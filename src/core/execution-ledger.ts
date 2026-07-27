@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { AtomicJsonStore } from './state-file.js';
 
+export const DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES = 64_000;
+
 export interface ExecutionCall {
   sessionId: string;
   runId: string;
@@ -98,7 +100,11 @@ export class ExecutionLedger {
 
   constructor(file: string, options: ExecutionLedgerOptions = {}) {
     this.maxEntries = positiveLimit(options.maxEntries, 2_000, 'maxEntries');
-    this.maxOutputBytes = positiveLimit(options.maxOutputBytes, 64_000, 'maxOutputBytes');
+    this.maxOutputBytes = positiveLimit(
+      options.maxOutputBytes,
+      DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES,
+      'maxOutputBytes',
+    );
     this.retentionMs = positiveLimit(options.retentionMs, 30 * 24 * 60 * 60_000, 'retentionMs');
     this.state = new AtomicJsonStore(file, {
       defaultValue: () => ({ version: 1, entries: Object.create(null) as Record<string, ExecutionEntry> }),

@@ -2,8 +2,8 @@
 
 日期：2026-07-27
 
-状态：有条件可开工；大象网页版个人账号最小收发 PoC 已通过，QQ、微信个人账号
-Adapter 仍须先通过非 CUA 真实收发门禁
+状态：可按渠道能力开工；大象网页版个人账号最小收发 PoC 已通过，QQ 已由 owner
+明确选择受控 CUA 路线，微信 `wx-cli` 只读路线正在完成实机初始化门禁
 
 适用渠道：大象、QQ、微信
 
@@ -47,6 +47,11 @@ Adapter 仍须先通过非 CUA 真实收发门禁
 - 不重启、不替换、不注入当前客户端；
 - 不向未确认目标发送测试消息。
 
+完成首轮非 CUA 探测后，owner 已明确作出两个例外决策：
+
+- QQ 不再等待协议逆向，也不采用 NapCat；以不抢焦点的受控 CUA 作为选定路线；
+- 微信允许对独立可回退副本重签并重启，用于验证 `wx-cli` 本地只读能力。
+
 可重复执行的只读探测脚本：
 
 ```bash
@@ -58,8 +63,8 @@ node scripts/probe-personal-im-transports.mjs
 | 渠道 | 当前客户端/入口 | 协议握手 | 个人账号校验 | 收件 | 发件 | 结论 |
 |---|---|---:|---:|---:|---:|---|
 | 大象 | `https://x.sankuai.com/` 个人账号 | 是 | 是 | DOM 增量通过，外部入站待测 | 通过 | 独立 Web PoC 向 owner 自聊只发送一次；捕获唯一新增 `data-mid`、送达回执和输入框清空，刷新后从服务端历史按相同 `data-mid` 重载 |
-| QQ | 6.9.98 / 51102 | 否 | 否 | 否 | 否 | 当前 QQ 自带本地端口不是 OneBot；NapCat/OneBot 未安装、未配置 |
-| 微信 | 4.1.11 / 269136 | 否 | 否 | 否 | 否 | 当前本地端口不是公开消息 API；现有 iLink 是 Bot 身份，本次明确排除 |
+| QQ | 6.9.98 / 51102 | 不适用 | 当前客户端实例，账号指纹待补 | 可见会话按需读取已具备 | 脚本与防重测试通过，真实 canary 待批 | 不采用 NapCat；选定 `qq-messenger-skill + ComputerManager` 的受控 CUA 路线 |
+| 微信 | 4.1.11 / 269136 | 本地库已定位 | 当前登录用户可识别 | 尚未通过 | 不支持 | 重签副本已取得 task port，但登录确认前只找到 17 个库、0 把密钥；不能把 `init` 的成功文案当成可读通过 |
 
 大象的 Browser Companion DOM 路线已经证明“本人账号 + 稳定会话 ID + 稳定消息 ID
 + 单次发送 + 增量捕获 + 回执 + 刷新后历史重载”的最小闭环，可以开始实现有界的
@@ -74,8 +79,9 @@ node scripts/probe-personal-im-transports.mjs
 /Users/liuyuran/Project/daxiang-web-poc/experiment-result.json
 ```
 
-QQ、微信仍不能声称完成个人账号非 CUA 双向收发。公共 schema、Hub、权限和测试骨架
-可以实施；每个尚未通过的渠道进入正式 Adapter 代码前都必须完成：
+微信仍不能声称完成个人账号非 CUA 双向收发。QQ 则是 owner 明确接受覆盖受限的
+CUA 路线，不再把“非 CUA”作为它的开工前提，但必须诚实标记
+`coverage=visible_ax`。协议或数据库 Adapter 进入正式代码前仍必须完成：
 
 ```text
 协议进程在线
@@ -86,9 +92,10 @@ QQ、微信仍不能声称完成个人账号非 CUA 双向收发。公共 schema
 → 获得 confirmed 回执
 ```
 
-任何一步依赖机器人身份、CUA、未批准的客户端注入或结果只能标为 accepted，
-都不算通过个人账号非 CUA 收发门禁。大象已经通过最小自聊闭环，可以开始 bounded
-Adapter 实现；但它尚未通过正式生产门禁中的后台外部入站与稳定性验证。
+任何一步依赖机器人身份、未批准的客户端注入或结果只能标为 accepted，都不算通过
+个人账号协议收发门禁。CUA 只有在 owner 明确选择且 `coverage` 不被夸大时才可作为
+渠道实现；当前仅 QQ 获得该例外。大象已经通过最小自聊闭环，可以开始 bounded
+Adapter 实现；微信只读门禁仍未通过。
 
 ## 2. 必须达到的用户体验
 
@@ -378,7 +385,7 @@ interface PersonalMessageResult {
 
 ## 8. 渠道 Adapter
 
-三个渠道共享一套 Adapter 接口和实现骨架：
+三个渠道共享一套 Adapter 接口；共享实现只承载已经确定的协议和可靠性逻辑：
 
 ```ts
 interface PersonalMessageAdapter {
@@ -392,11 +399,17 @@ interface PersonalMessageAdapter {
 ### 8.1 一套代码，隔离运行
 
 - 维护一个 `personal-message-connector` 代码包。
-- 大象、QQ、微信通过配置选择不同 Adapter。
-- 默认仍以三个 Connector 实例运行，保留故障和账号隔离。
-- 三个实例共用协议解析、游标、指纹、限流、状态上报和错误处理代码。
+- 大象和微信只读路线通过配置选择不同 Adapter；QQ 由
+  `qq-messenger-skill + ComputerManager` 承载，不伪装成协议 Adapter。
+- 最终运行两个隔离 Connector 实例和一个串行 QQ Computer worker，保留故障和账号
+  隔离。
+- 三条路线在 PersonalMessageHub 汇合，共用消息 schema、ACK 解释、限流、状态上报
+  和错误分类；不强求传输层形态一致。
+- 账号解析、页面/客户端指纹和游标结构先由渠道 Adapter 自己拥有，第二个真实渠道
+  出现相同代码后才提取。
 - 单个渠道崩溃不影响另外两个渠道。
 - 不创建三套复制粘贴的 Connector。
+- 未通过真实门禁的渠道不创建只能返回“未实现”的空 Adapter。
 
 ### 8.2 Connector、Browser Companion 与 CUA 的职责
 
@@ -422,7 +435,8 @@ ComputerManager 负责：
 - 需要点击、输入或发送的 GUI 动作；
 - `observe → one atomic act → re-observe`；
 - 防止操作错误窗口、错误联系人和已有草稿；
-- 只承担 CUA 兜底，不承载已验证的 Browser Companion 主路线。
+- 默认承担 CUA 兜底；当 owner 明确接受覆盖限制且协议路线不可用时，也可成为某个
+  渠道的选定路线。当前只有 QQ 适用，且必须标记 `visible_ax`，不能伪装成完整监听。
 
 Connector 不得通过任意 Shell 绕过这两个受控入口执行界面写操作。Browser Companion
 写入必须经过 Hub 绑定的窄 action 和 ExecutionLedger；CUA 写入必须经过
@@ -835,65 +849,416 @@ GUI 路线额外要求：
 - 尚未验证其他账号后台主动入站、断线重连、离线补偿、长时间稳定性和 DOM
   版本兼容。
 
-主路线：
+#### 14.1.1 已锁定实现
 
-1. 默认使用专用后台标签页运行大象网页版，并通过 Browser Companion 注入经过版本
-   校验的 DOM Bridge；
-2. 以现有 `page-probe.js` 为 PoC 基线，只暴露 `inspect`、`startObserver`、
-   `drain`、`sendText`、`stopObserver` 和 `restore` 的收敛能力；
-3. Companion 不读取 Cookie、localStorage、IndexedDB 或认证 Token，只使用网页
-   已有登录态；
-4. Adapter 将 `data-sid`、`data-mid`、会话类型和回执映射到统一消息协议；
-5. 正式官方个人账号接口可用后，可替换 Browser Companion，但不得改变上层契约；
-6. 大象本地 `LocalProtocolServer` / DXMP 仅作为诊断或受限卡片分享能力，不作为
-   普通消息主路线；
-7. Browser Companion 不可用时，ComputerManager 仅作为按需 CUA 兜底，不计入
-   非 CUA 覆盖率。
+大象采用一个独立 Connector 进程和一个专用 Chrome 后台标签页：
 
-要求：
+```text
+personal-message-connector.mjs --channel=daxiang
+→ daxiang-web Adapter
+→ Chrome JXA Browser Driver
+→ 专用 x.sankuai.com 后台标签页
+→ 页面内 daxiang-web-page-bridge.js
+```
 
-- 使用稳定 `sid`、`mid` 或等价 ID；
-- 必须证明调用身份就是 owner 本人，而不是应用号、机器人或个人助理号；
-- PoC 已通过 owner 自聊 nonce 发出、DOM 增量捕获和刷新回读；
-- 生产启用前必须再由其他账号向后台页面发送 nonce，验证真正外部入站；
-- 专用后台标签页不得激活、切换或改变 owner 当前 Chrome 标签；
-- 页面结构或版本指纹变化时立即降级为 unavailable，禁止继续发送；
-- 不能从历史缓存冒充当前消息；
-- Connector 离线只表示协议入口不可用，不表示“大象没有新消息”；
-- Browser Companion 写入必须经过 Hub 绑定的窄 action 和 ExecutionLedger；
-- CUA 兜底写入必须经过 ComputerManager。
+这不是 CUA。Browser Driver 只通过 Chrome 自带 Apple Events JavaScript 接口在
+指定后台标签页执行有界脚本，不激活浏览器、不发送键盘鼠标事件，也不读取 Cookie、
+`localStorage`、`IndexedDB` 或认证 Token。CUA 仍只在 owner 当次明确请求且主路线
+不可用时，作为 ComputerManager 兜底。
+
+运行前提只有：
+
+- macOS 上已运行 Google Chrome；
+- owner 已在专用标签登录 `https://x.sankuai.com/`；
+- Chrome 已允许来自 Apple Events 的 JavaScript；
+- 实际运行 MimiAgent 的 Node/LaunchAgent 已获得必要的 macOS Automation 权限。
+
+缺少任一项只会得到明确的 unavailable 诊断；Connector 不代替 owner修改浏览器
+设置，也不通过启动、激活 Chrome 来触发权限。
+
+首个渠道实现不预先抽象 QQ、微信尚未验证的传输细节。只共享已经确定的 NDJSON、
+状态、ACK、结果和 Adapter 接口；等第二个渠道真实跑通后，再提取确实重复的驱动
+代码。这样既保留统一契约，也避免为了“看起来通用”提前建设难维护的框架。
+
+大象实现文件固定为：
+
+```text
+examples/connectors/personal-message-connector.mjs
+examples/connectors/personal-message/daxiang-web.mjs
+examples/connectors/personal-message/daxiang-web-page-bridge.js
+examples/connectors/personal-message/daxiang-web.example.json
+tests/daxiang-web-personal-connector.test.ts
+tests/fixtures/daxiang-web/
+```
+
+`personal-message-connector.mjs` 只负责 NDJSON、status、event ACK、action
+分发、截止时间和进程退出；DOM 选择器、页面指纹、标签绑定、消息解析和发送全部留在
+`daxiang-web.mjs`。页面 Bridge 是无依赖的普通 JavaScript，不进入 Runtime。
+
+#### 14.1.2 专用标签页绑定
+
+Connector 每次轮询都重新枚举 Chrome 标签，不能长期相信
+`chrome:<windowIndex>:<tabIndex>`，因为标签增删后索引会变化。
+
+绑定规则固定为：
+
+1. 页面 origin 必须精确为 `https://x.sankuai.com`；
+2. 首次只读探测时，如果只有一个匹配标签且它不是当前活动标签，在页面
+   `window.name` 写入配置中的随机 `tabMarker`；
+3. 后续每次通过 `origin + tabMarker` 重新定位；
+4. 没有匹配、出现多个匹配、标签处于活动状态或 URL 跳出允许 origin 时，立即停止
+   观察和发送；
+5. Connector 不自动新建、激活、刷新、关闭或移动标签页；
+6. 页面刷新导致 Bridge 消失时，可以在同一已绑定标签重新注入；不能借此跳过页面
+   指纹校验。
+
+`window.name` 只保存一个随机本地标记，不保存账号、联系人、消息或凭证。若 owner
+希望在前台使用大象网页版，应另开普通标签；被绑定的专用标签一旦成为活动标签，
+Connector 暂停操作并把 `backgroundSafe` 报告为 false。
+
+#### 14.1.3 账号与页面指纹
+
+首次配置必须提供 owner 本人自聊的稳定 `selfConversation.sid` 和 `type`。
+Bridge 用下面的非敏感证据计算账号指纹：
+
+```text
+accountFingerprint =
+sha256("daxiang-web-v1" + origin + selfConversation.sid + selfRowLabelDigest)
+```
+
+`selfRowLabelDigest` 由本人自聊行的规范化可见标签在 Connector 内计算；原始标签不写
+日志、status 或 diagnostics。Connector 配置中的
+`expectedAccountFingerprint` 与当前值不一致时，读取 coverage 降为 unavailable，
+发送直接拒绝。单独看到“同步成功”不能证明账号身份。
+
+页面指纹不依赖完整 HTML，而由 Bridge 版本、origin、关键元素是否唯一、元素标签名
+和必要属性组合后取摘要。至少检查：
+
+- `.comp-session[data-sid]` 可用且目标 `sid` 唯一；
+- `.bubble-item[data-mid]` 的 `mid` 存在且当前样本唯一；
+- `#textTextarea` 是唯一且可读的 `TEXTAREA`；
+- `#msgSend button` 中“发送”按钮唯一；
+- 当前路由、selected session、`sid` 和会话类型一致。
+
+`allowedPageFingerprints` 未配置、当前指纹未命中或 Bridge major version 不兼容时，
+允许只读 `health_check` 返回新指纹，但禁止 `send_message`。选择器变化只修改页面
+Bridge 和 fixture，不扩散到 Hub、Daemon 或 Runtime。
+
+#### 14.1.4 页面 Bridge 契约
+
+以已经跑通的 `page-probe.js` 为基线，产品 Bridge 固定暴露版本化窄接口。Chrome
+Apple Events 不能可靠等待页面 Promise，因此跨进程接口全部是同步小命令；等待路由、
+DOM 更新和发送结果由 Connector 有界轮询完成：
+
+```ts
+interface DaxiangWebPageBridgeV1 {
+  inspect(input: { selfSid: string }): InspectResult;
+  installObserver(): ObserverResult;
+  drain(): PageEvent[];
+  selectConversation(input: {
+    sid: string;
+    type: 'chat' | 'groupchat';
+  }): SelectionResult;
+  readCurrentConversation(input: {
+    sid: string;
+    type: 'chat' | 'groupchat';
+    limit: number;
+  }): ConversationSnapshot;
+  prepareSend(input: {
+    attemptId: string;
+    sid: string;
+    type: 'chat' | 'groupchat';
+    text: string;
+  }): PreparedSend;
+  commitSend(input: { attemptId: string }): DispatchResult;
+  observeSend(input: { attemptId: string }): PageSendObservation;
+  dispose(): { disposed: boolean };
+}
+```
+
+边界固定为：
+
+- 只接受配置中已经存在的数字 `sid`，不接受显示名搜索；
+- `pubchat` 首次实施不开放发送；
+- 单条正文最多 4,000 字符，上下文最多 50 条；
+- 只返回消息所需字段，不返回整页 HTML；
+- 只处理拥有稳定 `data-mid` 的消息；缺少 `mid` 的气泡只计入 coverage gap，不用
+  内容哈希冒充稳定消息；
+- `MutationObserver` 只观察会话未读变化、消息节点新增和回执属性变化，内存队列
+  最多 200 条；
+- `prepareSend` 只在目标路由已经稳定后暂存并复核正文，不点击；
+- `commitSend` 为同一个 `attemptId` 最多点击一次；重复调用只能返回此前状态；
+- `observeSend` 只读检查新 `mid`、方向、正文和回执，不产生第二次发送；
+- 页面刷新后由 Connector 重新注入并从服务端可见历史补读，不能把 Bridge 内存队列
+  当作可靠存储。
+
+`ConversationSnapshot` 至少包含 `sid`、`type`、`messages`、
+`latestFingerprint`、`readStateChanged` 和 `capturedAt`。每条消息至少包含
+`mid`、方向、正文预览、可验证时的稳定 sender、页面时间和回执原值。方向或 sender
+无法从当前 DOM 稳定解析时必须返回 `unknown`；这类消息最多进入 Observe/Digest，
+不能触发 Auto。
+
+#### 14.1.5 入站轮询、ACK 和补偿
+
+只观察配置 `watch.conversations` 中的会话：
+
+```text
+找到并验证专用标签
+→ 验证账号和页面指纹
+→ 确保 Observer 已安装
+→ drain 增量事件
+→ 对出现未读变化的 watch 会话读取最近有界上下文
+→ 用 sid + mid 合并 Observer 与快照结果
+→ 只输出方向为 incoming 的新 Event
+→ 等全部 event_ack 成功
+→ 原子推进该批游标
+```
+
+大象 Event 的稳定身份固定为：
+
+```text
+source     = personal-message:daxiang
+externalId = daxiang:<accountFingerprintDigest>:<sid>:<mid>
+conversation.id = daxiang:<accountFingerprintDigest>:<sid>
+replyTarget = 不设置
+```
+
+Connector 状态按会话保存最后一次完整 ACK 的批次水位和最多 256 个近期已 ACK
+`mid`。收到部分 ACK、ACK 失败、超时或进程退出时，整批水位不前移；重启后允许
+重读，交给现有 Event Store 用 `source + externalId` 去重。Connector 不建设消息
+数据库，也不长期保存正文。
+
+读取未读会话可能改变大象服务端未读状态，所以在真实实验确认前固定报告
+`changesReadState: 'unknown'`。实现可以在专用后台标签内切换受监控会话并恢复原
+selected session，但不得切换 Chrome 活动标签。无法恢复只影响这个专用标签，
+必须记录有界诊断并暂停本轮，不能影响 owner 当前前台。
+
+空闲轮询默认 30 秒；观察到未读变化后可在 2～5 秒内合并短消息，再恢复空闲频率。
+不进行全联系人扫描，不依赖 Provider 推进游标。离线补偿只承诺“当前 watch 会话中
+网页能重新加载到的有界历史”；网页未提供的缺口必须报告为 coverage gap。
+
+#### 14.1.6 四个 Connector action
+
+大象实例只声明以下 action：
+
+| Action | target | 结果 |
+|---|---|---|
+| `health_check` | `account` | 账号/页面摘要、标签状态、coverage、是否可读写 |
+| `sync_now` | `all` 或配置中的 `sid` | 立即执行一次受监控会话同步 |
+| `get_context` | 配置中的 `sid` | 返回最多 50 条有界上下文和最新指纹 |
+| `send_message` | 配置中的 `sid` | 只发送 Hub 已绑定目标的一条文本 |
+
+`send_message` 虽登记在 Connector Manager 的 action 目录中，但通用
+`connector_action` 必须对 `personal-*` Connector 拒绝写 action；它只能由
+`PersonalMessageHub` 持有的、已经绑定账号和 `sid` 的内部 callback 调用。
+`health_check`、`sync_now` 和 `get_context` 仍可按现有只读权限开放。
+
+#### 14.1.7 单次发送算法
+
+发送严格沿用已通过 PoC 的一次性语义：
+
+```text
+复核专用标签、账号指纹和页面指纹
+→ 确认 sid 在配置 allowlist 且 type 一致
+→ 读取最新上下文并比对 contextToken.latestFingerprint
+→ 确认输入框为空
+→ 设置文本并逐字复核
+→ 确认发送按钮唯一且可用
+→ 只 click 一次
+→ 等待新的、此前不存在的 data-mid 和精确正文
+→ 读取回执原值
+→ 返回 observed / confirmed / uncertain
+```
+
+状态解释固定为：
+
+- 点击前失败：`ok:false, uncertain:false`，Host 可按现有策略决定是否安全重试；
+- 点击后观察到唯一新 outgoing `mid` 和精确正文：`ok:true`，
+  `status:'observed'`；
+- 只有回执字段的业务含义经过独立双端实验确认后，才可返回
+  `status:'confirmed'` 和 `deliveryConfirmed:true`；
+- 点击后超时、页面断开、出现多个候选气泡或无法判定：`ok:false,
+  uncertain:true`，Connector 不重试，Host 直接进入 uncertain fencing；
+- 已有草稿、账号变化、指纹变化、目标不唯一、owner 正在使用专用标签时，一律在
+  点击前停止。
+
+PoC 观察到 `data-receipt` 不等于已经证明“对方设备收到”，因此首版大象
+`deliveryConfirmed` 固定为 false，不能在文案中把 `observed` 写成“已送达”。
+
+#### 14.1.8 readiness 与 coverage
+
+启动时先报告 `unknown`，每次成功轮询重新发送带 freshness 的 status：
+
+```json
+{
+  "type": "status",
+  "inbound": "ready",
+  "outbound": "ready",
+  "deliveryConfirmed": false,
+  "eventAcknowledgement": true,
+  "freshForMs": 90000
+}
+```
+
+上面只是协议示例；实际映射固定为：
+
+| 条件 | inbound | outbound | coverage |
+|---|---|---|---|
+| 标签、账号或 Bridge 不可验证 | unavailable | unavailable | unavailable |
+| 当前标签为活动标签 | unknown | unavailable | bounded，暂停观察 |
+| watch 会话可读但 sender/方向不稳定 | ready | 按发送探测决定 | bounded，最高 Digest |
+| watch 会话、稳定 ID 和方向可读 | ready | 按发送探测决定 | bounded |
+| 页面指纹未进 allowlist | 允许只读时 ready | unavailable | bounded |
+| freshness 过期 | stale | stale | 不变但停止 Auto |
+
+在“外部账号后台入站、重连补读、未读副作用”真实实验完成前，coverage 始终是
+`bounded`，不得标成 `complete`。
+
+#### 14.1.9 配置与本地状态
+
+大象业务配置使用一个独立、无凭证 JSON：
+
+```json
+{
+  "schemaVersion": 1,
+  "tabMarker": "mimi-daxiang-random-marker",
+  "expectedAccountFingerprint": "sha256:...",
+  "allowedPageFingerprints": ["sha256:..."],
+  "selfConversation": { "sid": "123456", "type": "chat" },
+  "watch": {
+    "enabled": true,
+    "pollIntervalMs": 30000,
+    "conversations": [
+      { "sid": "123456", "type": "chat", "label": "owner-self-chat" }
+    ]
+  },
+  "limits": {
+    "contextMessages": 50,
+    "eventPreviewChars": 4000
+  }
+}
+```
+
+文件默认位于
+`~/.mimi-agent/daemon/personal-daxiang.json`，权限为 `0600`；
+`label` 只用于 owner 阅读，不参与目标选择。Connector 的环境白名单只需要：
+
+```text
+MIMI_DAEMON_DATA_DIR
+DAXIANG_WEB_CONFIG
+DAXIANG_WEB_COMMAND_TIMEOUT_MS
+```
+
+持久状态位于
+`~/.mimi-agent/daemon/connector-state/personal-message-daxiang/`，只保存配置摘要、
+账号指纹摘要、页面指纹、每会话 ACK 水位、最近已 ACK `mid` 和有界错误类别。
+配置变化时，如果账号、self sid 或 tab marker 变化，旧水位不能直接继承，必须先
+重新只读探测。
+
+首次启用的操作固定为：
+
+```text
+准备一个已登录且非活动状态的大象 Web 专用标签
+→ 创建业务配置，expectedAccountFingerprint 和 allowedPageFingerprints 暂留空
+→ 启用 Connector，只运行 health_check(probe=true)
+→ 从只读结果取得两个摘要并写回配置
+→ reload Connector，再次 health_check 确认精确匹配
+→ 完成外部账号入站 canary
+→ 完成 owner 批准的本人自聊 Confirm 发送 canary
+```
+
+指纹为空时不能发送；`health_check` 只返回摘要、结构计数和错误类别，不返回账号
+显示名、会话正文或页面 HTML。这个流程复用现有 Connector 启停和 reload，不增加
+新的常驻 onboarding 服务。
+
+#### 14.1.10 实施完成门禁
+
+代码可以立即按本节开工；能力开放仍按证据逐项进行：
+
+- 只读单元和假 Driver 测试通过后，可交付 Connector disabled 模板；
+- 当前 PoC 证据允许实现 owner 自聊的 bounded 读取和 Confirm 发送代码；
+- 由另一个真实账号向后台 watch 会话发送唯一 nonce，Connector 收到 Event 且
+  ACK 后跨重启不重复，才允许声明真实外部入站；
+- 断网后恢复并补读 nonce，才允许声明离线补偿；
+- 24 小时后台观察期间不激活 Chrome、不漏掉测试消息、不无限增长内存，才允许默认
+  开启 Observe/Digest；
+- 连续 20 次 Confirm 发送错目标和重复发送为 0，并完成 72 小时受控运行后，才可
+  对精确低风险规则开放 Auto；
+- DOM fixture 或页面指纹变化时，测试必须证明发送 fail closed。
+
+大象本地 `LocalProtocolServer` / DXMP 继续只作为诊断或受限卡片分享能力，不作为
+普通消息主路线。未来获得正式个人账号 API 时，只替换
+`daxiang-web.mjs`，不得改变 Event、Hub、授权和结果契约。
+
+#### 14.1.11 可直接开工的任务清单
+
+下面是同一个最终方案内的依赖顺序，不是删减能力的产品阶段：
+
+| 任务 | 代码交付 | 完成定义 |
+|---|---|---|
+| DAX-01 | 页面 Bridge 与最小 DOM fixtures | 同步接口可解析 `sid/mid`，脚本语法检查和 fixture 测试通过 |
+| DAX-02 | Chrome JXA Browser Driver | 能后台重找绑定标签；多标签、活动标签、origin 变化全部 fail closed |
+| DAX-03 | 大象配置 schema 与原子状态 | 非法配置拒绝；状态权限正确；正文和原始显示名不落盘 |
+| DAX-04 | Connector NDJSON host | status、action、deadline、event ACK 和 graceful shutdown 契约测试通过 |
+| DAX-05 | bounded 入站同步 | watch allowlist、Observer/快照合并、稳定 externalId、整批 ACK 水位通过 |
+| DAX-06 | 单次发送 | prepare/commit/observe 只 click 一次；post-click 故障全部 uncertain |
+| DAX-07 | Hub 与工具策略接线 | Context token 绑定目标；通用 `connector_action` 不能直达大象写 action |
+| DAX-08 | disabled 模板、doctor 与文档 | fresh config 默认关闭；doctor 能解释权限、标签、账号和指纹问题 |
+| DAX-09 | 真实 canary 与运行记录 | 外部入站、重启去重、断线补读、Confirm 发送和后台不抢焦点均有结果文件 |
+
+每个任务先运行最窄测试。DAX-01～DAX-08 不依赖真实发送，可以正常进入代码实施；
+DAX-09 需要 owner 明确指定安全目标并批准唯一发送文本。只有 DAX-09 的真实证据
+可以提升 readiness/coverage，不允许用单元测试结果代替。
 
 ### 14.2 QQ 个人账号
 
-实测状态：
+选定路线：
 
-- QQ 6.9.98 / build 51102 正在使用；
-- 4001、4301、4310、9210 是 QQ 内部端口，不是 OneBot API；
-- 当前没有 NapCat 进程和 OneBot 配置；
-- 尚未验证个人账号握手、入站事件或发送。
+```text
+低频自适应可见窗口观察
+→ qq-messenger-skill / ComputerManager
+→ 有界上下文与 visible_ax 指纹
+→ PersonalMessageHub
+→ 同一 ComputerManager 路线发送并重新观察
+```
 
-主路线：
+这条路线不安装 NapCat、不登录第二个账号、不注入或重签 QQ，也不逆向加密数据库。
+它使用 owner 已登录的官方 QQ，并接受“窗口隐藏时不可读、无法保证完整历史”的真实
+覆盖边界。
 
-1. 首选当前个人 QQ 的受支持协议接口；
-2. 若无官方接口，可把 NapCat/OneBot 作为**需 owner 单独批准的实验候选**：
-   OneBot 只是协议格式，必须绑定 owner 本人的 QQ，不能新建或替换成机器人号；
-3. 实验前必须验证当前 QQ build 兼容性、代码来源、签名、可卸载性、账号风控和
-   与现有客户端共存方式；
-4. 通过后只启用绑定 `127.0.0.1`、随机 token 的 HTTP/WS 接口；
-5. 协议路线不可用时，现有 `qq-messenger-skill` / ComputerManager 仅作为 CUA
-   兜底，不计入非 CUA 覆盖率。
+已完成的稳定性加固：
 
-要求：
+- 新增 `--action status`，用一次只读探测返回 `ready` 或明确不可用原因；
+- 只读 status/context 可读取当前桌面可见、尺寸合理的聊天窗口；发送或切换会话时，
+  可见窗口（即使不在前台）默认失败关闭，避免改变你下次看到的会话或已读状态；
+- 仅当 QQ 原本隐藏且 `launch_app` 明确返回 `self_activation_suppressed=true` 时取得一次
+  隐藏窗口租约，完成后恢复隐藏；无法证明前台未被抢占或恢复失败时停止且不重试；
+- 切换会话前、写入前、按下发送键前再次检查 owner 是否正在使用 QQ；
+- 联系人精确匹配、非空草稿保护、写入后逐字回读、只按一次 Return；
+- 发送后用新增气泡和输入框状态复核；结果不确定时标记 `uncertain`，绝不重试；
+- 所有 QQ 调用共用本机私有文件锁，避免两个 worker 同时切会话或发送；专项测试覆盖
+  成功发送、上下文读取、会话切换、前台占用、可见窗口 fail-closed、隐藏窗口租约、
+  草稿保护和 uncertain，共 12 项。
 
-- 不登录第二个账号，不使用 QQ 官方 Bot；
-- 未经 owner 明确批准，不安装、注入、重签或替换当前 QQ；
-- NapCat/OneBot 不作为默认依赖，只能在真实 PoC 通过后成为可选 Adapter；
-- OneBot `get_login_info` 必须验证为 owner 账号，但日志不得输出 QQ 号；
-- 必须通过 WS 入站事件和安全目标 nonce 回读证明双向通信；
-- `send_qq.py` 的行为应迁入或受控于已注册 ComputerManager 路线，
-  不由模型任意执行 Shell；
-- 默认最高到 Draft；经过真实验证的精确低风险会话才允许 Auto；
-- 每次动作后重新获取界面 token，不能复用旧 snapshot 的元素索引。
+持续监听的目标是轻量自适应轮询，但当前脚本尚未提供稳定 watcher；在 watcher 完成前，
+只能按需读取，不能把 QQ 宣称为持续监听渠道：
+
+- 仅在 `status=ready` 时读取一次窗口 AX 快照；空闲时降频，发现未读变化时短时提频；
+- 只处理当前可见会话列表和会话区，不滚动全历史，不做高频截图和 OCR；
+- 使用账号指纹、规范化会话标题、方向、可见时间与正文摘要生成合成去重键；
+- 合成键不能冒充服务端消息 ID，coverage 固定为 `visible_ax`、`complete=false`；
+- QQ 前台使用、窗口隐藏、元素结构变化或草稿非空时暂停，不与 owner 抢控制权；
+- 单 QQ 进程串行执行，禁止两个 worker 同时切会话或发送；
+- 默认最高到 Draft；真实 canary 和长稳测试通过后，精确低风险白名单才允许 Confirm，
+  Auto 必须另行批准。
+
+开工任务固定为：
+
+1. 把脚本能力注册到 ComputerManager 的窄 QQ 操作，不允许模型任意拼 Shell；
+2. 增加自适应观察循环、合成去重、暂停状态和指标；
+3. 记录每次窗口选择、目标确认、写入确认和发送确认 receipt，不记录完整私聊正文；
+4. 用 owner 明确批准的安全会话完成唯一 nonce canary；
+5. 连续运行至少 8 小时，验证不抢焦点、不覆盖草稿、不重复发送和合理 CPU 占用。
 
 ### 14.3 微信个人账号
 
@@ -903,23 +1268,29 @@ GUI 路线额外要求：
 - 14013、14016、14019、14022、14023 是客户端内部端口，不是公开消息 API；
 - OpenClaw iLink 是独立 Bot 身份，明确排除；
 - WeChatFerry 不是当前 macOS 4.x 可用方案；
-- `wx-cli` 类工具最多提供本地只读能力，不能完成发送；部分方案还要求扫描内存、
-  重签和重启微信，不符合当前无侵入约束。
+- `wx-cli` 只能提供本地只读能力，不能完成发送；
+- owner 已批准重签与重启。为保留回退，原始 `/Applications/微信.app` 未改签，
+  实验使用 `/Users/liuyuran/Applications/微信-Mimi.app`；
+- 副本加入最小 `get-task-allow` 后成功获得 task port 并定位 17 个加密数据库；
+- 微信尚未完成登录确认时密钥提取为 0，`wx sessions` 实际报“无法解密
+  session.db”，所以门禁仍未通过；
+- 官方客户端已恢复，当前只等待手机端确认进入微信，不把重签副本的初始化文案
+  误报为成功。
 
 主路线：
 
-1. 优先等待或申请官方支持个人账号的消息事件、历史读取和发送能力；
-2. 可单独验证只读数据库 Adapter，但它只能提升 Observe / Digest，不能据此开放
-   Confirm / Auto；
-3. 只有出现适配当前微信 4.x macOS、无需机器人身份且可验证投递的个人发送协议，
-   才实现完整 Adapter；
-4. 在此之前 ComputerManager 只作为 owner 当次请求的 CUA 兜底，不计入非 CUA
-   覆盖率。
+1. 手机确认后先验证官方客户端确实打开数据库，再在可回退条件下完成一次密钥提取；
+2. 必须以 `wx sessions --json`、`wx unread --json` 的真实解密结果作为只读门禁，
+   不能使用 `wx init` 的退出码或文案代替；
+3. 通过后只实现 read-only Adapter，用于 Observe / Digest，不据此开放发送；
+4. 发送继续由 ComputerManager 作为 owner 当次请求的 CUA 路线，保持
+   `outbound=unavailable` 或 `outbound=visible_ax` 的诚实状态；
+5. 出现适配当前微信 4.x macOS、个人身份且可验证投递的发送协议后，再替换发送侧。
 
 要求：
 
-- 不退出或替换 owner 当前微信；
-- 未经 owner 明确批准，不重签、注入、扫描进程内存或重启微信；
+- 原始官方微信必须保留可回退，不在实验失败时让 owner 长时间停留在未登录状态；
+- 重签、扫描进程内存和重启必须有 owner 明确批准；本次授权仅覆盖独立副本实验；
 - OpenClaw iLink Bot 保持独立来源，不作为个人微信降级路线；
 - 个人微信无法稳定读取时如实返回 `notification_only` 或 `bounded`；
 - 默认最高到 Draft；精确低风险会话经过验证后才允许 Auto；
@@ -1047,19 +1418,22 @@ GUI 路线额外要求：
 ~/.mimi-agent/daemon/connectors.json
 ```
 
-个人消息的通用配置只保留：
+个人消息业务配置的通用形状只保留账号、观察范围和探测目标；渠道特殊字段放在各自
+示例文件中。例如：
 
 ```json
 {
-  "channel": "qq",
+  "channel": "daxiang",
   "expectedAccountFingerprint": "sha256:...",
   "watch": {
     "enabled": true,
-    "conversations": ["stable-conversation-id"],
+    "conversations": [
+      { "sid": "stable-conversation-id", "type": "chat" }
+    ],
     "pollIntervalMs": 30000
   },
   "capabilityProbe": {
-    "safeConversation": "stable-self-chat-id"
+    "selfConversation": { "sid": "stable-self-chat-id", "type": "chat" }
   }
 }
 ```
@@ -1075,11 +1449,49 @@ Connector ID 和 source 固定为：
 三者：
 
 - 使用同一个 `personal-message-connector.mjs`；
+- 通过 `--channel=<channel>` 加载各自已经通过门禁的 Adapter；首个实现只包含
+  `daxiang-web`，不为空壳 QQ、微信编写传输代码；
 - 在 `mimi.connectors.example.json` 中默认 `enabled:false`；
 - `trust` 固定为 `external`；
 - 不使用已退役的 `daxiang`、`qq`、`qq-applescript`、
   `wechat-applescript` ID；
 - 不使用已退役脚本文件名，因此不会被旧 Connector 清理规则误删。
+
+大象模板项固定为：
+
+```json
+{
+  "personal-daxiang": {
+    "enabled": false,
+    "command": "node",
+    "args": [
+      "/absolute/path/to/MimiAgent/examples/connectors/personal-message-connector.mjs",
+      "--channel=daxiang"
+    ],
+    "envAllowlist": [
+      "MIMI_DAEMON_DATA_DIR",
+      "DAXIANG_WEB_CONFIG",
+      "DAXIANG_WEB_COMMAND_TIMEOUT_MS"
+    ],
+    "source": "personal-message:daxiang",
+    "trust": "external",
+    "profileId": "owner",
+    "restart": true,
+    "deliveryTimeoutMs": 30000,
+    "actionTimeoutMs": 30000,
+    "actions": {
+      "health_check": { "description": "只读检查大象个人账号、专用后台标签和页面兼容性" },
+      "sync_now": { "description": "立即同步配置中的大象会话" },
+      "get_context": { "description": "按稳定 sid 读取有界大象会话上下文" },
+      "send_message": { "description": "仅供 PersonalMessageHub 向已绑定 sid 发送一条文本" }
+    }
+  }
+}
+```
+
+模板存在不代表可以发送。缺少业务配置、账号指纹或页面指纹时，Connector 必须保持
+只读或 unavailable；fresh install 不自动创建大象标签、不读取会话、不触发权限
+弹窗。
 
 配置迁移采用一次性、可回滚规则：
 
@@ -1139,11 +1551,14 @@ Connector 配置。例如：
 ### 19.1 已锁定的设计决策
 
 1. 使用现有 Connector Manager，不建设新的消息进程管理器。
-2. 三渠道使用同一 Adapter 包、三个隔离实例。
+2. 三渠道共享 Connector host 和消息契约、使用三个隔离实例；只在真实重复出现后
+   提取 Adapter 公共驱动。
 3. 个人消息 Event 默认不设置 `replyRoute`。
 4. 五级授权使用 Source Policy 的 `messageMode` 机器字段。
 5. Auto 只通过两个消息窄工具执行，不开放通用工作权限。
-6. GUI 读写全部由 ComputerManager 完成，Connector 不直接执行 GUI 写操作。
+6. 已验证的后台 Browser Companion 可由个人消息 Connector 执行窄 DOM
+   读写；CUA 才由 ComputerManager 执行。两种写路线都必须经过 Hub 和
+   ExecutionLedger。
 7. 人物复用现有 People，承诺落入现有 Task、Goal、Schedule 或 Memory。
 8. 不增加消息数据库和专用 retention 配置。
 9. 结果不确定时不自动重试、不切换 transport。
@@ -1172,6 +1587,7 @@ npm run check
 node --import tsx --test tests/personal-message.test.ts
 node --import tsx --test tests/personal-message-policy.test.ts
 node --import tsx --test tests/personal-message-config.test.ts
+node --import tsx --test tests/daxiang-web-personal-connector.test.ts
 npm test
 npm run build
 npm run test:package
@@ -1256,16 +1672,22 @@ Auto 默认关闭。单个“渠道 + 账号 + 会话 + 动作类型”只有满
 - 扩展 Source Policy `messageMode` 和对应工具策略；
 - 增加 Event 绑定的 `PersonalMessageScope` 和受限 Connector callback。
 
-### 20.2 共享 Adapter 包
+### 20.2 Connector host 与渠道 Adapter
 
-- 建立一套 `personal-message-connector`；
+- 建立一套轻量 `personal-message-connector` host；
 - 实现公共 health、cursor、poll、ACK、dedup 和 diagnostics；
-- 只有对应渠道通过个人账号非 CUA 收发门禁后，才实现该渠道 Adapter；
+- 只有对应渠道通过个人账号协议门禁后，才实现 Connector Adapter；owner 已明确选择
+  的 QQ CUA 路线由 Skill + ComputerManager 实现，不伪装成 Connector Adapter；
 - 未通过门禁的渠道只登记 capability gap，不创建伪 Adapter；
-- 大象已通过最小自聊门禁，可以实现 bounded Browser Companion Adapter；
+- 按 14.1 的已锁定契约实现 `daxiang-web` bounded Browser Companion Adapter；
+- 大象首版只观察配置的稳定 `sid`，只使用稳定 `mid` 产生 Event；
+- 大象先以 `deliveryConfirmed:false` 交付，回执语义实测后才能升级；
 - Browser Companion 写操作由窄 Connector action 承载，CUA 写操作由渠道 Skill
   和 ComputerManager 承载；
-- 正式 API 可用时才实现 `send_message` action；
+- 为 QQ 增加受控 `status/context/send` 操作、自适应观察循环和 `visible_ax`
+  coverage；隐藏或前台占用时自动暂停；
+- 已验证的 Browser Companion 可以实现受限 `send_message`；未通过门禁的其他渠道
+  不得照抄；
 - 增加一次性 disabled 配置迁移。
 
 ### 20.3 事务理解与授权
@@ -1294,12 +1716,16 @@ scripts/probe-personal-im-transports.mjs
 src/daemon/personal-message.ts
 src/runtime/personal-message-hub.ts
 examples/connectors/personal-message-connector.mjs
-examples/connectors/personal-message.example.json
+examples/connectors/personal-message/daxiang-web.mjs
+examples/connectors/personal-message/daxiang-web-page-bridge.js
+examples/connectors/personal-message/daxiang-web.example.json
 skills/daxiang-personal/SKILL.md
 skills/wechat-personal/SKILL.md
 tests/personal-message.test.ts
 tests/personal-message-hub.test.ts
 tests/personal-message-connector.test.ts
+tests/daxiang-web-personal-connector.test.ts
+tests/fixtures/daxiang-web/
 tests/personal-message-policy.test.ts
 tests/personal-message-config.test.ts
 ```
@@ -1383,7 +1809,44 @@ src/runtime/capability-broker-service.ts
 - 发送后置校验失败返回 uncertain；
 - 不激活、不退出、不覆盖客户端。
 
-### 22.4 配置迁移
+### 22.4 大象 Browser Companion
+
+普通单元测试使用假 Browser Driver 和最小 DOM fixture，不依赖真实账号、Chrome、
+网络或 Provider，至少覆盖：
+
+- 只接受精确 `https://x.sankuai.com` origin；
+- 每次按 `origin + tabMarker` 重找标签，不复用过期 tab index；
+- 多个匹配标签、标签处于活动状态和页面跳转时 fail closed；
+- Bridge 缺失时只在已绑定标签重注入；
+- 账号指纹、页面指纹或 Bridge major version 不匹配时禁止发送；
+- watch allowlist 只接受数字 `sid` 和允许的会话类型；
+- Observer 与历史快照中的同一个 `sid + mid` 只产生一个 Event；
+- 缺少稳定 `mid`、方向为 unknown 或 sender 不稳定时不会开放 Auto；
+- `externalId` 只由账号摘要、`sid` 和 `mid` 组成；
+- 整批 Event 全部 ACK 后才原子推进水位，部分 ACK 和 ACK 丢失不推进；
+- 重启重读由 `source + externalId` 去重；
+- 配置和状态文件权限正确，状态与 stderr 不含消息正文、显示名和凭证；
+- Bridge 不访问 Cookie、`localStorage`、`IndexedDB` 和认证 Token；
+- 输入框非空、目标不唯一、正文复核失败均在 click 前安全失败；
+- 成功路径只 click 一次，并要求新 outgoing `mid` 和精确正文；
+- click 后超时、断页或候选不唯一返回 `uncertain:true` 且不重试；
+- 未独立验证的 `data-receipt` 只能得到 `observed`；
+- Connector 不调用 Chrome `activate`、不发送按键、不使用剪贴板；
+- `personal-daxiang/send_message` 无法从通用 `connector_action` 直达，只能通过
+  Hub 的绑定 callback。
+
+真实大象验收是显式 opt-in，不进入 `npm test`：
+
+- 另一个账号向后台 watch 会话发送唯一 nonce，验证 external inbound；
+- ACK 后重启 Connector，验证相同 `mid` 不重复触发；
+- 断网、恢复并发送第二个 nonce，验证实际可见范围内的补读；
+- owner 使用另一个 Chrome 标签时，专用标签不被激活；
+- 专用标签被 owner 激活时，发送能力立即暂停；
+- 本人自聊执行 1 次 approved send，验证只发送一次；
+- 24 小时观察和 72 小时受控发送记录 CPU、内存、漏收、重复、uncertain 和页面
+  指纹变化。
+
+### 22.5 配置迁移
 
 - 三个新 Connector 在 fresh config 中存在且默认关闭；
 - 旧 config 只补一次缺失的 disabled 项；
@@ -1393,7 +1856,7 @@ src/runtime/capability-broker-service.ts
 - 新 ID 和共享脚本不会被误删；
 - 启用前不启动客户端或触发权限弹窗。
 
-### 22.5 故障恢复
+### 22.6 故障恢复
 
 - Connector 崩溃；
 - Daemon 在发送前、发送中、发送后崩溃；
@@ -1405,11 +1868,13 @@ src/runtime/capability-broker-service.ts
 - owner 手动发送与自动任务并发；
 - 单渠道故障不影响其他渠道。
 
-### 22.6 真实验收
+### 22.7 真实验收
 
 真实测试只使用 owner 明确指定的本人自聊或安全目标：
 
-- 每渠道先通过个人账号非 CUA 的账号、收件、发件和 nonce 回读门禁；
+- 大象先通过个人账号非 CUA 的账号、收件、发件和 nonce 回读门禁；
+- QQ 通过 `visible_ax` 的账号/窗口保护、上下文读取、唯一发送和新增气泡复核门禁；
+- 微信只读侧通过真实数据库解密门禁，发送侧按独立 CUA 门禁验收；
 - 每渠道 24 小时只读观察；
 - 每渠道 72 小时受控发送；
 - 三渠道连续 7 天共存；
@@ -1425,7 +1890,8 @@ src/runtime/capability-broker-service.ts
 只有同时满足以下条件，方案才算完成：
 
 1. 大象、QQ、微信都能验证 owner 的个人账号。
-2. 三个渠道使用同一消息契约和同一 Adapter 骨架。
+2. 三个渠道使用同一消息契约和 PersonalMessageHub；协议路线复用 Adapter 骨架，
+   QQ CUA 复用 ComputerManager。
 3. 每个渠道都能报告 readiness、coverage 和最后成功时间。
 4. 配置会话可以持续感知，且不持续干扰前台应用。
 5. 按需读取能获得有界上下文并说明是否完整。
@@ -1452,8 +1918,8 @@ src/runtime/capability-broker-service.ts
 25. Auto Run 只获得消息窄工具，不获得通用工作权限。
 26. 三个新 Connector 的 disabled 配置迁移只执行一次。
 27. 每个已开放能力都有对应 capability probe 证据。
-28. 三个渠道分别完成 owner 个人账号的非 CUA 入站事件、发送和 nonce 回读，
-    机器人身份或 CUA 结果不能替代。
+28. 大象完成非 CUA 入站与 nonce 回读；QQ 完成 `visible_ax` 读写门禁；微信完成
+    本地库真实解密，并对 CUA 发送单独验收。机器人身份不能替代个人账号结果。
 
 ## 24. 目标状态
 

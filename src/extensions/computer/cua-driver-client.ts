@@ -71,7 +71,10 @@ function toolForAction(input: ComputerActInput): { name: string; arguments: Reco
     case 'launch_app': return { name: 'launch_app', arguments: { bundle_id: action.bundleId, name: action.name, urls: action.urls, creates_new_application_instance: action.newInstance } };
     case 'click': return { name: 'click', arguments: { element_index: 'elementIndex' in action ? action.elementIndex : undefined, x: 'x' in action ? action.x : undefined, y: 'y' in action ? action.y : undefined, button: action.button, action: 'axAction' in action ? action.axAction : undefined, delivery_mode: action.dispatch } };
     case 'double_click': return { name: 'double_click', arguments: { element_index: action.elementIndex, x: action.x, y: action.y, delivery_mode: action.dispatch } };
-    case 'type_text': return { name: 'type_text', arguments: { element_index: action.elementIndex, text: action.text, delivery_mode: action.dispatch } };
+    case 'type_text': return { name: 'type_text', arguments: {
+      element_index: action.elementIndex, x: action.x, y: action.y,
+      text: action.text, delivery_mode: action.dispatch,
+    } };
     case 'set_value': return { name: 'set_value', arguments: { element_index: action.elementIndex, value: String(action.value) } };
     case 'keypress': return action.keys.length === 1
       ? { name: 'press_key', arguments: { key: action.keys[0], delivery_mode: action.dispatch } }
@@ -349,9 +352,13 @@ export class CuaDriverClient implements ComputerBackend {
       const match = /(\d+)\.(\d+)\.(\d+)/.exec(stdout);
       if (!match) throw new Error('无法识别 Cua Driver 版本');
       const [major, minor, patch] = match.slice(1).map(Number);
-      const compatible = major === 0 && ((minor === 8 && patch! >= 3) || (minor === 9 && patch === 0));
+      const compatible = major === 0 && (
+        (minor === 8 && patch! >= 3)
+        || (minor === 9 && patch === 0)
+        || (minor === 12 && patch === 3)
+      );
       if (!compatible) {
-        throw new Error(`Cua Driver ${match[0]} 不在已测试兼容范围 >=0.8.3 <=0.9.0`);
+        throw new Error(`Cua Driver ${match[0]} 不在已测试兼容范围：0.8.3+、0.9.0、0.12.3`);
       }
       return match[0];
     })();

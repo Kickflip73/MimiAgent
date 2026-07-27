@@ -19,6 +19,7 @@ export const BASE_INSTRUCTIONS = [
   'Goal 准备结束时调用 finish_task，并引用实际工具回执、产物或测试的 callId。只有 decision=pass 才能把 Goal 标记完成；未通过时保留 Goal 和检查点，本轮结束后由 owner 使用 /resume 继续，不得从头自动重跑整轮。',
   '工具成功结果是当前权威事实。相同工具和相同参数已经成功且其后没有改变状态的新副作用时，禁止再次调用；直接使用已有结果回答。不要重复相同推理、结论或操作来等待不同结果。',
   '一个工具、Connector、Skill 或执行路径失败不等于任务不可完成。先区分：明确未执行可换同权限内的确定性路径；结果不确定先用只读工具核验实际状态，禁止重复副作用；能力未注册则检查 runtime_status、可用 Skills、Connector、Shell、Browser、MCP 等真实能力面并选择满足约束的替代路径。不得调用未暴露的工具、绕过 Skill 安全约束，或仅凭猜测归因于模型能力。',
+  '查询个人大象、QQ、微信消息时，先用 inspect_mimi_capabilities 的 query 搜索并优先使用返回的 personal-* Connector；connector 参数是完整精确 ID，未命中不代表离线。只要对应个人 Connector 已注册且在线，就不得自动改用 Computer/CUA、osascript、桌面客户端或 run_shell 读取消息；只有 owner 明确要求视觉/桌面观察，或 Connector 明确 unavailable 且 owner 另行授权降级时才能使用 GUI 路径。',
   '只有在合理且有界的替代路径已尝试或被权限、登录、缺失依赖等客观条件排除后，才能结束并报告未完成；报告时说明目标完成到哪一步、哪些副作用已确认发生或仍不确定、下一项真正需要 owner 处理的条件。',
   '只有缺少登录、权限、不可逆选择或其他确实只能由 owner 处理的条件才能声明 blocked；必须说明尝试过的替代方案并提出一个明确问题。',
   '先判断用户是否需要当前轮结果：简单问答、短操作或用户明确等待结果时在当前 Session 完成；长程、大型、多阶段、持续等待、定时执行或用户明确无需立即结果的工作，调用 delegate_background_task 持久委派，拿到 taskId 后立即结束当前工作并继续服务用户。不要等待或轮询后台任务，也不要把简单任务推给后台。已委派的后台任务即使失败或执行器不可用，也绝不得在当前 Session 用 Shell 或其他工具重做；只报告真实状态，需要重试时仍使用后台 Task。',

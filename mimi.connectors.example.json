@@ -1,5 +1,48 @@
 {
   "connectors": {
+    "personal-daxiang": {
+      "enabled": false,
+      "command": "node",
+      "args": ["/absolute/path/to/MimiAgent/examples/connectors/personal-message-connector.mjs", "--channel=daxiang"],
+      "envAllowlist": ["MIMI_DAEMON_DATA_DIR", "DAXIANG_WEB_CONFIG", "DAXIANG_WEB_COMMAND_TIMEOUT_MS"],
+      "source": "personal-message:daxiang",
+      "trust": "external",
+      "profileId": "owner",
+      "restart": true,
+      "healthEvents": true,
+      "healthStabilityMs": 5000,
+      "deliveryTimeoutMs": 30000,
+      "actionTimeoutMs": 30000,
+      "actions": {
+        "health_check": { "description": "只读检查大象个人账号、专用后台标签和页面兼容性；target=health，payloadJson={}" },
+        "list_targets": { "description": "列出配置允许访问的本人和 watch 会话稳定 sid；target=all，payloadJson={}" },
+        "sync_now": { "description": "立即同步配置中的大象 watch 会话并产生新消息 Event；target=all，payloadJson={}" },
+        "get_context": { "description": "按 list_targets 返回的稳定 sid 读取有界大象会话上下文；payloadJson 可只传 {\"limit\":30}" },
+        "send_message": { "description": "仅供 PersonalMessageHub 向已绑定 sid 发送一条文本" }
+      }
+    },
+    "personal-qq": {
+      "enabled": false,
+      "command": "node",
+      "args": ["/absolute/path/to/MimiAgent/examples/connectors/personal-message-connector.mjs", "--channel=qq"],
+      "envAllowlist": [],
+      "source": "personal-message:qq",
+      "trust": "external",
+      "profileId": "owner",
+      "restart": false,
+      "actions": {}
+    },
+    "personal-wechat": {
+      "enabled": false,
+      "command": "node",
+      "args": ["/absolute/path/to/MimiAgent/examples/connectors/personal-message-connector.mjs", "--channel=wechat"],
+      "envAllowlist": [],
+      "source": "personal-message:wechat",
+      "trust": "external",
+      "profileId": "owner",
+      "restart": false,
+      "actions": {}
+    },
     "openclaw-weixin": {
       "enabled": false,
       "command": "node",

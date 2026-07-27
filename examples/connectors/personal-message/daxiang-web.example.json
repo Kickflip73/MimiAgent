@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "tabMarker": "replace-with-a-random-local-marker",
+  "expectedAccountFingerprint": "",
+  "allowedPageFingerprints": [],
+  "selfConversation": {
+    "sid": "123456",
+    "type": "chat"
+  },
+  "watch": {
+    "enabled": false,
+    "pollIntervalMs": 30000,
+    "conversations": [
+      {
+        "sid": "123456",
+        "type": "chat",
+        "label": "owner-self-chat"
+      }
+    ]
+  },
+  "limits": {
+    "contextMessages": 50,
+    "eventPreviewChars": 4000
+  }
+}

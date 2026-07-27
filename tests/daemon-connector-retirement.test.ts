@@ -43,7 +43,16 @@ test('initialization removes retired IM and HTTP connectors from existing config
     ) as { connectors: Record<string, unknown> };
 
     assert.equal(result.connectors.removedRetired, 4);
-    assert.deepEqual(Object.keys(persisted.connectors).sort(), ['macos-system', 'openclaw-weixin']);
+    assert.deepEqual(Object.keys(persisted.connectors).sort(), [
+      'macos-system',
+      'openclaw-weixin',
+      'personal-daxiang',
+      'personal-qq',
+      'personal-wechat',
+    ]);
+    for (const id of ['personal-daxiang', 'personal-qq', 'personal-wechat']) {
+      assert.equal((persisted.connectors[id] as { enabled: boolean }).enabled, false);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

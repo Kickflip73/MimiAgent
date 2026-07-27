@@ -64,6 +64,7 @@ const appConfigSchema = z.object({
   dataRoot: z.string().min(1),
   daemonDataRoot: z.string().min(1).optional(),
   skillsRoot: z.string().min(1),
+  skillsRootConfigured: z.boolean().optional(),
   mcpConfig: z.string().min(1),
   historyLimit: z.number().int().positive(),
   contextWindow: z.number().int().positive().optional(),

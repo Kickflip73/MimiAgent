@@ -21,6 +21,15 @@ import type {
   ReplyRoute,
   TaskRecord,
 } from './types.js';
+import {
+  mostRestrictiveMessageMode,
+  personalMessageAuthorizationFor,
+  personalMessageConfirmationText,
+  personalMessagePayloadSchema,
+  PERSONAL_MESSAGE_MODES,
+  type PersonalMessageAuthorization,
+  type PersonalMessageMode,
+} from './personal-message.js';
 
 const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 const eventKindSchema = z.enum(['command', 'alert', 'ambient', 'schedule', 'webhook']);
@@ -69,6 +78,7 @@ export const mimiSourcePolicySchema = z.object({
   actor: z.string().min(1).max(200).optional(),
   conversation: z.string().min(1).max(200).optional(),
   access: z.enum(SOURCE_POLICY_ACCESS_LEVELS).default('reply'),
+  messageMode: z.enum(PERSONAL_MESSAGE_MODES).default('draft'),
   computerAccess: computerAccessSchema.default('none'),
   computerApps: z.array(z.string().trim().min(1).max(500)).min(1).max(100).optional(),
   instructions: z.array(mimiInstructionSchema).min(1).max(10),
@@ -598,18 +608,77 @@ export class AttentionEngine {
       sessionKey: task.sessionKey,
       replyRoute: eventFact.replyRoute ?? authority.replyRoute,
     };
-    const decisionContext = this.instructionsFor(event);
+    const confirmation = this.personalMessageConfirmation(task, eventFact, authority);
+    const confirmationEvent = confirmation
+      ? this.store.getImmutableEvent(confirmation.eventId)
+      : undefined;
+    const policyEvent = confirmationEvent ? {
+      id: confirmationEvent.id,
+      externalId: confirmationEvent.externalId,
+      source: confirmationEvent.source,
+      kind: eventKindForType(confirmationEvent.type),
+      trust: confirmationEvent.trust,
+      actor: confirmationEvent.actor,
+      conversation: confirmationEvent.conversation,
+      payload: confirmationEvent.payload,
+      occurredAt: confirmationEvent.occurredAt,
+      receivedAt: confirmationEvent.receivedAt,
+      priority: task.priority,
+      profileId: confirmationEvent.profileId,
+      replyRoute: confirmationEvent.replyRoute,
+    } satisfies EventEnvelope : event;
+    const decisionContext = this.instructionsFor(policyEvent);
     return decideEvent(
       event,
       decisionContext.instructions,
-      this.personFor(event),
+      this.personFor(policyEvent),
       decisionContext.sourcePolicyAccess,
       false,
       task,
       eventFact.source,
       decisionContext.computerAccess,
       decisionContext.computerApps,
+      decisionContext.messageMode,
+      confirmation,
     );
+  }
+
+  private personalMessageConfirmation(
+    task: TaskRecord,
+    eventFact: ImmutableEvent,
+    authority: ImmutableEvent,
+  ): PersonalMessageAuthorization | undefined {
+    if (
+      authority.trust !== 'owner'
+      || authority.source !== 'local-cli'
+      || !task.sessionKey
+    ) return undefined;
+    const approvedText = personalMessageConfirmationText(task.objective);
+    if (!approvedText) return undefined;
+    const previous = this.store.latestCompletedPersonalMessageEventForSession(
+      task.sessionKey,
+      new Date(eventFact.receivedAt),
+    );
+    if (!previous) return undefined;
+    const previousEvent: EventEnvelope = {
+      id: previous.id,
+      externalId: previous.externalId,
+      source: previous.source,
+      kind: eventKindForType(previous.type),
+      trust: previous.trust,
+      actor: previous.actor,
+      conversation: previous.conversation,
+      payload: previous.payload,
+      occurredAt: previous.occurredAt,
+      receivedAt: previous.receivedAt,
+      priority: task.priority,
+      profileId: previous.profileId,
+      replyRoute: previous.replyRoute,
+    };
+    const mode = this.instructionsFor(previousEvent).messageMode;
+    if (mode !== 'confirm') return undefined;
+    const authorization = personalMessageAuthorizationFor(previousEvent, 'confirm');
+    return authorization ? { ...authorization, approvedText } : undefined;
   }
 
   routeIngress(event: EventEnvelope, now = new Date()): {
@@ -624,6 +693,27 @@ export class AttentionEngine {
     ) return { decision: 'task_created', reasonCode: 'owner_or_internal' };
     if (snoozed && event.priority < this.config.quietHours.urgentPriority) {
       return { decision: 'digest', reasonCode: 'snoozed' };
+    }
+    if (event.source.startsWith('personal-message:')) {
+      const payload = personalMessagePayloadSchema.safeParse(event.payload);
+      if (!payload.success || event.source !== `personal-message:${payload.data.channel}`) {
+        return { decision: 'observe_only', reasonCode: 'personal_message_invalid' };
+      }
+      if (payload.data.direction === 'outgoing') {
+        return { decision: 'observe_only', reasonCode: 'personal_message_outgoing' };
+      }
+      if (!event.actor?.id) {
+        return { decision: 'digest', reasonCode: 'personal_message_sender_unstable' };
+      }
+      const messageMode = this.instructionsFor(event).messageMode ?? 'draft';
+      if (messageMode === 'observe') {
+        return { decision: 'observe_only', reasonCode: 'personal_message_observe' };
+      }
+      if (
+        messageMode === 'digest'
+        || payload.data.coverage === 'notification_only'
+        || payload.data.coverage === 'metadata_only'
+      ) return { decision: 'digest', reasonCode: 'personal_message_digest' };
     }
     const rule = this.config.rules.find((candidate) => this.matchesRule(candidate, event));
     if (rule) {
@@ -843,11 +933,13 @@ export class AttentionEngine {
     sourcePolicyAccess?: SourcePolicyAccess;
     computerAccess?: ComputerAccess;
     computerApps?: string[];
+    messageMode?: PersonalMessageMode;
   } {
     const instructions = [...this.config.decisionPolicy.standingOrders];
     let sourcePolicyAccess: SourcePolicyAccess | undefined;
     let computerAccess: ComputerAccess | undefined;
     let computerApps: Set<string> | undefined;
+    const messageModes: PersonalMessageMode[] = [];
     const levels: Record<ComputerAccess, number> = { none: 0, observe: 1, background: 2, foreground: 3, admin: 4 };
     for (const policy of this.config.decisionPolicy.sourcePolicies) {
       if (!globMatches(policy.source, event.source)) continue;
@@ -862,10 +954,14 @@ export class AttentionEngine {
           ? selected
           : new Set([...computerApps].filter((bundleId) => selected.has(bundleId)));
       }
+      messageModes.push(policy.messageMode);
       instructions.push(...policy.instructions);
     }
     return {
       instructions: [...new Set(instructions)], sourcePolicyAccess, computerAccess,
+      ...(event.source.startsWith('personal-message:') ? {
+        messageMode: mostRestrictiveMessageMode(messageModes),
+      } : {}),
       ...(computerApps ? { computerApps: [...computerApps] } : {}),
     };
   }

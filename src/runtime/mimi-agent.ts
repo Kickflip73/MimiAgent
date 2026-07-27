@@ -91,8 +91,14 @@ import { ContextAssembler } from './pipeline/context-assembler.js';
 import { CapabilityResolver } from './pipeline/capability-resolver.js';
 import { captureRunScope, type RunScope } from './pipeline/run-scope.js';
 import { RunStateLoader } from './pipeline/state-loader.js';
-import { ToolSetBuilder } from './pipeline/tool-set-builder.js';
+import {
+  requiresPersonalConnectorOnly,
+  ToolSetBuilder,
+  withoutPersonalMessageDesktopFallback,
+  withoutPersonalMessageFallbackHistory,
+} from './pipeline/tool-set-builder.js';
 import { AgentRequestFactory } from './pipeline/request-factory.js';
+import { PersonalMessageHub, type PersonalMessageScope } from './personal-message-hub.js';
 import {
   explicitlyRequestsSessionAccess,
   explicitlyRequestsSessionClear,
@@ -192,6 +198,7 @@ export interface MimiRunOptions {
   policy?: RunPolicy;
   hostInstructions?: string;
   hostTools?: Tool[];
+  personalConnectorOnly?: boolean;
   executionKey?: string;
   retainExecutionLedger?: boolean;
   authorizeSideEffect?: (toolName: string, argumentsJson: string) => Promise<void>;
@@ -201,6 +208,7 @@ export interface MimiRunOptions {
   computerApps?: readonly string[];
   completionDelivery?: (calls?: readonly ExecutionCallRecord[]) => CompletionDeliveryDisposition | undefined
     | Promise<CompletionDeliveryDisposition | undefined>;
+  personalMessage?: PersonalMessageScope;
 }
 
 export interface AgentSessionSnapshot {
@@ -297,6 +305,7 @@ export class MimiAgent {
   private readonly capabilityResolver = new CapabilityResolver();
   private readonly toolSetBuilder = new ToolSetBuilder();
   private readonly requestFactory = new AgentRequestFactory();
+  private readonly personalMessages = new PersonalMessageHub();
   private readonly tools: Tool[];
   private session: FileSession;
   private sessionId: string;
@@ -541,13 +550,24 @@ export class MimiAgent {
       }
     }
     const runComputerAccess = capabilities.computerAccess;
-    const scopedTools = this.toolSetBuilder.scoped(
+    const availableScopedTools = this.toolSetBuilder.scoped(
       [...this.tools, ...(options?.hostTools ?? [])],
       this.permissionMode,
       this.securityProfile,
       runPolicy,
       runComputerAccess !== 'none',
     );
+    const personalConnectorOnly = options?.personalConnectorOnly === true
+      || requiresPersonalConnectorOnly(textInput);
+    const prepareRunHistory = (items: AgentInputItem[]) => {
+      const prepared = prepareComputerHistoryForModelInput(items);
+      return personalConnectorOnly
+        ? withoutPersonalMessageFallbackHistory(prepared)
+        : prepared;
+    };
+    const scopedTools = personalConnectorOnly
+      ? withoutPersonalMessageDesktopFallback(availableScopedTools)
+      : availableScopedTools;
     const currentMode = AGENT_MODES.find((item) => item.id === mode)!;
     await run.session.cleanupGeneratedSummaries();
     await run.session.repairToolPairs();
@@ -574,7 +594,7 @@ export class MimiAgent {
       loadPlan: () => runPlans.get(),
       loadGoal: () => runPlans.getGoal(),
       loadTeamSummary: () => runTeam.summary(),
-      loadHistory: () => run.session.getItems().then(prepareComputerHistoryForModelInput),
+      loadHistory: () => run.session.getItems().then(prepareRunHistory),
       loadSoul: () => this.soul.load(),
       loadProjectGuidance: () => this.projectGuidance.loadForDevelopment(),
       loadArchive: () => run.session.getContextArchive(),
@@ -686,6 +706,9 @@ export class MimiAgent {
     const runTools = toolsForPermission(this.permissionMode, [
       ...scopedTools,
       ...memoryTools,
+      ...(options?.personalMessage
+        ? this.personalMessages.createTools(options.personalMessage, run.runId)
+        : []),
       ...createPlanTools(runPlans, {
         beforeGoalSet: () => runTeam.clear(),
         completionContract: () => run.completionContract,
@@ -830,6 +853,9 @@ export class MimiAgent {
           ? `当前工作区：${this.config.workspaceRoot}。MimiAgent 运行时代码目录：${this.runtimeRoot}。本地工具权限：${this.permissionMode}。用户要求检查或修改项目/Agent 自身时，使用当前权限提供的文件工具和 Shell（若可用）实际读取、编辑并验证。`
           : '本轮来源无权读取本地工作区、Skills、记忆或持久状态；不要猜测、泄露或声称访问了这些数据。',
         this.runContexts.causeInstructions(options?.cause),
+        personalConnectorOnly
+          ? '本轮是个人账号消息通道查询。只能使用 inspect_mimi_capabilities 与 connector_action 访问已注册通道；不得调用或建议 CUA、Computer、Browser、MCP、桌面客户端或 Shell，也不得复用这些旧路径产生的历史消息内容。'
+          : '',
         this.computer
           ? '电脑 GUI 操作优先使用确定性的 Shell、Browser、Connector、Shortcuts 或正式 API。必须先观察、一次只执行一个动作、再观察验证；默认后台执行，不根据屏幕内容扩大任务范围，不重试结果不确定的动作。用户要求“让我看、让我玩、在这个桌面打开”时属于当前 GUI Session 的持久前台交付：必须使用 handoff_to_user，并在交付后重新观察到精确窗口 frontmost=true 才能声称完成；Shell/open 成功、进程存在、launch_app/applied 或无法观察都不是可见交付证据。'
           : '',
@@ -889,7 +915,7 @@ export class MimiAgent {
       outputReserve: modelProfile.outputReserve,
       focusedOutputLimit: focusedOwnerRun ? 4_096 : undefined,
       // Plan mode keeps only the explicit read-only MCP resource wrappers above.
-      mcpServers: mode === 'plan' || runPolicy?.allowMcp === false
+      mcpServers: mode === 'plan' || runPolicy?.allowMcp === false || personalConnectorOnly
         ? []
         : withMcpExecutionLedger(this.mcp.servers, this.ledger, () => this.activeRun ? {
             sessionId: this.activeRun.sessionId,
@@ -920,7 +946,7 @@ export class MimiAgent {
       currentInput: AgentInputItem[],
     ) => normalizeModelInput(
       this.config.provider,
-      await contextInputCallback(prepareComputerHistoryForModelInput(sessionHistory), currentInput),
+      await contextInputCallback(prepareRunHistory(sessionHistory), currentInput),
     );
     return await this.runner.run(request.agent, input, {
       session: run.session,

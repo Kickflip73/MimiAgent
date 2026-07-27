@@ -19,6 +19,9 @@ const [, , command, tool, rawPayload] = process.argv;
 if (command !== 'call') process.exit(10);
 const payload = JSON.parse(rawPayload);
 state.calls.push({ tool, payload });
+if (state.windowVisible === undefined) {
+  state.windowVisible = process.env.FAKE_WINDOW_VISIBLE !== 'false';
+}
 
 const input = {
   element_index: 121,
@@ -84,17 +87,44 @@ if (state.sent) {
 
 let result = {};
 let textResult;
-if (tool === 'get_accessibility_tree') {
+if (tool === 'list_apps') {
   result = {
-    apps: [{ bundle_id: 'com.tencent.qq', name: 'QQ', pid: 79493 }],
-    windows: [{ app_name: 'QQ', pid: 79493, title: 'QQ', window_id: 2347 }],
+    apps: [{
+      active: state.qqActive === true || process.env.FAKE_QQ_ACTIVE === 'true',
+      bundle_id: 'com.tencent.qq',
+      name: 'QQ',
+      pid: 79493,
+      running: true,
+    }],
   };
+} else if (tool === 'list_windows') {
+  result = {
+    windows: [{
+      app_name: 'QQ',
+      bounds: { height: 694, width: 989, x: 391, y: 179 },
+      is_on_screen: state.windowVisible,
+      on_current_space: true,
+      pid: 79493,
+      title: 'QQ',
+      window_id: 2347,
+    }],
+  };
+} else if (tool === 'launch_app') {
+  state.windowVisible = true;
+  if (process.env.FAKE_LAUNCH_ACTIVATES === 'true') state.qqActive = true;
+  result = {
+    pid: 79493,
+    self_activation_suppressed: process.env.FAKE_LAUNCH_UNSAFE !== 'true',
+  };
+} else if (tool === 'hotkey') {
+  state.windowVisible = false;
+  textResult = '✅ Sent background hotkey.';
 } else if (tool === 'get_window_state') {
   result = { elements };
-} else if (tool === 'set_value') {
-  state.draft = payload.value;
-  state.message = payload.value;
-  textResult = '✅ Set AXValue on [121] AXTextArea.';
+} else if (tool === 'type_text') {
+  state.draft = payload.text;
+  state.message = payload.text;
+  textResult = '✅ Typed into [121] AXTextArea.';
 } else if (tool === 'press_key') {
   if (process.env.FAKE_SEND_MODE !== 'noop') {
     state.sent = true;
@@ -109,7 +139,11 @@ fs.writeFileSync(stateFile, JSON.stringify(state));
 process.stdout.write(textResult ?? JSON.stringify(result));
 `;
 
-async function runSkill(sendMode = 'send', initialDraft = '') {
+async function runSkill(
+  sendMode = 'send',
+  initialDraft = '',
+  environment: Record<string, string> = {},
+) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-qq-skill-'));
   const fakeDriver = path.join(root, 'fake-cua-driver.mjs');
   const stateFile = path.join(root, 'state.json');
@@ -127,6 +161,9 @@ async function runSkill(sendMode = 'send', initialDraft = '') {
       MIMI_CUA_DRIVER: fakeDriver,
       FAKE_CUA_STATE: stateFile,
       FAKE_SEND_MODE: sendMode,
+      MIMI_QQ_USE_DRIVER_HIDE: '1',
+      MIMI_QQ_ALLOW_VISIBLE_BACKGROUND: '1',
+      ...environment,
     },
   });
   const state = JSON.parse(await readFile(stateFile, 'utf8')) as {
@@ -153,6 +190,34 @@ async function readContext(contact?: string, activeTarget = true) {
       ...process.env,
       MIMI_CUA_DRIVER: fakeDriver,
       FAKE_CUA_STATE: stateFile,
+      MIMI_QQ_USE_DRIVER_HIDE: '1',
+      MIMI_QQ_ALLOW_VISIBLE_BACKGROUND: '1',
+    },
+  });
+  const state = JSON.parse(await readFile(stateFile, 'utf8')) as {
+    calls: Array<{ tool: string; payload: Record<string, unknown> }>;
+  };
+  return { result, state };
+}
+
+async function readStatus(environment: Record<string, string> = {}) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-qq-status-'));
+  const fakeDriver = path.join(root, 'fake-cua-driver.mjs');
+  const stateFile = path.join(root, 'state.json');
+  await writeFile(fakeDriver, fakeDriverSource, 'utf8');
+  await chmod(fakeDriver, 0o755);
+  await writeFile(stateFile, JSON.stringify({
+    calls: [], draft: '', message: '', sent: false,
+  }), 'utf8');
+  const result = spawnSync('python3', [script, '--action', 'status'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      MIMI_CUA_DRIVER: fakeDriver,
+      FAKE_CUA_STATE: stateFile,
+      MIMI_QQ_USE_DRIVER_HIDE: '1',
+      MIMI_QQ_ALLOW_VISIBLE_BACKGROUND: '1',
+      ...environment,
     },
   });
   const state = JSON.parse(await readFile(stateFile, 'utf8')) as {
@@ -171,11 +236,15 @@ test('QQ skill sends through one deterministic script path and verifies the new 
     verified: true,
   });
   assert.deepEqual(state.calls.map(({ tool }) => tool), [
-    'get_accessibility_tree',
+    'list_apps',
+    'list_windows',
     'get_window_state',
-    'set_value',
+    'list_apps',
+    'type_text',
     'get_window_state',
+    'list_apps',
     'press_key',
+    'list_apps',
     'get_window_state',
   ]);
   const press = state.calls.find(({ tool }) => tool === 'press_key');
@@ -206,6 +275,7 @@ test('QQ skill reads bounded visible context without any send action', async () 
     status: 'context',
     target: '我的好乖乖',
     source: 'visible_ax',
+    backgroundSafe: true,
     complete: false,
     truncated: false,
     messages: [
@@ -215,10 +285,12 @@ test('QQ skill reads bounded visible context without any send action', async () 
     ],
   });
   assert.deepEqual(state.calls.map(({ tool }) => tool), [
-    'get_accessibility_tree',
+    'list_apps',
+    'list_windows',
     'get_window_state',
+    'list_apps',
   ]);
-  assert.equal(state.calls.some(({ tool }) => tool === 'set_value' || tool === 'press_key'), false);
+  assert.equal(state.calls.some(({ tool }) => tool === 'type_text' || tool === 'press_key'), false);
 });
 
 test('QQ skill confirms a requested conversation before reading its context', async () => {
@@ -227,10 +299,13 @@ test('QQ skill confirms a requested conversation before reading its context', as
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).target, '我的好乖乖');
   assert.deepEqual(state.calls.map(({ tool }) => tool), [
-    'get_accessibility_tree',
+    'list_apps',
+    'list_windows',
     'get_window_state',
+    'list_apps',
     'click',
     'get_window_state',
+    'list_apps',
   ]);
   assert.deepEqual(state.calls.find(({ tool }) => tool === 'click')?.payload, {
     pid: 79493,
@@ -238,7 +313,102 @@ test('QQ skill confirms a requested conversation before reading its context', as
     element_token: 'snapshot:contact',
     delivery_mode: 'background',
   });
-  assert.equal(state.calls.some(({ tool }) => tool === 'set_value' || tool === 'press_key'), false);
+  assert.equal(state.calls.some(({ tool }) => tool === 'type_text' || tool === 'press_key'), false);
+});
+
+test('QQ skill exposes a fast readiness probe without changing the UI', async () => {
+  const { result, state } = await readStatus();
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    status: 'ready',
+    target: '我的好乖乖',
+    source: 'visible_ax',
+    backgroundSafe: true,
+  });
+  assert.deepEqual(state.calls.map(({ tool }) => tool), [
+    'list_apps',
+    'list_windows',
+    'get_window_state',
+    'list_apps',
+  ]);
+});
+
+test('QQ skill fails closed while the owner is actively using QQ', async () => {
+  const { result, state } = await runSkill('send', '', { FAKE_QQ_ACTIVE: 'true' });
+
+  assert.equal(result.status, 1, result.stderr);
+  const output = JSON.parse(result.stdout) as { status: string; error: string };
+  assert.equal(output.status, 'failed');
+  assert.match(output.error, /前台/);
+  assert.deepEqual(state.calls.map(({ tool }) => tool), ['list_apps']);
+});
+
+test('QQ skill fails closed for a visible background window by default', async () => {
+  const { result, state } = await runSkill('send', '', { MIMI_QQ_ALLOW_VISIBLE_BACKGROUND: '0' });
+
+  assert.equal(result.status, 1, result.stderr);
+  const output = JSON.parse(result.stdout) as { status: string; error: string };
+  assert.equal(output.status, 'failed');
+  assert.match(output.error, /窗口当前可见/);
+  assert.equal(state.calls.some(({ tool }) => tool === 'get_window_state'), false);
+});
+
+test('QQ skill acquires and restores a hidden window without foreground activation', async () => {
+  const { result, state } = await readStatus({ FAKE_WINDOW_VISIBLE: 'false' });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).status, 'ready');
+  assert.deepEqual(state.calls.map(({ tool }) => tool), [
+    'list_apps',
+    'list_windows',
+    'launch_app',
+    'list_apps',
+    'list_windows',
+    'get_window_state',
+    'list_apps',
+    'list_apps',
+    'hotkey',
+    'list_apps',
+    'list_windows',
+  ]);
+  assert.deepEqual(state.calls.find(({ tool }) => tool === 'launch_app')?.payload, {
+    bundle_id: 'com.tencent.qq',
+    creates_new_application_instance: false,
+  });
+  assert.deepEqual(state.calls.find(({ tool }) => tool === 'hotkey')?.payload, {
+    pid: 79493,
+    window_id: 2347,
+    keys: ['cmd', 'h'],
+    delivery_mode: 'background',
+  });
+});
+
+test('QQ skill fails closed and restores state when a hidden-window lease cannot prove focus safety', async () => {
+  const { result, state } = await readStatus({
+    FAKE_WINDOW_VISIBLE: 'false',
+    FAKE_LAUNCH_UNSAFE: 'true',
+  });
+
+  assert.equal(result.status, 1, result.stderr);
+  const output = JSON.parse(result.stdout) as { status: string; error: string };
+  assert.equal(output.status, 'failed');
+  assert.match(output.error, /无法证明.*没有抢占前台/);
+  assert.equal(state.calls.some(({ tool }) => tool === 'get_window_state'), false);
+  assert.equal(state.calls.filter(({ tool }) => tool === 'hotkey').length, 1);
+});
+
+test('QQ skill does not hide the app if the owner starts using it during lease acquisition', async () => {
+  const { result, state } = await readStatus({
+    FAKE_WINDOW_VISIBLE: 'false',
+    FAKE_LAUNCH_ACTIVATES: 'true',
+  });
+
+  assert.equal(result.status, 1, result.stderr);
+  const output = JSON.parse(result.stdout) as { status: string; error: string };
+  assert.equal(output.status, 'failed');
+  assert.match(output.error, /前台/);
+  assert.equal(state.calls.some(({ tool }) => tool === 'hotkey'), false);
 });
 
 test('QQ skill reports an uncertain send once without retrying', async () => {
@@ -250,7 +420,7 @@ test('QQ skill reports an uncertain send once without retrying', async () => {
   assert.match(output.error, /不会自动重试/);
   assert.equal(state.sent, false);
   assert.equal(state.calls.filter(({ tool }) => tool === 'press_key').length, 1);
-  assert.equal(state.calls.filter(({ tool }) => tool === 'set_value').length, 1);
+  assert.equal(state.calls.filter(({ tool }) => tool === 'type_text').length, 1);
 });
 
 test('QQ skill preserves a non-empty user draft and refuses to send', async () => {
@@ -260,5 +430,5 @@ test('QQ skill preserves a non-empty user draft and refuses to send', async () =
   const output = JSON.parse(result.stdout) as { status: string; error: string };
   assert.equal(output.status, 'failed');
   assert.match(output.error, /输入框已有内容/);
-  assert.equal(state.calls.some(({ tool }) => tool === 'set_value' || tool === 'press_key'), false);
+  assert.equal(state.calls.some(({ tool }) => tool === 'type_text' || tool === 'press_key'), false);
 });

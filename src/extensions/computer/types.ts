@@ -83,7 +83,10 @@ const uiActionSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('type_text'), elementIndex: z.number().int().nonnegative().optional(),
+    x: z.number().finite().nonnegative().optional(), y: z.number().finite().nonnegative().optional(),
     text: z.string().max(10_000), dispatch: dispatchSchema,
+  }).refine((value) => value.elementIndex !== undefined || (value.x !== undefined && value.y !== undefined), {
+    message: 'type_text 需要 elementIndex 或 x/y',
   }),
   z.object({
     type: z.literal('set_value'), elementIndex: z.number().int().nonnegative(),

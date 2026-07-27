@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- bound combined `run_shell` output to the execution-ledger budget so large
+  command responses are truncated with an explicit marker instead of turning a
+  completed side effect into a non-retryable ledger failure
+- render GFM Markdown tables as aligned terminal box tables in streamed and
+  replayed TUI answers, including tables that omit leading and trailing pipes
+- add the shared personal-message schemas, conservative `messageMode` policy,
+  Run-bound single-use context tokens, and a disabled-by-default Daxiang personal
+  account Connector using a background Chrome DOM bridge; QQ and personal WeChat
+  adapters remain unimplemented, and generic Connector actions cannot bypass the
+  personal-message send fence; first watch polls establish a message-ID-only
+  baseline instead of replaying visible history, while conversation stabilization,
+  explicit page-failure detection, and action/poll exclusion prevent send races
+- require exact same-Session owner confirmation for personal-message Confirm drafts,
+  preserving the original Event target and approved text across Runs
+- route owner personal-message queries through keyword Connector discovery and
+  configured target listing, reject unknown exact IDs as non-offline misses, and
+  remove Shell/Computer/CUA/Browser desktop fallbacks unless explicitly requested
 - index every completed owner conversation round and search private Session
   episodes by default so a new Session can recall relevant prior conversations
   without a separate history-intent or evidence flag

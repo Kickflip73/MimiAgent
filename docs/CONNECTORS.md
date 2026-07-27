@@ -1,10 +1,10 @@
 # MimiAgent Connector Protocol
 
-Connector 把微信 Bot、邮件、Messages、新闻、天气、日历或其他事件源适配为 MimiAgent 的统一事件协议。它运行在独立子进程中，通过 stdin/stdout 交换一行一个 JSON 的 NDJSON；渠道 SDK、崩溃和凭证不会进入 MimiAgent Runtime。QQ 仅通过 `qq-messenger-skill` 的 CUA 路线操作，不属于 Connector。
+Connector 把个人大象、微信 Bot、邮件、Messages、新闻、天气、日历或其他事件源适配为 MimiAgent 的统一事件协议。它运行在独立子进程中，通过 stdin/stdout 交换一行一个 JSON 的 NDJSON；渠道 SDK、崩溃和凭证不会进入 MimiAgent Runtime。个人 QQ、个人微信 Adapter 尚未实现；现有 `qq-messenger-skill` 仍只是 CUA 兜底，OpenClaw 微信仍是独立 Bot 来源。
 
 ## 配置
 
-首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认只启用不启动 GUI App 的 System Connector；Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Desktop、Browser、Screen 和 Voice 均需用户显式启用。旧版自动启用的 canonical 本机 Connector 会一次性迁移到这个无界面默认，之后用户的显式启停选择继续保留。Calendar/Reminders 启用后通过 EventKit 静默访问系统数据；Mail 的主动轮询只在 Mail 已经运行时读取，绝不为了后台轮询重新打开 App。OpenClaw 微信、Radar 和 File Radar 默认关闭。初始化会移除已退役的大象、QQ OneBot/NapCat、通用 HTTP Action 及 QQ/微信/大象 AppleScript Connector 配置，防止旧安装继续启动这些实现。后续初始化会补齐缺失的 enabled 默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充发布包新增的 action。已有其他 owner 路径、环境、来源和 action 描述保持不变。写入是原子的，无变更时不改文件。也可用 `MIMI_CONNECTORS_CONFIG` 指向其他绝对配置文件。
+首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认只启用不启动 GUI App 的 System Connector；Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Desktop、Browser、Screen、Voice 和三个个人消息配置槽位均需用户显式启用。旧版自动启用的 canonical 本机 Connector 会一次性迁移到这个无界面默认，之后用户的显式启停选择继续保留；三个个人消息槽位也只补一次，owner 在迁移后删除时不会反复恢复。Calendar/Reminders 启用后通过 EventKit 静默访问系统数据；Mail 的主动轮询只在 Mail 已经运行时读取，绝不为了后台轮询重新打开 App。OpenClaw 微信、Radar 和 File Radar 默认关闭。初始化会移除旧大象 Bot/AppleScript、QQ OneBot/NapCat、通用 HTTP Action 及 QQ/微信 AppleScript Connector 配置，防止旧安装继续启动这些实现。后续初始化会补齐缺失的 enabled 默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充发布包新增的 action。已有其他 owner 路径、环境、来源和 action 描述保持不变。写入是原子的，无变更时不改文件。也可用 `MIMI_CONNECTORS_CONFIG` 指向其他绝对配置文件。
 
 `~/.mimi-agent/daemon` 是唯一默认常驻状态目录。三个配置示例文件均使用统一的 MimiAgent 命名。
 
@@ -147,7 +147,7 @@ Connector 完成远端发送后必须确认：
 
 Agent 需要主动执行 Connector 事务时，调用通用 `connector_action`。Daemon 先检查配置中的 `actions` 目录，再向子进程发送：
 
-每个 Daemon Agent Run 还会获得只读 `inspect_mimi_capabilities`，动态返回当前 Connector 的 enabled/online、inbound/outbound readiness 和 action 目录。已知 ID 时用 `connector` 精确过滤，只知道“微信”等渠道词时用 `query` 匹配 ID、source、action 或描述；过滤后的能力输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals 与 `truncated` 明示是否截断。`connector_action` 使用固定短描述并要求先调用这份小范围能力检查，避免整份动态目录在每轮模型请求中重复占用上下文；状态仍可能随后变化，因此 Manager 在真正发送前再次校验。
+每个 Daemon Agent Run 还会获得只读 `inspect_mimi_capabilities`，动态返回当前 Connector 的 enabled/online、inbound/outbound readiness 和 action 目录。已知完整 ID 时用 `connector` 精确过滤，只知道“大象”“微信”等渠道词时用 `query` 匹配 ID、source、action 或描述；精确 ID 未命中会明确报错，不能把 `daxiang` 与真实 `personal-daxiang` 的不匹配解释成离线。过滤后的能力输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals 与 `truncated` 明示是否截断。`connector_action` 使用固定短描述并要求先调用这份小范围能力检查，避免整份动态目录在每轮模型请求中重复占用上下文；状态仍可能随后变化，因此 Manager 在真正发送前再次校验。
 
 ```json
 {"type":"action","id":"action-uuid","action":"send_message","target":"group:123","payload":{"text":"会议延后 10 分钟"},"deadlineAt":1784176000000}
@@ -163,9 +163,51 @@ Connector 执行完成后返回：
 
 运行 `mimi daemon connectors` 可查看每个 Connector 的当前进程状态、双向就绪度和 action 目录，输出不包含凭证。恢复通知仍需要通过上述稳定窗口。
 
+## 个人账号消息 Connector
+
+`personal-message-connector.mjs` 是大象、QQ、微信个人账号 Adapter 的共享 NDJSON host。当前只实现 `--channel=daxiang`；`personal-qq` 和 `personal-wechat` 仅保留默认关闭、无 action 的配置槽位，启用时会明确报告尚未实现，不会冒充可用通道。
+
+owner 主动查询大象消息时，固定使用
+`inspect_mimi_capabilities(query="大象") → personal-daxiang/list_targets →
+sync_now/get_context`。`list_targets` 只返回配置允许访问的 self/watch 稳定 sid，不扫描
+或复制全部联系人。此类消息查询的 Run 会移除 Shell、Computer/CUA、Browser/Desktop
+工具；只有 owner 明确要求视觉/桌面观察或在 Connector 明确 unavailable 后另行授权，
+才允许进入 GUI 路径。
+
+大象 Adapter 使用已登录的 `https://x.sankuai.com/` 专用 Chrome 后台标签。它通过 Chrome Apple Events JavaScript 接口注入窄页面 Bridge，不激活 Chrome、不发送键盘鼠标事件，也不读取或导出浏览器认证资料。标签必须通过 `origin + window.name tabMarker` 唯一绑定，并且不能是任何 Chrome 窗口的当前标签；账号指纹、页面指纹、稳定 `sid` 和稳定 `mid` 任一不匹配都会停止写操作。
+
+业务配置从 `DAXIANG_WEB_CONFIG` 读取，模板为
+`examples/connectors/personal-message/daxiang-web.example.json`。初次启用时先保持
+`expectedAccountFingerprint` 和 `allowedPageFingerprints` 为空，只调用
+`health_check` 的 probe 获取摘要；写回并重载后才开放有界读取。配置缺失、Chrome
+未运行、专用标签处于活动状态或 Apple Events JavaScript 未获准时，Connector
+保持 `unavailable`，不会打开或激活浏览器。
+
+大象 Event 固定使用 `source=personal-message:daxiang`，不设置 `replyTarget`。
+`send_message` 虽在 Connector action 目录登记，但通用 `connector_action` 会拒绝
+个人消息写 action；只有当前 Run 的 `PersonalMessageHub` 绑定 callback 可以调用。
+Hub 先由 `get_personal_message_context` 生成最长五分钟、绑定 Run/账号/会话/最新消息
+指纹的 HMAC token，再由 `send_personal_message` 单次消费。发送后只能观察到新
+outgoing `data-mid`，所以首版结果固定为 `observed` 且
+`deliveryConfirmed:false`；点击后的超时或歧义为 `uncertain`，不得重试或换路线。
+Bridge 不会重复点击已经选中的会话；切换会话后必须等待消息列表稳定再读取或发送。
+页面明确出现失败/重试标记时返回 `failed`，不再把已知失败拖到观察超时；发送 action
+执行期间轮询暂停，避免后台切换会话破坏目标和回执观察。
+
+`messageMode=confirm` 的草稿只能在同一个人消息 Session 中由 owner 使用
+`确认发送大象消息：<最终文本>` 解锁。Host 只接受最近十分钟内已经完成的个人消息
+草稿 Event，重新读取最新上下文，并把正文锁为命令中的精确文本；普通“好”
+“发送一下”、跨 Session 命令、过期草稿或模型改写后的正文都不能触发写操作。
+
+轮询只扫描配置的 watch 会话。每个新 watch 会话的首轮只把当前可见稳定 `mid`
+写成私有基线，不把启用前的页面历史误报为新 Event；之后 Connector 等整批
+`event_ack` 成功才推进最近 256 个稳定 `mid`。ACK 丢失时重读，由 Host 的
+`source + externalId` 去重。coverage 在后台外部入站、断线补偿和长期稳定性真实
+验收前固定为 `bounded`。
+
 ## 已退役的消息渠道
 
-大象 Connector、QQ OneBot/NapCat Connector、通用 HTTP Action/Event Connector，以及 QQ、微信、大象 AppleScript IM Connector 已从运行时、发布包和默认配置中移除。QQ 只保留 `skills/qq-messenger-skill` 的 CUA 路线；微信只保留上文的 OpenClaw iLink Bot 路线。旧配置会在初始化时删除这些已退役项。
+旧大象 Bot/AppleScript Connector、QQ OneBot/NapCat Connector、通用 HTTP Action/Event Connector，以及 QQ、微信 AppleScript IM Connector 已从运行时、发布包和默认配置中移除。它们不会作为个人消息 Adapter 的降级路线。个人 QQ/微信仍未实现；微信另行保留上文的 OpenClaw iLink Bot 来源。旧配置会在初始化时删除这些已退役项。
 
 ## 信息雷达（RSS / Atom / 天气）
 

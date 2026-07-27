@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentInputItem, RunStreamEvent } from '@openai/agents';
-import { parseRunEvent, renderBanner, renderMarkdownLine, renderRecoveryCheckpoint, renderSessionTranscript, TerminalRenderer, type OutputLevel } from '../src/terminal.js';
+import { parseRunEvent, renderAssistantAnswer, renderBanner, renderMarkdownLine, renderRecoveryCheckpoint, renderSessionTranscript, TerminalRenderer, type OutputLevel } from '../src/terminal.js';
 
 class BufferWriter {
   isTTY = false;
@@ -63,6 +63,41 @@ test('renders common Markdown as readable terminal text', () => {
   assert.equal(renderMarkdownLine('const ok = true;', false, state), '  │ const ok = true;');
   assert.equal(renderMarkdownLine('```', false, state), '  └─');
   assert.equal(renderMarkdownLine('风向 |          东南风，2~5级', false, state), '风向 | 东南风，2~5级');
+});
+
+test('renders GFM tables without outer pipes as aligned terminal tables', () => {
+  const rendered = renderAssistantAnswer([
+    '状态 | 数量 | 占比',
+    '--- | ---: | ---:',
+    '获得激励 | 42 家 | 27.3%',
+    '未获得 | 110 家 | 71.4%',
+    '已达上限 | 2 家 | 1.3%',
+  ].join('\n'), false);
+
+  assert.match(rendered, /┌──────────┬────────┬───────┐/);
+  assert.match(rendered, /│ 状态     │   数量 │  占比 │/);
+  assert.match(rendered, /│ 获得激励 │  42 家 │ 27\.3% │/);
+  assert.doesNotMatch(rendered, /\s\|\s/);
+});
+
+test('recognizes a streamed GFM table from its divider and preserves prose pipes', () => {
+  const status = new BufferWriter();
+  const answer = new BufferWriter();
+  const renderer = new TerminalRenderer(status, answer);
+  renderer.start();
+  renderer.handle({
+    type: 'raw_model_stream_event',
+    data: {
+      type: 'output_text_delta',
+      delta: '风向 | 东南风，2~5级\n\n状态 | 数量 | 占比\n--- | ---: | ---:\n获得激励 | 42 家 | 27.3%\n',
+    },
+  } as RunStreamEvent);
+  renderer.finish();
+
+  assert.match(answer.value, /风向 \| 东南风，2~5级/);
+  assert.match(answer.value, /┌──────────┬───────┬───────┐/);
+  assert.match(answer.value, /│ 获得激励 │ 42 家 │ 27\.3% │/);
+  assert.doesNotMatch(answer.value, /状态 \| 数量 \| 占比/);
 });
 
 test('collapses repeated blank lines in streamed terminal answers', () => {

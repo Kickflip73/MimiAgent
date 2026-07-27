@@ -10,6 +10,7 @@ test('Task worker configuration excludes Computer Use capability', () => {
     dataRoot: '/data',
     daemonDataRoot: '/daemon',
     skillsRoot: '/workspace/skills',
+    skillsRootConfigured: true,
     mcpConfig: '/workspace/mcp.json',
     historyLimit: 40,
     maxTurns: null,
@@ -31,6 +32,7 @@ test('Task worker configuration excludes Computer Use capability', () => {
   const workerConfig = taskWorkerConfig(config);
   assert.equal('computer' in workerConfig, false);
   assert.equal(workerConfig.securityProfile, 'full-owner');
+  assert.equal(workerConfig.skillsRootConfigured, true);
   assert.doesNotThrow(() => taskWorkerInitSchema.parse({
     type: 'init',
     executor: 'codex',

@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -17,12 +19,29 @@ from typing import Any
 
 DEFAULT_CUA_DRIVER = Path.home() / ".local" / "bin" / "cua-driver"
 CUA_TIMEOUT_SECONDS = 10
+NATIVE_HIDE_TIMEOUT_SECONDS = 8
 CONTACT_SETTLE_TIMEOUT_SECONDS = 2.0
+DRAFT_VERIFY_TIMEOUT_SECONDS = 2.0
 SEND_VERIFY_TIMEOUT_SECONDS = 2.0
 DEFAULT_CONTEXT_LIMIT = 20
 MAX_CONTEXT_LIMIT = 100
 MAX_CONTEXT_ITEM_CHARS = 2_000
 MAX_CONTEXT_TOTAL_CHARS = 20_000
+QQ_LOCK_FILE = Path(os.environ.get(
+    "MIMI_QQ_LOCK_FILE",
+    Path.home() / ".mimi-agent" / "qq-skill.lock",
+))
+NATIVE_VISIBILITY_SWIFT = r"""
+import AppKit
+let pid = pid_t(CommandLine.arguments[1])!
+let action = CommandLine.arguments[2]
+let before = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+let app = NSRunningApplication(processIdentifier: pid)
+if action == "hide" { _ = app?.hide() } else { _ = app?.unhide() }
+Thread.sleep(forTimeInterval: 0.35)
+let after = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
+print("{\"hidden\":\(app?.isHidden == true),\"frontmostUnchanged\":\(before == after)}")
+"""
 
 
 class SendError(RuntimeError):
@@ -75,6 +94,44 @@ class Window:
     window_id: int
 
 
+@dataclass(frozen=True)
+class WindowLease:
+    window: Window
+    restore_hidden: bool
+
+
+@contextlib.contextmanager
+def qq_operation_lock():
+    """Serialize every QQ CUA operation across Mimi workers and CLI calls."""
+    QQ_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(QQ_LOCK_FILE.parent, 0o700)
+    try:
+        fd = os.open(
+            QQ_LOCK_FILE,
+            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except OSError as error:
+        raise SendError("QQ 后台锁文件不可安全打开；为避免并发操作，已停止") from error
+    try:
+        metadata = os.fstat(fd)
+        if metadata.st_uid != os.getuid() or (metadata.st_mode & 0o077) != 0:
+            raise SendError("QQ 后台锁文件权限不安全；为避免并发操作，已停止")
+        with os.fdopen(fd, "a+", encoding="utf-8", closefd=True) as lock_file:
+            fd = -1
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise SendError("QQ 后台通道正在执行另一项操作；为避免并发切换会话，已停止") from error
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
@@ -94,40 +151,76 @@ def matches_contact(label: Any, contact: str) -> bool:
     return candidate == contact or (contact in candidate and len(candidate) <= len(contact) + 4)
 
 
-def find_qq_window(driver: CuaDriver) -> Window:
-    tree = driver.call("get_accessibility_tree", {})
-    apps = tree.get("apps")
-    qq_pids = {
-        app.get("pid")
-        for app in apps if isinstance(app, dict)
+def qq_app(
+    driver: CuaDriver,
+    expected_pid: int | None = None,
+    *,
+    require_inactive: bool = True,
+) -> dict[str, Any]:
+    listed = driver.call("list_apps", {})
+    apps = listed.get("apps")
+    candidates = [
+        app for app in apps
+        if isinstance(app, dict)
         and text(app.get("bundle_id")).lower() == "com.tencent.qq"
-    } if isinstance(apps, list) else set()
-    qq_pids = {pid for pid in qq_pids if isinstance(pid, int)}
-    if not qq_pids:
+        and app.get("running") is not False
+        and isinstance(app.get("pid"), int)
+        and app.get("pid", 0) > 0
+    ] if isinstance(apps, list) else []
+    if expected_pid is not None:
+        candidates = [app for app in candidates if app.get("pid") == expected_pid]
+    if not candidates:
+        if expected_pid is not None:
+            raise SendError("QQ 进程在操作期间发生变化；为避免误操作，已停止")
         raise SendError("未找到运行中的 QQ")
+    if require_inactive and any(app.get("active") is not False for app in candidates):
+        raise SendError("无法证明 QQ 未占前台；为避免干扰你的操作，已停止")
+    return candidates[0]
 
-    windows = tree.get("windows")
-    if not isinstance(windows, list):
-        windows = []
+
+def assert_background_control(driver: CuaDriver, window: Window) -> None:
+    qq_app(driver, window.pid)
+
+
+def set_native_visibility(pid: int, action: str) -> dict[str, Any]:
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/swift", "-e", NATIVE_VISIBILITY_SWIFT, str(pid), action],
+            capture_output=True,
+            text=True,
+            timeout=NATIVE_HIDE_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise SendError(f"调整 QQ 后台窗口状态失败：{error}") from error
+    if completed.returncode != 0:
+        raise SendError("调整 QQ 后台窗口状态的原生辅助进程失败")
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise SendError("调整 QQ 后台窗口状态返回无效结果") from error
+    if result.get("frontmostUnchanged") is not True:
+        raise SendError("调整 QQ 后台窗口状态时前台应用发生变化")
+    return result
+
+
+def visible_qq_window(driver: CuaDriver, pid: int) -> Window | None:
+    listed = driver.call("list_windows", {"pid": pid})
+    windows = listed.get("windows")
     candidates = [
         item for item in windows
         if isinstance(item, dict)
-        and item.get("pid") in qq_pids
+        and item.get("pid") == pid
         and isinstance(item.get("window_id"), int)
-    ]
-    if not candidates:
-        listed = driver.call("list_windows", {})
-        listed_windows = listed.get("windows")
-        candidates = [
-            item for item in listed_windows
-            if isinstance(item, dict)
-            and item.get("pid") in qq_pids
-            and isinstance(item.get("window_id"), int)
-        ] if isinstance(listed_windows, list) else []
-    if not candidates:
-        raise SendError("QQ 正在运行，但没有可后台操作的窗口")
-
-    def window_rank(item: dict[str, Any]) -> tuple[int, float]:
+        and item.get("is_on_screen") is True
+        and item.get("on_current_space") is True
+        and isinstance(item.get("bounds"), dict)
+        and isinstance(item["bounds"].get("width"), (int, float))
+        and isinstance(item["bounds"].get("height"), (int, float))
+        and item["bounds"]["width"] >= 600
+        and item["bounds"]["height"] >= 450
+    ] if isinstance(windows, list) else []
+    def window_rank(item: dict[str, Any]) -> float:
         bounds = item.get("bounds")
         area = 0.0
         if isinstance(bounds, dict):
@@ -135,10 +228,88 @@ def find_qq_window(driver: CuaDriver) -> Window:
             height = bounds.get("height", 0)
             if isinstance(width, (int, float)) and isinstance(height, (int, float)):
                 area = float(width * height)
-        return (int(item.get("is_on_screen") is True), area)
+        return area
 
+    if not candidates:
+        return None
     selected = max(candidates, key=window_rank)
     return Window(pid=selected["pid"], window_id=selected["window_id"])
+
+
+def restore_hidden_window(driver: CuaDriver, window: Window) -> None:
+    app = qq_app(driver, window.pid, require_inactive=False)
+    if app.get("active") is not False:
+        raise SendError("QQ 前台状态无法确认；不会隐藏用户正在使用的窗口")
+    if os.environ.get("MIMI_QQ_USE_DRIVER_HIDE") == "1":
+        driver.call("hotkey", {
+            "pid": window.pid,
+            "window_id": window.window_id,
+            "keys": ["cmd", "h"],
+            "delivery_mode": "background",
+        }, allow_text=True)
+    else:
+        hidden = set_native_visibility(window.pid, "hide")
+        if hidden.get("hidden") is not True or hidden.get("frontmostUnchanged") is not True:
+            raise SendError("QQ 未能在保持前台应用不变的情况下恢复隐藏")
+    app = qq_app(driver, window.pid, require_inactive=False)
+    if app.get("active") is not False:
+        raise SendError("恢复 QQ 隐藏状态时检测到前台占用；已停止")
+    if visible_qq_window(driver, window.pid) is not None:
+        raise SendError("QQ 后台窗口未能恢复原隐藏状态")
+
+
+def acquire_qq_window(driver: CuaDriver, *, allow_visible_readonly: bool = False) -> WindowLease:
+    app = qq_app(driver)
+    pid = app["pid"]
+    existing = visible_qq_window(driver, pid)
+    if existing is not None:
+        # A visible background QQ window is still the owner's real window.  A
+        # conversation click would change what the owner sees next time they
+        # switch to QQ (and may change read state), so the safe default is to
+        # fail closed.  Tests/operators may explicitly opt in for a controlled
+        # compatibility check, but production callers should keep this off.
+        if not allow_visible_readonly and os.environ.get("MIMI_QQ_ALLOW_VISIBLE_BACKGROUND") != "1":
+            raise SendError("QQ 窗口当前可见；为避免改变你看到的会话，后台操作已暂停")
+        return WindowLease(window=existing, restore_hidden=False)
+
+    launched = False
+    window: Window | None = None
+    try:
+        if os.environ.get("MIMI_QQ_USE_DRIVER_HIDE") == "1":
+            result = driver.call("launch_app", {
+                "bundle_id": "com.tencent.qq",
+                "creates_new_application_instance": False,
+            })
+        else:
+            visibility = set_native_visibility(pid, "unhide")
+            result = {
+                "pid": pid,
+                "self_activation_suppressed": visibility.get("frontmostUnchanged") is True,
+            }
+        launched = True
+        if result.get("pid") not in {None, pid}:
+            raise SendError("QQ 后台窗口租约返回了不同进程；已停止")
+        if result.get("self_activation_suppressed") is not True:
+            raise SendError("无法证明 QQ 后台窗口租约没有抢占前台；已停止")
+        qq_app(driver, pid)
+        deadline = time.monotonic() + CONTACT_SETTLE_TIMEOUT_SECONDS
+        while window is None:
+            window = visible_qq_window(driver, pid)
+            if window is not None or time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+        if window is None:
+            raise SendError("QQ 后台窗口租约未取得可操作窗口")
+        return WindowLease(window=window, restore_hidden=True)
+    except SendError:
+        if launched:
+            cleanup_window = window or visible_qq_window(driver, pid)
+            if cleanup_window is not None:
+                try:
+                    restore_hidden_window(driver, cleanup_window)
+                except SendError:
+                    pass
+        raise
 
 
 def get_elements(driver: CuaDriver, window: Window) -> list[dict[str, Any]]:
@@ -245,6 +416,7 @@ def open_conversation(
         return elements, input_element, active_conversation_title(elements, input_element)
 
     contact_element = find_contact(elements, input_element, contact)
+    assert_background_control(driver, window)
     driver.call("click", {
         "pid": window.pid,
         "window_id": window.window_id,
@@ -351,26 +523,45 @@ def context_messages(
 
 def read_qq_context(
     driver: CuaDriver,
+    window: Window,
     contact: str | None,
     limit: int,
 ) -> dict[str, Any]:
-    window = find_qq_window(driver)
     elements, input_element, resolved_contact = open_conversation(
         driver, window, get_elements(driver, window), contact,
     )
+    assert_background_control(driver, window)
     messages, truncated = context_messages(elements, input_element, limit)
     return {
         "status": "context",
         "target": resolved_contact,
         "source": "visible_ax",
+        "backgroundSafe": True,
         "complete": False,
         "truncated": truncated,
         "messages": messages,
     }
 
 
-def send_qq_message(driver: CuaDriver, contact: str, message: str, dry_run: bool) -> dict[str, Any]:
-    window = find_qq_window(driver)
+def qq_status(driver: CuaDriver, window: Window) -> dict[str, Any]:
+    elements = get_elements(driver, window)
+    input_element = find_input(elements)
+    assert_background_control(driver, window)
+    return {
+        "status": "ready",
+        "target": active_conversation_title(elements, input_element),
+        "source": "visible_ax",
+        "backgroundSafe": True,
+    }
+
+
+def send_qq_message(
+    driver: CuaDriver,
+    window: Window,
+    contact: str,
+    message: str,
+    dry_run: bool,
+) -> dict[str, Any]:
     elements, input_element, resolved_contact = open_conversation(
         driver, window, get_elements(driver, window), contact,
     )
@@ -380,20 +571,28 @@ def send_qq_message(driver: CuaDriver, contact: str, message: str, dry_run: bool
     if not input_is_clear(input_element):
         raise SendError("QQ 输入框已有内容；为避免覆盖用户草稿或重复发送，未执行任何写入")
 
+    assert_background_control(driver, window)
     baseline = message_count(elements, input_element, message)
     token = input_element["element_token"]
-    driver.call("set_value", {
+    driver.call("type_text", {
         "pid": window.pid,
         "window_id": window.window_id,
         "element_token": token,
-        "value": message,
+        "text": message,
+        "delivery_mode": "background",
     }, allow_text=True)
 
-    prepared_elements = get_elements(driver, window)
-    prepared_input = find_input(prepared_elements)
-    if input_text(prepared_input) != message:
-        raise SendError("QQ 输入框写入后内容不一致；为避免发送错误或重复文本，未执行发送按键")
+    draft_deadline = time.monotonic() + DRAFT_VERIFY_TIMEOUT_SECONDS
+    while True:
+        prepared_elements = get_elements(driver, window)
+        prepared_input = find_input(prepared_elements)
+        if input_text(prepared_input) == message:
+            break
+        if time.monotonic() >= draft_deadline:
+            raise SendError("QQ 输入框写入后内容不一致；为避免发送错误或重复文本，未执行发送按键")
+        time.sleep(0.1)
     token = prepared_input["element_token"]
+    assert_background_control(driver, window)
 
     try:
         driver.call("press_key", {
@@ -403,6 +602,7 @@ def send_qq_message(driver: CuaDriver, contact: str, message: str, dry_run: bool
             "key": "return",
             "delivery_mode": "background",
         }, allow_text=True)
+        assert_background_control(driver, window)
     except SendError as error:
         raise SendUncertain(f"发送按键结果不确定：{error}") from error
 
@@ -423,7 +623,7 @@ def send_qq_message(driver: CuaDriver, contact: str, message: str, dry_run: bool
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="后台读取 QQ 上下文或发送一条消息")
-    parser.add_argument("--action", choices=("send", "context"), default="send")
+    parser.add_argument("--action", choices=("send", "context", "status"), default="send")
     parser.add_argument("--to", help="QQ 联系人昵称；读取当前会话时可省略")
     parser.add_argument("--msg", help="要发送的消息文本")
     parser.add_argument("--limit", type=int, default=DEFAULT_CONTEXT_LIMIT, help="上下文最大条目数")
@@ -457,12 +657,39 @@ def main() -> int:
         return 1
 
     try:
-        driver = CuaDriver(executable)
-        if args.action == "context":
-            result = read_qq_context(driver, contact, args.limit)
-        else:
-            assert contact is not None and message is not None
-            result = send_qq_message(driver, contact, message, args.dry_run)
+        with qq_operation_lock():
+            driver = CuaDriver(executable)
+            readonly_visible = args.action == "status" or (args.action == "context" and contact is None)
+            lease = acquire_qq_window(driver, allow_visible_readonly=readonly_visible)
+            operation_error: SendError | SendUncertain | None = None
+            result: dict[str, Any] | None = None
+            try:
+                if args.action == "context":
+                    result = read_qq_context(driver, lease.window, contact, args.limit)
+                elif args.action == "status":
+                    result = qq_status(driver, lease.window)
+                else:
+                    assert contact is not None and message is not None
+                    result = send_qq_message(
+                        driver, lease.window, contact, message, args.dry_run,
+                    )
+            except (SendError, SendUncertain) as error:
+                operation_error = error
+            cleanup_error: SendError | None = None
+            if lease.restore_hidden:
+                try:
+                    restore_hidden_window(driver, lease.window)
+                except SendError as error:
+                    cleanup_error = error
+            if operation_error is not None:
+                raise operation_error
+            assert result is not None
+            if cleanup_error is not None:
+                if result.get("status") == "sent":
+                    result["backgroundSafe"] = False
+                    result["cleanupWarning"] = str(cleanup_error)
+                else:
+                    raise cleanup_error
     except SendUncertain as error:
         print(json.dumps({"status": "uncertain", "error": str(error)}, ensure_ascii=False))
         return 2

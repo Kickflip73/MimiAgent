@@ -237,6 +237,9 @@ owner 也可在对话中使用 `list_mimi_people`、`upsert_mimi_person`、`remo
 - `actor`：可选，匹配 Event `actor.id`，支持 `*`。
 - `conversation`：可选，匹配 Event `conversation.id`，支持 `*`。
 - `access`：`reply | work`，默认 `reply`。`reply` 只允许时间、计算、当前 Session 有界活动和最终回复/静默结束；`work` 才允许本地工作、网络、Connector、后台委派和 Team。
+- `messageMode`：仅对 `personal-message:*` 生效，可选
+  `observe | digest | draft | confirm | auto`，默认 `draft`。多条策略同时命中时取最
+  保守模式；它只能降低 Attention 行为，不能把本应摘要的事件升级为立即 Run。
 - `instructions`：1～10 条该来源专属替身规则。
 
 全局和局部 instruction 会按配置顺序合并并去重；多个策略同时匹配时使用最高 `access`，不是把自由文本当作权限。最多 50 条全局 order、100 条 source policy；单条 instruction 最多 1000 字符，全部 instruction 合计最多 20000 字符。`daemon attention` 只显示全局条数、source policy 条数和字符数，不返回私人规则正文。修改后使用现有 `daemon attention reload` 热重载；失败时当前内存配置不变。
@@ -249,6 +252,16 @@ Standing Orders 是 owner 管理的本机可信配置，但当前 owner 的明�
 - `assistant.json decisionPolicy`：只针对长期在线事件的替身处理原则，以及来源/人物/会话差异。
 
 外部 Event 正文仍被单独标记为来源数据，不会因为命中了 source policy 而变成系统指令，也不能扩大目标、收件人、权限或副作用范围。`reply` 档不开放 Shell、文件写入、`http_request`、`connector_action`、后台委派或 Team；回复由原 Event 的可靠 Outbox 自动送回，不需要发送工具。`work` 档保留静态工作工具集，但仍排除策略/人物/Runtime/Connector 配置控制、Memory 写入、任意既有后台任务管理和未知 MCP。Task worker 只从仍存在且确认为 conversation root 的来源 Event 与当前 policy 重新计算授权；root/parent 缺失或指向另一个 Task 时，即使 Task 自带 owner provenance 或命中通配 policy 也强制最小策略。已接受的 Task 是执行队列，不再被 snooze、静默时段或 Attention 运行预算转成 Digest；这些限制只决定 Conversation 阶段是否接受/委派任务。Schedule occurrence 还必须与数据库中的 schedule 和 immutable Event identity 一致；撤销 external work policy 后，一次性任务只受限收尾，interval/watch 只可停止当前计划，伪造 occurrence 没有停止工具。只有 owner conversation root 的 write Task 获得 `connector_action`；外部 source-policy work Task 在后台仍可完成本地工作，但不会看到必然被 Broker 拒绝的 action 工具，完成或失败结果继续由 Outbox 原路返回。进入 Task lane 后不再开放 `delegate_background_task`，写任务拆分只用当前 Task 内的 Ultra Team，读任务只用确定性只读工具和只读 SubAgent。它不改变执行账本或 Action Bridge 不重放语义。
+
+个人消息 Event 永远不设置普通回复路由。`observe/digest` 不获得个人消息工具，
+`draft` 和尚未确认的 `confirm` 最多获得绑定当前 Event 的
+`get_personal_message_context`；owner 在同一 Session 使用
+`确认发送大象消息：<最终文本>` 时，最近十分钟内已经完成的 Confirm 草稿才获得
+一次精确正文发送能力。`auto` 也可能获得 `send_personal_message`。消息发送 Run
+的固定工具集不包含 Shell、通用
+`connector_action`、文件/网络写入或 Computer Use；账号、后台安全性、coverage、
+新鲜度或稳定 ID 不满足时，发送工具不会出现。高风险正文在 Host 侧再次拒绝自动
+发送，结果不确定的 token 永远不能重放。
 
 `source` 支持 `*` 通配符；规则按数组顺序匹配第一条。`action` 有四种：
 

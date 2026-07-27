@@ -35,6 +35,7 @@ class FakeComputerBackend implements ComputerBackend {
   starts = 0;
   ends = 0;
   actions: BackendActionRequest[] = [];
+  nextActionResult: BackendActionResult = { status: 'applied', delivery: 'background' };
   targets = [target];
   observation: BackendObservation = {
     target,
@@ -55,7 +56,7 @@ class FakeComputerBackend implements ComputerBackend {
   }
   async act(_session: BackendSession, request: BackendActionRequest): Promise<BackendActionResult> {
     this.actions.push(request);
-    return { status: 'applied', delivery: 'background' };
+    return this.nextActionResult;
   }
   async endSession(): Promise<void> { this.ends += 1; }
   async close(): Promise<void> {}
@@ -104,6 +105,17 @@ test('requires a fresh observation for each bounded UI action', async () => {
   await manager.endRun(authority.runId);
   assert.equal(backend.starts, 1);
   assert.equal(backend.ends, 1);
+});
+
+test('background authority rejects a driver-side foreground delivery', async () => {
+  const { backend, manager, authority } = await fixture();
+  backend.nextActionResult = { status: 'applied', delivery: 'foreground' };
+  const observed = await observeWindow(manager, authority);
+
+  await assert.rejects(() => manager.act(authority, {
+    observationId: observed.observationId,
+    action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
+  }), /foreground_violation.*升级为前台投递/);
 });
 
 test('derives screenshotless window dimensions from the exact target bounds', async () => {
@@ -370,6 +382,18 @@ printf '{"elements":[],"screenshot_png_b64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB","
   assert.equal(result.screenshot?.mediaType, 'image/png');
   assert.equal(result.screenshot?.data, 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB');
   assert.deepEqual(result.data, { elements: [] });
+});
+
+test('Cua CLI adapter accepts the installed 0.12.3 driver version', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-current-'));
+  const fixture = path.join(root, 'cua-driver');
+  await writeFile(fixture, `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'cua-driver 0.12.3\\n'; exit 0; fi
+printf '{"content":[],"structuredContent":{"ready":true}}\\n'
+`, { mode: 0o700 });
+  const client = new CuaDriverClient(fixture, 2_000);
+
+  assert.equal((await client.health()).version, '0.12.3');
 });
 
 test('FileSession never persists computer type_text plaintext', async () => {

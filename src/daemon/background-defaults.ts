@@ -1,4 +1,12 @@
-export const BACKGROUND_DEFAULTS_VERSION = 1;
+export const BACKGROUND_DEFAULTS_VERSION = 2;
+
+export const PERSONAL_MESSAGE_CONNECTOR_IDS = [
+  'personal-daxiang',
+  'personal-qq',
+  'personal-wechat',
+] as const;
+
+const LEGACY_VISIBLE_DEFAULTS_VERSION = 1;
 
 const DEFAULT_MACOS_CONNECTORS = new Set([
   'macos-system',
@@ -26,15 +34,29 @@ export function legacyVisibleConnectorsToDisable(
   enabled: Readonly<Record<string, boolean>>,
   canonical: ReadonlySet<string>,
 ): { version: number; disabled: string[]; changed: boolean } {
-  if (currentVersion >= BACKGROUND_DEFAULTS_VERSION) {
+  if (currentVersion >= LEGACY_VISIBLE_DEFAULTS_VERSION) {
     return { version: currentVersion, disabled: [], changed: false };
   }
   const disabled = LEGACY_VISIBLE_MACOS_CONNECTORS.filter((id) => (
     enabled[id] === true && canonical.has(id)
   ));
   return {
-    version: BACKGROUND_DEFAULTS_VERSION,
+    version: LEGACY_VISIBLE_DEFAULTS_VERSION,
     disabled,
+    changed: true,
+  };
+}
+
+export function personalMessageConnectorsToAdd(
+  currentVersion: number,
+  present: ReadonlySet<string>,
+): { version: number; added: string[]; changed: boolean } {
+  if (currentVersion >= BACKGROUND_DEFAULTS_VERSION) {
+    return { version: currentVersion, added: [], changed: false };
+  }
+  return {
+    version: BACKGROUND_DEFAULTS_VERSION,
+    added: PERSONAL_MESSAGE_CONNECTOR_IDS.filter((id) => !present.has(id)),
     changed: true,
   };
 }

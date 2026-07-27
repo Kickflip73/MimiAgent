@@ -8,7 +8,12 @@ import { ContextAssembler } from '../src/runtime/pipeline/context-assembler.js';
 import { AgentRequestFactory } from '../src/runtime/pipeline/request-factory.js';
 import { captureRunScope } from '../src/runtime/pipeline/run-scope.js';
 import { RunStateLoader } from '../src/runtime/pipeline/state-loader.js';
-import { ToolSetBuilder } from '../src/runtime/pipeline/tool-set-builder.js';
+import {
+  requiresPersonalConnectorOnly,
+  ToolSetBuilder,
+  withoutPersonalMessageDesktopFallback,
+  withoutPersonalMessageFallbackHistory,
+} from '../src/runtime/pipeline/tool-set-builder.js';
 
 function scope() {
   return captureRunScope({
@@ -127,6 +132,57 @@ test('tool set builder keeps mode and run-policy filtering in one stage', () => 
     },
   );
   assert.deepEqual(prepared.map((item) => item.name), ['read_file', 'delegate_research']);
+});
+
+test('personal message queries expose Connector tools without desktop fallback tools', () => {
+  const tool = (name: string) => ({ name }) as Tool;
+  assert.equal(requiresPersonalConnectorOnly('检查待处理的大象消息'), true);
+  assert.equal(requiresPersonalConnectorOnly('用大象客户端窗口检查消息'), false);
+  assert.equal(requiresPersonalConnectorOnly('修复大象消息通道代码'), false);
+  const prepared = withoutPersonalMessageDesktopFallback([
+    tool('inspect_mimi_capabilities'),
+    tool('connector_action'),
+    tool('run_shell'),
+    tool('computer_observe'),
+    tool('mcp_cua_driver__list_windows'),
+    tool('mcp_browser__page_text'),
+    tool('list_mcp_resources'),
+    tool('reload_mcp'),
+  ]);
+  assert.deepEqual(prepared.map((item) => item.name), [
+    'inspect_mimi_capabilities',
+    'connector_action',
+  ]);
+});
+
+test('personal message history excludes completed desktop fallback turns', () => {
+  const items = [
+    { role: 'user', content: '旧的大象查询' },
+    { type: 'function_call', name: 'mcp_cua_driver__list_windows', callId: 'old-call', arguments: '{}' },
+    {
+      type: 'function_call_result',
+      name: 'mcp_cua_driver__list_windows',
+      callId: 'old-call',
+      output: { type: 'text', text: 'old desktop data' },
+    },
+    { role: 'assistant', content: '旧桌面结果' },
+    { role: 'user', content: '检查待处理的大象消息' },
+  ] as AgentInputItem[];
+  assert.deepEqual(withoutPersonalMessageFallbackHistory(items), [
+    { role: 'user', content: '检查待处理的大象消息' },
+  ]);
+
+  const activeTurn = [
+    { role: 'user', content: '检查待处理的大象消息' },
+    { type: 'function_call', name: 'mcp_cua_driver__list_windows', callId: 'active-call', arguments: '{}' },
+    {
+      type: 'function_call_result',
+      name: 'mcp_cua_driver__list_windows',
+      callId: 'active-call',
+      output: { type: 'text', text: 'Tool not found' },
+    },
+  ] as AgentInputItem[];
+  assert.deepEqual(withoutPersonalMessageFallbackHistory(activeTurn), activeTurn);
 });
 
 test('state loader skips every unauthorized source', async () => {

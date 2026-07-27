@@ -24,6 +24,12 @@ import type {
   TaskRecord,
   TaskType,
 } from './types.js';
+import {
+  personalMessageContextSchema,
+  personalMessageResultSchema,
+  type PersonalMessageAuthorization,
+} from './personal-message.js';
+import type { PersonalMessageScope } from '../runtime/personal-message-hub.js';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -72,6 +78,16 @@ export { eventFailureAttemptLimit } from './dispatcher-retry-policy.js';
 const TERMINAL_TASK_STATUSES = new Set<TaskRecord['status']>([
   'completed', 'failed', 'cancelled', 'dead_letter',
 ]);
+
+function personalConnectorId(channel: PersonalMessageAuthorization['channel']): string {
+  return `personal-${channel}`;
+}
+
+function personalConversationTarget(authorization: PersonalMessageAuthorization): string | undefined {
+  if (authorization.channel !== 'daxiang') return undefined;
+  const match = /^daxiang:[a-f0-9]{16,64}:(\d+)$/.exec(authorization.conversationId);
+  return match?.[1];
+}
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -380,6 +396,9 @@ export class MimiDispatcher {
         : `task:${task.id}`;
       execution = { sessionId: decision.sessionId!, key: executionKey };
       const deliveryControl: MimiDeliveryControl = { suppressed: false };
+      const personalMessage = decision.personalMessage
+        ? this.personalMessageScope(decision.personalMessage)
+        : undefined;
       let completionDelivery: { suppressed: true; reason?: string } | undefined;
       const checkPreemption = () => {
         if (!this.options.claimTaskTypes?.includes('conversation')) return;
@@ -431,6 +450,7 @@ export class MimiDispatcher {
         signal: runSignal,
         options: {
           ...decision.options,
+          ...(personalMessage ? { personalMessage } : {}),
           executionKey,
           retainExecutionLedger: true,
           completionDelivery: (calls) => {
@@ -687,6 +707,71 @@ export class MimiDispatcher {
         this.activeSessions.delete(active.sessionId);
       }
     }
+  }
+
+  private personalMessageScope(
+    authorization: PersonalMessageAuthorization,
+  ): PersonalMessageScope | undefined {
+    const connectors = this.connectors;
+    const target = personalConversationTarget(authorization);
+    if (!connectors || !target) return undefined;
+    const connectorId = personalConnectorId(authorization.channel);
+    const connector = connectors.listCapabilities().find((candidate) => candidate.id === connectorId);
+    const readiness = connector?.readiness;
+    const fresh = connector?.online === true && readiness?.stale !== true;
+    const capability = {
+      accountVerified: fresh && readiness?.accountVerified === true,
+      inboundCoverage: fresh
+        ? readiness?.coverage ?? 'unavailable'
+        : 'unavailable' as const,
+      contextRead: fresh
+        ? readiness?.contextRead ?? 'unavailable'
+        : 'unavailable' as const,
+      sendRoute: fresh && readiness?.outbound === 'ready'
+        ? 'connector' as const
+        : 'none' as const,
+      deliveryConfirmed: readiness?.deliveryConfirmed === true,
+      backgroundSafe: fresh && readiness?.backgroundSafe === true,
+      changesReadState: readiness?.changesReadState ?? 'unknown' as const,
+      stableConversationId: readiness?.stableConversationId === true,
+      stableMessageId: readiness?.stableMessageId === true,
+      probedAt: readiness?.reportedAt ?? new Date(0).toISOString(),
+    };
+    return {
+      eventId: authorization.eventId,
+      channel: authorization.channel,
+      accountFingerprint: authorization.accountFingerprint,
+      conversationId: authorization.conversationId,
+      actorId: authorization.actorId,
+      messageMode: authorization.mode,
+      approvedText: authorization.approvedText,
+      capability,
+      getContext: async (limit) => personalMessageContextSchema.parse(
+        await connectors.executePersonalMessageAction({
+          connector: connectorId,
+          action: 'get_context',
+          target,
+          payload: {
+            accountFingerprint: authorization.accountFingerprint,
+            conversationId: authorization.conversationId,
+            limit,
+          },
+        }),
+      ),
+      send: async ({ text, latestFingerprint }) => personalMessageResultSchema.parse(
+        await connectors.executePersonalMessageAction({
+          connector: connectorId,
+          action: 'send_message',
+          target,
+          payload: {
+            accountFingerprint: authorization.accountFingerprint,
+            conversationId: authorization.conversationId,
+            latestFingerprint,
+            text,
+          },
+        }),
+      ),
+    };
   }
 
   private abortForStopWhenSafe(active: ActiveExecution): void {

@@ -92,6 +92,14 @@ interface ConnectorStatusMessage {
   deliveryConfirmed?: boolean;
   eventAcknowledgement?: boolean;
   freshForMs?: number;
+  coverage?: 'complete' | 'bounded' | 'notification_only' | 'metadata_only' | 'unavailable';
+  accountVerified?: boolean;
+  backgroundSafe?: boolean;
+  changesReadState?: boolean | 'unknown';
+  stableConversationId?: boolean;
+  stableMessageId?: boolean;
+  contextRead?: 'stable' | 'bounded' | 'unavailable';
+  lastObservedAt?: string;
 }
 
 interface PendingDelivery {
@@ -117,6 +125,14 @@ export interface ConnectorCapability {
     reportedAt?: string;
     freshUntil?: string;
     stale?: boolean;
+    coverage?: 'complete' | 'bounded' | 'notification_only' | 'metadata_only' | 'unavailable';
+    accountVerified?: boolean;
+    backgroundSafe?: boolean;
+    changesReadState?: boolean | 'unknown';
+    stableConversationId?: boolean;
+    stableMessageId?: boolean;
+    contextRead?: 'stable' | 'bounded' | 'unavailable';
+    lastObservedAt?: string;
   };
   source: string;
   trust: EventTrust;
@@ -460,6 +476,29 @@ class ConnectorProcess implements NotificationSink {
     )) {
       throw new Error('status.freshForMs 必须是 1000 到 604800000 的安全整数');
     }
+    if (message.coverage !== undefined && ![
+      'complete', 'bounded', 'notification_only', 'metadata_only', 'unavailable',
+    ].includes(message.coverage)) throw new Error('status.coverage 无效');
+    for (const [name, value] of [
+      ['accountVerified', message.accountVerified],
+      ['backgroundSafe', message.backgroundSafe],
+      ['stableConversationId', message.stableConversationId],
+      ['stableMessageId', message.stableMessageId],
+    ] as const) {
+      if (value !== undefined && typeof value !== 'boolean') throw new Error(`status.${name} 必须是 boolean`);
+    }
+    if (message.changesReadState !== undefined
+      && typeof message.changesReadState !== 'boolean'
+      && message.changesReadState !== 'unknown') {
+      throw new Error('status.changesReadState 必须是 boolean 或 unknown');
+    }
+    if (message.contextRead !== undefined
+      && !['stable', 'bounded', 'unavailable'].includes(message.contextRead)) {
+      throw new Error('status.contextRead 无效');
+    }
+    if (message.lastObservedAt !== undefined && !validDate(message.lastObservedAt)) {
+      throw new Error('status.lastObservedAt 必须是有效时间');
+    }
     this.supportsEventAcknowledgement = message.eventAcknowledgement === true;
     this.statusReportedAt = new Date().toISOString();
     this.statusFreshForMs = message.freshForMs;
@@ -467,6 +506,14 @@ class ConnectorProcess implements NotificationSink {
       inbound: message.inbound,
       outbound: message.outbound,
       ...(message.deliveryConfirmed === undefined ? {} : { deliveryConfirmed: message.deliveryConfirmed }),
+      ...(message.coverage === undefined ? {} : { coverage: message.coverage }),
+      ...(message.accountVerified === undefined ? {} : { accountVerified: message.accountVerified }),
+      ...(message.backgroundSafe === undefined ? {} : { backgroundSafe: message.backgroundSafe }),
+      ...(message.changesReadState === undefined ? {} : { changesReadState: message.changesReadState }),
+      ...(message.stableConversationId === undefined ? {} : { stableConversationId: message.stableConversationId }),
+      ...(message.stableMessageId === undefined ? {} : { stableMessageId: message.stableMessageId }),
+      ...(message.contextRead === undefined ? {} : { contextRead: message.contextRead }),
+      ...(message.lastObservedAt === undefined ? {} : { lastObservedAt: validDate(message.lastObservedAt) }),
     };
   }
 
@@ -761,6 +808,25 @@ export class ConnectorManager {
   }
 
   async executeAction(request: ConnectorActionRequest): Promise<unknown> {
+    if (request.connector.startsWith('personal-') && request.action === 'send_message') {
+      throw new Error(
+        `Connector ${request.connector} 的 send_message 只能由 PersonalMessageHub 的绑定回调调用`,
+      );
+    }
+    return this.executeRegisteredAction(request);
+  }
+
+  async executePersonalMessageAction(request: ConnectorActionRequest): Promise<unknown> {
+    if (!request.connector.startsWith('personal-')) {
+      throw new Error(`Connector ${request.connector} 不是个人消息 Connector`);
+    }
+    if (!['list_targets', 'get_context', 'send_message', 'health_check', 'sync_now'].includes(request.action)) {
+      throw new Error(`个人消息 Connector 不允许 action ${request.action}`);
+    }
+    return this.executeRegisteredAction(request);
+  }
+
+  private async executeRegisteredAction(request: ConnectorActionRequest): Promise<unknown> {
     const connector = this.connectors.get(request.connector);
     if (!connector) throw new Error(`未找到 Connector ${request.connector}`);
     return connector.executeAction(request.action, request.target, request.payload);

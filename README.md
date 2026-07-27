@@ -197,7 +197,7 @@ mimi daemon --help
 
 `mimi daemon status` 默认输出适合终端阅读的健康摘要；脚本、自动化和完整排障数据使用 `mimi daemon status --json`。
 
-首次 `mimi` 会执行幂等初始化：创建权限为 `0700` 的 MimiAgent 数据目录、`0600` 的策略/Connector 配置和本机数据库，并把发布包内的 Connector 目录物化为当前安装位置的绝对路径。macOS 默认只启用无界面的 System Connector；Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Desktop、Browser、Screen 和 Voice 都必须显式启用，Daemon 启动不会把任何 GUI App 放进 Dock。旧版自动启用的 canonical 本机 Connector 会一次性切换到该无界面默认，后续用户显式启停仍会保留；Calendar/Reminders 与 Mail 即使被启用，也不会为了后台轮询重新打开已关闭的 App。OpenClaw 微信、Radar 等额外数据源保持关闭。升级会删除已退役的大象、QQ OneBot/NapCat、通用 HTTP Action 及 QQ/微信/大象 AppleScript Connector 配置，补齐缺失的默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充新 action。QQ 消息只保留 CUA Skill 路线，微信只保留 OpenClaw iLink Bot。`mimi daemon doctor` 只读检查模型 Key、脚本、系统命令、后台、运行中 Connector、dead letter、容量阈值和 launchd 状态，不读取邮件、消息或屏幕，也不触发系统授权。
+首次 `mimi` 会执行幂等初始化：创建权限为 `0700` 的 MimiAgent 数据目录、`0600` 的策略/Connector 配置和本机数据库，并把发布包内的 Connector 目录物化为当前安装位置的绝对路径。macOS 默认只启用无界面的 System Connector；Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Desktop、Browser、Screen、Voice 和三个个人消息配置槽位都默认关闭，Daemon 启动不会把任何 GUI App 放进 Dock。旧版自动启用的 canonical 本机 Connector 会一次性切换到该无界面默认，后续用户显式启停仍会保留；个人消息槽位也只补一次，owner 删除后不会反复恢复。Calendar/Reminders 与 Mail 即使被启用，也不会为了后台轮询重新打开已关闭的 App。OpenClaw 微信、Radar 等额外数据源保持关闭。升级会删除旧大象 Bot/AppleScript、QQ OneBot/NapCat、通用 HTTP Action 及 QQ/微信 AppleScript Connector 配置，补齐缺失的默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充新 action。个人 QQ/微信 Adapter 尚未实现；现有 QQ CUA Skill 和 OpenClaw iLink Bot 都不是个人消息通道的自动降级路线。`mimi daemon doctor` 只读检查模型 Key、脚本、系统命令、后台、运行中 Connector、dead letter、容量阈值和 launchd 状态，不读取邮件、消息或屏幕，也不触发系统授权。
 
 LaunchAgent 的 plist 不保存 API Key，而是读取持久环境文件；只在当前 Shell `export` 的临时 Key 不会被写入磁盘，此时 MimiAgent 仍可在当前登录会话内运行。首次访问邮件、消息、联系人、屏幕等能力时，macOS 可能向实际 Node/Terminal/LaunchAgent 进程请求系统权限；MimiAgent 不再叠加审批层。
 
@@ -223,7 +223,15 @@ owner/system 以及命中 owner source policy 的 MimiAgent 事件可使用有�
 
 微信 Bot、邮件、Messages、新闻和天气等渠道通过隔离的 stdio Connector 接入：Daemon 负责拉起、崩溃退避重启、故障自愈跟踪、事件去重和可靠回传，Connector 只负责渠道协议。MimiAgent 会核对实时能力、跟踪到稳定恢复，并只在无法自愈或影响事务时通知；中断期间结果不确定的外部动作不会自动重放。每个 Daemon Run 都获得动态只读 `inspect_mimi_capabilities`，可小范围查看 enabled、online、readiness 和 action 目录。配置示例见 `mimi.connectors.example.json`，协议见 [docs/CONNECTORS.md](docs/CONNECTORS.md)。
 
-微信使用腾讯官方 `openclaw-weixin` iLink Bot 通道，不操作 WeChat.app，但它不是个人微信完整收件箱。QQ 不再提供 Connector、OneBot/NapCat 或 AppleScript 路线，只保留 `qq-messenger-skill` 的 CUA 实现。大象消息通道已全部移除。更完整的范围见 [Connector 文档](docs/CONNECTORS.md)。
+大象个人账号通道通过默认关闭的 `personal-daxiang` Connector 接入已登录的专用
+Chrome 后台标签，提供有界读取、首次监听历史基线、ACK 后游标和一次性观察式发送；
+账号/页面指纹未锁定或标签正在使用时失败关闭。个人 QQ、个人微信 Adapter 尚未实现，
+配置槽位无 action 且默认关闭。腾讯官方 `openclaw-weixin` 仍是独立 iLink Bot，QQ
+`qq-messenger-skill` 仍是当次 CUA 兜底，两者都不会冒充个人消息 Connector。
+owner 查询大象消息时通过 `query=大象` 发现完整 `personal-daxiang` ID，再使用
+`list_targets/sync_now/get_context`；该查询不会因 ID 猜错或 bounded coverage
+自动降级到 CUA、Browser、桌面或 Shell。
+更完整的范围见 [Connector 文档](docs/CONNECTORS.md)。
 
 `radar-connector.mjs` 用单个零依赖子进程轮询多个 RSS/Atom feed 和 Open-Meteo 地点。新闻以 `ambient` 进入 Attention 摘要池，命中降水、阵风、高低温或恶劣天气代码阈值时产生 `alert`。配置起点见 `mimi.radar.example.json`。
 

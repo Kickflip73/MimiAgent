@@ -1,0 +1,242 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import {
+  DaxiangWebAdapter,
+  parseDaxiangConfig,
+} from '../examples/connectors/personal-message/daxiang-web.mjs';
+
+function sha256(value: string): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+const pageShape = {
+  bridgeMajor: 1,
+  origin: 'https://x.sankuai.com',
+  sessionTag: 'DIV',
+  stableSessionCount: 2,
+  messageTag: 'DIV',
+  stableMessageCount: 3,
+  inputCount: 1,
+  inputTag: 'TEXTAREA',
+  sendButtonCount: 1,
+  sendButtonTag: 'BUTTON',
+};
+const selfLabel = 'Owner Self';
+const accountFingerprint = sha256([
+  'daxiang-web-v1',
+  'https://x.sankuai.com',
+  '123',
+  sha256(selfLabel),
+].join('\0'));
+const pageFingerprint = sha256(JSON.stringify({
+  bridgeMajor: pageShape.bridgeMajor,
+  origin: pageShape.origin,
+  sessionTag: pageShape.sessionTag,
+  messageTag: pageShape.messageTag,
+  inputCount: pageShape.inputCount,
+  inputTag: pageShape.inputTag,
+  sendButtonCount: pageShape.sendButtonCount,
+  sendButtonTag: pageShape.sendButtonTag,
+}));
+
+class FakeDriver {
+  commits = 0;
+  observeStatus: 'observed' | 'failed' = 'observed';
+  messages = [{
+    mid: '9001',
+    direction: 'incoming',
+    actorId: 'actor-1',
+    text: 'hello',
+    occurredAt: '2026-07-27T10:00:00.000Z',
+    receipt: null,
+  }];
+
+  async locate(): Promise<Record<string, unknown>> {
+    return { tab: { active: false } };
+  }
+
+  async execute(_marker: string, script: string): Promise<{ value: string | null }> {
+    const method = /__mimiDaxiangBridge\.([a-zA-Z]+)\(/.exec(script)?.[1];
+    if (!method) return { value: null };
+    let result: unknown;
+    if (method === 'inspect') {
+      result = {
+        version: '1.0.0',
+        selfRowCount: 1,
+        selfRowLabel: selfLabel,
+        pageShape,
+        readable: true,
+        sendStructureReady: true,
+      };
+    } else if (method === 'installObserver') result = { installed: true };
+    else if (method === 'drain') result = [];
+    else if (method === 'selectConversation') result = { selected: true, changed: false };
+    else if (method === 'readCurrentConversation') {
+      result = {
+        matched: true,
+        sid: '123',
+        type: 'chat',
+        messages: this.messages,
+        capturedAt: '2026-07-27T10:00:01.000Z',
+        readStateChanged: 'unknown',
+      };
+    } else if (method === 'prepareSend') result = { prepared: true };
+    else if (method === 'commitSend') {
+      this.commits += 1;
+      result = { dispatched: true, repeated: false };
+    } else if (method === 'observeSend') {
+      result = this.observeStatus === 'observed'
+        ? {
+            status: 'observed',
+            message: { mid: '9002', direction: 'outgoing', text: '收到' },
+            draftEmpty: true,
+          }
+        : { status: 'failed', reason: 'page_marked_send_failed' };
+    } else throw new Error(`unexpected bridge method ${method}`);
+    return { value: JSON.stringify(result) };
+  }
+}
+
+function config() {
+  return parseDaxiangConfig({
+    schemaVersion: 1,
+    tabMarker: 'marker-1',
+    expectedAccountFingerprint: accountFingerprint,
+    allowedPageFingerprints: [pageFingerprint],
+    selfConversation: { sid: '123', type: 'chat' },
+    watch: {
+      enabled: true,
+      pollIntervalMs: 30_000,
+      conversations: [{ sid: '123', type: 'chat', label: 'self' }],
+    },
+    limits: { contextMessages: 50, eventPreviewChars: 4_000 },
+  });
+}
+
+test('Daxiang config rejects unstable targets and unknown fields', () => {
+  assert.throws(() => parseDaxiangConfig({
+    ...config(),
+    extra: true,
+  }), /not supported/);
+  assert.throws(() => parseDaxiangConfig({
+    ...config(),
+    selfConversation: { sid: 'display-name', type: 'chat' },
+  }), /digits only/);
+});
+
+test('Daxiang adapter baselines history, emits new bounded events, and advances only after ACK', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'daxiang-personal-'));
+  const stateFile = path.join(root, 'state', 'cursor.json');
+  const driver = new FakeDriver();
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile,
+  });
+
+  const health = await adapter.health({ probe: true });
+  assert.equal(health.accountVerified, true);
+  assert.equal(health.pageAllowed, true);
+  assert.equal(health.deliveryConfirmed, false);
+
+  const first = await adapter.poll();
+  assert.equal(first.events.length, 0);
+  driver.messages.push({
+    mid: '9002',
+    direction: 'incoming',
+    actorId: 'actor-1',
+    text: 'new message',
+    occurredAt: '2026-07-27T10:00:02.000Z',
+    receipt: null,
+  });
+
+  const afterBaseline = await adapter.poll();
+  assert.equal(afterBaseline.events.length, 1);
+  const firstEvent = afterBaseline.events[0];
+  assert.ok(firstEvent);
+  assert.equal(firstEvent.externalId, `daxiang:${accountFingerprint.slice(7, 23)}:123:9002`);
+  assert.equal(firstEvent.payload.coverage, 'bounded');
+  assert.equal(firstEvent.replyTarget, undefined);
+  assert.match(firstEvent.actor.id, /^sha256:[a-f0-9]{64}$/);
+
+  const beforeAck = await adapter.poll();
+  assert.equal(beforeAck.events.length, 1);
+  await adapter.acknowledge([firstEvent.externalId]);
+  const afterAck = await adapter.poll();
+  assert.equal(afterAck.events.length, 0);
+  assert.equal((await stat(stateFile)).mode & 0o777, 0o600);
+  assert.doesNotMatch(await readFile(stateFile, 'utf8'), /hello|new message|Owner Self/);
+});
+
+test('Daxiang send clicks once and reports observed rather than confirmed', async () => {
+  const driver = new FakeDriver();
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-${Date.now()}.json`),
+  });
+  await adapter.health({ probe: true });
+  const context = await adapter.getContext({
+    accountFingerprint,
+    sid: '123',
+    type: 'chat',
+    limit: 30,
+  });
+  const result = await adapter.send({
+    accountFingerprint,
+    sid: '123',
+    type: 'chat',
+    text: '收到',
+    latestFingerprint: context.latestFingerprint,
+  });
+  assert.equal(driver.commits, 1);
+  assert.equal(result.status, 'observed');
+  assert.equal(result.deliveryConfirmed, false);
+});
+
+test('Daxiang send reports an explicit page failure without clicking again', async () => {
+  const driver = new FakeDriver();
+  driver.observeStatus = 'failed';
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-failed-${Date.now()}.json`),
+  });
+  await adapter.health({ probe: true });
+  const context = await adapter.getContext({
+    accountFingerprint,
+    sid: '123',
+    type: 'chat',
+    limit: 1,
+  });
+  const result = await adapter.send({
+    accountFingerprint,
+    sid: '123',
+    type: 'chat',
+    text: '收到',
+    latestFingerprint: context.latestFingerprint,
+  });
+  assert.equal(driver.commits, 1);
+  assert.equal(result.status, 'failed');
+  assert.match(String(result.error), /page_marked_send_failed/);
+});
+
+test('Daxiang page bridge has no credential access or foreground activation path', async () => {
+  const bridge = await readFile(
+    fileURLToPath(new URL('../examples/connectors/personal-message/daxiang-web-page-bridge.js', import.meta.url)),
+    'utf8',
+  );
+  assert.doesNotMatch(bridge, /(?:cookie|localStorage|indexedDB|activate\(|clipboard|keyCode)/i);
+  assert.match(bridge, /\(\?:me\|from-me/);
+  assert.match(bridge, /\(\?:you\|from-other/);
+  assert.match(bridge, /page_marked_send_failed/);
+  new Function(bridge);
+});

@@ -177,6 +177,23 @@ test('owner natural language never selects a tool policy from message wording', 
   }
 });
 
+test('owner personal-message queries add only a narrowing Connector routing hint', () => {
+  const decision = decideEvent(event({
+    trust: 'owner',
+    source: 'local-cli',
+    payload: { prompt: '检查待处理的大象消息' },
+  }));
+  assert.equal(decision.options?.policy, undefined);
+  assert.equal(decision.options?.personalConnectorOnly, true);
+
+  const development = decideEvent(event({
+    trust: 'owner',
+    source: 'local-cli',
+    payload: { prompt: '修复大象消息通道代码' },
+  }));
+  assert.equal(development.options?.personalConnectorOnly, undefined);
+});
+
 test('source playbooks require exact trusted provenance', () => {
   const cases: Array<[Partial<EventEnvelope>, RegExp]> = [
     [{ source: 'macos-life', kind: 'alert', payload: { type: 'calendar_upcoming' } }, /本机生活事务执行剧本/],

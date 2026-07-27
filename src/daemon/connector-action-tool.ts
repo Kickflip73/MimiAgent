@@ -30,6 +30,14 @@ export interface ConnectorCapabilitySnapshot {
       reportedAt?: string;
       freshUntil?: string;
       stale?: boolean;
+      coverage?: 'complete' | 'bounded' | 'notification_only' | 'metadata_only' | 'unavailable';
+      accountVerified?: boolean;
+      backgroundSafe?: boolean;
+      changesReadState?: boolean | 'unknown';
+      stableConversationId?: boolean;
+      stableMessageId?: boolean;
+      contextRead?: 'stable' | 'bounded' | 'unavailable';
+      lastObservedAt?: string;
     };
     source: string;
     actions: Array<{ name: string; description: string }>;
@@ -130,15 +138,24 @@ export function createConnectorCapabilityTool(connectors: ConnectorManager): Too
   return createConnectorCapabilityRuntimeTool((filter) => connectorCapabilitySnapshot(connectors, filter));
 }
 
-function createConnectorCapabilityRuntimeTool(inspect: InspectCapabilities): Tool {
+export function createConnectorCapabilityRuntimeTool(inspect: InspectCapabilities): Tool {
   return tool({
     name: 'inspect_mimi_capabilities',
-    description: '动态读取 MimiAgent 当前 Connector 的进程状态、真实 inbound/outbound 就绪度和有界 action 目录。已知渠道时用 connector 精确过滤；只知道关键词时用 query 搜索 connector/source/action，避免读取完整目录。online 只表示 Connector 进程存活；执行外部事务前应优先检查 readiness。',
+    description: '动态读取 MimiAgent 当前 Connector 的进程状态、真实 inbound/outbound 就绪度和有界 action 目录。connector 必须是完整精确 ID（例如 personal-daxiang 或 openclaw-weixin）；不确定 ID 时必须用 query 搜索渠道关键词。精确 ID 未命中不代表离线，工具会报错要求重新搜索。online 只表示 Connector 进程存活；执行 action 前应优先检查 readiness。',
     parameters: z.object({
-      connector: identifier.optional().describe('可选 Connector ID 精确过滤，例如 openclaw-weixin 或 qq'),
+      connector: identifier.optional().describe('可选完整 Connector ID 精确过滤，例如 personal-daxiang 或 openclaw-weixin；不要填 daxiang、qq 等渠道简称'),
       query: z.string().trim().min(1).max(100).optional().describe('可选关键词，匹配 Connector ID、source、action 名或描述'),
     }).strict(),
-    execute: async (filter, _context, details) => inspect(filter, details?.signal),
+    execute: async (filter, _context, details) => {
+      const snapshot = await inspect(filter, details?.signal);
+      if (filter.connector && snapshot.total === 0) {
+        throw new Error(
+          `Connector ID "${filter.connector}" 未注册；这不是 Connector 离线证据。`
+          + '请改用 query 搜索渠道关键词并使用返回的完整 ID，不得据此自动降级到 GUI、CUA 或 Shell。',
+        );
+      }
+      return snapshot;
+    },
   });
 }
 
@@ -199,7 +216,7 @@ function createConnectorActionRuntimeTool(
 ): Tool {
   return tool({
     name: 'connector_action',
-    description: '通过隔离的 Connector 执行外部副作用，如发送 IM、创建日程或发送邮件。调用前先用 inspect_mimi_capabilities 获取当前 connector/action、target 格式和 readiness：已知 ID 时传 connector 精确过滤，不确定微信等渠道 ID 时传 query 关键词搜索，避免加载完整目录。不要猜测能力名。只能使用目录中已声明的能力；payloadJson 必须是严格 JSON。结果超时或不确定时不要自动重试，避免重复事务。',
+    description: '调用隔离 Connector 已声明的有界读取或外部 action。调用前先用 inspect_mimi_capabilities 获取完整 connector ID、action、target 格式和 readiness；不知道完整 ID 时必须用 query 搜索，禁止猜测。个人大象查询应使用 personal-daxiang 的 list_targets、sync_now 或 get_context，不得自动改走 GUI、CUA、osascript 或 Shell。只能使用目录中已声明的能力；payloadJson 必须是严格 JSON。结果超时或不确定时不要自动重试。',
     parameters: z.object({
       connector: identifier.describe('Connector ID，例如 macos-mail'),
       action: identifier.describe('Connector 声明的 action 名称，例如 send_message'),

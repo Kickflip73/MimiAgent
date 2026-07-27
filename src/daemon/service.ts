@@ -60,6 +60,7 @@ import {
   defaultConnectorEnabled,
   LEGACY_VISIBLE_MACOS_CONNECTORS,
   legacyVisibleConnectorsToDisable,
+  personalMessageConnectorsToAdd,
 } from './background-defaults.js';
 import { createMimiCommandHostTools } from './host-tools.js';
 import {
@@ -696,6 +697,18 @@ async function mergeTemplateActions(
     backgroundDefaultsVersion = defaults.version;
     changed ||= defaults.changed;
   }
+  if (backgroundDefaultsVersion < BACKGROUND_DEFAULTS_VERSION) {
+    const personal = personalMessageConnectorsToAdd(
+      backgroundDefaultsVersion,
+      new Set(Object.keys(connectors)),
+    );
+    for (const id of personal.added) {
+      const packaged = template.connectors[id];
+      if (packaged) connectors[id] = { ...packaged, enabled: false };
+    }
+    backgroundDefaultsVersion = personal.version;
+    changed ||= personal.changed;
+  }
   for (const [id, connector] of Object.entries(connectors)) {
     const script = connectorScriptPath(connector);
     if (!RETIRED_CONNECTOR_IDS.has(id) && (!script || !RETIRED_CONNECTOR_SCRIPTS.has(path.basename(script)))) {
@@ -858,6 +871,32 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
     ? Object.entries(connectorConfig.connectors).filter(([, connector]) => connector.enabled).map(([id]) => id)
     : [];
   if (connectorConfig && enabled.length === 0) issues.push('没有启用任何 Connector');
+  const daxiangEnabled = enabled.includes('personal-daxiang');
+  const daxiangConfigFile = process.env.DAXIANG_WEB_CONFIG
+    ? path.resolve(process.env.DAXIANG_WEB_CONFIG)
+    : path.join(paths.root, 'personal-daxiang.json');
+  let daxiangConfigMissing = false;
+  let daxiangFingerprintsMissing = false;
+  if (daxiangEnabled) {
+    if (platform !== 'darwin') issues.push('personal-daxiang 只支持 macOS Google Chrome');
+    if (!await exists(daxiangConfigFile)) {
+      daxiangConfigMissing = true;
+      issues.push(`personal-daxiang 业务配置不存在：${daxiangConfigFile}`);
+    } else {
+      try {
+        const daxiangConfig = JSON.parse(await readFile(daxiangConfigFile, 'utf8')) as Record<string, unknown>;
+        daxiangFingerprintsMissing = typeof daxiangConfig.expectedAccountFingerprint !== 'string'
+          || !daxiangConfig.expectedAccountFingerprint
+          || !Array.isArray(daxiangConfig.allowedPageFingerprints)
+          || daxiangConfig.allowedPageFingerprints.length === 0;
+        if (daxiangFingerprintsMissing) {
+          issues.push('personal-daxiang 尚未锁定账号指纹和页面指纹，只能执行 health_check probe');
+        }
+      } catch (error) {
+        issues.push(`personal-daxiang 业务配置无效：${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
   const scriptPaths = connectorConfig
     ? [...new Set(Object.values(connectorConfig.connectors)
       .flatMap((connector) => connector.args)
@@ -959,6 +998,11 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
   }
   if (missingScripts.length) nextActions.push('重新运行 npm install 或修复 Connector 脚本路径');
   if (missingBinaries.length) nextActions.push('安装或恢复缺失的 macOS 系统命令');
+  if (daxiangConfigMissing) {
+    nextActions.push(`复制 daxiang-web.example.json 到 ${daxiangConfigFile}，准备已登录且非活动的大象专用标签`);
+  } else if (daxiangFingerprintsMissing) {
+    nextActions.push('对 personal-daxiang 执行 health_check probe，核对摘要后写回账号和页面指纹并 reload');
+  }
   if (!daemonStatus && configured && connectorConfig) nextActions.push('运行 mimi，后台服务会自动启动');
   if (health) {
     for (const action of health.risks.map((risk) => risk.nextAction)) {

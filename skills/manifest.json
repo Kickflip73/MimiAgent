@@ -11,7 +11,7 @@
     { "name": "gpt-tasteskill", "status": "experimental", "published": false },
     { "name": "kmdrawio", "status": "experimental", "published": false },
     { "name": "kmedit", "status": "experimental", "published": false },
-    { "name": "meituan-km", "status": "experimental", "published": false },
+    { "name": "meituan-km", "status": "experimental", "published": true },
     { "name": "minimalist-skill", "status": "experimental", "published": false },
     { "name": "opencli-adapter-author", "status": "experimental", "published": false },
     { "name": "opencli-autofix", "status": "experimental", "published": false },

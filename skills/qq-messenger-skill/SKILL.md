@@ -41,9 +41,17 @@ python3 <root>/scripts/send_qq.py --action context --to '<联系人>' --limit 20
 python3 <root>/scripts/send_qq.py --action context --limit 20
 ```
 
+快速检查 QQ 当前是否满足后台操作条件：
+
+```bash
+python3 <root>/scripts/send_qq.py --action status
+```
+
 使用 Shell 工具的参数传递能力安全引用用户原文，不要改写联系人或正文。一次脚本调用返回
 一行 JSON：
 
+- `status=ready`：QQ 在运行且未占前台，脚本已取得可读窗口；只读 status/context 可使用当前可见窗口；若 QQ 原本隐藏，
+  脚本会临时取得非激活窗口并在返回前恢复隐藏。
 - `status=sent`：已发送并通过发送前后差异验证。
 - `status=context`：`messages` 是按界面顺序排列的可见快照；`direction` 为
   `incoming`、`outgoing` 或 `unknown`，`complete=false` 表示不是完整历史，
@@ -59,7 +67,17 @@ python3 <root>/scripts/send_qq.py --action context --limit 20
 
 ## 安全边界
 
-- 禁止前置或启动 QQ、`osascript`、前台 dispatch、像素点击和全局键盘输入。
+- 禁止前置或激活 QQ、`osascript`、前台 dispatch、像素点击和全局键盘输入。
+- QQ 已运行但隐藏时，脚本可以获取一次临时“后台窗口租约”：只允许
+  `launch_app` 返回 `self_activation_suppressed=true`，并且每次写操作前后都确认
+  QQ 未成为前台；完成后使用目标进程和窗口恢复原隐藏状态。
+- QQ 窗口即使“可见但不在前台”，默认也不操作：切换会话可能改变你下次看到的页面或已读状态。
+  只有隔离实验显式设置 `MIMI_QQ_ALLOW_VISIBLE_BACKGROUND=1` 才允许该兼容路径。
+- 所有 QQ 调用共用一个本机文件锁，避免两个后台任务同时切换会话、覆盖草稿或重复发送。
+- QQ 位于前台、进程在操作中变化，或任一检查发现用户已开始使用 QQ 时，立即停止。
+  若用户在租约期间主动切到 QQ，脚本不得把 QQ 隐藏回去。
+- 后台窗口租约失败、无法证明未抢焦点或无法恢复原隐藏状态时失败关闭；若消息已经
+  确认发送，则保留 `sent` 结果并返回 `cleanupWarning`，绝不重复发送。
 - 禁止在脚本之外手动 `set_value`、`press_key` 或点击发送。
 - 目标不匹配、昵称歧义、窗口不可读时失败关闭。
 - 上下文不足时说明限制，不把可见窗口快照冒充完整聊天记录。

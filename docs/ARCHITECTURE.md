@@ -48,6 +48,13 @@ src/daemon/
 └── notifier.ts          system / local 通知与渠道注册
 ```
 
+个人账号消息在该边界内只增加两个轻量模块：`core/personal-message.ts` 定义
+三渠道共享的有界 payload/context/result schema（`daemon/personal-message.ts`
+只作 Daemon 边界转出）；`runtime/personal-message-hub.ts`
+在当前 Run 内签发和消费绑定目标的 HMAC context token。Hub 不拥有数据库、不运行
+Connector、不保存正文；Connector cursor 仍由隔离进程维护，Event、Task 和副作用
+回执继续由现有 Store 与 ExecutionLedger 持有。
+
 可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 `computer_observe` 与 `computer_act` 两个 Function Tool。它按 Run 管理不可复用的 Observation、动作/截图预算、Cua session、前台 lease 和受保护录制 artifact；GUI 写动作继续经过统一 Tool policy、ExecutionLedger 与跨进程动作锁。默认配置不创建该 Extension。
 
 `src/agent.ts` 导出 `MimiAgent`；实现位于 `runtime/mimi-agent.ts`。
@@ -186,11 +193,18 @@ Attention Engine 是同步、确定性的 Host 层分类器，不是第二个模
 
 Connector Action Bridge 把外部凭证保留在 Kernel 监督的隔离 Connector 子进程中。一个 Daemon 数据根只有一个 Connector Manager/broker；Conversation actor 与后台 Task worker 都不能各自拉起同一渠道或复制凭证，而是通过这一个 broker 做能力发现和 action。每个 Connector 在 owner 配置里声明 action 目录；Agent 可先通过动态只读 `inspect_mimi_capabilities` 查看配置路径及 enabled/online 状态，通过 `reload_mimi_connectors` 复用 Manager 的 validate-before-swap/drain 热重载，再通过通用 `connector_action` 发出 `action(id, action, target, payload)` 并等待 `action_result`。能力快照最多返回 50 个 Connector、全局 100 个 action 和 300 字符描述，同时保留真实 totals/truncated，避免异常配置膨胀上下文；action 执行时仍由 Manager 做最终在线检查。目录用于能力发现，不是审批层。超时或子进程退出时不自动重放，以避免不确定结果造成重复事务；Agent 只能选择不会重复原事务的替代执行面或向 owner 汇报。
 
+`personal-*` Connector 的写 action 是例外：通用 `connector_action` 确定性拒绝
+`send_message`。Dispatcher 只能从当前个人消息 Event、精确 Source Policy 和实时
+readiness 生成临时 `PersonalMessageScope`，其中 callback 已绑定 Connector、账号
+与稳定会话；Runtime 只把两个窄工具加入当前主 Agent，不传给 SubAgent、Team worker
+或独立后台 Task。token 绑定 Run、Event、渠道、账号、会话、最新消息指纹和五分钟
+过期时间，并在外部写开始前 fencing 为已消费。
+
 Daemon 的本地副作用账本使用稳定的 `eventId` 作为 execution scope，并以工具名和规范参数生成语义 call ID。模型重试时即使 SDK call ID 改变，相同动作也只重放已保存结果。账本只在 Event 成功提交后清理；retry、抢占和 dead letter 都保留它，因此 dead letter 原 ID 显式恢复时仍不会再次执行已经成功落账的相同动作。若进程在外部动作后、事件提交前崩溃，租约恢复后的重试也不会重复该动作。
 
 Unix Socket 位于 `MIMI_DAEMON_DATA_DIR`（可回退旧目录）且权限为 `0600`，提供 status、chat snapshot/history/invoke、activity、submit、events、tasks、runs、outbox、dead-letter retry/archive、attention、connectors、schedules 和 shutdown。仅靠同用户可连接的 Socket 不作为 owner 认证：bootstrap 在同目录原子创建并校验一个 `0600` 随机 control bearer，普通 `mimiRpc`/CLI 自动读取并随请求发送，Kernel 对除两条专用 worker broker 方法外的全部 RPC（包括 ping/status/submit/shutdown）做固定长度摘要的 constant-time 比较。token 不进入 SQLite、环境、status、Doctor、日志或错误文本；运行中新 daemon 的 token 文件缺失、权限错误、内容错误或值不匹配都 fail closed。Task worker broker 只验证 Supervisor 分配的独立 `workerToken`，其客户端显式不读取 control bearer。旧 daemon 会忽略新请求附带的 `auth` 字段；尚未初始化 token 的只读探测也仍可使用旧协议，因此新 CLI 能读取 status 并完成安全升级。协议版本提升确保已运行旧实例不会被误当成当前控制面；同协议 status 还必须携带由包版本、入口文件内容和构建时间导出的 build identity，缺失或不一致都按待升级处理。status 同时携带活跃 Session Event、task worker PID/heartbeat 及在途 Host/管理 mutation 数；Chat 修改、Attention reload 和 Connector 热重载共用一个关闭门，shutdown 只有在 Event、task worker、Outbox 和管理事务都空闲时才原子停止接收新事务。CLI 从任意目录采用现有后台的绑定工作区，并按该工作区重新解析默认数据、Skill 与 MCP 路径；本地显式 workspace 只决定没有后台时新 Host 的启动位置。长期开启的 CLI 在 Host 被替换后重新采用新实例报告的工作区；普通 RPC 在连接尚未建立而收到 `ENOENT/ECONNREFUSED` 时恢复后台并安全重试一次。空闲旧版会先经 shutdown 安全退出再由当前入口重启，活动 Event、task、Outbox 或 mutation 和未来版本都不会被强制终止。已安装 launchd 的后台升级后仍由重写为当前入口的同一 KeepAlive job 托管，不退化为 detached 进程。交互式与单次 CLI 都走该入口；命令通过共享 `CommandHandler` 和远程 adapter 作用于同一个 Host。FileSession 是唯一 transcript 真相；`chat.snapshot` 只返回指定 Session 的有界展示项、偏好、Plan 与恢复点，`chat.history` 按修订号分块传送完整权威 items，两者都不切换当前 Session。SQLite Event/Run 只做可靠控制面和 Activity，不再拼装第二份聊天记录。Doctor 额外聚合 SQLite/WAL/SHM、Memory 和 Daemon 日志的容量阈值；安全重启在旧进程退出后轮转超限日志并保留固定五代。`daemon diagnostics` 使用显式白名单生成 `0600` JSON：Connector 只保留 readiness 计数，health 只保留风险代码和 backlog，文件只保留大小与时间，绝不序列化 Event/Outbox/Session/Run/Memory 正文、target、凭证、Connector 参数或本机路径。
 
-Daemon 启动前经过一个幂等 bootstrap，而不是额外安装服务：首次运行从发布包 Connector catalog 物化绝对 Node/脚本路径，创建 `0700` 数据目录、原子且稳定的 `0600` control bearer、`0600` 配置和 SQLite 数据库。Darwin 本机 Connector 默认启用，凭证型外部来源保持待配置；QQ/微信 UI 自动化不属于默认集合。升级现有配置时只补缺失的默认 enabled 本机 Connector，不加入模板中默认关闭的外部通道。对同 ID、canonical packaged script 路径/文件身份一致且未关闭 `syncTemplateActions` 的现有 Connector 合并缺失 action；`macos-system` 也只有满足该身份校验时才迁移精确旧 provenance。其他 owner 的 enabled、执行路径、环境、来源、超时和已有描述均保持不变，且无变更时不写文件。Detached 与 launchd 启动复用同一个非敏感环境构造器，保持 workspace、状态目录、Skills、MCP、permission 和运行限制一致；Daemon status 返回实际 permission，CLI 会和本地解析值一起核对。正常 `mimi` 连接也会轻量核对 supervisor：持久 Key 就绪且后台空闲时把 detached worker 安全迁移到 launchd，忙碌时继续复用并延后。协议过期或 permission 不一致的同工作区后台只有在 Event、Outbox 和 Host mutation 全部空闲时才会被替换；launchd 立即拉起的旧 plist 实例也会在重装 supervisor 前再次核对。首次解析的 env 文件路径会固化为绝对路径，API Key 等秘密仍只来自进程环境或该受保护 env 文件。安装 launchd 前必须确认所选 Provider Key 确实存在于该持久 env 文件，避免当前 Shell 可用而登录重启后循环失败。Doctor 复用同一 schema 做只读静态检查和短时认证 Unix Socket status，不拉起 Connector、不探测私人数据库、不会输出 control bearer，也不触发系统权限。
+Daemon 启动前经过一个幂等 bootstrap，而不是额外安装服务：首次运行从发布包 Connector catalog 物化绝对 Node/脚本路径，创建 `0700` 数据目录、原子且稳定的 `0600` control bearer、`0600` 配置和 SQLite 数据库。Darwin 本机 Connector 默认启用，凭证型外部来源保持待配置；QQ/微信 UI 自动化不属于默认集合。升级现有配置时补缺失的默认 enabled 本机 Connector，并通过单独版本门只补一次三个 disabled 个人消息槽位；迁移完成后 owner 删除槽位不会被后续启动恢复。其他模板中默认关闭的外部通道仍不补入。对同 ID、canonical packaged script 路径/文件身份一致且未关闭 `syncTemplateActions` 的现有 Connector 合并缺失 action；`macos-system` 也只有满足该身份校验时才迁移精确旧 provenance。其他 owner 的 enabled、执行路径、环境、来源、超时和已有描述均保持不变，且无变更时不写文件。Detached 与 launchd 启动复用同一个非敏感环境构造器，保持 workspace、状态目录、Skills、MCP、permission 和运行限制一致；Daemon status 返回实际 permission，CLI 会和本地解析值一起核对。正常 `mimi` 连接也会轻量核对 supervisor：持久 Key 就绪且后台空闲时把 detached worker 安全迁移到 launchd，忙碌时继续复用并延后。协议过期或 permission 不一致的同工作区后台只有在 Event、Outbox 和 Host mutation 全部空闲时才会被替换；launchd 立即拉起的旧 plist 实例也会在重装 supervisor 前再次核对。首次解析的 env 文件路径会固化为绝对路径，API Key 等秘密仍只来自进程环境或该受保护 env 文件。安装 launchd 前必须确认所选 Provider Key 确实存在于该持久 env 文件，避免当前 Shell 可用而登录重启后循环失败。Doctor 复用同一 schema 做只读静态检查和短时认证 Unix Socket status，不拉起 Connector、不探测私人数据库、不会输出 control bearer，也不触发系统权限。
 
 恢复备份是独立于数据库迁移备份的用户运维边界。在线备份使用 SQLite Backup API，不直接复制活动 WAL；其余原子 JSON、Session、Memory Wiki、Trace 与配置按显式 allowlist 复制，control bearer、Socket、日志和临时 Computer 产物排除。完成标记 `manifest.json` 最后写入，逐文件记录大小和 SHA-256，并要求备份数据库通过 `integrity_check`。校验拒绝缺失、多余、篡改或符号链接文件。恢复仅对离线且不存在的数据根开放，先在同一父目录 staging、复验数据库，再以目录 rename 提交；不覆盖已有状态、不带回旧 IPC 身份，适用于空白环境恢复演练。
 

@@ -275,6 +275,31 @@ export class MimiStore {
     return this.eventStore.get(id);
   }
 
+  latestCompletedPersonalMessageEventForSession(
+    sessionKey: string,
+    before: Date,
+    maxAgeMs = 10 * 60_000,
+  ): ImmutableEvent | undefined {
+    const row = this.database.prepare(`
+      SELECT events.id
+      FROM tasks
+      JOIN events ON events.id = tasks.authority_event_id
+      WHERE tasks.session_key = ?
+        AND tasks.status = 'completed'
+        AND events.source LIKE 'personal-message:%'
+        AND events.received_at <= ?
+      ORDER BY tasks.updated_at DESC, events.received_at DESC, events.id DESC
+      LIMIT 1
+    `).get(sessionKey, before.toISOString()) as Row | undefined;
+    const id = row?.id;
+    if (typeof id !== 'string') return undefined;
+    const event = this.eventStore.get(id);
+    if (!event) return undefined;
+    const receivedAt = Date.parse(event.receivedAt);
+    if (!Number.isFinite(receivedAt) || before.getTime() - receivedAt > maxAgeMs) return undefined;
+    return event;
+  }
+
   listImmutableEvents(limit = 50): ImmutableEvent[] {
     return this.eventStore.list(managementLimit(limit));
   }

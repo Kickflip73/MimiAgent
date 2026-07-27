@@ -9,6 +9,7 @@ import path from 'node:path';
 import { codeInterpreterTool, tool, webSearchTool } from '@openai/agents';
 import { Agent as HttpAgent, fetch } from 'undici';
 import { z } from 'zod';
+import { DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES } from './core/execution-ledger.js';
 import { PRE_MIMI_DATA_DIRECTORY } from './core/mimi-legacy.js';
 import { withExclusiveFileLock } from './core/state-file.js';
 import { diagnoseWrittenFiles } from './runtime/file-diagnostics.js';
@@ -145,6 +146,37 @@ function sandboxProfile(protectedPaths: string[]): string {
 function truncate(value: string, limit = MAX_SHELL_OUTPUT): string {
   if (value.length <= limit) return value;
   return `${value.slice(0, limit)}\n...[输出已截断，共 ${value.length} 字符]`;
+}
+
+function boundShellResult(
+  result: { exitCode: number; stdout: string; stderr: string },
+): { exitCode: number; stdout: string; stderr: string } {
+  const serializedBytes = (candidate: typeof result): number =>
+    Buffer.byteLength(JSON.stringify([candidate]), 'utf8');
+  if (serializedBytes(result) <= DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES) return result;
+
+  let lower = 0;
+  let upper = Math.max(result.stdout.length, result.stderr.length) - 1;
+  let bounded = {
+    ...result,
+    stdout: truncate(result.stdout, 0),
+    stderr: truncate(result.stderr, 0),
+  };
+  while (lower <= upper) {
+    const limit = Math.floor((lower + upper) / 2);
+    const candidate = {
+      ...result,
+      stdout: truncate(result.stdout, limit),
+      stderr: truncate(result.stderr, limit),
+    };
+    if (serializedBytes(candidate) <= DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES) {
+      bounded = candidate;
+      lower = limit + 1;
+    } else {
+      upper = limit - 1;
+    }
+  }
+  return bounded;
 }
 
 export async function readLocalFile(
@@ -1082,11 +1114,11 @@ export async function runShellCommand(
       signal?.removeEventListener('abort', abort);
       const stdout = Buffer.concat(stdoutChunks).toString('utf8');
       const stderr = Buffer.concat(stderrChunks).toString('utf8');
-      resolve({
+      resolve(boundShellResult({
         exitCode: terminating || spawnError ? 1 : (closeCode ?? 1),
         stdout: truncate(stdout),
         stderr: truncate([stderr, terminationMessage, spawnError?.message].filter(Boolean).join('\n')),
-      });
+      }));
     };
 
     const kill = (force = false): boolean => {

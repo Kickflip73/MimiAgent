@@ -122,9 +122,7 @@ export function renderSessionTranscript(items: AgentInputItem[], tty = true): st
 }
 
 export function renderAssistantAnswer(value: string, tty = true): string {
-  const state = { code: false };
-  const answer = value.replace(/\x1b/g, '').trim().split(/\r?\n/)
-    .map((line) => renderMarkdownLine(line, tty, state)).join('\n');
+  const answer = renderMarkdownText(value.replace(/\x1b/g, '').trim(), tty);
   return `${badge('answer', tty)}\n${answer}`;
 }
 
@@ -255,6 +253,134 @@ function inlineMarkdown(text: string, tty: boolean): string {
   return value;
 }
 
+type TableAlignment = 'left' | 'center' | 'right';
+
+interface MarkdownTable {
+  rows: string[][];
+  alignments: TableAlignment[];
+}
+
+function parseTableRow(source: string): string[] | undefined {
+  let line = source.trim();
+  if (!line.includes('|')) return undefined;
+  if (line.startsWith('|')) line = line.slice(1);
+  if (line.endsWith('|') && !line.endsWith('\\|')) line = line.slice(0, -1);
+
+  const cells: string[] = [];
+  let cell = '';
+  let escaped = false;
+  for (const character of line) {
+    if (escaped) {
+      cell += character;
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      cell += character;
+      continue;
+    }
+    if (character === '|') {
+      cells.push(cell.trim());
+      cell = '';
+      continue;
+    }
+    cell += character;
+  }
+  cells.push(cell.trim());
+  return cells.length >= 2 ? cells : undefined;
+}
+
+function parseTableDivider(source: string): TableAlignment[] | undefined {
+  const cells = parseTableRow(source);
+  if (!cells || !cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s/g, '')))) return undefined;
+  return cells.map((cell) => {
+    const marker = cell.replace(/\s/g, '');
+    if (marker.startsWith(':') && marker.endsWith(':')) return 'center';
+    return marker.endsWith(':') ? 'right' : 'left';
+  });
+}
+
+function terminalWidth(value: string): number {
+  const plain = value.replace(/\x1b\[[0-9;]*m/g, '');
+  let width = 0;
+  for (const character of plain) {
+    const code = character.codePointAt(0) ?? 0;
+    width += code >= 0x1100 && (
+      code <= 0x115f
+      || code === 0x2329
+      || code === 0x232a
+      || (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f)
+      || (code >= 0xac00 && code <= 0xd7a3)
+      || (code >= 0xf900 && code <= 0xfaff)
+      || (code >= 0xfe10 && code <= 0xfe19)
+      || (code >= 0xfe30 && code <= 0xfe6f)
+      || (code >= 0xff00 && code <= 0xff60)
+      || (code >= 0xffe0 && code <= 0xffe6)
+      || (code >= 0x1f300 && code <= 0x1faff)
+    ) ? 2 : 1;
+  }
+  return width;
+}
+
+function padTableCell(value: string, width: number, alignment: TableAlignment): string {
+  const remaining = Math.max(0, width - terminalWidth(value));
+  if (alignment === 'right') return `${' '.repeat(remaining)}${value}`;
+  if (alignment === 'center') {
+    const left = Math.floor(remaining / 2);
+    return `${' '.repeat(left)}${value}${' '.repeat(remaining - left)}`;
+  }
+  return `${value}${' '.repeat(remaining)}`;
+}
+
+function renderMarkdownTable(table: MarkdownTable, tty: boolean): string {
+  const renderedRows = table.rows.map((row) => row.map((cell) => inlineMarkdown(cell, tty)));
+  const widths = table.alignments.map((_, index) =>
+    Math.max(1, ...renderedRows.map((row) => terminalWidth(row[index] ?? ''))),
+  );
+  const border = (left: string, middle: string, right: string) =>
+    `${left}${widths.map((width) => '─'.repeat(width + 2)).join(middle)}${right}`;
+  const row = (cells: string[], header = false) => {
+    const content = cells.map((cell, index) => {
+      const value = header && tty ? `${ansi.bold}${cell}${ansi.reset}` : cell;
+      return ` ${padTableCell(value, widths[index]!, table.alignments[index]!)} `;
+    });
+    return `│${content.join('│')}│`;
+  };
+  return [
+    border('┌', '┬', '┐'),
+    row(renderedRows[0] ?? [], true),
+    border('├', '┼', '┤'),
+    ...renderedRows.slice(1).map((cells) => row(cells)),
+    border('└', '┴', '┘'),
+  ].join('\n');
+}
+
+function renderMarkdownText(source: string, tty: boolean): string {
+  const lines = source.split(/\r?\n/);
+  const state = { code: false };
+  const rendered: string[] = [];
+  for (let index = 0; index < lines.length;) {
+    const header = parseTableRow(lines[index] ?? '');
+    const alignments = parseTableDivider(lines[index + 1] ?? '');
+    if (!state.code && header && alignments && header.length === alignments.length) {
+      const rows = [header];
+      index += 2;
+      while (index < lines.length) {
+        const cells = parseTableRow(lines[index] ?? '');
+        if (!cells || cells.length !== header.length) break;
+        rows.push(cells);
+        index += 1;
+      }
+      rendered.push(renderMarkdownTable({ rows, alignments }, tty));
+      continue;
+    }
+    rendered.push(renderMarkdownLine(lines[index] ?? '', tty, state));
+    index += 1;
+  }
+  return rendered.join('\n');
+}
+
 export function renderMarkdownLine(
   source: string,
   tty = true,
@@ -307,6 +433,8 @@ class MarkdownStream {
   private timer?: NodeJS.Timeout;
   private previousBlank = false;
   private partialLineOpen = false;
+  private pendingTableHeader?: string;
+  private table?: MarkdownTable;
 
   constructor(
     private readonly output: Writable,
@@ -326,11 +454,7 @@ class MarkdownStream {
         newline = this.buffer.indexOf('\n');
         continue;
       }
-      const blank = line.trim() === '';
-      if (!blank || !this.previousBlank) {
-        this.output.write(`${renderMarkdownLine(line, this.tty, this.state)}\n`);
-      }
-      this.previousBlank = blank;
+      this.writeCompleteLine(line);
       newline = this.buffer.indexOf('\n');
     }
     this.scheduleFlush();
@@ -340,14 +464,17 @@ class MarkdownStream {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     if (!this.buffer) {
-      const wrotePartial = this.partialLineOpen;
+      const wrotePartial = this.partialLineOpen || this.flushPendingTable();
       this.partialLineOpen = false;
       this.previousBlank = false;
       return wrotePartial;
     }
-    this.output.write(this.partialLineOpen
-      ? this.renderContinuation(this.buffer)
-      : renderMarkdownLine(this.buffer, this.tty, this.state));
+    if (this.partialLineOpen) {
+      this.output.write(this.renderContinuation(this.buffer));
+    } else {
+      this.writeCompleteLine(this.buffer, false);
+      this.flushPendingTable(false);
+    }
     this.buffer = '';
     this.partialLineOpen = false;
     this.previousBlank = false;
@@ -375,6 +502,7 @@ class MarkdownStream {
     const trimmed = this.buffer.trim();
     if (!trimmed) return false;
     if (/^#{1,6}$/.test(trimmed) || trimmed.startsWith('```')) return false;
+    if (parseTableRow(this.buffer) || parseTableDivider(this.buffer)) return false;
     const boldMarkers = (this.buffer.match(/\*\*/g) ?? []).length;
     const codeMarkers = (this.buffer.match(/(?<!`)`(?!`)/g) ?? []).length;
     return boldMarkers % 2 === 0 && codeMarkers % 2 === 0;
@@ -384,6 +512,58 @@ class MarkdownStream {
     const clean = value.replace(/\x1b/g, '');
     if (this.state.code) return this.tty ? `${ansi.gray}${clean}${ansi.reset}` : clean;
     return inlineMarkdown(clean, this.tty);
+  }
+
+  private writeCompleteLine(line: string, newline = true): void {
+    if (this.table) {
+      const cells = parseTableRow(line);
+      if (cells?.length === this.table.alignments.length) {
+        this.table.rows.push(cells);
+        return;
+      }
+      this.flushPendingTable();
+    }
+
+    if (this.pendingTableHeader !== undefined) {
+      const header = parseTableRow(this.pendingTableHeader);
+      const alignments = parseTableDivider(line);
+      if (header && alignments && header.length === alignments.length) {
+        this.table = { rows: [header], alignments };
+        this.pendingTableHeader = undefined;
+        return;
+      }
+      this.emitLine(this.pendingTableHeader);
+      this.pendingTableHeader = undefined;
+    }
+
+    if (!this.state.code && parseTableRow(line) && !parseTableDivider(line)) {
+      this.pendingTableHeader = line;
+      return;
+    }
+    this.emitLine(line, newline);
+  }
+
+  private emitLine(line: string, newline = true): void {
+    const blank = line.trim() === '';
+    if (!blank || !this.previousBlank) {
+      this.output.write(`${renderMarkdownLine(line, this.tty, this.state)}${newline ? '\n' : ''}`);
+    }
+    this.previousBlank = blank;
+  }
+
+  private flushPendingTable(newline = true): boolean {
+    if (this.table) {
+      this.output.write(`${renderMarkdownTable(this.table, this.tty)}${newline ? '\n' : ''}`);
+      this.table = undefined;
+      this.previousBlank = false;
+      return true;
+    }
+    if (this.pendingTableHeader !== undefined) {
+      this.emitLine(this.pendingTableHeader, newline);
+      this.pendingTableHeader = undefined;
+      return true;
+    }
+    return false;
   }
 }
 

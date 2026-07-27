@@ -6,6 +6,10 @@ import path from 'node:path';
 import test from 'node:test';
 import { RunContext } from '@openai/agents';
 import {
+  DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES,
+  ExecutionLedger,
+} from '../src/core/execution-ledger.js';
+import {
   applyLocalPatch,
   createTools,
   editLocalFile,
@@ -203,6 +207,43 @@ test('Shell uses an explicitly isolated environment when provided', async () => 
   });
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout, 'yes:');
+});
+
+test('Shell bounds its combined result to the execution ledger output limit', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-ledger-output-'));
+  const ledger = new ExecutionLedger(path.join(root, 'execution-ledger.json'));
+  let executions = 0;
+  const call = {
+    sessionId: 'demo',
+    runId: 'run-shell-output',
+    toolName: 'run_shell',
+    callId: 'shell-1',
+    argumentsJson: '{"command":"large-output"}',
+  };
+  const execute = () => ledger.executeOnce(call, async () => {
+    executions += 1;
+    return runShellCommand(
+      root,
+      `${JSON.stringify(process.execPath)} -e "process.stdout.write('x'.repeat(100000)); process.stderr.write('y'.repeat(100000))"`,
+      5,
+    );
+  });
+  const result = await execute();
+  const replay = await new ExecutionLedger(path.join(root, 'execution-ledger.json'))
+    .executeOnce(call, async () => {
+      executions += 1;
+      throw new Error('successful Shell output must replay from the ledger');
+    });
+
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /输出已截断/);
+  assert.match(result.stderr, /输出已截断/);
+  assert.ok(
+    Buffer.byteLength(JSON.stringify([result]), 'utf8')
+      <= DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES,
+  );
+  assert.deepEqual(replay, result);
+  assert.equal(executions, 1);
 });
 
 test('Shell rejects commands that intentionally detach work from MimiAgent ownership', async () => {

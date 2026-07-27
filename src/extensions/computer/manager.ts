@@ -64,6 +64,7 @@ function hasAccess(actual: ComputerAccess, required: ComputerAccess): boolean {
 function actionCoordinates(action: ComputerActInput['action']): Array<{ x: number; y: number }> {
   if (action.type === 'click' && action.x !== undefined && action.y !== undefined) return [{ x: action.x, y: action.y }];
   if (action.type === 'double_click' && action.x !== undefined && action.y !== undefined) return [{ x: action.x, y: action.y }];
+  if (action.type === 'type_text' && action.x !== undefined && action.y !== undefined) return [{ x: action.x, y: action.y }];
   if (action.type === 'scroll' && action.x !== undefined && action.y !== undefined) return [{ x: action.x, y: action.y }];
   if (action.type === 'drag') return action.path;
   return [];
@@ -240,6 +241,11 @@ export class ComputerManager {
         const applied = await this.backend.act(run.session!, {
           input: backendInput, target, element, fromZoom: observation?.fromZoom, artifactPath,
         }, signal);
+        if (requiredAccess === 'background' && applied.delivery === 'foreground') {
+          throw new ComputerActionUncertainError(
+            'foreground_violation：驱动把后台动作升级为前台投递，停止后续动作',
+          );
+        }
         if (target && requiredAccess === 'background') {
           const after = await this.backend.listTargets({ query: target.bundleId, limit: 50 }, signal);
           const fresh = after.find((candidate) => candidate.pid === target.pid && candidate.windowId === target.windowId);

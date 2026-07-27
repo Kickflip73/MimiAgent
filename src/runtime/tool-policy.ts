@@ -54,6 +54,8 @@ const TOOL_DESCRIPTOR_DEFINITIONS = {
   set_mimi_connector_enabled: { capabilities: ['state-write'], sideEffect: true },
   reload_mimi_connectors: { capabilities: ['state-write'], sideEffect: true },
   connector_action: { capabilities: ['state-write'], sideEffect: true },
+  get_personal_message_context: { capabilities: ['state-read'], modes: ALL_MODES },
+  send_personal_message: { capabilities: ['state-write'], sideEffect: true },
   memory_search: { capabilities: ['memory-read'], modes: ALL_MODES },
   memory_read: { capabilities: ['memory-read'], modes: ALL_MODES },
   memory_links: { capabilities: ['memory-read'], modes: ALL_MODES },
