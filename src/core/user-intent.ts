@@ -13,6 +13,8 @@ export function capabilityDisclosureForInput(input: string): UserCapabilityDiscl
   const compound = /(?:然后|并且|同时|接着|之后|再(?:去|来|把|帮|继续|修改|修复)|[,，;；]|\b(?:and|then|also)\b)/iu.test(value);
   const sessionIntent = explicitlyRequestsSessionAccess(value) || explicitlyRequestsSessionClear(value)
     || /(?:切换|更换|选择).{0,12}(?:模型|模式)|(?:模型|模式|输出等级).{0,12}(?:切换|更换|选择|调整)|(?:当前|现在|正在).{0,8}(?:使用|用的)?(?:模型|模式)|你.{0,8}用.{0,8}(?:模型|模式)|\b(?:switch|change|select|current).{0,16}(?:model|mode)|\/(?:model|mode|output)\b/iu.test(value);
+  const contextualFollowUp = /(?:上次|之前|刚才|先前|以前|曾经|earlier|previous|last time).{0,40}(?:咋样了|怎么样了|进度|状态|完成了没|完成了吗|好了吗|到哪了|going|progress|status)/iu.test(value);
+  if (contextualFollowUp) return 'full';
   const statusIntent = value.length <= 80 && (
     /(?:咋样了|怎么样了|开始了没|开始了吗|完成了没|完成了吗|好了吗|到哪了|什么状态|还在.{0,8}吗|进度.{0,8}(?:呢|如何|怎样|怎么样|咋样|多少|到哪)|how(?:'s| is).{0,16}going)\s*[?？!！。]*$/iu.test(value)
     || /^(?:(?:请|帮我)?(?:列出|查看|看看|查下)?\s*)?(?:当前|最近|所有)?(?:后台)?任务(?:列表|状态)?\s*[?？!！。]*$/iu.test(value)

@@ -71,12 +71,18 @@ try {
     access(path.join(packageRoot, 'mimi.connectors.example.json')),
   ]);
   const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+  const skillsManifest = JSON.parse(
+    await readFile(path.join(packageRoot, 'skills', 'manifest.json'), 'utf8'),
+  );
   const apiContract = JSON.parse(
     await readFile(path.join(packageRoot, 'evals', 'public-api-contract.json'), 'utf8'),
   );
   assert.equal(manifest.name, 'mimi-agent');
   assert.equal(apiContract.packageVersion, manifest.version);
   assert.deepEqual(manifest.bin, { mimi: 'dist/index.js' });
+  for (const skill of skillsManifest.skills.filter((candidate) => candidate.published)) {
+    await access(path.join(packageRoot, 'skills', skill.name, 'SKILL.md'));
+  }
   assert.deepEqual(await readdir(path.join(packageRoot, 'knowledge')), ['mimi-agent.md']);
   const cliTarget = path.join(packageRoot, manifest.bin.mimi);
   let cliCommand = process.execPath;

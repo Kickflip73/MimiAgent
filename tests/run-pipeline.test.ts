@@ -141,6 +141,7 @@ test('state loader skips every unauthorized source', async () => {
     loadSoul: denied,
     loadProjectGuidance: denied,
     loadArchive: denied,
+    loadActiveSkills: denied,
   });
   const state = await loader.load({
     canReadLocal: false,

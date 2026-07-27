@@ -69,6 +69,25 @@ export interface SessionPreferences {
   outputLevel?: string;
 }
 
+export type ActivatedSkillSourceId =
+  | 'configured'
+  | 'project-native'
+  | 'project-shared'
+  | 'user-native'
+  | 'user-shared'
+  | 'builtin';
+
+export interface ActivatedSkill {
+  name: string;
+  sourceId: ActivatedSkillSourceId;
+  file: string;
+  contentHash: string;
+  activatedAt: string;
+  updatedAt: string;
+}
+
+export type SkillActivationStatus = 'activated' | 'updated' | 'already_active' | 'stale_run';
+
 interface SessionFile {
   id: string;
   createdAt: string;
@@ -77,6 +96,7 @@ interface SessionFile {
   checkpoint?: RunCheckpoint;
   contextArchive?: ContextArchive;
   preferences?: SessionPreferences;
+  activeSkills?: ActivatedSkill[];
 }
 
 const sessionFileSchema = z.object({
@@ -121,6 +141,21 @@ const sessionFileSchema = z.object({
     model: z.string().optional(),
     outputLevel: z.string().optional(),
   }).optional(),
+  activeSkills: z.array(z.object({
+    name: z.string().min(1),
+    sourceId: z.enum([
+      'configured',
+      'project-native',
+      'project-shared',
+      'user-native',
+      'user-shared',
+      'builtin',
+    ]),
+    file: z.string().min(1),
+    contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    activatedAt: z.string(),
+    updatedAt: z.string(),
+  }).strict()).optional(),
 });
 
 function decodeSessionFile(value: unknown): SessionFile {
@@ -506,6 +541,59 @@ export class FileSession implements Session {
     return { ...(await this.load()).preferences };
   }
 
+  async getActiveSkills(): Promise<ActivatedSkill[]> {
+    return (await this.load()).activeSkills?.map((skill) => ({ ...skill })) ?? [];
+  }
+
+  async activateSkill(
+    record: Omit<ActivatedSkill, 'activatedAt' | 'updatedAt'>
+      & Partial<Pick<ActivatedSkill, 'activatedAt' | 'updatedAt'>>,
+    expectedRunId?: string,
+  ): Promise<SkillActivationStatus> {
+    return this.mutateWhen((session) => {
+      if (expectedRunId && (
+        session.checkpoint?.status !== 'running'
+        || session.checkpoint.runId !== expectedRunId
+      )) {
+        return { result: 'stale_run' as const, changed: false };
+      }
+      const active = session.activeSkills ?? [];
+      const index = active.findIndex((skill) => skill.name === record.name);
+      const previous = index >= 0 ? active[index] : undefined;
+      if (previous
+        && previous.file === record.file
+        && previous.contentHash === record.contentHash
+        && previous.sourceId === record.sourceId) {
+        return { result: 'already_active' as const, changed: false };
+      }
+      const now = new Date().toISOString();
+      const next: ActivatedSkill = {
+        name: record.name,
+        sourceId: record.sourceId,
+        file: record.file,
+        contentHash: record.contentHash,
+        activatedAt: previous?.activatedAt ?? record.activatedAt ?? now,
+        updatedAt: record.updatedAt ?? now,
+      };
+      if (index >= 0) active[index] = next;
+      else active.push(next);
+      session.activeSkills = active;
+      session.updatedAt = now;
+      return { result: previous ? 'updated' as const : 'activated' as const, changed: true };
+    });
+  }
+
+  async deactivateSkill(name: string): Promise<boolean> {
+    return this.mutateWhen((session) => {
+      const active = session.activeSkills ?? [];
+      const next = active.filter((skill) => skill.name !== name);
+      if (next.length === active.length) return { result: false, changed: false };
+      session.activeSkills = next;
+      session.updatedAt = new Date().toISOString();
+      return { result: true, changed: true };
+    });
+  }
+
   async setPreferences(preferences: Partial<SessionPreferences>): Promise<void> {
     await this.mutate((session) => {
       session.preferences = { ...session.preferences, ...preferences };
@@ -530,6 +618,7 @@ export class FileSession implements Session {
       session.items = [];
       session.checkpoint = undefined;
       session.contextArchive = undefined;
+      session.activeSkills = [];
       session.updatedAt = new Date().toISOString();
     });
   }

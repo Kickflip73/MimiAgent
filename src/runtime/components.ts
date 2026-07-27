@@ -1,4 +1,5 @@
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import OpenAI from 'openai';
 import { preferredEnvironmentValue, type AppConfig } from '../config.js';
@@ -7,7 +8,7 @@ import { ProjectGuidanceLoader, SoulLoader } from '../core/guidance.js';
 import type { MemoryHub } from '../core/memory.js';
 import { isMcpConfigurationTrusted, MCPManager } from '../extensions/mcp.js';
 import { createRoutedMemoryHub } from '../extensions/memory/hub.js';
-import { SkillLoader } from '../extensions/skills.js';
+import { SkillLoader, type SkillSource } from '../extensions/skills.js';
 import { ComputerManager } from '../extensions/computer/manager.js';
 import { CuaDriverClient } from '../extensions/computer/cua-driver-client.js';
 import { createModel, type ModelRuntime } from './model.js';
@@ -26,6 +27,52 @@ export interface RuntimeComponents {
   computer?: ComputerManager;
 }
 
+export function skillSources(config: AppConfig, homeDirectory = os.homedir()): SkillSource[] {
+  const projectNative = path.join(config.workspaceRoot, 'skills');
+  const configured = config.skillsRootConfigured === true
+    || path.resolve(config.skillsRoot) !== path.resolve(projectNative);
+  const builtinRoot = path.resolve(fileURLToPath(new URL('../../skills/', import.meta.url)));
+  return [
+    ...(configured ? [{
+      id: 'configured' as const,
+      scope: 'configured' as const,
+      root: config.skillsRoot,
+      precedence: 0,
+    }] : []),
+    {
+      id: 'project-native',
+      scope: 'project',
+      root: projectNative,
+      precedence: 1,
+    },
+    {
+      id: 'project-shared',
+      scope: 'project',
+      root: path.join(config.workspaceRoot, '.agents', 'skills'),
+      precedence: 2,
+    },
+    {
+      id: 'user-native',
+      scope: 'user',
+      root: path.join(homeDirectory, '.mimi-agent', 'skills'),
+      precedence: 3,
+    },
+    {
+      id: 'user-shared',
+      scope: 'user',
+      root: path.join(homeDirectory, '.agents', 'skills'),
+      precedence: 4,
+    },
+    {
+      id: 'builtin',
+      scope: 'builtin',
+      root: builtinRoot,
+      precedence: 5,
+      manifest: path.join(builtinRoot, 'manifest.json'),
+    },
+  ];
+}
+
 export async function createRuntimeComponents(
   config: AppConfig,
   requestedSessionId?: string,
@@ -42,7 +89,7 @@ export async function createRuntimeComponents(
   const sessionId = requestedSessionId
     ?? preferredEnvironmentValue('MIMI_SESSION', 'AGENT_SESSION')
     ?? 'default';
-  const skills = new SkillLoader(config.skillsRoot);
+  const skills = new SkillLoader(skillSources(config));
   const mcpTrusted = await isMcpConfigurationTrusted(
     config.mcpConfig,
     config.workspaceRoot,

@@ -170,7 +170,7 @@ Schema v7 在 v6 历史保留索引之上增加旧 Event 执行字段；v8 增�
 
 MimiAgent Event 获得一个只读运行自省 Host Tool 与四个 Schedule Host Tool。`inspect_mimi_activity` 直接从 Store 生成有界快照，包括 counts、积压、dead letter、Digest/Schedule 数量及近期 Event/Run/Outbox/Audit 元数据，不返回其他事务正文、答案、投递内容或 target。Schedule Tools 用于创建一次性 follow-up、周期 routine、查询和取消计划；新计划保留发起事件的 origin Session、profile、trust provenance、reply route 和不可变 Conversation authority root。到期 occurrence 总是进入独立 `mimi-task-*` Session 与 Task lane，由 OS worker 执行，不占用来源 Conversation actor；Task 每次从 durable root 与当前 source policy 重新计算权限。owner/system 的本机 CLI 计划使用可审计的合成 root；外部来源缺根、根被删除或 provenance 不匹配时失败关闭且不发出新 Task。撤销外部 work policy 后，一次性 follow-up 只能受限收尾，interval/watch 只获得绑定当前 authentic occurrence 的 `complete_current_mimi_schedule` 以停止轮询，伪造 occurrence 不获得该工具。非 command Event 额外获得 `finish_mimi_silently`：它只修改当前 attempt 的内存 DeliveryControl，成功提交时把 suppression reason 放入 Event result 并省略 Outbox；直接 command 没有该工具，失败/重试也不继承状态。所有能力继续位于同一个事务语境，不引入 RPC 回环或工作流引擎；创建/取消工具进入事件级语义账本，重试不会重复建立计划，静默控制不是外部副作用且不进入 ledger。
 
-最终工具集取 `mode capability ∩ security profile ∩ local deployment permission ∩ event policy`。新安装的认证本机 owner 默认使用 `safe/read-only`；`workstation/workspace` 允许工作区写入和显式 Connector 事务但不开放 Shell、Computer Use 或受信工作区 MCP，只有 `full-owner/trusted` 直接使用当前 OS 用户权限。交互式启动横幅始终显示有效安全档位，`/security` 用同一权威 profile catalog 展示四类高风险能力及持久环境切换方式；它是非阻塞 onboarding，只解释和收敛权限，不自动升级授权。直接 Conversation 仍按当前输入渐进披露工具：进度、Session 管理、实时查询和普通问答分别获得经过 Host 白名单校验的小型工具集，明确的文件、代码、桌面、外部事务、记忆或复杂执行请求才装载完整能力；分类不确定时只在有效安全档位内提供完整能力。高置信度进度问询由可信 Host 从有界 Session、Plan、Goal 和后台任务状态直接生成答案并照常持久化，不启动模型或工具循环。未披露 Skill 工具时不注入 Skill Catalog，聚焦 owner 请求将历史预算限制为 8000 tokens、输出预留限制为 4096 tokens，且不触发自动语义记忆检索或写入 Episode。该分类只收窄当轮模型可见面，不扩大授权，也不建立绕过 ExecutionLedger 的通用调用器。已配置的 Connector Host Tools 继续经过 profile/mode/event policy；受信工作区 MCP 只允许 Full Owner 显式配置。外部事件默认禁用 Session/Memory、本地文件、Shell、MCP、未知工具和外部写事务。命中 owner source policy 后使用固定 `reply | work` 档位，旧配置默认 `reply`，多个匹配取最高档：`reply` 只有时间、计算、当前 Session 有界活动与投递控制，不能调用 Shell、文件写、任意写网络、Connector action、后台委派或 Team；`work` 才获得原静态工作 allowlist，但仍不能读写 Runtime/Attention/People/Standing Order/Connector 配置、写 Memory、管理任意既有后台任务或调用未知 MCP。Task 的 `workspaceAccess=read` 再与来源权限相交，形成固定只读研究/checkpoint 工具集。
+最终工具集取 `mode capability ∩ security profile ∩ local deployment permission ∩ event policy`。新安装的认证本机 owner 默认使用 `safe/read-only`；`workstation/workspace` 允许工作区写入和显式 Connector 事务但不开放 Shell、Computer Use 或受信工作区 MCP，只有 `full-owner/trusted` 直接使用当前 OS 用户权限。交互式启动横幅始终显示有效安全档位，`/security` 用同一权威 profile catalog 展示四类高风险能力及持久环境切换方式；它是非阻塞 onboarding，只解释和收敛权限，不自动升级授权。直接 Conversation 仍按当前输入渐进披露工具：进度、Session 管理、实时查询和普通问答分别获得经过 Host 白名单校验的小型工具集，明确的文件、代码、桌面、外部事务、记忆或复杂执行请求才装载完整能力；分类不确定时只在有效安全档位内提供完整能力。进度与后台任务问询仍进入模型，模型可读取当前 Session 上下文，并仅通过 `list_background_tasks`、`inspect_background_task` 查询后台状态；提及上次、之前或刚才具体工作的追问按完整请求处理，不由关键词规则拼接 Host 状态或最近一次结果。未披露 Skill 工具时不注入 Skill Catalog，聚焦 owner 请求将历史预算限制为 8000 tokens、输出预留限制为 4096 tokens，且不触发自动语义记忆检索或写入 Episode。该分类只收窄当轮模型可见面，不扩大授权，也不建立绕过 ExecutionLedger 的通用调用器。已配置的 Connector Host Tools 继续经过 profile/mode/event policy；受信工作区 MCP 只允许 Full Owner 显式配置。外部事件默认禁用 Session/Memory、本地文件、Shell、MCP、未知工具和外部写事务。命中 owner source policy 后使用固定 `reply | work` 档位，旧配置默认 `reply`，多个匹配取最高档：`reply` 只有时间、计算、当前 Session 有界活动与投递控制，不能调用 Shell、文件写、任意写网络、Connector action、后台委派或 Team；`work` 才获得原静态工作 allowlist，但仍不能读写 Runtime/Attention/People/Standing Order/Connector 配置、写 Memory、管理任意既有后台任务或调用未知 MCP。Task 的 `workspaceAccess=read` 再与来源权限相交，形成固定只读研究/checkpoint 工具集。
 
 Computer Use 不随 `work` 隐式授予。source policy 还必须显式声明 `computerAccess: observe|background|foreground|admin`，可用 `computerApps` 形成 bundle ID allowlist；多个匹配 policy 的应用列表取交集。所有后台 Task、SubAgent、Team worker、`workspace/read-only` 部署和未授权 Event 固定没有电脑操作能力。
 
@@ -342,15 +342,14 @@ Task Lead 只有确实缺少无法自行取得的必要信息时才调用 `reque
 
 SkillLoader 实现开放 Agent Skills 格式的最小完整客户端流程：
 
-- Skill 可用 `required-tools` 声明不可缺少的运行时 Function Tool。目录披露和激活都以当前 Run 的最终工具集为准；权限、模式、来源策略或可选 Extension 移除依赖后，Skill 必须 fail closed，不能把不可执行说明注入模型。
+- registry 按 `configured → project-native → project-shared → user-native → user-shared → builtin` 扫描固定根的直接子目录。`configured` 是显式 `MIMI_SKILLS_DIR`；project 分别是 `skills` 与 `.agents/skills`，user 分别是 `~/.mimi-agent/skills` 与 `~/.agents/skills`。builtin 从 MimiAgent 模块位置解析，且只接纳自身 `skills/manifest.json` 中 `published: true` 的条目。
+- 来源按优先级、目录按名称确定排序。canonical 文件去重；无效高优先级候选不遮蔽 fallback，有效同名候选只注册 winner 并产生包含双方 source/path 的 shadowed diagnostic。有效注册量限制 200 个、正文总量限制 10MB，达到边界必须诊断。
+- YAML Parser 和 Schema 校验 `name`、`description`。初始目录只披露当前 Run 可用 Skill 的名称、描述、胜出来源与绝对位置；owner 还可在原始输入开头用一个或多个 `$skill-name` 显式激活。解析发生在统一 `MimiAgent.stream()` Run 边界，外部/非 owner 输入保持惰性数据。
+- `FileSession.activeSkills` 保存名称、source、canonical 文件、SHA-256 与时间。相同绑定幂等，同名换源或正文变化必须重新激活；reload 只重建 registry。模型首次 `use_skill` 获得完整正文并写入绑定，重复调用返回 `already_active`；`/skills active` 与 `/skills deactivate` 管理当前 Session。
+- 每轮把当前仍可用且未 stale 的绑定重新解析为完整 `active-skills` host instruction section。`base-instructions` 与 `active-skills` 是 required section，不经过 token 截断；超出 instruction budget 时请求明确失败。Transcript、archive、collapse 与 full compact 不保存或删除这份派生正文。
+- Skill 可用 MimiAgent 扩展字段 `required-tools` 声明不可缺少的 Function Tool。catalog、`$skill`、`use_skill`、恢复注入、`list_skills` 与 `read_skill_resource` 共用 availability evaluator，以本轮最终工具名、`canReadLocal`、绑定和指令预算 fail closed。`allowed-tools` 不参与授权，也不能扩大 ToolPolicy。
 
-1. 扫描 `skills/*/SKILL.md`。
-2. 用 YAML Parser 和 Schema 校验 `name`、`description`。
-3. 只把名称、描述和绝对位置放入初始上下文。
-4. 模型调用 `use_skill` 激活完整说明。
-5. 模型调用 `read_skill_resource` 按需读取 Skill 根目录内资源。
-
-资源读取拒绝绝对路径和目录逃逸，单个文本资源限制为 256KB。无效 Skill 进入 diagnostics，不影响其他 Skill；`/skills reload` 可热重载。
+资源读取要求当前 Session 存在同一份 active binding，且本轮仍 available；随后拒绝绝对路径、目录逃逸和 symlink 逃逸，单个文本资源限制为 256KB。无效 Skill 进入 diagnostics，不影响其他 Skill；`/skills reload` 可热重载 registry。
 
 ## MCP
 

@@ -2,7 +2,7 @@ import type { AgentInputItem } from '@openai/agents';
 import type { GuidanceSnapshot } from '../../core/guidance.js';
 import type { MemoryCard } from '../../core/memory.js';
 import type { Goal, PlanStep } from '../../core/plan.js';
-import type { ContextArchive } from '../../core/session.js';
+import type { ActivatedSkill, ContextArchive } from '../../core/session.js';
 import type { ResolvedCapabilities } from './capability-resolver.js';
 
 export interface RunStateLoaderDependencies {
@@ -15,6 +15,7 @@ export interface RunStateLoaderDependencies {
   loadSoul: () => Promise<GuidanceSnapshot>;
   loadProjectGuidance: () => Promise<GuidanceSnapshot>;
   loadArchive: () => Promise<ContextArchive | undefined>;
+  loadActiveSkills: () => Promise<ActivatedSkill[]>;
 }
 
 export interface RunStateSnapshot {
@@ -26,6 +27,7 @@ export interface RunStateSnapshot {
   readonly soul: Readonly<GuidanceSnapshot>;
   readonly projectGuidance: Readonly<GuidanceSnapshot>;
   readonly storedArchive?: Readonly<ContextArchive>;
+  readonly activeSkills: readonly Readonly<ActivatedSkill>[];
 }
 
 const EMPTY_GUIDANCE: GuidanceSnapshot = Object.freeze({ instructions: '', files: [] });
@@ -47,6 +49,7 @@ export class RunStateLoader {
       soul,
       projectGuidance,
       storedArchive,
+      activeSkills,
     ] = await Promise.all([
       capabilities.canReadMemory ? this.dependencies.hotProfile() : Promise.resolve([]),
       capabilities.canReadMemory ? this.dependencies.searchMemories() : Promise.resolve([]),
@@ -59,6 +62,7 @@ export class RunStateLoader {
         ? this.dependencies.loadProjectGuidance()
         : Promise.resolve(EMPTY_GUIDANCE),
       capabilities.canReadSessionContext ? this.dependencies.loadArchive() : Promise.resolve(undefined),
+      capabilities.canReadSessionContext ? this.dependencies.loadActiveSkills() : Promise.resolve([]),
     ]);
     const memories = [...hotProfile, ...memoryCards]
       .filter((memory, index, all) => all.findIndex((candidate) => (
@@ -74,6 +78,7 @@ export class RunStateLoader {
       soul: Object.freeze(soul),
       projectGuidance: Object.freeze(projectGuidance),
       storedArchive: storedArchive ? Object.freeze({ ...storedArchive }) : undefined,
+      activeSkills: Object.freeze(activeSkills.map((skill) => Object.freeze({ ...skill }))),
     });
   }
 }

@@ -5,7 +5,6 @@ import { MimiHost } from '../runtime/mimi-host.js';
 import type { RuntimeEvent } from '../runtime/hooks.js';
 import { TerminalRunInterruptedError } from '../runtime/run-outcome.js';
 import { CompletionGateError } from '../core/completion.js';
-import { capabilityDisclosureForInput } from '../core/user-intent.js';
 import { NotifierRegistry } from './notifier.js';
 import type { ConnectorTaskRuntime } from './connector-action-tool.js';
 import type { ConnectorManager } from './connectors.js';
@@ -13,8 +12,6 @@ import type { MimiDeliveryControl } from './delivery-tools.js';
 import { OutboxDeliveryCoordinator } from './dispatcher-delivery.js';
 import { AttentionEngine } from './attention.js';
 import { createMimiHostTools } from './host-tools.js';
-import { buildOwnerStatusAnswer } from './status-context.js';
-import { buildDaemonHealth } from './health-model.js';
 import type { MemoryMaintenanceRuntime } from './memory-maintenance-tools.js';
 import { MimiStore } from './store.js';
 import { eventFailureAttemptLimit } from './dispatcher-retry-policy.js';
@@ -423,33 +420,12 @@ export class MimiDispatcher {
       preemptTimer = setInterval(checkPreemption, this.options.preemptPollMs ?? 250);
       preemptTimer.unref();
       refreshRunIdleWatchdog();
-      const focusedStatus = event.trust === 'owner'
-        && task.type === 'conversation'
-        && capabilityDisclosureForInput(decision.input!) === 'status';
-      const focusedStatusAnswer = focusedStatus
-        ? await this.host.mutate(decision.sessionId!, async (agent) => {
-            const [plan, goal] = await Promise.all([agent.currentPlan(), agent.currentGoal()]);
-            const activity = this.store.activitySnapshot(1);
-            return buildOwnerStatusAnswer(this.store, decision.sessionId!, task.id, {
-              plan,
-              goal,
-              health: buildDaemonHealth({
-                tasks: activity.tasks,
-                outbox: activity.outbox,
-                pendingDigest: activity.pendingDigest,
-                connectors: this.connectors?.listCapabilities(),
-                checkedAt: activity.generatedAt,
-              }),
-            });
-          }, runSignal, workspaceRoot)
-        : undefined;
       const hostedRun = this.host.execute({
         executionId: task.id,
         sessionId: decision.sessionId!,
         workspaceRoot,
         input: decision.input!,
         signal: runSignal,
-        ...(focusedStatusAnswer !== undefined ? { trustedHostAnswer: focusedStatusAnswer } : {}),
         options: {
           ...decision.options,
           executionKey,

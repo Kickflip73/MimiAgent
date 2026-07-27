@@ -41,6 +41,8 @@ test('progressively discloses capabilities for owner conversation input', () => 
   assert.equal(capabilityDisclosureForInput('为什么 Computer Use 工具当前不可用？'), 'runtime');
   assert.equal(capabilityDisclosureForInput('搜索一下今天上海的天气'), 'web');
   assert.equal(capabilityDisclosureForInput('切换到上一个会话'), 'session');
+  assert.equal(capabilityDisclosureForInput('我们上次开发的游戏怎么样了？'), 'full');
+  assert.equal(capabilityDisclosureForInput('上次那个后台任务到哪了？'), 'full');
   for (const input of [
     '修复这个问题',
     '读取 src/index.ts 并分析调用链',
@@ -73,7 +75,7 @@ test('progressively discloses capabilities for owner conversation input', () => 
   assert.equal(capabilityDisclosureForInput('列出后台任务'), 'status');
 });
 
-test('owner status questions expose no tools before the Host answers directly', () => {
+test('owner status questions expose only background inspection tools to the model', () => {
   const now = new Date().toISOString();
   const decision = decideEvent({
     id: 'event-status', externalId: 'external-status', source: 'local-cli', kind: 'command',
@@ -81,7 +83,9 @@ test('owner status questions expose no tools before the Host answers directly', 
     priority: 100,
   });
 
-  assert.deepEqual(decision.options?.policy?.allowedTools, []);
+  assert.deepEqual(decision.options?.policy?.allowedTools, [
+    'list_background_tasks', 'inspect_background_task',
+  ]);
   assert.equal(decision.options?.policy?.allowSideEffects, false);
   assert.equal(decision.options?.policy?.allowMcp, false);
 });

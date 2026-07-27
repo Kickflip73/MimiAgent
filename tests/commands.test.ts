@@ -45,7 +45,21 @@ function fakeAgent(): MimiAgent {
     switchSession: async () => undefined,
     history: async () => [],
     clearSession: async () => undefined,
-    listSkills: () => [{ name: 'review', description: 'Review code' }],
+    listSkills: async () => [{
+      name: 'review',
+      description: 'Review code',
+      root: '/tmp/review',
+      file: '/tmp/review/SKILL.md',
+      source: { id: 'project-native', scope: 'project', root: '/tmp', precedence: 1 },
+      contentHash: 'a'.repeat(64),
+      active: false,
+      stale: false,
+      available: true,
+      unavailableReasons: [],
+      missingTools: [],
+    }],
+    activeSkills: async () => [],
+    deactivateSkill: async () => false,
     reloadSkills: async () => ({ skills: [{ name: 'review', description: 'Review code' }], warnings: [] }),
     memoryList: async () => [{
       ref: { scope: 'private', id: 'm1', profileId: 'owner' }, title: 'Stack', summary: 'uses TS',
@@ -124,6 +138,37 @@ test('handles status and high-frequency inspection commands', async () => {
     assert.match(output.join('\n'), /uses TS/);
     assert.match(output.join('\n'), /running/);
     assert.match(output.join('\n'), /AGENTS\.md/);
+  } finally {
+    console.log = original;
+  }
+});
+
+test('lists and deactivates only the current Session active Skills', async () => {
+  const output: string[] = [];
+  const original = console.log;
+  const agent = fakeAgent();
+  let deactivated = '';
+  agent.activeSkills = async () => [{
+    name: 'review',
+    sourceId: 'project-native',
+    file: '/tmp/review/SKILL.md',
+    contentHash: 'a'.repeat(64),
+    activatedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    stale: false,
+  }];
+  agent.deactivateSkill = async (name) => {
+    deactivated = name;
+    return true;
+  };
+  console.log = (...args: unknown[]) => output.push(args.join(' '));
+  try {
+    const handler = new CommandHandler(agent, async () => undefined);
+    assert.equal(await handler.execute('/skills active'), 'handled');
+    assert.equal(await handler.execute('/skills deactivate review'), 'handled');
+    assert.equal(deactivated, 'review');
+    assert.match(output.join('\n'), /review: project-native \[active\]/);
+    assert.match(output.join('\n'), /已停用 Skill：review/);
   } finally {
     console.log = original;
   }

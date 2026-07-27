@@ -65,6 +65,7 @@ export interface AppConfig {
   dataRoot: string;
   daemonDataRoot?: string;
   skillsRoot: string;
+  skillsRootConfigured?: boolean;
   mcpConfig: string;
   historyLimit: number;
   contextWindow?: number;
@@ -351,7 +352,8 @@ export function adoptWorkspaceConfig(
 ): AppConfig {
   const workspace = path.resolve(workspaceRoot);
   const explicitDataRoot = preferredEnvironmentValue('MIMI_DATA_DIR', 'AGENT_DATA_DIR');
-  const explicitSkillsRoot = preferredEnvironmentValue('MIMI_SKILLS_DIR', 'AGENT_SKILLS_DIR');
+  const explicitSkillsRoot = config.skillsRootConfigured
+    ?? Boolean(preferredEnvironmentValue('MIMI_SKILLS_DIR', 'AGENT_SKILLS_DIR'));
   const explicitMcpConfig = preferredEnvironmentValue('MIMI_MCP_CONFIG', 'MCP_CONFIG');
   return {
     ...config,
@@ -365,6 +367,7 @@ export function adoptWorkspaceConfig(
           workspace,
         ),
     skillsRoot: explicitSkillsRoot ? config.skillsRoot : path.join(workspace, 'skills'),
+    skillsRootConfigured: explicitSkillsRoot,
     mcpConfig: explicitMcpConfig ? config.mcpConfig : path.join(workspace, 'mcp.json'),
   };
 }
@@ -438,12 +441,20 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
   if (selectedSecurityProfile !== 'full-owner' && trustedWorkspaceMcp) {
     throw new Error(`MIMI_SECURITY_PROFILE=${selectedSecurityProfile} 不允许信任工作区 MCP`);
   }
+  const resolvedSkillsRoot = skillsRoot
+    ? expandHome(skillsRoot, homeDirectory)
+    : path.join(workspaceRoot, 'skills');
   return {
     provider: modelProvider(),
     workspaceRoot,
     dataRoot,
     daemonDataRoot,
-    skillsRoot: skillsRoot ? expandHome(skillsRoot, homeDirectory) : path.join(workspaceRoot, 'skills'),
+    skillsRoot: resolvedSkillsRoot,
+    // Daemon workers receive the derived workspace default through the environment.
+    // Treat an identical path as the project-native source rather than pinning it
+    // across later workspace switches.
+    skillsRootConfigured: Boolean(skillsRoot)
+      && path.resolve(resolvedSkillsRoot) !== path.resolve(workspaceRoot, 'skills'),
     mcpConfig: mcpConfig ? expandHome(mcpConfig, homeDirectory) : path.join(workspaceRoot, 'mcp.json'),
     historyLimit: positiveSafeInteger(['MIMI_HISTORY_LIMIT', 'HISTORY_LIMIT'], 40)!,
     contextWindow,

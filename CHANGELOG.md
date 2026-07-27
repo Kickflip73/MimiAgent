@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- discover Agent Skills across configured, project, user and package roots with
+  deterministic precedence, manifest-allowlisted builtins, canonical deduplication
+  and structured shadow diagnostics
+- add owner-leading `$skill-name` activation, Session-persisted idempotent bindings,
+  active/stale/deactivate inspection, protected full instruction recovery across
+  restart and context compaction, and active-binding resource authorization
+- apply one fail-closed Skill availability check to catalog disclosure, explicit
+  and model activation, protected recovery and resource reads using the final Run
+  tool set; `allowed-tools` remains non-authoritative metadata
 - add a per-request Context Manifest with section-level estimates, deterministic
   compression records, provider actual-usage backfill, and a structured
   `actual`/`estimate`/`raw-history` chat status; daemon protocol 10 retains the
@@ -57,6 +66,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   persisting it as a synthetic user turn, remove affected legacy archive messages
   on Session load, and resolve short confirmations against the immediately
   preceding assistant proposal
+- route status and prior-work follow-ups through the model instead of returning a
+  keyword-triggered Host answer; background status remains limited to read-only
+  task inspection tools
 
 ## [0.12.0] - 2026-07-24
 

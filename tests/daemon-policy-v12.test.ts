@@ -163,7 +163,9 @@ test('owner capability disclosure stays progressive while explicit work remains 
     source: 'local-cli',
     payload: { prompt: '咋样了？' },
   }));
-  assert.deepEqual(status.options?.policy?.allowedTools, []);
+  assert.deepEqual(status.options?.policy?.allowedTools, [
+    'list_background_tasks', 'inspect_background_task',
+  ]);
   assert.equal(status.options?.policy?.allowSessionContext, true);
 
   const session = decideEvent(event({

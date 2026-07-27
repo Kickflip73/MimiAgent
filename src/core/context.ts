@@ -10,6 +10,7 @@ export interface ContextParts {
   projectGuidance?: string;
   historySummary: string;
   skillCatalog: string;
+  activeSkills?: string;
   memories: MemoryCard[];
   plan: PlanStep[];
   goal?: Goal;
@@ -34,6 +35,7 @@ export type ContextSectionId =
   | 'recovery'
   | 'memory-cards'
   | 'skill-catalog'
+  | 'active-skills'
   | 'archive'
   | 'recent-history'
   | 'current-input'
@@ -266,9 +268,19 @@ export class ContextManager {
   }
 
   buildInstructionsResult(parts: ContextParts, tokenBudget = this.instructionTokenBudget): BuiltInstructions {
-    const candidates: Array<{ id: ContextSectionId; text: string; itemCount?: number }> = [
+    const required: Array<{ id: ContextSectionId; text: string; itemCount?: number }> = [
       { id: 'base-instructions', text: parts.baseInstructions },
     ];
+    if (parts.activeSkills) {
+      required.push({ id: 'active-skills', text: parts.activeSkills });
+    }
+    const requiredTokens = required.reduce((total, candidate) => total + estimateTokens(candidate.text), 0);
+    if (requiredTokens > tokenBudget) {
+      throw new ContextProtocolBudgetError(
+        '基础指令与 active-skills 完整正文超出 instruction budget；请停用 Skill、缩短 Skill 或使用更大上下文模型',
+      );
+    }
+    const candidates: Array<{ id: ContextSectionId; text: string; itemCount?: number }> = [];
     if (parts.sessionState) {
       candidates.push({ id: 'session-state', text: `当前会话状态：\n${parts.sessionState}` });
     }
@@ -323,9 +335,14 @@ export class ContextManager {
       });
     }
 
-    const sections: string[] = [];
-    const usage: ContextSectionUsage[] = [];
-    let remaining = Math.max(0, tokenBudget);
+    const sections: string[] = required.map((candidate) => candidate.text);
+    const usage: ContextSectionUsage[] = required.map((candidate) => ({
+      id: candidate.id,
+      estimatedTokens: estimateTokens(candidate.text),
+      ...(candidate.itemCount === undefined ? {} : { itemCount: candidate.itemCount }),
+      truncated: false,
+    }));
+    let remaining = Math.max(0, tokenBudget - requiredTokens);
     for (const candidate of candidates) {
       if (remaining <= 0) break;
       const originalTokens = estimateTokens(candidate.text);
@@ -348,7 +365,7 @@ export class ContextManager {
       }
       remaining -= estimatedTokens;
     }
-    const text = this.fitTokens(sections.join('\n\n'), Math.max(0, tokenBudget));
+    const text = sections.join('\n\n');
     return { text, sections: usage };
   }
 

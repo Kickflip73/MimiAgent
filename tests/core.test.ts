@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { access, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -792,10 +793,13 @@ test('loads skill metadata and content on demand', async () => {
   assert.match(loader.catalog(), /review: Review code/);
   assert.match(loader.catalog(), /location:/);
   assert.match(loader.get('review')?.content ?? '', /Do it/);
+  const canonicalDirectory = await realpath(directory);
   assert.deepEqual(loader.activate('review'), {
     name: 'review',
-    root: directory,
-    file: path.join(directory, 'SKILL.md'),
+    root: canonicalDirectory,
+    file: path.join(canonicalDirectory, 'SKILL.md'),
+    sourceId: 'configured',
+    contentHash: createHash('sha256').update('---\nname: review\ndescription: Review code\n---\nDo it.').digest('hex'),
     instructions: '---\nname: review\ndescription: Review code\n---\nDo it.',
   });
   assert.throws(() => loader.activate('missing'), /未找到 Skill/);
@@ -950,6 +954,29 @@ test('caps dynamic instructions within their token budget', () => {
   assert.ok(estimateTokens(instructions) <= 2_000);
 });
 
+test('active skill instructions are never silently truncated', () => {
+  const manager = new ContextManager(40, 8_000);
+  const activeSkills = `<active_skills>\n${'complete skill body '.repeat(40)}\n</active_skills>`;
+  const built = manager.buildInstructionsResult({
+    baseInstructions: 'base',
+    activeSkills,
+    historySummary: '',
+    skillCatalog: '',
+    memories: [],
+    plan: [],
+  }, 1_000);
+  assert.match(built.text, /complete skill body/);
+  assert.equal(built.sections.find((section) => section.id === 'active-skills')?.truncated, false);
+  assert.throws(() => manager.buildInstructionsResult({
+    baseInstructions: 'base',
+    activeSkills: `<active_skills>${'x'.repeat(20_000)}</active_skills>`,
+    historySummary: '',
+    skillCatalog: '',
+    memories: [],
+    plan: [],
+  }, 100), /完整正文超出 instruction budget/);
+});
+
 test('budgets the complete model request including input, instructions, tools and output reserve', () => {
   const contextWindow = 4_000;
   const outputReserveTokens = 600;
@@ -980,7 +1007,8 @@ test('budgets the complete model request including input, instructions, tools an
 
   const instructionBudget = Math.min(800, budget.inputBudget);
   const instructions = manager.buildInstructions({
-    baseInstructions: `base ${'规则'.repeat(2_000)}`,
+    baseInstructions: 'base rules',
+    identity: `identity ${'规则'.repeat(2_000)}`,
     historySummary: '',
     skillCatalog: '',
     memories: [],

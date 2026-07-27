@@ -296,7 +296,7 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_ASSISTANT_CONFIG` | `<MIMI_DAEMON_DATA_DIR>/assistant.json` | 用户画像、Standing Orders、静默时段、预算、规则与主动简报配置 |
 | `MIMI_WEBHOOK_PORT` | 未启用 | localhost 认证 Webhook 端口 |
 | `MIMI_WEBHOOK_TOKEN` | 未设置 | Webhook Bearer Token，启用时至少 24 字符 |
-| `MIMI_SKILLS_DIR` | `<workspace>/skills` | Skill 根目录 |
+| `MIMI_SKILLS_DIR` | 未设置 | 最高优先级额外 Skill 根目录；不再替换标准发现位置 |
 | `MIMI_MCP_CONFIG` | `<workspace>/mcp.json` | MCP Server 配置文件 |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | MemoryHub Embedding 模型 |
 | `MIMI_MEMORY_RETRIEVAL_MODE` | `auto` | `auto` 使用可用 Embedding；`lexical` 固定纯本地 FTS/BM25 |
@@ -329,7 +329,7 @@ Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Con
 | `/history` | 查看当前完整历史 |
 | `/clear` | 清空当前会话 |
 | `/status` | 查看模型、会话、Skills、Memory 和 MCP 状态 |
-| `/skills [reload]` | 列出或重新扫描 Agent Skills |
+| `/skills [reload\|active\|deactivate <name>]` | 列出、重新扫描或管理当前 Session 的 Agent Skills |
 | `/tools` | 列出当前可用工具 |
 | `/mcp [reload]` | 查看状态或重新连接 MCP Server |
 | `/context` | 查看历史、记忆和计划用量 |
@@ -485,9 +485,15 @@ description: 审查当前代码变更
 3. 运行测试并输出问题。
 ```
 
-MimiAgent 遵循 Agent Skills 的渐进披露方式：启动时只暴露名称、描述和位置；匹配任务后调用 `use_skill` 激活完整说明，再通过 `read_skill_resource` 按需读取 `references/`、`scripts/` 或其他文本资源。YAML 元数据会按开放规范校验，无效 Skill 只产生诊断，不阻断其他 Skill。依赖可选运行时工具的 Skill 可声明 `required-tools`（逗号或空格分隔）；当前 Run 没有这些工具时，该 Skill 不会进入提示目录，直接激活也会失败关闭，避免出现“说明书已加载但执行器不存在”。修改后执行 `/skills reload` 即可生效。
+MimiAgent 遵循 Agent Skills 的渐进披露方式：启动时只暴露名称、描述、胜出来源和位置；匹配任务后调用 `use_skill` 激活完整说明，也可在 owner 消息开头写 `$code-review`（支持多个 `$skill-name`）显式激活。原始输入仍原样保存在 Session，外部事件、非 owner 内容、转义或正文中间的 `$name` 不会触发激活。
 
-内置 Skill 工具：`use_skill`、`read_skill_resource`、`list_skills`、`reload_skills`。仓库保留 `code-review`、`research` 和 `web-research` 三个精简示例，用户可在工作区自由添加更多 Skills。
+发现优先级从高到低为：`MIMI_SKILLS_DIR`、`<workspace>/skills`、`<workspace>/.agents/skills`、`~/.mimi-agent/skills`、`~/.agents/skills`、npm 包自身的 `skills/`。同名时只注册最高优先级的有效候选，`/skills` 会显示来源、位置、active/stale/unavailable 状态；无效高优先级候选不会遮蔽有效 fallback。包内来源还必须在 `skills/manifest.json` 中标记 `published: true`，因此实验 Skill 不会被当作内置产品能力。
+
+激活记录属于当前 Session，并以 Skill 名称、canonical 文件路径和 SHA-256 正文摘要幂等去重。`/skills active` 查看记录，`/skills deactivate <name>` 停用；`/skills reload` 只重建 registry，不会把同名新来源静默绑定到旧记录。激活正文每轮从 Session 恢复为完整的受保护 `active-skills` 指令区，因此重启、自动 collapse 和 `/compact` 不会令它失效，也不会伪造 user/assistant 历史；完整正文放不下时会明确失败，不会截断后继续。
+
+YAML 元数据会按开放规范校验，无效 Skill 只产生诊断，不阻断其他 Skill。依赖可选运行时工具的 Skill 可声明 MimiAgent 扩展字段 `required-tools`（数组、逗号或空格分隔）；目录披露、显式/模型激活、恢复注入与资源读取都按当前 Run 的最终工具集和本地读取权 fail closed。`allowed-tools` 只保留为元数据，不能注册工具或扩大权限。`read_skill_resource` 还要求当前 Session 已激活同一份、未 stale 且本轮仍可用的绑定，并继续拒绝绝对路径、目录逃逸、symlink 逃逸和超过 256KB 的文本。
+
+内置 Skill 工具：`use_skill`、`read_skill_resource`、`list_skills`、`reload_skills`。发布包保留 `code-review`、`computer-use`、`research` 和 `web-research` 四个 manifest allowlist Skill，项目与用户可在标准位置安装更多 Skills。
 
 ## MCP
 

@@ -115,7 +115,9 @@ const NON_OWNER_WORK_TASK_TOOLS = WORK_TASK_TOOLS
 const NON_OWNER_WORK_TASK_SIDE_EFFECT_TOOLS = WORK_TASK_SIDE_EFFECT_TOOLS
   .filter((name) => name !== 'connector_action');
 
-const OWNER_STATUS_TOOLS = [] as const;
+const OWNER_STATUS_TOOLS = [
+  'list_background_tasks', 'inspect_background_task',
+] as const;
 
 const OWNER_RUNTIME_TOOLS = [
   'runtime_status',

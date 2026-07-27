@@ -5,8 +5,6 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { RunContext, type Tool } from '@openai/agents';
 import { createMimiActivityTools } from '../src/daemon/activity-tools.js';
-import { buildDaemonHealth } from '../src/daemon/health-model.js';
-import { buildOwnerStatusAnswer } from '../src/daemon/status-context.js';
 import { MimiStore } from '../src/daemon/store.js';
 import { isSideEffectTool, toolsForRunPolicy } from '../src/runtime/tool-policy.js';
 
@@ -75,44 +73,6 @@ test('Mimi activity separates conversation executions from background tasks and 
         error: undefined,
       },
     );
-  } finally {
-    store.close();
-  }
-});
-
-test('owner status answer is generated from bounded daemon state without a model round', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-owner-status-context-'));
-  const store = new MimiStore(path.join(root, 'mimi.db'));
-  try {
-    const timestamp = '2026-07-20T03:00:00.000Z';
-    const authority = store.appendEvent({
-      id: 'status-authority', externalId: 'status-authority', source: 'local-cli',
-      type: 'command.received', trust: 'owner', payload: {}, profileId: 'owner',
-      occurredAt: timestamp, receivedAt: timestamp,
-    }).event;
-    store.enqueueTask({
-      id: 'status-background-task', type: 'background', idempotencyKey: 'status-background-task',
-      authorityEventId: authority.id, profileId: 'owner',
-      objective: { objective: `检查构建状态${'x'.repeat(8_000)}` },
-      executor: 'isolated_worker', workspaceAccess: 'read', priority: 50,
-    });
-
-    const answer = buildOwnerStatusAnswer(store, 'mimi-owner-status-session');
-    assert.match(answer, /当前有 1 个后台任务/);
-    assert.match(answer, /检查构建状态/);
-    assert.match(answer, /queued/);
-    assert.ok(answer.length <= 6_000, answer.length.toString());
-
-    const degraded = buildOwnerStatusAnswer(store, 'mimi-owner-status-session', undefined, {
-      plan: [],
-      health: buildDaemonHealth({
-        tasks: { ...store.activitySnapshot(1).tasks, dead_letter: 2 },
-        outbox: store.activitySnapshot(1).outbox,
-      }),
-    });
-    assert.match(degraded, /系统健康：degraded/);
-    assert.match(degraded, /2 个任务进入 dead letter/);
-    assert.match(degraded, /mimi daemon tasks/);
   } finally {
     store.close();
   }

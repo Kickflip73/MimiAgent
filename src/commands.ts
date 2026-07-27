@@ -110,6 +110,8 @@ export interface CommandTarget {
   history(): ReturnType<MimiAgent['history']>;
   clearSession(): ReturnType<MimiAgent['clearSession']>;
   listSkills(): MaybePromise<ReturnType<MimiAgent['listSkills']>>;
+  activeSkills?(): ReturnType<MimiAgent['activeSkills']>;
+  deactivateSkill?(name: string): ReturnType<MimiAgent['deactivateSkill']>;
   reloadSkills(): ReturnType<MimiAgent['reloadSkills']>;
   mcpStatuses(): MaybePromise<ReturnType<MimiAgent['mcpStatuses']>>;
   reloadMcp(): ReturnType<MimiAgent['reloadMcp']>;
@@ -181,7 +183,8 @@ const HELP = `内置命令：
   /switch <id>        按 ID 切换对话
   /history            查看当前对话历史
   /clear              清空当前对话
-  /skills [reload]    列出或重新加载 Skills
+  /skills [reload|active|deactivate <name>]
+                      列出、重新加载或管理当前 Session 的 Skills
   /tools              列出当前可用工具
   /mcp [reload]       查看或重新连接 MCP Server
   /context            查看上下文、记忆和计划用量
@@ -455,8 +458,33 @@ export class CommandHandler {
         const result = await this.agent.reloadSkills();
         return this.handled(`已重新加载 ${result.skills.length} 个 Skills${result.warnings.length ? `，${result.warnings.length} 个无效` : ''}`);
       }
+      if (argument === 'active') {
+        const active = this.agent.activeSkills
+          ? await this.agent.activeSkills()
+          : (await this.agent.listSkills()).filter((skill) => skill.active).map((skill) => ({
+              name: skill.name,
+              sourceId: skill.source.id,
+              stale: skill.stale,
+            }));
+        return this.handled(active.map((skill) =>
+          `- ${skill.name}: ${skill.sourceId}${skill.stale ? ' [stale]' : ' [active]'}`
+        ).join('\n') || '当前 Session 没有已激活 Skill');
+      }
+      if (argument.startsWith('deactivate ')) {
+        const name = argument.slice('deactivate '.length).trim();
+        if (!this.agent.deactivateSkill) {
+          return this.handled('当前远程 Host 暂不支持停用 Skill，请在本机 Session 中执行。');
+        }
+        const deactivated = await this.agent.deactivateSkill(name);
+        return this.handled(deactivated ? `已停用 Skill：${name}` : `当前 Session 未激活 Skill：${name}`);
+      }
+      if (argument === 'deactivate') return this.handled('用法：/skills deactivate <name>');
       const skills = await this.agent.listSkills();
-      return this.handled(skills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n') || '暂无 Skills');
+      return this.handled(skills.map((skill) => [
+        `- ${skill.name}: ${skill.description}`,
+        `  source: ${skill.source.id}${skill.active ? ' [active]' : skill.stale ? ' [stale]' : ''}${skill.available ? '' : ` [unavailable: ${skill.unavailableReasons.join(', ')}]`}`,
+        `  location: ${skill.file}`,
+      ].join('\n')).join('\n') || '暂无 Skills');
     }
     if (command === '/tools') {
       const tools = await this.agent.toolNames;
