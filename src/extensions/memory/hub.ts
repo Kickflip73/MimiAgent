@@ -190,19 +190,29 @@ class DefaultMemoryHub implements MemoryHub {
     const queryVector = await this.embed(normalized, automatic);
     const channels: Array<Array<{ item: MemoryHit; key: string }>> = [];
     if (!options.scope || options.scope === 'all' || options.scope === 'private') {
-      const hits = this.privateCatalog.search(normalized, { ...options, limit }, queryVector);
-      channels.push(hits.map((item) => ({ item, key: `private:${item.ref.id}` })));
+      const wikiHits = this.privateCatalog.search(normalized, {
+        ...options, documentTypes: ['wiki'], limit,
+      }, queryVector);
+      channels.push(wikiHits.map((item) => ({ item, key: `private:${item.ref.id}` })));
+      if ((context.cause?.trust ?? 'owner') === 'owner') {
+        const episodeHits = this.privateCatalog.search(normalized, {
+          ...options, documentTypes: ['episode'], limit,
+        }, queryVector);
+        channels.push(episodeHits.map((item) => ({ item, key: `episode:${item.ref.id}` })));
+      }
     }
     if (!options.scope || options.scope === 'all' || options.scope === 'workspace') {
-      const hits = this.workspaceCatalog.search(normalized, { ...options, limit }, queryVector);
+      const hits = this.workspaceCatalog.search(normalized, {
+        ...options, documentTypes: ['wiki'], limit,
+      }, queryVector);
       channels.push(hits.map((item) => ({ item, key: `workspace:${item.ref.id}` })));
     }
-    const wikiHits = reciprocalRankFusion(channels.filter((channel) => channel.length), limit);
+    const memoryHits = reciprocalRankFusion(channels.filter((channel) => channel.length), limit);
     const needsEvidence = options.includeEvidence
-      || wikiHits.length < limit
-      || wikiHits.some((hit) => hit.stale || hit.status === 'conflicted');
-    if (!needsEvidence) return finish(wikiHits);
-    const missing = limit - wikiHits.length;
+      || memoryHits.length < limit
+      || memoryHits.some((hit) => hit.stale || hit.status === 'conflicted');
+    if (!needsEvidence) return finish(memoryHits);
+    const missing = limit - memoryHits.length;
     const evidenceLimit = missing > 0 ? missing : Math.max(1, Math.floor(limit / 3));
     const sourceEvidence = (!options.scope || options.scope === 'all' || options.scope === 'workspace')
       ? await this.documents.search(normalized, evidenceLimit)
@@ -217,20 +227,11 @@ class DefaultMemoryHub implements MemoryHub {
         score: 1 / (60 + index + 1), sourceRefs: [document.sourceRef], documentType: 'source',
       };
     });
-    const episodeHits = options.includeEvidence
-      && context.allowEpisodeEvidence
-      && (context.cause?.trust ?? 'owner') === 'owner'
-      && (!options.scope || options.scope === 'all' || options.scope === 'private')
-      ? this.privateCatalog.search(normalized, {
-          ...options, scope: 'private', documentTypes: ['episode'], limit: evidenceLimit,
-        }, queryVector)
-      : [];
     const evidenceHits = reciprocalRankFusion([
-      episodeHits.map((item) => ({ item, key: `episode:${item.ref.id}` })),
       sourceHits.map((item) => ({ item, key: `source:${item.ref.id}` })),
     ].filter((channel) => channel.length), evidenceLimit);
-    if (evidenceHits.length === 0) return finish(wikiHits);
-    return finish([...wikiHits.slice(0, Math.max(0, limit - evidenceHits.length)), ...evidenceHits]);
+    if (evidenceHits.length === 0) return finish(memoryHits);
+    return finish([...memoryHits.slice(0, Math.max(0, limit - evidenceHits.length)), ...evidenceHits]);
   }
 
   async read(ref: MemoryRef, context: RunMemoryContext): Promise<MemoryDocument> {

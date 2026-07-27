@@ -157,53 +157,24 @@ test('memory maintenance and revoked recurring schedules fail closed to dedicate
   assert.match(instructions(revoked), /授权已撤销|停止后续唤醒/);
 });
 
-test('owner capability disclosure stays progressive while explicit work remains unrestricted', () => {
-  const status = decideEvent(event({
-    trust: 'owner',
-    source: 'local-cli',
-    payload: { prompt: '咋样了？' },
-  }));
-  assert.deepEqual(status.options?.policy?.allowedTools, [
-    'list_background_tasks', 'inspect_background_task',
-  ]);
-  assert.equal(status.options?.policy?.allowSessionContext, true);
-
-  const session = decideEvent(event({
-    trust: 'owner',
-    source: 'local-cli',
-    payload: { prompt: '切换到昨天的会话' },
-  }));
-  assert.ok(session.options?.policy?.allowedTools?.includes('switch_session'));
-  assert.equal(session.options?.policy?.allowMcp, false);
-
-  const runtime = decideEvent(event({
-    trust: 'owner',
-    source: 'local-cli',
-    payload: { prompt: '为什么 Computer Use 工具当前不可用？' },
-  }));
-  assert.deepEqual(runtime.options?.policy?.allowedTools, ['runtime_status']);
-  assert.equal(runtime.options?.policy?.allowSideEffects, false);
-
-  const web = decideEvent(event({
-    trust: 'owner',
-    source: 'local-cli',
-    payload: { prompt: '搜索一下今天的天气' },
-  }));
-  assert.ok(web.options?.policy?.allowedTools?.includes('web_search'));
-
-  const full = decideEvent(event({
-    trust: 'owner',
-    source: 'local-cli',
-    payload: { prompt: '修改项目并运行测试' },
-  }));
-  assert.equal(full.options?.policy, undefined);
-
-  const experiment = decideEvent(event({
-    trust: 'owner',
-    source: 'local-cli',
-    payload: { prompt: '为什么GitHub直连不通？你试一下。' },
-  }));
-  assert.equal(experiment.options?.policy, undefined);
+test('owner natural language never selects a tool policy from message wording', () => {
+  for (const prompt of [
+    '咋样了？',
+    '为什么天空是蓝色的？',
+    '搜索一下今天的天气',
+    '切换到昨天的会话',
+    '为什么 Computer Use 工具当前不可用？',
+    '修改项目并运行测试',
+    '为什么GitHub直连不通？你试一下。',
+    '你给我看一下这个需求要做什么？要怎么去做？你能给我规划一下？',
+  ]) {
+    const decision = decideEvent(event({
+      trust: 'owner',
+      source: 'local-cli',
+      payload: { prompt },
+    }));
+    assert.equal(decision.options?.policy, undefined, prompt);
+  }
 });
 
 test('source playbooks require exact trusted provenance', () => {

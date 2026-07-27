@@ -318,7 +318,7 @@ Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Con
 
 默认 `mimi` 连接常驻 MimiAgent 后展示一个仅存在于当前 CLI 内存中的新对话草稿，不读取旧对话，也不创建 Session 文件。第一条普通消息被后台接受后，草稿 ID 才成为真实 Session；在此之前执行 `/exit`，或用 `/sessions`、`/switch` 进入已有 Session，都不会留下空会话。全部内置命令通过本地 Socket 读写同一个 Kernel；`/new` 重新准备一个草稿，`/switch` 只选择已存在的 Session actor，不创建第二个控制面。`/exit` 只关闭终端，Esc 会请求后台安全取消当前 Task；若外部 Tool 正在执行，会先等待其结果落账再结束，不把不确定事务当作可重放失败。
 
-一个 `MIMI_DAEMON_DATA_DIR` 对应一个常驻 Kernel 控制面，但一个 Kernel 可以承载多个项目工作区。工作区选择顺序为：用户在当前命令中给出的绝对路径或唯一可解析的项目名；明确要求“当前项目”时采用运行本次 `mimi` 的目录；Session 已经在处理的事项目录；最后才是默认目录。创建新项目、游戏、网站、报告等工作且没有指定工作区时，MimiAgent 会先创建 `~/MimiWorkspace/<具体事项>`，再在该目录执行，不会把产物写进 Daemon 首次启动目录或 MimiAgent 产品仓库。若项目名对应多个目录会失败关闭并要求明确路径。`MIMI_SESSION`（兼容 `AGENT_SESSION`）会选择 CLI 首次连接的 Session；未设置时使用稳定 Owner Session。
+一个 `MIMI_DAEMON_DATA_DIR` 对应一个常驻 Kernel 控制面，但一个 Kernel 可以承载多个项目工作区。用户在当前命令中给出的绝对路径或唯一可解析的项目名优先；除此之外，本地 CLI 默认采用运行本次 `mimi` 的目录，当前仓库中的代码分析以及随任务创建的文档、报告、脚本等文件都留在该工作区，不按对话另建目录。只有明确新建独立项目、游戏、网站等事项且当前启动目录不适用，或没有可用的启动/Session 工作区时，MimiAgent 才创建 `~/MimiWorkspace/<具体事项>`；明确继续该事项时再沿用对应 Session 工作区。这样既不会把普通仓库工作移出当前目录，也不会把无关新项目写进 Daemon 首次启动目录或 MimiAgent 产品仓库。若项目名对应多个目录会失败关闭并要求明确路径。`MIMI_SESSION`（兼容 `AGENT_SESSION`）会选择 CLI 首次连接的 Session；未设置时使用稳定 Owner Session。
 
 内置命令：
 
@@ -541,7 +541,7 @@ Memory 编译与查询流程：
 
 默认使用 FTS5/BM25；配置 `OPENAI_API_KEY` 时用 `text-embedding-3-small` 增强并以 RRF 合并排名，Embedding 失败立即回退词法检索。`/memory reindex` 只重建页面、向量和 links 等派生数据，不清空 suppression 与 compilation receipt。缺少 FTS5 的 Node 构建会回退 bounded LIKE 并在 status 中标记 degraded。
 
-完整 Session round 会作为 private episode 证据增量索引，但不会自动注入；只有 owner 明确要求访问历史且查询设置 evidence 时才能回读。Daemon 在普通 Task 终态事务中登记 observation，达到 10 条或最老等待 10 分钟后才创建低优先级 `memory_maintenance` Task；连续 50 个页面变化，或有变化且 7 天未 lint 时，把 semantic lint 合并进下一维护 Task。维护 Run 每批最多读取 20 条/8KB 证据、写 5 页，只能使用 Memory 工具；单条 external/public 断言不能直接成为 active 事实。`/memory maintain` 可显式触发无网络的有界 semantic lint。
+每个已完成的 Session round 都会作为 private episode 增量索引；owner 的普通 Memory 检索默认同时搜索已编译 Wiki 和全部历史 episode，因此新 Session 可以直接回忆其他 Session 的相关信息。private episode 不向外部来源或 SubAgent/Team 开放。Daemon 在普通 Task 终态事务中登记 observation，达到 10 条或最老等待 10 分钟后才创建低优先级 `memory_maintenance` Task；连续 50 个页面变化，或有变化且 7 天未 lint 时，把 semantic lint 合并进下一维护 Task。维护 Run 每批最多读取 20 条/8KB 证据、写 5 页，只能使用 Memory 工具；单条 external/public 断言不能直接成为 active 事实。`/memory maintain` 可显式触发无网络的有界 semantic lint。
 
 ## Plan、Goal、Ultra Team、Trace 与 Eval
 

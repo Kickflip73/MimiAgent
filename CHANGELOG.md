@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- index every completed owner conversation round and search private Session
+  episodes by default so a new Session can recall relevant prior conversations
+  without a separate history-intent or evidence flag
 - remove the Daxiang, QQ OneBot/NapCat and generic HTTP Action/Event connectors,
   delete all QQ/Weixin/Daxiang AppleScript IM fallbacks and QQ installer paths,
   retain only OpenClaw iLink for Weixin and the CUA Skill for QQ, and purge retired
@@ -46,9 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the entire run with `Tool ... not found`
 - resolve each owner task to its actual project workspace before the model runs:
   explicit paths or unique project names override the CLI launch directory,
-  current-project work uses that directory, unspecified new deliverables are
-  created under `~/MimiWorkspace/<task>`, Session runtimes rebuild at FIFO-safe
-  boundaries, and durable background/Codex tasks inherit the resolved workspace
+  ordinary work and repository-local deliverables use that directory, and only
+  standalone new projects that do not fit the current directory fall back to
+  `~/MimiWorkspace/<task>`; Session runtimes rebuild at FIFO-safe boundaries,
+  and durable background/Codex tasks inherit the resolved workspace
 - bound the interactive input viewport for long text, preserve bracketed-paste
   markers split across terminal data chunks, and defer/coalesce Apple Terminal
   redraws outside IME key events; Apple Terminal uses a single physical-row

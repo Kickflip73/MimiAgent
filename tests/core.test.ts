@@ -240,7 +240,7 @@ test('returns unknown model tool calls to the model instead of aborting the run'
   }
 });
 
-test('focused owner runs omit undisclosed Skill catalog and cap output reservation', async () => {
+test('owner natural-language runs retain the runtime tool and Skill discovery surface', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-focused-context-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const skillsRoot = path.join(root, 'skills');
@@ -281,11 +281,12 @@ test('focused owner runs omit undisclosed Skill catalog and cap output reservati
       { role: 'assistant', content: `OLD_ASSISTANT_${index}_${'y'.repeat(2_000)}` },
     ]).flat() as AgentInputItem[]);
     await agent.stream('咋样了？', undefined, decision.options);
-    assert.deepEqual(captured.tools, []);
-    assert.doesNotMatch(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
-    assert.equal(captured.maxTokens, 4_096);
-    assert.ok((await agent.contextInfo()).estimatedTokens < 20_000);
-    await agent.failRun(new Error('test cleanup'), true);
+    assert.ok(captured.tools?.includes('read_file'));
+    assert.ok(captured.tools?.includes('list_skills'));
+    assert.match(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
+    await agent.completeRun('FOCUSED_OWNER_ANSWER');
+    const recalled = await agent.memorySearch('FOCUSED_OWNER_ANSWER', 'private');
+    assert.equal(recalled[0]?.documentType, 'episode');
   } finally {
     await agent.close();
   }

@@ -5,7 +5,6 @@ import {
   CommandHandler,
   commandHelp,
 } from './commands.js';
-import { capabilityDisclosureForInput } from './core/user-intent.js';
 import {
   MimiChatClient,
   RemoteCommandTarget,
@@ -30,8 +29,8 @@ export const CHAT_HELP = `${commandHelp()}
 
 这些命令作用于后台唯一 MimiAgent。/exit 只关闭当前终端。`;
 
-function runLabel(input: string): string {
-  return capabilityDisclosureForInput(input) === 'status' ? '读取本机状态' : '模型思考中';
+function runLabel(_input: string): string {
+  return '模型思考中';
 }
 
 export function renderChatHistory(snapshot: MimiChatSnapshot, tty: boolean): string {

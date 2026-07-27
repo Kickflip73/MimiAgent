@@ -21,7 +21,7 @@ export function createMemoryTools(
   const tools = [
     tool({
       name: 'memory_search',
-      description: '优先搜索当前 profile 和 workspace 的已编译 Wiki；返回有界摘要、ref 与来源。',
+      description: '搜索当前 profile 的长期记忆和全部历史 Session round，并搜索 workspace 知识；返回有界摘要、ref 与来源。',
       parameters: z.object({
         query: z.string().trim().min(1),
         scope: z.enum(['private', 'workspace', 'all']).default('all'),

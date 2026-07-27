@@ -96,7 +96,6 @@ import { AgentRequestFactory } from './pipeline/request-factory.js';
 import {
   explicitlyRequestsSessionAccess,
   explicitlyRequestsSessionClear,
-  explicitlyRequestsHistoricalEvidence,
 } from '../core/user-intent.js';
 
 export { AGENT_MODES } from './instructions.js';
@@ -596,7 +595,6 @@ export class MimiAgent {
     const memoryTools = createMemoryTools(this.memory, () => ({
       ...memoryContext,
       input: run.input,
-      allowEpisodeEvidence: explicitlyRequestsHistoricalEvidence(run.input),
     }));
     const delegatedMemoryTools = createMemoryTools(this.memory, () => memoryContext, { workspaceOnly: true });
     const delegatedTools = [...scopedTools, ...delegatedMemoryTools];
@@ -1565,10 +1563,7 @@ export class MimiAgent {
       }
       await this.runCommits.advance(run.sessionId, run.runId, 'goal_committed');
       const cause = run.options?.cause;
-      const focusedOwnerRun = cause?.trust === 'owner' && cause.source === 'local-cli'
-        && run.options?.policy?.allowedTools !== undefined;
-      if (!focusedOwnerRun
-        && cause?.source !== 'mimi:memory-maintenance' && cause?.source !== 'attention:briefing') {
+      if (cause?.source !== 'mimi:memory-maintenance' && cause?.source !== 'attention:briefing') {
         await this.memory.recordEpisode({
           sessionId: run.sessionId,
           runId: run.runId,

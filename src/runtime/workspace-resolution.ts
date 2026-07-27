@@ -23,10 +23,10 @@ export interface WorkspaceResolutionInput {
   homeDirectory?: string;
 }
 
-const CURRENT_PROJECT = /(?:当前|这个|本|这里的|这个目录(?:里的)?)(?:项目|工程|仓库|代码|目录)|(?:current|this)\s+(?:project|repository|repo|workspace|directory)/iu;
+const CURRENT_PROJECT = /(?:当前|现有|这个|本|该|这里(?:的)?|这个目录(?:里的)?).{0,24}(?:项目|工程|仓库|代码|目录|业务|领域|模块|服务|接口|应用)|(?:current|existing|this)\s+(?:project|repository|repo|workspace|directory|codebase|module|service|application)/iu;
 const CONTINUE_CURRENT_WORK = /(?:继续|接着|延续|完善|补充|迭代|这个(?:游戏|应用|网站|项目|工程|事项))|\b(?:continue|resume|keep working|extend|finish)\b/iu;
 const NEW_WORK = /(?:创建|新建|从零(?:开始)?|搭建|生成|制作|开发|实现|写(?:一份|一个)?|做(?:一个|个)?).{0,40}(?:项目|工程|应用|程序|游戏|网站|页面|插件|脚本|报告|文档|PPT|演示|表格|工作簿|图片|视频|音频)|\b(?:create|build|generate|make|develop|implement|write)\b.{0,60}\b(?:project|app|application|game|website|page|plugin|script|report|document|deck|spreadsheet|image|video|audio)\b/iu;
-const DEVELOPMENT_WORK = /(?:代码|仓库|项目|工程|实现|修复|重构|构建|测试|编译|依赖|模块|函数|接口|组件|部署|code|repository|repo|project|implement|fix|refactor|build|test|compile|dependency|module|function|interface|component|deploy)/iu;
+const NEW_STANDALONE_WORKSPACE = /(?:创建|新建|从零(?:开始)?|搭建|制作|开发|实现|做|搞).{0,40}(?:项目|工程|应用|程序|游戏|网站|插件)|\b(?:create|build|make|develop|implement)\b.{0,60}\b(?:project|app|application|game|website|plugin)\b/iu;
 
 async function directory(value: string): Promise<string | undefined> {
   try {
@@ -164,11 +164,16 @@ export async function resolveTaskWorkspace(
 
   const defaultRoot = path.join(homeDirectory, 'MimiWorkspace');
   if (session && inside(defaultRoot, session)
-    && NEW_WORK.test(request.input)
     && CONTINUE_CURRENT_WORK.test(request.input)) {
     return { workspaceRoot: session, source: 'session', created: false };
   }
-  if (NEW_WORK.test(request.input) && !CURRENT_PROJECT.test(request.input)) {
+  if (requested
+    && (!NEW_STANDALONE_WORKSPACE.test(request.input)
+      || CURRENT_PROJECT.test(request.input)
+      || inside(defaultRoot, requested))) {
+    return { workspaceRoot: requested, source: 'current-directory', created: false };
+  }
+  if (NEW_STANDALONE_WORKSPACE.test(request.input)) {
     const target = path.join(defaultRoot, taskSlug(request.input));
     let created = false;
     try {
@@ -179,11 +184,8 @@ export async function resolveTaskWorkspace(
     }
     return { workspaceRoot: target, source: 'default-task', created };
   }
-  if (requested && (CURRENT_PROJECT.test(request.input) || DEVELOPMENT_WORK.test(request.input))) {
-    return { workspaceRoot: requested, source: 'current-directory', created: false };
-  }
-  if (session) return { workspaceRoot: session, source: 'session', created: false };
   if (requested) return { workspaceRoot: requested, source: 'current-directory', created: false };
+  if (session) return { workspaceRoot: session, source: 'session', created: false };
 
   const target = path.join(defaultRoot, taskSlug(request.input));
   await mkdir(target, { recursive: true });

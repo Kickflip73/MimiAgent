@@ -8,9 +8,11 @@ import { resolveTaskWorkspace } from '../src/runtime/workspace-resolution.js';
 
 test('tells Mimi where user work lives and treats stale memory paths only as clues', () => {
   assert.match(BASE_INSTRUCTIONS, /默认用户工作根目录 ~\/MimiWorkspace/);
+  assert.match(BASE_INSTRUCTIONS, /默认使用用户运行本次 mimi 的目录/);
+  assert.match(BASE_INSTRUCTIONS, /为当前代码仓库创建文档.*仍保存在当前工作区/);
   assert.match(BASE_INSTRUCTIONS, /Memory 和历史中的旧路径只作为线索/);
   assert.match(BASE_INSTRUCTIONS, /禁止因旧路径不存在就断言项目或文件已经丢失/);
-  assert.match(BASE_INSTRUCTIONS, /MimiAgent 运行时代码目录.*不能作为.*用户工作内容的默认目录/);
+  assert.match(BASE_INSTRUCTIONS, /MimiAgent 运行时代码目录.*不能承载无关用户项目/);
 });
 
 test('uses an explicit project path instead of the directory where Mimi was started', async () => {
@@ -68,6 +70,62 @@ test('uses the launch directory for work on the current project', async () => {
   const resolved = await resolveTaskWorkspace({
     input: '修复当前项目的 TypeScript 类型错误',
     requestedWorkspaceRoot: project,
+    homeDirectory: home,
+  });
+
+  assert.equal(resolved.workspaceRoot, project);
+  assert.equal(resolved.source, 'current-directory');
+});
+
+test('keeps a code analysis and its requested document in the launch repository', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'mimi-workspace-analysis-'));
+  const project = path.join(home, 'IdeaProjects', 'inspection-service');
+  await mkdir(project, { recursive: true });
+
+  const resolved = await resolveTaskWorkspace({
+    input: [
+      '深度分析当前巡检领域相关的代码逻辑，对巡检领域做一次整体的业务逻辑梳理，',
+      '重点梳理定时任务相关的业务逻辑，以及巡检相关的一些接口。',
+      '给巡检做一个全面的业务流程梳理，并落到一个文档。',
+    ].join(''),
+    requestedWorkspaceRoot: project,
+    homeDirectory: home,
+  });
+
+  assert.deepEqual(resolved, {
+    workspaceRoot: project,
+    source: 'current-directory',
+    created: false,
+  });
+  await assert.rejects(stat(path.join(home, 'MimiWorkspace')), { code: 'ENOENT' });
+});
+
+test('creates an ordinary requested document in the launch directory', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'mimi-workspace-document-'));
+  const project = path.join(home, 'Projects', 'current-service');
+  await mkdir(project, { recursive: true });
+
+  const resolved = await resolveTaskWorkspace({
+    input: '写一份接口排查文档',
+    requestedWorkspaceRoot: project,
+    homeDirectory: home,
+  });
+
+  assert.equal(resolved.workspaceRoot, project);
+  assert.equal(resolved.source, 'current-directory');
+  await assert.rejects(stat(path.join(home, 'MimiWorkspace')), { code: 'ENOENT' });
+});
+
+test('prefers the current CLI launch directory over an unrelated Session workspace', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'mimi-workspace-cli-session-'));
+  const project = path.join(home, 'IdeaProjects', 'inspection-service');
+  const staleSession = path.join(home, 'MimiWorkspace', 'old-task');
+  await Promise.all([mkdir(project, { recursive: true }), mkdir(staleSession, { recursive: true })]);
+
+  const resolved = await resolveTaskWorkspace({
+    input: '当前工作区是哪个？',
+    requestedWorkspaceRoot: project,
+    sessionWorkspaceRoot: staleSession,
     homeDirectory: home,
   });
 

@@ -162,7 +162,7 @@ test('MemoryHub falls back to bounded workspace source evidence when Wiki is ins
   assert.match((await hub.read(hits[0]!.ref, context(root))).body, /Canary deploys/);
 });
 
-test('MemoryHub indexes complete rounds but exposes cross-session episodes only with owner history intent', async () => {
+test('MemoryHub searches all owner Session rounds by default', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-episode-'));
   const hub = await createMemoryHub({ workspaceRoot: root, dataRoot: path.join(root, 'data'), profileId: 'owner' });
   const ctx = context(root);
@@ -173,17 +173,35 @@ test('MemoryHub indexes complete rounds but exposes cross-session episodes only 
     occurredAt: new Date().toISOString(),
   }, ctx);
 
-  assert.deepEqual(await hub.search('cobalt lane', ctx, { scope: 'private', includeEvidence: true }), []);
-  const authorized = { ...ctx, allowEpisodeEvidence: true };
-  const hits = await hub.search('cobalt lane', authorized, { scope: 'private', includeEvidence: true });
+  const hits = await hub.search('cobalt lane', ctx, { scope: 'private' });
   assert.equal(hits[0]?.documentType, 'episode');
   assert.equal(hits[0]?.ref.id, ref.id);
-  assert.match((await hub.read(ref, authorized)).body, /staged rollout/);
+  assert.match((await hub.read(ref, ctx)).body, /staged rollout/);
 
-  await hub.reindex(authorized);
-  assert.equal((await hub.search('cobalt lane', authorized, {
-    scope: 'private', includeEvidence: true,
-  }))[0]?.documentType, 'episode');
+  const daxiangContext = { ...ctx, runId: 'run-daxiang' };
+  const daxiang = await hub.recordEpisode({
+    sessionId: daxiangContext.sessionId,
+    runId: daxiangContext.runId,
+    input: '请读取大象网页版消息。',
+    answer: '通过 CuaDriver 的 AX 树和 page.get_text 读取大象消息。',
+    occurredAt: new Date().toISOString(),
+  }, daxiangContext);
+  for (const query of [
+    '我之前让你读大象消息你是怎么读的？',
+    '大象 消息 读取',
+  ]) {
+    assert.equal(
+      (await hub.search(query, ctx, { scope: 'private' }))[0]?.ref.id,
+      daxiang.id,
+      query,
+    );
+  }
+
+  const external = { ...ctx, cause: { trust: 'external' as const, source: 'webhook' } };
+  assert.deepEqual(await hub.search('cobalt lane', external, { scope: 'private' }), []);
+
+  await hub.reindex(ctx);
+  assert.equal((await hub.search('cobalt lane', ctx, { scope: 'private' }))[0]?.ref.id, ref.id);
 });
 
 test('MemoryHub rejects external writes and workspace private provenance', async () => {

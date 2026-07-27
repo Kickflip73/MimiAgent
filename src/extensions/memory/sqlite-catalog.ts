@@ -69,6 +69,31 @@ function summary(body: string): string {
   return body.replace(/^#.*$/gm, '').replace(/\[\[|\]\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 600);
 }
 
+function ftsQueryFor(input: string): string {
+  const parts = input.match(/\p{Script=Han}+|[a-zA-Z0-9_]+/gu) ?? [];
+  const hanParts: string[] = [];
+  const terms: string[] = [];
+  const addTrigrams = (value: string) => {
+    const characters = [...value];
+    for (let index = 0; index <= characters.length - 3; index += 1) {
+      terms.push(characters.slice(index, index + 3).join(''));
+    }
+  };
+  for (const part of parts) {
+    if (/^\p{Script=Han}+$/u.test(part)) {
+      hanParts.push(part);
+      addTrigrams(part);
+    } else if (part.length >= 3) {
+      terms.push(part);
+    }
+  }
+  if (hanParts.length > 1) addTrigrams(hanParts.join(''));
+  return [...new Set(terms)]
+    .slice(0, 64)
+    .map((term) => `"${term.replaceAll('"', '""')}"`)
+    .join(' OR ');
+}
+
 function cosine(left: number[], right: number[]): number {
   if (!left.length || left.length !== right.length) return -1;
   let dot = 0;
@@ -214,7 +239,7 @@ export class SqliteMemoryCatalog {
 
     let lexicalRows: Row[] = [];
     if (this.fts5 && query.trim().length >= 3) {
-      const ftsQuery = (query.match(/[\p{L}\p{N}_]+/gu) ?? []).map((term) => `"${term.replaceAll('"', '""')}"`).join(' OR ');
+      const ftsQuery = ftsQueryFor(query);
       if (ftsQuery) {
         try {
           lexicalRows = this.database.prepare(`
