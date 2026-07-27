@@ -12,6 +12,7 @@ const metadataSchema = z.object({
   compatibility: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   'allowed-tools': z.string().optional(),
+  'required-tools': z.union([z.string(), z.array(z.string().min(1))]).optional(),
 }).passthrough();
 
 const MAX_SKILL_BYTES = 512_000;
@@ -99,8 +100,9 @@ export class SkillLoader {
     if (directories.length > MAX_SKILLS) this.warnings.push(`Skill 目录超过 ${MAX_SKILLS} 项，仅加载前 ${MAX_SKILLS} 项`);
   }
 
-  catalog(): string {
+  catalog(availableTools?: readonly string[]): string {
     return [...this.skills.values()]
+      .filter((skill) => this.missingRequiredTools(skill, availableTools).length === 0)
       .map((skill) => `- ${skill.name}: ${skill.description}\n  location: ${skill.file}`)
       .join('\n');
   }
@@ -115,6 +117,26 @@ export class SkillLoader {
 
   get(name: string): Skill | undefined {
     return this.skills.get(name);
+  }
+
+  activate(name: string, availableTools?: readonly string[]): {
+    name: string;
+    root: string;
+    file: string;
+    instructions: string;
+  } {
+    const skill = this.get(name);
+    if (!skill) throw new Error(`未找到 Skill：${name}`);
+    const missingTools = this.missingRequiredTools(skill, availableTools);
+    if (missingTools.length) {
+      throw new Error(`Skill ${name} 当前不可用，缺少必需工具：${missingTools.join(', ')}`);
+    }
+    return {
+      name: skill.name,
+      root: skill.root,
+      file: skill.file,
+      instructions: skill.content,
+    };
   }
 
   async readResource(name: string, resource: string): Promise<{ path: string; content: string }> {
@@ -133,17 +155,13 @@ export class SkillLoader {
     return { path: canonicalTarget, content };
   }
 
-  createTools() {
+  createTools(availableTools?: () => readonly string[] | undefined) {
     return [
       tool({
         name: 'use_skill',
         description: '按名称激活匹配的 Agent Skill，返回完整说明和资源根目录。',
         parameters: z.object({ name: z.string().min(1) }),
-        execute: async ({ name }) => {
-          const skill = this.get(name);
-          if (!skill) throw new Error(`未找到 Skill：${name}`);
-          return skill.content;
-        },
+        execute: async ({ name }) => this.activate(name, availableTools?.()),
       }),
       tool({
         name: 'read_skill_resource',
@@ -167,5 +185,15 @@ export class SkillLoader {
         },
       }),
     ];
+  }
+
+  private missingRequiredTools(skill: Skill, availableTools?: readonly string[]): string[] {
+    const declared = skill.metadata['required-tools'];
+    if (!declared || availableTools === undefined) return [];
+    const required = (Array.isArray(declared) ? declared : declared.split(/[\s,]+/))
+      .map((name) => name.trim())
+      .filter(Boolean);
+    const available = new Set(availableTools);
+    return required.filter((name) => !available.has(name));
   }
 }

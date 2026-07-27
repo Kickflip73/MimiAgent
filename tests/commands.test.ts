@@ -17,6 +17,16 @@ function fakeAgent(): MimiAgent {
       workspaceRoot: '/tmp/demo',
       maxTurns: 200,
       permissionMode: 'trusted',
+      securityProfile: {
+        id: 'full-owner',
+        label: 'Full Owner',
+        permissionMode: 'trusted',
+        shell: true,
+        externalTransactions: true,
+        computerUse: false,
+        trustedWorkspaceMcp: false,
+      },
+      computer: { configured: false },
       skillCount: 2,
       memoryCount: 1,
       mcpServers: [],
@@ -107,6 +117,8 @@ test('handles status and high-frequency inspection commands', async () => {
     assert.match(output.join('\n'), /deepseek-chat/);
     assert.match(output.join('\n'), /Shell 可用/);
     assert.match(output.join('\n'), /Full Owner \(full-owner\/trusted\)/);
+    assert.match(output.join('\n'), /当前能力.*Computer Use 未配置/);
+    assert.match(output.join('\n'), /Computer  未配置/);
     assert.match(output.join('\n'), /MIMI_SECURITY_PROFILE/);
     assert.match(output.join('\n'), /Review code/);
     assert.match(output.join('\n'), /uses TS/);

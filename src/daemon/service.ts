@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parse as parseDotenv } from 'dotenv';
 import {
+  adoptRuntimeWorkspaceConfig,
   adoptWorkspaceConfig,
   preferredEnvironmentValue,
   resolveEnvironmentFile,
@@ -19,6 +20,7 @@ import { MimiAgent } from '../agent.js';
 import { assertSessionId } from '../core/session-id.js';
 import { configureAgentRuntime, requireProviderApiKey } from '../runtime/bootstrap.js';
 import { MimiHost } from '../runtime/mimi-host.js';
+import { resolveTaskWorkspace } from '../runtime/workspace-resolution.js';
 import { MimiDispatcher } from './dispatcher.js';
 import {
   ConnectorManager,
@@ -457,6 +459,7 @@ interface SubmitParams {
   priority?: number;
   profileId?: string;
   sessionKey?: string;
+  workspaceRoot?: string;
   actor?: EventEnvelope['actor'];
   conversation?: EventEnvelope['conversation'];
   replyRoute?: ReplyRoute;
@@ -470,6 +473,14 @@ function object(value: unknown): Record<string, unknown> {
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} 不能为空`);
   return value.trim();
+}
+
+function optionalAbsoluteDirectory(value: unknown, name: string): string | undefined {
+  if (value === undefined) return undefined;
+  const selected = requiredString(value, name);
+  if (!path.isAbsolute(selected)) throw new Error(`${name} 必须是绝对路径`);
+  if (selected.length > 4096) throw new Error(`${name} 过长`);
+  return path.resolve(selected);
 }
 
 function eventKind(value: unknown): EventKind {
@@ -1105,11 +1116,15 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
   };
   let signalsRegistered = false;
   try {
+    const runtimeConfig = (workspaceRoot?: string): AppConfig => workspaceRoot
+      ? adoptRuntimeWorkspaceConfig(config, workspaceRoot)
+      : config;
     const agent = await MimiAgent.create(config);
     host = new MimiHost(agent, undefined, {
       maxConcurrentSessions: config.sessionMaxConcurrency ?? 4,
-      createSessionRuntime: async (sessionId) => ({
-        agent: await MimiAgent.create(config, sessionId),
+      primaryWorkspaceRoot: config.workspaceRoot,
+      createSessionRuntime: async (sessionId, workspaceRoot) => ({
+        agent: await MimiAgent.create(runtimeConfig(workspaceRoot), sessionId),
       }),
     });
     const notifier = new NotifierRegistry();
@@ -1150,6 +1165,23 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return task?.executor === 'isolated_worker' || task?.executor === 'codex'
           ? activeTaskSupervisor.pause(eventId, reason)
           : { state: 'not_pauseable' };
+      },
+      resolveWorkspace: async (input, event, sessionId) => {
+        const current = host!.workspaceRootFor(sessionId);
+        if (event.trust !== 'owner') return current ?? config.workspaceRoot;
+        const payload = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload)
+          ? event.payload as Record<string, unknown>
+          : {};
+        const requestedWorkspaceRoot = optionalAbsoluteDirectory(
+          payload.workspaceRoot,
+          'event.payload.workspaceRoot',
+        );
+        const resolved = await resolveTaskWorkspace({
+          input,
+          requestedWorkspaceRoot,
+          sessionWorkspaceRoot: current,
+        });
+        return resolved.workspaceRoot;
       },
     });
     const activeConnectors = connectors;
@@ -1233,12 +1265,14 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       if (method === 'chat.bootstrap') {
         const params = object(rawParams);
         const draftSessionId = assertSessionId(requiredString(params.draftSessionId, 'draftSessionId'));
+        const requestedWorkspaceRoot = optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot');
         const snapshot = await createMimiChatSnapshot(
           host!, host!.currentSessionId, config.workspaceRoot, 1,
         );
         return {
           ...snapshot,
           sessionId: draftSessionId,
+          workspaceRoot: requestedWorkspaceRoot ?? snapshot.workspaceRoot,
           draft: true,
           contextUsed: 0,
           contextStatus: {
@@ -1258,7 +1292,12 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       if (method === 'chat.snapshot') {
         const params = object(rawParams);
         const sessionId = chatSessionId(params);
-        return createMimiChatSnapshot(host!, sessionId, config.workspaceRoot, limit(params.limit, 30));
+        return createMimiChatSnapshot(
+          host!,
+          sessionId,
+          host!.workspaceRootFor(sessionId) ?? config.workspaceRoot,
+          limit(params.limit, 30),
+        );
       }
       if (method === 'chat.history') {
         const params = object(rawParams);
@@ -1351,11 +1390,20 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       if (method === 'submit') {
         const params = object(rawParams) as SubmitParams;
         const now = new Date().toISOString();
+        const source = params.source ?? 'local-cli';
+        const trust = eventTrust(params.trust);
+        const requestedWorkspaceRoot = source === 'local-cli' && trust === 'owner'
+          ? optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot')
+          : undefined;
+        const payload = params.payload ?? {
+          prompt: requiredString(params.text, 'text'),
+          ...(requestedWorkspaceRoot ? { workspaceRoot: requestedWorkspaceRoot } : {}),
+        };
         const event: EventEnvelope = {
           id: params.eventId ? requiredString(params.eventId, 'eventId') : randomUUID(),
-          externalId: params.externalId ?? randomUUID(), source: params.source ?? 'local-cli',
-          kind: eventKind(params.kind), trust: eventTrust(params.trust),
-          payload: params.payload ?? { prompt: requiredString(params.text, 'text') },
+          externalId: params.externalId ?? randomUUID(), source,
+          kind: eventKind(params.kind), trust,
+          payload,
           occurredAt: now, receivedAt: now, priority: Math.max(0, Math.min(100, params.priority ?? 100)),
           profileId: params.profileId ?? 'owner',
           sessionKey: params.sessionKey === undefined

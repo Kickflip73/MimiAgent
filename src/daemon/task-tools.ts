@@ -39,6 +39,7 @@ export interface BackgroundTaskToolContext {
   task: TaskRecord;
   event: ImmutableEvent;
   sessionId: string;
+  workspaceRoot?: string;
   replyRoute?: ReplyRoute;
   cancel?: (eventId: string, reason?: string) => MaybePromise<EventCancelResult>;
   pause?: (eventId: string, reason?: string) => MaybePromise<BackgroundTaskPauseResult>;
@@ -379,6 +380,7 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
             strategy: normalized.strategy,
             executor: normalized.executor,
             workspaceAccess: normalized.workspaceAccess,
+            ...(context.workspaceRoot ? { workspaceRoot: context.workspaceRoot } : {}),
             originSessionId: context.sessionId,
             replyRoute: context.replyRoute ?? context.event.replyRoute ?? { channel: 'system' },
           },

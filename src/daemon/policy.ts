@@ -117,6 +117,10 @@ const NON_OWNER_WORK_TASK_SIDE_EFFECT_TOOLS = WORK_TASK_SIDE_EFFECT_TOOLS
 
 const OWNER_STATUS_TOOLS = [] as const;
 
+const OWNER_RUNTIME_TOOLS = [
+  'runtime_status',
+] as const;
+
 const OWNER_SESSION_TOOLS = [
   'runtime_status', 'list_models', 'list_modes', 'switch_model', 'switch_mode',
   'set_output_level', 'list_sessions', 'get_session_history', 'switch_session',
@@ -134,6 +138,16 @@ function ownerConversationPolicy(input: string): RunPolicy | undefined {
     return {
       allowedCapabilities: ['read', 'state-read'],
       allowedTools: OWNER_STATUS_TOOLS,
+      allowSideEffects: false,
+      allowUnknownTools: false,
+      allowMcp: false,
+      allowSessionContext: true,
+    };
+  }
+  if (disclosure === 'runtime') {
+    return {
+      allowedCapabilities: ['control'],
+      allowedTools: OWNER_RUNTIME_TOOLS,
       allowSideEffects: false,
       allowUnknownTools: false,
       allowMcp: false,

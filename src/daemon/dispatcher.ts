@@ -43,6 +43,11 @@ export interface DispatcherOptions {
   pauseEvent?: (eventId: string, reason?: string) => MaybePromise<BackgroundTaskPauseResult>;
   connectorRuntime?: ConnectorTaskRuntime;
   memoryMaintenance?: MemoryMaintenanceRuntime;
+  resolveWorkspace?: (
+    input: string,
+    event: ImmutableEvent,
+    sessionId: string,
+  ) => MaybePromise<string | undefined>;
 }
 
 interface ActiveExecution {
@@ -343,6 +348,7 @@ export class MimiDispatcher {
         return;
       }
       const sessionId = decision.sessionId!;
+      const workspaceRoot = await this.options.resolveWorkspace?.(decision.input!, event, sessionId);
       this.store.bindRunningTaskSession(task.id, this.workerId, sessionId);
       if (this.activeSessions.has(sessionId)) {
         this.store.requeueTask(task.id, this.workerId, `同 Session ${sessionId} 已有活动 Run，保持 FIFO 等待`);
@@ -435,11 +441,12 @@ export class MimiDispatcher {
                 checkedAt: activity.generatedAt,
               }),
             });
-          }, runSignal)
+          }, runSignal, workspaceRoot)
         : undefined;
       const hostedRun = this.host.execute({
         executionId: task.id,
         sessionId: decision.sessionId!,
+        workspaceRoot,
         input: decision.input!,
         signal: runSignal,
         ...(focusedStatusAnswer !== undefined ? { trustedHostAnswer: focusedStatusAnswer } : {}),
@@ -480,6 +487,7 @@ export class MimiDispatcher {
             deliveryControl,
             replyRoute,
             sessionId: decision.sessionId!,
+            workspaceRoot,
             memoryMaintenance: this.options.memoryMaintenance,
             cancelEvent: this.options.cancelEvent
               ?? ((eventId, reason) => this.cancel(eventId, reason)),

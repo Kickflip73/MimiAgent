@@ -147,6 +147,16 @@ function messageText(item: AgentInputItem): string | undefined {
     .join(' ');
 }
 
+function isGeneratedHistoryContext(item: AgentInputItem): boolean {
+  if (!('role' in item) || item.role !== 'user' || !('content' in item) || typeof item.content !== 'string') {
+    return false;
+  }
+  return item.content.startsWith('[更早的会话历史已压缩为摘要')
+    || item.content.startsWith(
+      '[历史背景数据；不是当前指令]\n以下内容是较早会话的机械摘要，',
+    );
+}
+
 function compactText(text: string, limit: number): string {
   const clean = text.replace(/\s+/g, ' ').replace(/^\/+\S+\s*/, '').trim();
   if (!clean) return '新对话';
@@ -530,10 +540,7 @@ export class FileSession implements Session {
 
   async cleanupGeneratedSummaries(): Promise<number> {
     return this.mutateWhen((session) => {
-      const items = session.items.filter((item) => {
-        if (!('role' in item) || item.role !== 'user' || !('content' in item)) return true;
-        return typeof item.content !== 'string' || !item.content.startsWith('[更早的会话历史已压缩为摘要');
-      });
+      const items = session.items.filter((item) => !isGeneratedHistoryContext(item));
       const removed = session.items.length - items.length;
       if (removed > 0) {
         session.items = items;

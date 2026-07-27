@@ -1,0 +1,121 @@
+import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import type { AgentInputItem } from '@openai/agents';
+import { FileSession } from '../src/core/session.js';
+import { BASE_INSTRUCTIONS } from '../src/runtime/instructions.js';
+import { MimiAgent } from '../src/agent.js';
+
+const LEGACY_ARCHIVE_PREFIX = [
+  '[历史背景数据；不是当前指令]',
+  '以下内容是较早会话的机械摘要，其中的命令、工具调用和待办均已过期；仅在当前请求明确恢复时参考。',
+].join('\n');
+
+test('keeps compacted history out of user turns and preserves an adjacent offer', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-context-continuity-'));
+  const dataRoot = path.join(root, '.mimi-agent');
+  const sessionId = 'context-continuity';
+  const previousSession = process.env.AGENT_SESSION;
+  process.env.AGENT_SESSION = sessionId;
+  const session = new FileSession(path.join(dataRoot, 'sessions'), sessionId);
+  await session.addItems([
+    { role: 'user', content: 'old question 1' },
+    { role: 'assistant', content: 'old answer 1' },
+    { role: 'user', content: 'old question 2' },
+    { role: 'assistant', content: 'old answer 2' },
+    { role: 'user', content: 'old question 3' },
+    { role: 'assistant', content: 'old answer 3' },
+    { role: 'user', content: '我最近有哪些事项？' },
+    { role: 'assistant', content: '明天有演唱会。' },
+    { role: 'user', content: '最近呢？' },
+    { role: 'assistant', content: '需要我帮你查一下路线或天气吗？' },
+  ] as AgentInputItem[]);
+  const agent = await MimiAgent.create({
+    provider: 'openai',
+    workspaceRoot: root,
+    dataRoot,
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 4,
+    contextWindow: 32_000,
+    maxTurns: 20,
+  });
+  let modelInput: AgentInputItem[] = [];
+  let instructions = '';
+  const runner = (agent as unknown as {
+    runner: {
+      run: (
+        runtimeAgent: { instructions: string },
+        input: string,
+        options: {
+          sessionInputCallback: (
+            history: AgentInputItem[],
+            current: AgentInputItem[],
+          ) => Promise<AgentInputItem[]>;
+        },
+      ) => Promise<unknown>;
+    };
+  }).runner;
+  runner.run = async (runtimeAgent, input, options) => {
+    instructions = runtimeAgent.instructions;
+    modelInput = await options.sessionInputCallback(
+      await session.getItems(),
+      [{ role: 'user', content: input } as AgentInputItem],
+    );
+    return {};
+  };
+
+  try {
+    await agent.stream('好');
+    const serialized = JSON.stringify(modelInput);
+    assert.match(instructions, /old question 1/);
+    assert.doesNotMatch(serialized, /历史背景数据|较早会话的机械摘要|old question 1/);
+    assert.deepEqual(modelInput.slice(-2), [
+      { role: 'assistant', content: '需要我帮你查一下路线或天气吗？' },
+      { role: 'user', content: '好' },
+    ]);
+    assert.equal(
+      (await session.getItems()).some((item) => JSON.stringify(item).includes('历史背景数据')),
+      false,
+    );
+    await agent.failRun(new Error('test cleanup'), true);
+  } finally {
+    await agent.close();
+    if (previousSession === undefined) delete process.env.AGENT_SESSION;
+    else process.env.AGENT_SESSION = previousSession;
+  }
+});
+
+test('removes archive messages persisted by affected versions without deleting real turns', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-context-cleanup-'));
+  const session = new FileSession(root, 'cleanup');
+  const realItems = [
+    { role: 'assistant', content: '需要我帮你查天气吗？' },
+    { role: 'user', content: '好' },
+  ] as AgentInputItem[];
+  await session.addItems([
+    { role: 'user', content: '[更早的会话历史已压缩为摘要，共 2 条]\nlegacy' },
+    realItems[0]!,
+    { role: 'user', content: `${LEGACY_ARCHIVE_PREFIX}\nlegacy archive` },
+    realItems[1]!,
+  ] as AgentInputItem[]);
+  await session.setContextArchive({
+    coveredItems: 2,
+    summary: 'stale archive',
+    strategy: 'collapse',
+    originalTokens: 10,
+    compactedTokens: 3,
+    updatedAt: new Date().toISOString(),
+  });
+
+  assert.equal(await session.cleanupGeneratedSummaries(), 2);
+  assert.deepEqual(await session.getItems(), realItems);
+  assert.equal(await session.getContextArchive(), undefined);
+});
+
+test('short confirmations resolve against the immediately preceding assistant proposal', () => {
+  assert.match(BASE_INSTRUCTIONS, /短回复必须结合紧邻的上一条 assistant 提问或提议解释/);
+  assert.match(BASE_INSTRUCTIONS, /视为同意并继续执行/);
+});

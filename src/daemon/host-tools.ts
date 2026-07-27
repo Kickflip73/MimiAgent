@@ -34,6 +34,7 @@ export interface MimiHostToolContext {
   event: ImmutableEvent;
   deliveryControl: MimiDeliveryControl;
   sessionId: string;
+  workspaceRoot?: string;
   connectors?: ConnectorManager;
   connectorRuntime?: ConnectorTaskRuntime;
   replyRoute?: ReplyRoute;
@@ -66,6 +67,7 @@ export function createMimiHostTools(context: MimiHostToolContext): Tool[] {
       task: context.task,
       event: context.event,
       sessionId: context.sessionId,
+      workspaceRoot: context.workspaceRoot,
       replyRoute: context.replyRoute,
       cancel: context.cancelEvent,
       pause: context.pauseEvent,

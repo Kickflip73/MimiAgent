@@ -7,6 +7,7 @@ MimiAgent 是 7×24 小时在线、本地优先的全能个人 Agent，同时提
 - OpenAI Agents SDK 负责模型循环、Tool、MCP 和 Agent-as-tool 协议。
 - 每个 Session actor 中的主 Agent 始终拥有该会话与最终回答，SubAgent 只处理有边界的独立子任务。
 - `mimi`、Daemon、IM、语音和其他入口共用一个常驻内核与 `MimiHost`；CLI 是本地 Unix Socket 客户端，不拥有第二份控制面或 transcript。
+- Kernel 是全局控制面，不是全局工作区。owner CLI Event 携带本次启动目录；Dispatcher 在模型运行前解析显式项目路径、唯一项目名、当前目录、Session 事项目录或 `~/MimiWorkspace/<具体事项>`，再让 Session actor 用该目录重建完整运行时。
 - 同一 Session 严格 FIFO，不同 Session actor 可在有界全局并发内同时运行；Session actor 是隔离执行单元，不承诺一对一映射为操作系统进程。
 - 无需立即返回的长任务先持久化，再由独立操作系统子进程执行；完成结果仍回到同一 Event / Run / Outbox 可靠链路。
 - 常驻内核空闲时只做确定性的监听、租约、计划和投递维护；没有可执行事件时不调用模型。
@@ -81,8 +82,8 @@ CLI / IM / Voice / Schedule / Connector events
 ```
 
 1. **Kernel 层**只有一个长期存活的状态所有者。它接收和持久化事件，执行 Attention 的确定性分类，维护租约、重试、Schedule、Outbox、Connector 生命周期与 Connector action broker，并监督任务子进程。没有待处理事件、计划到期或投递工作时，不启动 Agent Run，也不为了“思考”而周期调用模型。
-2. **Conversation 层**按 Session 创建隔离的 actor runtime。每个 actor 拥有自己的可变 `MimiAgent` 与 `AgentRunService`，因此一个会话的模型、模式、checkpoint 和流式运行不会污染另一个会话。同一 Session 的 Run 和 mutation 始终 FIFO；不同 Session 在 `MIMI_SESSION_MAX_CONCURRENCY` 限制内并行。actor 是进程内的逻辑执行单元，不等于一个 PID；多个 CLI 窗口只有选择不同 Session 时才并行，指向同一 Session 时会按顺序执行以保护 transcript。
-3. **Task 层**处理无需在当前对话等待的长程、大型、多阶段或持续型工作。主 MimiAgent 调用 `delegate_background_task` 后，先把带来源 Session、父事件、深度、`workspaceAccess: read | write` 和独立 Task Session 的 Event 持久化到 `task` lane，再立即把 `taskId` 返回当前对话。`TaskProcessSupervisor` 为 ready task fork 独立 Node.js 子进程，子进程通过租约领取精确 Event 并运行一个 Task Lead；暂停、继续、取消、阻塞等待输入、崩溃恢复和重试继续服从 Event/ExecutionLedger 语义。`read` Task 可并行读取、分析并更新自己的 Plan/Goal/checkpoint，但确定性禁用 Shell、文件写、任意写网络、Connector 事务、后台再委派和 Team；`write` Task 保留其来源授权档位并由 Supervisor 做工作区互斥，需要拆分时只使用当前 Task 内的只读 SubAgent 或 Ultra Team，不再建立持久 Task 子树。终态或输入请求由子进程写入 Event/Run，并通过 Kernel 的 Outbox/Notifier 主动送回来源渠道。Connector 凭据与渠道子进程仍由 Kernel 的 broker 单一持有，任务进程不复制渠道控制面；broker 请求只携带该 worker 的独立随机 `workerToken`，显式不读取控制面 bearer，也不能调用 status、submit、shutdown 或其他 owner RPC。
+2. **Conversation 层**按 Session 创建隔离的 actor runtime。每个 actor 拥有自己的可变 `MimiAgent` 与 `AgentRunService`，因此一个会话的模型、模式、checkpoint 和流式运行不会污染另一个会话。同一 Session 的 Run 和 mutation 始终 FIFO；不同 Session 在 `MIMI_SESSION_MAX_CONCURRENCY` 限制内并行。工作区是 Session Run 的不可变执行范围；解析结果变化时，actor 会在 FIFO 安全点关闭旧的工作区运行时，并用新目录重建文件工具、Shell、Project Guidance、Skill、MCP、Memory 路由与 Team。actor 是进程内的逻辑执行单元，不等于一个 PID；多个 CLI 窗口只有选择不同 Session 时才并行，指向同一 Session 时会按顺序执行以保护 transcript。
+3. **Task 层**处理无需在当前对话等待的长程、大型、多阶段或持续型工作。主 MimiAgent 调用 `delegate_background_task` 后，先把带来源 Session、父事件、深度、已解析 `workspaceRoot`、`workspaceAccess: read | write` 和独立 Task Session 的 Event 持久化到 `task` lane，再立即把 `taskId` 返回当前对话。`TaskProcessSupervisor` 为 ready task fork 独立 Node.js 子进程，并用持久化的工作区重建 worker 配置，不能回退到 Kernel 启动目录。子进程通过租约领取精确 Event 并运行一个 Task Lead；暂停、继续、取消、阻塞等待输入、崩溃恢复和重试继续服从 Event/ExecutionLedger 语义。`read` Task 可并行读取、分析并更新自己的 Plan/Goal/checkpoint，但确定性禁用 Shell、文件写、任意写网络、Connector 事务、后台再委派和 Team；`write` Task 保留其来源授权档位并由 Supervisor 做工作区互斥，需要拆分时只使用当前 Task 内的只读 SubAgent 或 Ultra Team，不再建立持久 Task 子树。终态或输入请求由子进程写入 Event/Run，并通过 Kernel 的 Outbox/Notifier 主动送回来源渠道。Connector 凭据与渠道子进程仍由 Kernel 的 broker 单一持有，任务进程不复制渠道控制面；broker 请求只携带该 worker 的独立随机 `workerToken`，显式不读取控制面 bearer，也不能调用 status、submit、shutdown 或其他 owner RPC。
 
 `MIMI_SESSION_MAX_CONCURRENCY` 控制对话 Session actor 池，默认 `4`，可配置范围为 `1～16`。Task supervisor 复用这个值作为期望 worker 数，但为保护本机资源再硬限制为最多 `8` 个（默认仍为 `4`）。两者是独立的本机有界执行池，不是共享配额、分布式调度或无限制进程树。
 
@@ -340,6 +341,8 @@ Task Lead 只有确实缺少无法自行取得的必要信息时才调用 `reque
 ## Agent Skills
 
 SkillLoader 实现开放 Agent Skills 格式的最小完整客户端流程：
+
+- Skill 可用 `required-tools` 声明不可缺少的运行时 Function Tool。目录披露和激活都以当前 Run 的最终工具集为准；权限、模式、来源策略或可选 Extension 移除依赖后，Skill 必须 fail closed，不能把不可执行说明注入模型。
 
 1. 扫描 `skills/*/SKILL.md`。
 2. 用 YAML Parser 和 Schema 校验 `name`、`description`。

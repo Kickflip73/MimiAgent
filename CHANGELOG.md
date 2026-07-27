@@ -31,6 +31,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - macOS 日历与提醒事项 Connector 改用 EventKit 原生后台访问，轮询和操作不再启动或激活 Calendar/Reminders App。
 - let the model recover from stale or hallucinated tool names instead of aborting
   the entire run with `Tool ... not found`
+- resolve each owner task to its actual project workspace before the model runs:
+  explicit paths or unique project names override the CLI launch directory,
+  current-project work uses that directory, unspecified new deliverables are
+  created under `~/MimiWorkspace/<task>`, Session runtimes rebuild at FIFO-safe
+  boundaries, and durable background/Codex tasks inherit the resolved workspace
+- bound the interactive input viewport for long text, preserve bracketed-paste
+  markers split across terminal data chunks, and defer/coalesce Apple Terminal
+  redraws outside IME key events; Apple Terminal uses a single physical-row
+  viewport that never crosses its marked-text wrapping crash boundary while
+  still submitting the complete input
+- return the activated Skill resource root from `use_skill`, and make QQ desktop
+  messaging a deterministic, background-only path that can read bounded visible
+  context for summaries or contextual replies, confirm exact recipients, verify
+  delivery by before/after differences, accept CuaDriver's textual action
+  receipts, preserve non-empty user drafts, verify the exact prepared text before
+  pressing send, and never retry or rename the recipient after a failed send
+- let runtime-capability questions inspect `runtime_status` so unavailable
+  Computer Use is explained from actual configuration instead of a reduced tool list
+- bind capability-dependent Skills to the current Run's real tool set, report
+  effective Computer Use configuration separately from Full Owner's potential
+  permission, and require bounded fallback/state verification before declaring a
+  task impossible or replaying an uncertain side effect
+- keep compacted history in its dedicated instruction/archive section instead of
+  persisting it as a synthetic user turn, remove affected legacy archive messages
+  on Session load, and resolve short confirmations against the immediately
+  preceding assistant proposal
 
 ## [0.12.0] - 2026-07-24
 

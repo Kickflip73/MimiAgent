@@ -100,8 +100,13 @@ function named(collection, name, label) {
   if (!item.exists()) throw new Error(label + ' not found: ' + name);
   return item;
 }
+var SKIP_CALENDARS = ['中国大陆节假日', 'Siri建议', '生日'];
 function calendars(app, name) {
-  return name === '*' ? app.calendars() : [named(app.calendars, name, 'calendar')];
+  if (name === '*') {
+    var all = app.calendars();
+    return all.filter(function(c) { return SKIP_CALENDARS.indexOf(String(c.name())) === -1; });
+  }
+  return [named(app.calendars, name, 'calendar')];
 }
 function reminderLists(app, name) {
   return name === '*' ? app.lists() : [named(app.lists, name, 'reminder list')];

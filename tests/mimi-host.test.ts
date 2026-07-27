@@ -145,6 +145,52 @@ test('runs different Session actors concurrently while preserving each Session F
   await host.close();
 });
 
+test('rebuilds a Session runtime when its resolved workspace changes', async () => {
+  const created: string[] = [];
+  const closed: string[] = [];
+  const executions: string[] = [];
+  const runtime = (workspaceRoot: string) => ({
+    agent: {
+      currentSessionId: 'session-a',
+      bindSessionActor: () => undefined,
+      switchSession: async () => undefined,
+      sessionSnapshot: async () => { throw new Error('unused'); },
+      listSessionSummaries: async () => [],
+      close: async () => { closed.push(workspaceRoot); },
+    } as unknown as MimiAgent,
+    runs: {
+      execute: async () => {
+        executions.push(workspaceRoot);
+        return { answer: workspaceRoot, effects: [] };
+      },
+    },
+  });
+  const primary = runtime('/workspace/initial');
+  const host = new MimiHost(primary.agent, primary.runs, {
+    primaryWorkspaceRoot: '/workspace/initial',
+    createSessionRuntime: async (_sessionId, workspaceRoot) => {
+      assert.ok(workspaceRoot);
+      created.push(workspaceRoot);
+      return runtime(workspaceRoot);
+    },
+  });
+
+  assert.equal((await host.execute({
+    sessionId: 'session-a', workspaceRoot: '/workspace/project-a', input: 'work A',
+  })).answer, '/workspace/project-a');
+  assert.equal(host.workspaceRootFor('session-a'), '/workspace/project-a');
+  assert.equal((await host.execute({
+    sessionId: 'session-a', workspaceRoot: '/workspace/project-b', input: 'work B',
+  })).answer, '/workspace/project-b');
+
+  assert.deepEqual(created, ['/workspace/project-a', '/workspace/project-b']);
+  assert.deepEqual(executions, ['/workspace/project-a', '/workspace/project-b']);
+  assert.deepEqual(closed, ['/workspace/project-a']);
+  await host.close();
+  assert.ok(closed.includes('/workspace/project-b'));
+  assert.ok(closed.includes('/workspace/initial'));
+});
+
 test('evicts least-recently-used idle Session actors without touching the primary actor', async () => {
   const created: string[] = [];
   const closed: string[] = [];

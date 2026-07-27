@@ -355,6 +355,7 @@ export class CommandHandler {
         `Skills    ${info.skillCount}`,
         `Memories  ${info.memoryCount}`,
         `MCP       ${info.mcpServers.join(', ') || '未连接'}`,
+        `Computer  ${info.computer?.configured ? `已配置（${info.computer.backend ?? 'unknown'}）` : '未配置'}`,
         `Team      ${info.team.total ? `${info.team.completed}/${info.team.total} 完成 · ${info.team.running} 运行` : '未启用'}`,
         `Guidance  ${info.guidanceFiles.length ? `${info.guidanceFiles.length} 个已加载` : '未配置'}`,
       ].join('\n'));
@@ -371,12 +372,14 @@ export class CommandHandler {
         return [
           value.shell ? 'Shell' : '无 Shell',
           value.externalTransactions ? '外部写事务' : '无外部写事务',
-          value.computerUse ? 'Computer Use' : '无 Computer Use',
+          value.computerUse ? '可配置 Computer Use' : '无 Computer Use',
           value.trustedWorkspaceMcp ? '受信工作区 MCP' : '无受信工作区 MCP',
         ].join(' · ');
       };
+      const effective = info.securityProfile;
       return this.handled([
         `当前档位  ${SECURITY_PROFILES[active].label} (${active}/${info.permissionMode ?? SECURITY_PROFILES[active].permissionMode})`,
+        `当前能力  ${effective?.shell ? 'Shell' : '无 Shell'} · ${effective?.externalTransactions ? '外部写事务' : '无外部写事务'} · ${effective?.computerUse ? 'Computer Use 已配置' : 'Computer Use 未配置'} · ${effective?.trustedWorkspaceMcp ? '受信工作区 MCP 已配置' : '受信工作区 MCP 未配置'}`,
         `${active === 'safe' ? '●' : '○'} Safe        只读工作区 · ${capabilities('safe')}`,
         `${active === 'workstation' ? '●' : '○'} Workstation 工作区可写 · ${capabilities('workstation')}`,
         `${active === 'full-owner' ? '●' : '○'} Full Owner  当前 OS 用户权限 · ${capabilities('full-owner')}`,

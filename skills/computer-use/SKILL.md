@@ -1,6 +1,7 @@
 ---
 name: computer-use
 description: Safely operate macOS applications through MimiAgent Computer Use. Use for tasks that require observing and manipulating a native app GUI when Shell, Browser, Connector, Shortcuts, or an official API cannot complete the work, including multi-window selection, accessibility-element actions, window-local visual fallback, dialogs, menus, and post-action verification.
+required-tools: computer_observe, computer_act
 ---
 
 # Computer Use

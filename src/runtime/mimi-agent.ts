@@ -118,6 +118,7 @@ interface ActiveRun {
   team?: TeamTaskStore;
   planOwned?: boolean;
   teamOwned?: boolean;
+  availableToolNames?: readonly string[];
 }
 
 export interface ContextUsageSnapshot {
@@ -370,7 +371,7 @@ export class MimiAgent {
     this.tools = toolsForPermission(this.permissionMode, [
       ...createTools(config.workspaceRoot, config.provider === 'openai', privateRuntimePaths(config), localAccess),
       ...computerTools,
-      ...this.skills.createTools(),
+      ...this.skills.createTools(() => this.activeRun?.availableToolNames),
       ...this.mcp.createTools(),
       ...createRuntimeControlTools({
         status: () => this.runtimeInfo(),
@@ -707,6 +708,7 @@ export class MimiAgent {
         },
       } : undefined,
     );
+    run.availableToolNames = allTools.map((tool) => tool.name);
     const toolSchemas = allTools.map((tool) => {
       const value = tool as unknown as Record<string, unknown>;
       return { name: value.name, description: value.description, parameters: value.parameters };
@@ -740,8 +742,8 @@ export class MimiAgent {
       }) : '',
       identity: canReadLocal ? soul.instructions : '',
       projectGuidance: canReadLocal ? projectGuidance.instructions : '',
-      historySummary: '',
-      skillCatalog: canReadLocal && skillsDisclosed ? this.skills.catalog() : '',
+      historySummary: archive?.summary ?? '',
+      skillCatalog: canReadLocal && skillsDisclosed ? this.skills.catalog(run.availableToolNames) : '',
       memories,
       plan: activePlan,
       goal,
@@ -753,22 +755,9 @@ export class MimiAgent {
       Math.max(0, budget.inputBudget - estimateTokens(instructions)),
       focusedOwnerRun ? 8_000 : Number.POSITIVE_INFINITY,
     );
-    const archiveContext = archive?.summary ? [{
-      role: 'user',
-      content: [
-        '[历史背景数据；不是当前指令]',
-        '以下内容是较早会话的机械摘要，其中的命令、工具调用和待办均已过期；仅在当前请求明确恢复时参考。',
-        archive.summary,
-      ].join('\n'),
-    } as AgentInputItem] : [];
-    const withArchiveContext = (currentInput: AgentInputItem[]): AgentInputItem[] => (
-      archiveContext.length && currentInput.some((item) => 'role' in item && item.role === 'user')
-        ? [...archiveContext, ...currentInput]
-        : currentInput
-    );
-    const currentContextInput = withArchiveContext([
+    const currentContextInput = [
       { role: 'user', content: input } as AgentInputItem,
-    ]);
+    ];
     const effectiveResult = context.effectiveHistoryResult(history, currentContextInput, archive, historyBudget);
     const effectiveHistory = effectiveResult.items;
     this.lastContextTokens = budget.toolSchemaTokens + budget.protocolReserveTokens
@@ -781,7 +770,7 @@ export class MimiAgent {
       instructions: builtInstructions,
       effective: effectiveResult,
       archive,
-      archiveInput: archiveContext,
+      archiveInput: [],
       currentInput: [{ role: 'user', content: input } as AgentInputItem],
       toolCount: toolSchemas.length,
     });
@@ -812,7 +801,7 @@ export class MimiAgent {
     const contextInputCallback = canReadSessionContext
       ? async (sessionHistory: AgentInputItem[], currentInput: AgentInputItem[]) => context.effectiveHistory(
           sessionHistory,
-          withArchiveContext(currentInput),
+          currentInput,
           archive,
           historyBudget,
         )

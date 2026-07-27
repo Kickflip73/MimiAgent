@@ -1,8 +1,9 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import process from 'node:process';
-import type { AppConfig } from '../config.js';
+import { adoptRuntimeWorkspaceConfig, type AppConfig } from '../config.js';
 import {
   collectTrustedMcpEnvironment,
   isMcpConfigurationTrusted,
@@ -101,6 +102,16 @@ function hasOwnerConversationRoot(store: MimiStore, taskId: string): boolean {
   const task = store.getTask(taskId);
   return task !== undefined
     && store.getImmutableEvent(task.authorityEventId)?.trust === 'owner';
+}
+
+function taskRuntimeConfig(config: AppConfig, objective: unknown): AppConfig {
+  if (!objective || typeof objective !== 'object' || Array.isArray(objective)) return config;
+  const workspaceRoot = (objective as Record<string, unknown>).workspaceRoot;
+  if (workspaceRoot === undefined) return config;
+  if (typeof workspaceRoot !== 'string' || !path.isAbsolute(workspaceRoot) || workspaceRoot.length > 4096) {
+    throw new Error('后台任务工作区必须是有效的绝对路径');
+  }
+  return adoptRuntimeWorkspaceConfig(config, workspaceRoot);
 }
 
 function equalWorkerToken(left: string, right: string): boolean {
@@ -371,19 +382,20 @@ export class TaskProcessSupervisor {
     const task = this.store.getTask(taskId);
     const executor = task?.executor === 'codex' ? 'codex' as const : 'mimi' as const;
     try {
-      workerConfig = taskWorkerConfig(this.config);
-      providerCredential = executor === 'mimi' ? taskProviderCredential(this.config) : undefined;
-      embeddingCredential = executor === 'mimi' ? taskEmbeddingCredential(this.config) : undefined;
+      const runtimeConfig = taskRuntimeConfig(this.config, task?.objective);
+      workerConfig = taskWorkerConfig(runtimeConfig);
+      providerCredential = executor === 'mimi' ? taskProviderCredential(runtimeConfig) : undefined;
+      embeddingCredential = executor === 'mimi' ? taskEmbeddingCredential(runtimeConfig) : undefined;
       const mcpConfigurationTrusted = await isMcpConfigurationTrusted(
-        this.config.mcpConfig,
-        this.config.workspaceRoot,
-        this.config.trustedWorkspaceMcp,
+        runtimeConfig.mcpConfig,
+        runtimeConfig.workspaceRoot,
+        runtimeConfig.trustedWorkspaceMcp,
       );
       const declaredMcpEnvironment = mcpConfigurationTrusted
         ? await collectTrustedMcpEnvironment(
-            this.config.mcpConfig,
-            this.config.workspaceRoot,
-            this.config.trustedWorkspaceMcp,
+            runtimeConfig.mcpConfig,
+            runtimeConfig.workspaceRoot,
+            runtimeConfig.trustedWorkspaceMcp,
           )
         : {};
       mcpEnvironmentKeys = Object.keys(declaredMcpEnvironment)

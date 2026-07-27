@@ -150,7 +150,23 @@ export async function localInboundHistory(target, payload = {}, env = process.en
 
 async function resolveOpenClaw() {
   const configured = process.env.OPENCLAW_BIN?.trim();
-  const candidates = [configured, '/opt/homebrew/bin/openclaw', '/usr/local/bin/openclaw']
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim() || path.join(homedir(), '.openclaw');
+  const managedToolsDir = path.join(stateDir, 'tools');
+  let managedCandidates = [];
+  try {
+    managedCandidates = (await readdir(managedToolsDir, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('node-v'))
+      .map((entry) => path.join(managedToolsDir, entry.name, 'bin', 'openclaw'))
+      .sort()
+      .reverse();
+  } catch {}
+  const candidates = [
+    configured,
+    ...managedCandidates,
+    path.join(stateDir, 'bin', 'openclaw'),
+    '/opt/homebrew/bin/openclaw',
+    '/usr/local/bin/openclaw',
+  ]
     .filter(Boolean);
   for (const candidate of candidates) {
     try {

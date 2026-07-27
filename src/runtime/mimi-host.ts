@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
 import type { SessionSummary } from '../core/session.js';
 import type { AgentSessionSnapshot, MimiAgent } from './mimi-agent.js';
 import {
@@ -11,6 +12,7 @@ import {
 export interface HostedAgentRunRequest extends AgentRunRequest {
   sessionId: string;
   executionId?: string;
+  workspaceRoot?: string;
 }
 
 export type HostCancelResult =
@@ -27,6 +29,7 @@ interface PendingExecution {
 
 interface SessionActor {
   sessionId: string;
+  workspaceRoot?: string;
   agent: MimiAgent;
   runs: HostedRunExecutor;
   lane: Promise<void>;
@@ -43,7 +46,8 @@ export interface MimiHostOptions {
   maxConcurrentSessions?: number;
   maxCachedSessions?: number;
   sessionIdleMs?: number;
-  createSessionRuntime?: (sessionId: string) => Promise<MimiSessionRuntime>;
+  primaryWorkspaceRoot?: string;
+  createSessionRuntime?: (sessionId: string, workspaceRoot?: string) => Promise<MimiSessionRuntime>;
 }
 
 interface SemaphoreWaiter {
@@ -123,6 +127,9 @@ export class MimiHost {
     if (options.createSessionRuntime) agent.bindSessionActor(agent.currentSessionId);
     this.primary = {
       sessionId: agent.currentSessionId,
+      workspaceRoot: options.primaryWorkspaceRoot
+        ? path.resolve(options.primaryWorkspaceRoot)
+        : undefined,
       agent,
       runs,
       lane: Promise.resolve(),
@@ -151,10 +158,11 @@ export class MimiHost {
       ? AbortSignal.any([request.signal, controller.signal])
       : controller.signal;
 
-    return this.actorFor(request.sessionId).then((actor) => this.enqueue(actor, async () => {
+    return this.actorFor(request.sessionId, request.workspaceRoot).then((actor) => this.enqueue(actor, async () => {
       const release = await this.slots.acquire(signal);
       try {
         if (signal.aborted) throw signal.reason ?? new Error(`Execution ${executionId} 已取消`);
+        await this.ensureWorkspace(actor, request.workspaceRoot);
         await this.selectSession(actor.agent, request.sessionId);
         signal.throwIfAborted();
         const receipt = request.options?.executionKey
@@ -194,10 +202,12 @@ export class MimiHost {
     sessionId: string,
     operation: (agent: MimiAgent) => T | Promise<T>,
     signal?: AbortSignal,
+    workspaceRoot?: string,
   ): Promise<T> {
     this.assertOpen();
-    return this.actorFor(sessionId).then((actor) => this.enqueue(actor, async () => {
+    return this.actorFor(sessionId, workspaceRoot).then((actor) => this.enqueue(actor, async () => {
       signal?.throwIfAborted();
+      await this.ensureWorkspace(actor, workspaceRoot);
       await this.selectSession(actor.agent, sessionId);
       signal?.throwIfAborted();
       return operation(actor.agent);
@@ -234,6 +244,10 @@ export class MimiHost {
     return this.agent.listSessionSummaries();
   }
 
+  workspaceRootFor(sessionId: string): string | undefined {
+    return this.resolvedActors.get(sessionId)?.workspaceRoot;
+  }
+
   cancel(executionId: string, reason = new Error(`Execution ${executionId} 已取消`)): HostCancelResult {
     const execution = this.pending.get(executionId);
     if (!execution) return { state: 'not_found' };
@@ -249,12 +263,12 @@ export class MimiHost {
     }
     const actors = await Promise.all([...new Set(this.actors.values())]);
     await Promise.all(actors.map((actor) => actor.lane));
-    const agents = [...new Set(actors.map((actor) => actor.agent))];
+    const agents = [...new Set([...actors.map((actor) => actor.agent), this.agent])];
     await Promise.all(agents.map((runtime) => runtime.close()));
     await Promise.all([...this.actorClosures]);
   }
 
-  private actorFor(sessionId: string): Promise<SessionActor> {
+  private actorFor(sessionId: string, workspaceRoot?: string): Promise<SessionActor> {
     this.reserveActor(sessionId);
     this.evictIdleActors(sessionId);
     const existing = this.actors.get(sessionId);
@@ -263,10 +277,12 @@ export class MimiHost {
       throw error;
     });
     if (!this.options.createSessionRuntime) return Promise.resolve(this.primary);
-    const created = this.options.createSessionRuntime(sessionId).then((runtime) => {
+    const resolvedWorkspace = workspaceRoot ? path.resolve(workspaceRoot) : undefined;
+    const created = this.options.createSessionRuntime(sessionId, resolvedWorkspace).then((runtime) => {
       runtime.agent.bindSessionActor(sessionId);
       return {
         sessionId,
+        workspaceRoot: resolvedWorkspace,
         agent: runtime.agent,
         runs: runtime.runs ?? new AgentRunService(runtime.agent),
         lane: Promise.resolve(),
@@ -288,6 +304,22 @@ export class MimiHost {
 
   private async selectSession(agent: MimiAgent, sessionId: string): Promise<void> {
     if (agent.currentSessionId !== sessionId) await agent.switchSession(sessionId);
+  }
+
+  private async ensureWorkspace(actor: SessionActor, workspaceRoot?: string): Promise<void> {
+    if (!workspaceRoot) return;
+    const resolved = path.resolve(workspaceRoot);
+    if (actor.workspaceRoot === resolved) return;
+    if (!this.options.createSessionRuntime) {
+      throw new Error(`Session ${actor.sessionId} 无法切换工作区`);
+    }
+    const previous = actor.agent;
+    const runtime = await this.options.createSessionRuntime(actor.sessionId, resolved);
+    runtime.agent.bindSessionActor(actor.sessionId);
+    actor.workspaceRoot = resolved;
+    actor.agent = runtime.agent;
+    actor.runs = runtime.runs ?? new AgentRunService(runtime.agent);
+    if (previous !== this.agent) await previous.close();
   }
 
   private enqueue<T>(

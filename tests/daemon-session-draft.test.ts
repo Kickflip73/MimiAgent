@@ -166,6 +166,38 @@ test('CLI restarts an unavailable daemon and retries a draft bootstrap', async (
   }
 });
 
+test('CLI submits its launch workspace with each owner command', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-submit-workspace-'));
+  const socket = path.join(root, 'mimi.sock');
+  const workspaceRoot = path.join(root, 'project');
+  let submitted: Record<string, unknown> | undefined;
+  const server = new MimiIpcServer(socket, (method, params) => {
+    if (method !== 'submit') throw new Error(`unexpected method: ${method}`);
+    submitted = params as Record<string, unknown>;
+    return {
+      event: { id: 'event' },
+      task: { id: 'task' },
+      inserted: true,
+    };
+  });
+  await server.start();
+  try {
+    const client = new MimiChatClient({
+      dataRoot: root,
+      daemonDataRoot: root,
+      workspaceRoot,
+      provider: 'openai',
+      permissionMode: 'trusted',
+    } as AppConfig);
+    await client.submit('修复当前项目');
+    assert.equal(submitted?.workspaceRoot, workspaceRoot);
+    assert.equal(submitted?.source, 'local-cli');
+    assert.equal(submitted?.trust, 'owner');
+  } finally {
+    await server.close();
+  }
+});
+
 test('a new command prepares an in-memory draft instead of switching a real Session', async () => {
   const calls: string[] = [];
   const target = {

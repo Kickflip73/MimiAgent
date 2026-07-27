@@ -23,6 +23,7 @@
     { "name": "panda-draw", "status": "experimental", "published": false },
     { "name": "pdf", "status": "experimental", "published": false },
     { "name": "playwright", "status": "experimental", "published": false },
+    { "name": "qq-messenger-skill", "status": "experimental", "published": false },
     { "name": "redesign-skill", "status": "experimental", "published": false },
     { "name": "screenshot", "status": "experimental", "published": false },
     { "name": "security-best-practices", "status": "experimental", "published": false },

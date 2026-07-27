@@ -3,6 +3,12 @@
     "xiaohongshu-mcp": {
       "url": "http://localhost:18060/mcp",
       "description": "小红书 MCP 服务 - 搜索/发布/互动"
+    },
+    "cua-driver": {
+      "command": "${HOME}/.local/bin/cua-driver",
+      "args": ["mcp"],
+      "allowedEnv": ["HOME"],
+      "description": "Cua Driver - 后台桌面操控，支持 macOS Accessibility/Screen Recording"
     }
   }
 }

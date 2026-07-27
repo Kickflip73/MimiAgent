@@ -74,6 +74,7 @@ test('repeated background delegation returns the same durable task', async () =>
       task: routed.task,
       event: routed.event,
       sessionId: 'test-session',
+      workspaceRoot: path.join(root, 'selected-workspace'),
     });
     const input = {
       objective: 'Implement the game MVP',
@@ -87,6 +88,10 @@ test('repeated background delegation returns the same durable task', async () =>
     assert.equal(typeof first.taskId, 'string', JSON.stringify(first));
     assert.equal(repeated.taskId, first.taskId);
     assert.equal(store.taskChildCount(routed.task.id), 1);
+    assert.equal(
+      (store.getTask(first.taskId)?.objective as Record<string, unknown>).workspaceRoot,
+      path.join(root, 'selected-workspace'),
+    );
 
     const outputJsonlPath = path.join(root, 'events.jsonl');
     await writeFile(outputJsonlPath, `${JSON.stringify({

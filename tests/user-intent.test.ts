@@ -38,6 +38,7 @@ test('rejects negated Session access and destructive clear intent', () => {
 test('progressively discloses capabilities for owner conversation input', () => {
   assert.equal(capabilityDisclosureForInput('咋样了？'), 'status');
   assert.equal(capabilityDisclosureForInput('为什么天空是蓝色的？'), 'lightweight');
+  assert.equal(capabilityDisclosureForInput('为什么 Computer Use 工具当前不可用？'), 'runtime');
   assert.equal(capabilityDisclosureForInput('搜索一下今天上海的天气'), 'web');
   assert.equal(capabilityDisclosureForInput('切换到上一个会话'), 'session');
   for (const input of [
@@ -56,6 +57,9 @@ test('progressively discloses capabilities for owner conversation input', () => 
     '搜索代码里的 TODO',
     '解释 src/index.ts 的逻辑',
     '总结 https://example.com/report',
+    '为什么GitHub直连不通？你试一下。',
+    '大象 Connector 失败，你不会使用 Computer Use 去操作大象看看么？',
+    '帮我看看大象有哪些消息',
     '查看修复进度并继续修改代码',
     '切换到上个会话，然后修复这个问题',
   ]) assert.equal(capabilityDisclosureForInput(input), 'full', input);
@@ -63,6 +67,7 @@ test('progressively discloses capabilities for owner conversation input', () => 
     '如何修复 TypeScript 类型错误？',
     '怎么配置 Git？',
     '解释为什么执行测试很慢',
+    '你试着解释一下这个概念',
   ]) assert.equal(capabilityDisclosureForInput(input), 'lightweight', input);
   assert.equal(capabilityDisclosureForInput('你现在用的什么模型？'), 'session');
   assert.equal(capabilityDisclosureForInput('列出后台任务'), 'status');
@@ -77,6 +82,19 @@ test('owner status questions expose no tools before the Host answers directly', 
   });
 
   assert.deepEqual(decision.options?.policy?.allowedTools, []);
+  assert.equal(decision.options?.policy?.allowSideEffects, false);
+  assert.equal(decision.options?.policy?.allowMcp, false);
+});
+
+test('runtime capability questions can inspect the actual runtime without broad tool access', () => {
+  const now = new Date().toISOString();
+  const decision = decideEvent({
+    id: 'event-runtime', externalId: 'external-runtime', source: 'local-cli', kind: 'command',
+    trust: 'owner', payload: '为什么 Computer Use 工具当前不可用？', profileId: 'owner',
+    occurredAt: now, receivedAt: now, priority: 100,
+  });
+
+  assert.deepEqual(decision.options?.policy?.allowedTools, ['runtime_status']);
   assert.equal(decision.options?.policy?.allowSideEffects, false);
   assert.equal(decision.options?.policy?.allowMcp, false);
 });

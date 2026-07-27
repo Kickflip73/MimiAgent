@@ -272,6 +272,74 @@ test('keeps the input cursor away from the right edge for IME composition', () =
   terminal.close();
 });
 
+test('defers and coalesces input redraws outside the keypress callback for Apple Terminal safety', async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const terminal = new InteractiveTerminal(
+    [],
+    input as never,
+    output as never,
+    { inputRedrawDelayMs: 20 },
+  );
+  terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
+  output.value = '';
+
+  for (const character of '输入文字') input.emit('keypress', character, { sequence: character });
+
+  assert.equal(output.value, '', 'keypress dispatch must not synchronously redraw the terminal');
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  const plain = output.value.replace(/\x1b\[[?0-9;]*[A-Za-z~]/g, '');
+  assert.match(plain, /┊> 输入文字/);
+  assert.equal((plain.match(/┊> 输入文字/g) ?? []).length, 1);
+  terminal.close();
+});
+
+test('submits buffered input before a deferred redraw fires', () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const lines: string[] = [];
+  const terminal = new InteractiveTerminal(
+    [],
+    input as never,
+    output as never,
+    { inputRedrawDelayMs: 20 },
+  );
+  terminal.start({ onLine: (line) => lines.push(line), onEscape: () => undefined, onExit: () => undefined });
+
+  input.emit('keypress', '立即发送', { sequence: '立即发送' });
+  input.emit('keypress', '\r', { name: 'return' });
+
+  assert.deepEqual(lines, ['立即发送']);
+  terminal.close();
+});
+
+test('keeps Apple Terminal input on one physical row past the wide-character wrap boundary', () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  output.columns = 52;
+  const lines: string[] = [];
+  const terminal = new InteractiveTerminal(
+    [],
+    input as never,
+    output as never,
+    { inputRedrawDelayMs: 0, singleLineInputViewport: true },
+  );
+  terminal.start({ onLine: (line) => lines.push(line), onEscape: () => undefined, onExit: () => undefined });
+  output.value = '';
+  const value = '这是用于验证苹果终端输入法安全视窗的一段较长中文文字，长度已经明显超过原来的自动换行边界';
+
+  input.emit('keypress', value, { sequence: value });
+
+  const plain = output.value.replace(/\x1b\[[?0-9;]*[A-Za-z~]/g, '');
+  assert.doesNotMatch(plain, /\n┊\s{2}/);
+  const cursorColumns = [...output.value.matchAll(/\x1b\[(\d+)C/g)]
+    .map((match) => Number(match[1]));
+  assert.ok(cursorColumns.every((column) => column <= output.columns - 16));
+  input.emit('keypress', '\r', { name: 'return' });
+  assert.deepEqual(lines, [value]);
+  terminal.close();
+});
+
 test('soft-wraps long editable input to the current terminal width', () => {
   const input = new FakeInput();
   const output = new FakeOutput();
@@ -330,6 +398,43 @@ test('wraps wide characters without splitting explicit input lines', async () =>
   await Promise.resolve();
   input.emit('keypress', '\r', { name: 'return' });
   assert.deepEqual(lines, ['甲乙丙丁戊己庚\n辛壬癸']);
+  terminal.close();
+});
+
+test('keeps long pasted input in a bounded viewport and submits the full text', async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  output.columns = 52;
+  const lines: string[] = [];
+  const terminal = new InteractiveTerminal([], input as never, output as never);
+  terminal.start({ onLine: (line) => lines.push(line), onEscape: () => undefined, onExit: () => undefined });
+  output.value = '';
+  const pasted = Array.from({ length: 400 }, (_, index) => `第 ${index + 1} 行长文本`).join('\n');
+
+  input.emit('data', Buffer.from(`\x1b[200~${pasted}\x1b[201~`));
+
+  const plain = output.value.replace(/\x1b\[[?0-9;]*[A-Za-z~]/g, '');
+  assert.match(plain, /上方 \d+ 行已隐藏/);
+  assert.ok(output.value.length < 5_000, `redraw output must stay bounded, received ${output.value.length} bytes`);
+  await Promise.resolve();
+  input.emit('keypress', '\r', { name: 'return' });
+  assert.deepEqual(lines, [pasted]);
+  terminal.close();
+});
+
+test('preserves a bracketed-paste end marker split across data chunks', async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const lines: string[] = [];
+  const terminal = new InteractiveTerminal([], input as never, output as never);
+  terminal.start({ onLine: (line) => lines.push(line), onEscape: () => undefined, onExit: () => undefined });
+
+  input.emit('data', Buffer.from('\x1b[200~完整长文本\x1b[20'));
+  input.emit('data', Buffer.from('1~'));
+  await Promise.resolve();
+  input.emit('keypress', '\r', { name: 'return' });
+
+  assert.deepEqual(lines, ['完整长文本']);
   terminal.close();
 });
 

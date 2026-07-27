@@ -171,7 +171,7 @@ mimi daemon start
 mimi
 ```
 
-`mimi daemon start` 会完成初始化、选择 macOS LaunchAgent 或安全的 detached 后台模式、等待控制端点健康后再返回。`start`、`stop`、`restart` 和 `status` 是全局服务命令：Daemon 首次启动后会以私有原子文件持久保存工作区绑定，之后从任意目录执行都会自动采用该工作区，不要求先 `cd`。`stop` 会等待后台真正退出，重复执行也不会报错；`restart` 会安全停止后重新启动。直接运行 `mimi` 仍会在需要时自动启动同一个后台 Kernel。之后所有终端输入、IM、语音和外部事件都进入同一个 MimiAgent 系统。未显式设置 `MIMI_WORKSPACE` 或兼容的 `AGENT_WORKSPACE` 时，从其他目录再次运行 `mimi` 会继续连接并采用已有 Kernel 的工作区，不会另起一套控制面。不同 Session 可以同时运行；同一 Session 的消息仍按 FIFO 处理。CLI 退出只关闭当前终端，不会关闭 MimiAgent 或它已接手的后台任务。macOS 上只要 Provider Key 保存在 `~/.mimi-agent/.env`（或显式 `MIMI_ENV_FILE`），启动命令会安装用户级 LaunchAgent，使 MimiAgent 在登录后启动并在异常退出后恢复。
+`mimi daemon start` 会完成初始化、选择 macOS LaunchAgent 或安全的 detached 后台模式、等待控制端点健康后再返回。`start`、`stop`、`restart` 和 `status` 是全局服务命令；直接运行 `mimi` 仍会在需要时自动启动同一个后台 Kernel。Kernel 是全局控制面，但不再把所有对话锁死在首次启动目录：每次本地 CLI 命令都会携带本次启动目录，Session 在模型运行前解析该任务的真实工作区，并为文件、Shell、项目指导、Skill、MCP、Team 和后台任务构建对应的工作区运行时。不同 Session 可以同时运行；同一 Session 的消息仍按 FIFO 处理。CLI 退出只关闭当前终端，不会关闭 MimiAgent 或它已接手的后台任务。macOS 上只要 Provider Key 保存在 `~/.mimi-agent/.env`（或显式 `MIMI_ENV_FILE`），启动命令会安装用户级 LaunchAgent，使 MimiAgent 在登录后启动并在异常退出后恢复。
 
 `mimi` 默认先进入不落盘的新对话草稿，发送第一条普通消息时才创建真实 Session；如果直接用 `/sessions` 或 `/switch` 切到已有对话，草稿不会留下空 Session。`/model`、`/mode`、`/sessions`、`/history`、`/skills`、`/mcp`、`/memory`、`/plan`、`/goal`、`/tasks` 和 `/task` 等命令与长期运行事件共用同一套实现和 FileSession 原始记录。
 
@@ -289,7 +289,7 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_MODEL_SUPPORTS_IMAGE_INPUT` | 按内置模型 Profile | 自定义模型是否明确支持图像输入；未声明时视觉观察失败关闭 |
 | `MIMI_TEAM_MAX_CONCURRENCY` | `4` | Ultra Team worker 并发上限，运行时强制不超过 4 |
 | `MIMI_SESSION_MAX_CONCURRENCY` | `4` | Session actor 池并发上限，范围 `1～16`、同 Session 仍 FIFO；task worker 复用该值但硬限制最多 `8` 个 |
-| `MIMI_WORKSPACE` | 首次启动时的当前目录 | 文件、Skill 和知识库的工作区；已有 Host 在线时，后续 CLI 采用 Host 的实际工作区 |
+| `MIMI_WORKSPACE` | 当前 CLI 的启动目录 | 本次本地对话建议的项目工作区；对话中显式指定的项目目录优先 |
 | `MIMI_DATA_DIR` | `<workspace>/.mimi-agent` | 会话、记忆、计划、索引和 Trace |
 | `MIMI_DAEMON_DATA_DIR` | `~/.mimi-agent/daemon` | 数据库、Socket 与日志 |
 | `MIMI_CONNECTORS_CONFIG` | `<MIMI_DAEMON_DATA_DIR>/connectors.json` | 隔离子进程 Connector 配置 |
@@ -314,7 +314,7 @@ Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Con
 
 默认 `mimi` 连接常驻 MimiAgent 后展示一个仅存在于当前 CLI 内存中的新对话草稿，不读取旧对话，也不创建 Session 文件。第一条普通消息被后台接受后，草稿 ID 才成为真实 Session；在此之前执行 `/exit`，或用 `/sessions`、`/switch` 进入已有 Session，都不会留下空会话。全部内置命令通过本地 Socket 读写同一个 Kernel；`/new` 重新准备一个草稿，`/switch` 只选择已存在的 Session actor，不创建第二个控制面。`/exit` 只关闭终端，Esc 会请求后台安全取消当前 Task；若外部 Tool 正在执行，会先等待其结果落账再结束，不把不确定事务当作可重放失败。
 
-一个 `MIMI_DAEMON_DATA_DIR` 对应一个常驻 Kernel 和一个绑定工作区。未显式设置 `MIMI_WORKSPACE` 或 `AGENT_WORKSPACE` 时，CLI 从任意目录连接都会采用该 Kernel 已绑定的工作区；显式设置后仍会严格校验，避免把命令交给错误的工作区。要显式切换工作区时，先停止该后台再从新工作区启动，或为不同工作区设置不同的 `MIMI_DAEMON_DATA_DIR`。`MIMI_SESSION`（兼容 `AGENT_SESSION`）会选择 CLI 首次连接的 Session；未设置时使用稳定 Owner Session。
+一个 `MIMI_DAEMON_DATA_DIR` 对应一个常驻 Kernel 控制面，但一个 Kernel 可以承载多个项目工作区。工作区选择顺序为：用户在当前命令中给出的绝对路径或唯一可解析的项目名；明确要求“当前项目”时采用运行本次 `mimi` 的目录；Session 已经在处理的事项目录；最后才是默认目录。创建新项目、游戏、网站、报告等工作且没有指定工作区时，MimiAgent 会先创建 `~/MimiWorkspace/<具体事项>`，再在该目录执行，不会把产物写进 Daemon 首次启动目录或 MimiAgent 产品仓库。若项目名对应多个目录会失败关闭并要求明确路径。`MIMI_SESSION`（兼容 `AGENT_SESSION`）会选择 CLI 首次连接的 Session；未设置时使用稳定 Owner Session。
 
 内置命令：
 
@@ -366,7 +366,7 @@ Task 与 RuntimeAction 的完成过程写入只含摘要和 phase 的 Run Commit
 完成回执一旦落盘，后续崩溃恢复会复用它而不会再次调用模型。JSON 状态本轮
 保持单读单写，不与 SQLite 长期双写。
 
-默认 CLI 交互不会阻塞输入：MimiAgent 执行时仍可继续提交消息。当前窗口指向同一 Session 的消息进入 FIFO 队列并依次执行；另一个窗口选择不同 Session 后，可在 `MIMI_SESSION_MAX_CONCURRENCY` 限制内同时运行，不必等待前一个 Session 结束。输入框支持多行编辑：`Shift+Enter` 插入换行，`Command+←/→` 跳到当前行首/行尾，只有手动 `Enter` 才发送；终端 bracketed paste 中自带的换行只会进入编辑区，不会触发提交。按 `Esc` 会请求后台在外部 Tool 的安全边界取消当前 Event，队列中的后续消息不受影响。长程或多阶段任务通过 `update_plan` 建立阶段任务，当前会话的完成数、当前步骤和最多 5 条附近任务会实时显示在输入框上方；长描述保持单行省略，全部完成后折叠为一行。输入 `/` 会展示命令面板，使用黑色活动光标配合 `↑` / `↓` 选择、`Tab` 补全。`/new`、`/clear` 会清理终端并保留项目顶部信息；会话切换则清理当前画面、恢复顶部信息、任务进度并回放目标会话的历史消息。
+默认 CLI 交互不会阻塞输入：MimiAgent 执行时仍可继续提交消息。当前窗口指向同一 Session 的消息进入 FIFO 队列并依次执行；另一个窗口选择不同 Session 后，可在 `MIMI_SESSION_MAX_CONCURRENCY` 限制内同时运行，不必等待前一个 Session 结束。输入框支持多行编辑：`Shift+Enter` 插入换行，`Command+←/→` 跳到当前行首/行尾，只有手动 `Enter` 才发送；终端 bracketed paste 中自带的换行只会进入编辑区，不会触发提交。长文本只渲染光标附近的有界视窗并标注隐藏行数，发送时仍提交完整内容，避免粘贴大段文本时反复刷新整个终端；Apple Terminal 上使用不会产生物理软换行的单行视窗，并将连续刷新移出输入法按键事件后合并执行，以规避 macOS 26 的原生 marked-text 崩溃。按 `Esc` 会请求后台在外部 Tool 的安全边界取消当前 Event，队列中的后续消息不受影响。长程或多阶段任务通过 `update_plan` 建立阶段任务，当前会话的完成数、当前步骤和最多 5 条附近任务会实时显示在输入框上方；长描述保持单行省略，全部完成后折叠为一行。输入 `/` 会展示命令面板，使用黑色活动光标配合 `↑` / `↓` 选择、`Tab` 补全。`/new`、`/clear` 会清理终端并保留项目顶部信息；会话切换则清理当前画面、恢复顶部信息、任务进度并回放目标会话的历史消息。
 
 简单问答、短操作以及你明确要在当前窗口看到结果的任务，会留在 Conversation actor 中流式执行。长程、大型、多阶段、持续等待或你明确无需立即结果的任务，主 MimiAgent 会调用 `delegate_background_task`：任务写入 SQLite 后立即返回 `taskId`，当前对话恢复可用，`TaskProcessSupervisor` 再用独立 Node.js 子进程和独立 Task Session 执行；`executor: "codex"` 是例外，它由 detached runner 启动独立 Codex CLI，不创建 Mimi Plan，也不进入 Mimi 的工具调用、重试或验收流程。到期 Schedule 与 Daily Routine 也复用同一 Task lane，而不是占用来源 Conversation。默认 `workspaceAccess=write`，写任务独占工作区；明确声明 `read` 的分析任务使用确定性只读工具，可与其他只读后台任务并行。Task 一旦被接受就不会因 snooze、静默时段或 Attention 预算被转成 Digest；这些设置控制的是新事件是否值得接受，不会吞掉执行队列。Task 内不再递归创建 durable 子任务；大型可拆分任务在同一 worker 内用有界 Ultra Team 汇总。只有 owner conversation root 的 write Task 可执行 Connector action；外部 source-policy work Task 不会看到必然被 Broker 拒绝的 action 工具，但完成结果仍由 Outbox 原路返回。发起 CLI 即使已退出，任务仍继续；完成结果由 Outbox 主动发往原渠道或系统通知。若任务确实缺少必要输入，它会持久化为 `blocked` 并主动问你，补充上下文后从原 Task Session 继续。运行中执行 `/task pause` 会先返回“已请求暂停”，并在当前 Tool 完成后的安全点落成 `paused`；pause/cancel 控制会在回复 CLI 前先写入 SQLite，即使 Kernel 或 worker 随后崩溃，重启恢复也不会继续执行已取消任务，已暂停任务仍保持 `paused`。不要为了“并行”把普通短任务强制后台化；用 `/tasks`、`/task <id>`、`/task pause <id>`、`/task resume <id> [context]` 和 `/task cancel <id>` 管理真正的后台工作。
 
@@ -485,7 +485,7 @@ description: 审查当前代码变更
 3. 运行测试并输出问题。
 ```
 
-MimiAgent 遵循 Agent Skills 的渐进披露方式：启动时只暴露名称、描述和位置；匹配任务后调用 `use_skill` 激活完整说明，再通过 `read_skill_resource` 按需读取 `references/`、`scripts/` 或其他文本资源。YAML 元数据会按开放规范校验，无效 Skill 只产生诊断，不阻断其他 Skill。修改后执行 `/skills reload` 即可生效。
+MimiAgent 遵循 Agent Skills 的渐进披露方式：启动时只暴露名称、描述和位置；匹配任务后调用 `use_skill` 激活完整说明，再通过 `read_skill_resource` 按需读取 `references/`、`scripts/` 或其他文本资源。YAML 元数据会按开放规范校验，无效 Skill 只产生诊断，不阻断其他 Skill。依赖可选运行时工具的 Skill 可声明 `required-tools`（逗号或空格分隔）；当前 Run 没有这些工具时，该 Skill 不会进入提示目录，直接激活也会失败关闭，避免出现“说明书已加载但执行器不存在”。修改后执行 `/skills reload` 即可生效。
 
 内置 Skill 工具：`use_skill`、`read_skill_resource`、`list_skills`、`reload_skills`。仓库保留 `code-review`、`research` 和 `web-research` 三个精简示例，用户可在工作区自由添加更多 Skills。
 

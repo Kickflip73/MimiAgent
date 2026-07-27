@@ -23,11 +23,17 @@ export interface RuntimeStatus {
   compressedFrom?: number;
 }
 
+interface InteractiveTerminalOptions {
+  inputRedrawDelayMs?: number;
+  singleLineInputViewport?: boolean;
+}
+
 type Key = { name?: string; ctrl?: boolean; shift?: boolean; meta?: boolean; sequence?: string };
 
 const clearLine = '\r\x1b[2K';
 const selectionCursor = '\x1b[96m›\x1b[0m';
 const doubleEscapeWindowMs = 350;
+const maxVisibleInputRows = 10;
 
 function displayWidth(value: string): number {
   const plain = value.replace(/\x1b\[[0-9;]*m/g, '');
@@ -40,6 +46,10 @@ function displayWidth(value: string): number {
 
 function usableTerminalWidth(value: number | undefined): number {
   return Number.isFinite(value) && value! >= 20 ? Math.floor(value!) : 80;
+}
+
+function isAppleTerminal(): boolean {
+  return process.platform === 'darwin' && process.env.TERM_PROGRAM === 'Apple_Terminal';
 }
 
 export class InteractiveTerminal {
@@ -61,10 +71,14 @@ export class InteractiveTerminal {
   private started = false;
   private closed = false;
   private bracketPaste = false;
+  private pastePending = '';
   private suppressPasteKeypress = false;
   private pasteDataListener?: (chunk: Buffer | string) => void;
   private resizeListener?: () => void;
   private escapeTimer?: NodeJS.Timeout;
+  private inputRedrawTimer?: NodeJS.Timeout;
+  private readonly inputRedrawDelayMs: number;
+  private readonly singleLineInputViewport: boolean;
   private selectState?: {
     items: SelectItem[];
     index: number;
@@ -76,7 +90,11 @@ export class InteractiveTerminal {
     private readonly completions: CompletionItem[],
     private readonly input: ReadStream = process.stdin,
     private readonly output: WriteStream = process.stdout,
-  ) {}
+    options: InteractiveTerminalOptions = {},
+  ) {
+    this.inputRedrawDelayMs = options.inputRedrawDelayMs ?? (isAppleTerminal() ? 24 : 0);
+    this.singleLineInputViewport = options.singleLineInputViewport ?? isAppleTerminal();
+  }
 
   start(handlers: { onLine: (line: string) => void; onEscape: () => void; onExit: () => void; onModeCycle?: () => void }): void {
     this.started = true;
@@ -119,7 +137,7 @@ export class InteractiveTerminal {
           this.buffer = [];
           this.cursor = 0;
           this.completionIndex = 0;
-          this.redraw();
+          this.redrawAfterInput();
           return;
         }
         this.escapeTimer = setTimeout(() => {
@@ -137,6 +155,7 @@ export class InteractiveTerminal {
       }
       if (key.name === 'return' || key.name === 'enter') {
         const line = (this.suggestions[this.completionIndex]?.value ?? this.buffer.join('')).trim();
+        this.cancelInputRedraw();
         this.eraseUi();
         this.output.write('\n');
         this.outputOpen = false;
@@ -158,7 +177,7 @@ export class InteractiveTerminal {
       if ((key.name === 'up' || key.name === 'down') && this.suggestions.length) {
         const direction = key.name === 'up' ? -1 : 1;
         this.completionIndex = (this.completionIndex + direction + this.suggestions.length) % this.suggestions.length;
-        this.redraw();
+        this.redrawAfterInput();
         return;
       }
       if ((key.name === 'up' || key.name === 'down') && this.buffer.includes('\n')) {
@@ -188,7 +207,7 @@ export class InteractiveTerminal {
         this.cursor += Array.from(text).length;
         this.completionIndex = 0;
       } else return;
-      this.redraw();
+      this.redrawAfterInput();
     });
     this.draw();
   }
@@ -255,6 +274,7 @@ export class InteractiveTerminal {
     this.buffer = [];
     this.cursor = 0;
     this.completionIndex = 0;
+    this.cancelInputRedraw();
     this.redraw();
   }
 
@@ -269,6 +289,7 @@ export class InteractiveTerminal {
   }
 
   clearScreen(content = ''): void {
+    this.cancelInputRedraw();
     this.outputOpen = false;
     this.outputOpenWidth = 0;
     this.output.write('\x1b[2J\x1b[H');
@@ -278,6 +299,7 @@ export class InteractiveTerminal {
 
   async select(items: SelectItem[], title = '选择'): Promise<string | undefined> {
     if (!items.length) return undefined;
+    this.cancelInputRedraw();
     this.eraseUi();
     return new Promise((resolve) => {
       this.selectState = { items, index: 0, title, resolve };
@@ -289,6 +311,7 @@ export class InteractiveTerminal {
     if (this.closed) return;
     if (this.escapeTimer) clearTimeout(this.escapeTimer);
     this.escapeTimer = undefined;
+    this.cancelInputRedraw();
     this.eraseUi();
     const selection = this.selectState;
     this.selectState = undefined;
@@ -333,12 +356,12 @@ export class InteractiveTerminal {
     this.buffer = Array.from(value);
     this.cursor = this.buffer.length;
     this.completionIndex = 0;
-    this.redraw();
+    this.redrawAfterInput();
   }
 
   private insertText(value: string): void {
     this.insertRawText(value);
-    this.redraw();
+    this.redrawAfterInput();
   }
 
   private insertRawText(value: string): void {
@@ -350,7 +373,8 @@ export class InteractiveTerminal {
   }
 
   private handlePasteData(chunk: Buffer | string): void {
-    const value = chunk.toString();
+    const value = this.pastePending + chunk.toString();
+    this.pastePending = '';
     const startMarker = '\x1b[200~';
     const endMarker = '\x1b[201~';
     if (!this.bracketPaste && !value.includes(startMarker)) return;
@@ -374,17 +398,35 @@ export class InteractiveTerminal {
         offset = start + startMarker.length;
       } else {
         const end = value.indexOf(endMarker, offset);
-        const content = end < 0 ? value.slice(offset) : value.slice(offset, end);
+        if (end < 0) {
+          const remainder = value.slice(offset);
+          const pendingLength = this.markerPrefixLength(remainder, endMarker);
+          const content = remainder.slice(0, remainder.length - pendingLength);
+          this.pastePending = remainder.slice(remainder.length - pendingLength);
+          if (content) {
+            this.insertRawText(content);
+            changed = true;
+          }
+          break;
+        }
+        const content = value.slice(offset, end);
         if (content) {
           this.insertRawText(content);
           changed = true;
         }
-        if (end < 0) break;
         this.bracketPaste = false;
         offset = end + endMarker.length;
       }
     }
-    if (changed) this.redraw();
+    if (changed) this.redrawAfterInput();
+  }
+
+  private markerPrefixLength(value: string, marker: string): number {
+    const limit = Math.min(value.length, marker.length - 1);
+    for (let length = limit; length > 0; length -= 1) {
+      if (marker.startsWith(value.slice(-length))) return length;
+    }
+    return 0;
   }
 
   private lineStart(position: number): number {
@@ -413,13 +455,33 @@ export class InteractiveTerminal {
       const nextStart = end + 1;
       this.cursor = Math.min(nextStart + column, this.lineEnd(nextStart));
     }
-    this.redraw();
+    this.redrawAfterInput();
   }
 
   private redraw(): void {
     if (this.closed || !this.started) return;
+    if (this.inputRedrawTimer) return;
     this.eraseUi();
     this.draw();
+  }
+
+  private redrawAfterInput(): void {
+    if (this.closed || !this.started) return;
+    if (this.inputRedrawDelayMs <= 0) {
+      this.redraw();
+      return;
+    }
+    this.cancelInputRedraw();
+    this.inputRedrawTimer = setTimeout(() => {
+      this.inputRedrawTimer = undefined;
+      this.redraw();
+    }, this.inputRedrawDelayMs);
+    this.inputRedrawTimer.unref();
+  }
+
+  private cancelInputRedraw(): void {
+    if (this.inputRedrawTimer) clearTimeout(this.inputRedrawTimer);
+    this.inputRedrawTimer = undefined;
   }
 
   private eraseUi(): void {
@@ -485,6 +547,9 @@ export class InteractiveTerminal {
     const compositionMargin = Math.min(16, Math.max(4, terminalWidth - 8));
     const width = terminalWidth - compositionMargin;
     const available = Math.max(2, width - prefixWidth);
+    if (this.singleLineInputViewport) {
+      return this.singleLineInputBox(prefixWidth, available);
+    }
     const value = this.buffer.join('');
     const logicalLines = value.split('\n');
     const beforeCursor = this.buffer.slice(0, this.cursor).join('');
@@ -493,7 +558,7 @@ export class InteractiveTerminal {
     let cursorRow = 0;
     let cursorColumn = prefixWidth;
     let cursorPlaced = false;
-    const lines: string[] = [];
+    const allLines: string[] = [];
     for (const [logicalRow, line] of logicalLines.entries()) {
       const characters = Array.from(line);
       const wrapped: Array<{ start: number; end: number; text: string }> = [];
@@ -514,21 +579,64 @@ export class InteractiveTerminal {
         const linePrefix = logicalRow === 0 && wrappedRow === 0
           ? '\x1b[90m┊\x1b[0m> '
           : '\x1b[90m┊\x1b[0m  ';
-        lines.push(`${linePrefix}${segment.text}`);
+        allLines.push(`${linePrefix}${segment.text}`);
         if (
           !cursorPlaced && logicalRow === logicalCursorRow &&
           cursorOffset >= segment.start && cursorOffset <= segment.end
         ) {
-          cursorRow = lines.length - 1;
+          cursorRow = allLines.length - 1;
           cursorColumn = prefixWidth + displayWidth(characters.slice(segment.start, cursorOffset).join(''));
           cursorPlaced = true;
         }
       }
     }
+    const start = Math.max(
+      0,
+      Math.min(cursorRow - Math.floor(maxVisibleInputRows / 2), allLines.length - maxVisibleInputRows),
+    );
+    const end = Math.min(allLines.length, start + maxVisibleInputRows);
+    const lines = allLines.slice(start, end);
+    if (start > 0) {
+      lines.unshift(`\x1b[90m┊\x1b[0m  \x1b[2m… 上方 ${start} 行已隐藏\x1b[0m`);
+    }
+    if (end < allLines.length) {
+      lines.push(`\x1b[90m┊\x1b[0m  \x1b[2m… 下方 ${allLines.length - end} 行已隐藏\x1b[0m`);
+    }
     return {
       lines,
-      cursorRow,
+      cursorRow: cursorRow - start + (start > 0 ? 1 : 0),
       cursorColumn,
+    };
+  }
+
+  private singleLineInputBox(
+    prefixWidth: number,
+    available: number,
+  ): { lines: string[]; cursorRow: number; cursorColumn: number } {
+    const lineStart = this.lineStart(this.cursor);
+    const lineEnd = this.lineEnd(this.cursor);
+    const characters = this.buffer.slice(lineStart, lineEnd);
+    const cursorOffset = this.cursor - lineStart;
+    let visibleStart = cursorOffset;
+    let usedBeforeCursor = 0;
+    while (visibleStart > 0) {
+      const characterWidth = displayWidth(characters[visibleStart - 1] ?? '');
+      if (usedBeforeCursor + characterWidth > available) break;
+      visibleStart -= 1;
+      usedBeforeCursor += characterWidth;
+    }
+    const visible: string[] = [];
+    let used = 0;
+    for (const character of characters.slice(visibleStart)) {
+      const characterWidth = displayWidth(character);
+      if (used + characterWidth > available) break;
+      visible.push(character);
+      used += characterWidth;
+    }
+    return {
+      lines: [`\x1b[90m┊\x1b[0m> ${visible.join('')}`],
+      cursorRow: 0,
+      cursorColumn: prefixWidth + usedBeforeCursor,
     };
   }
 

@@ -179,7 +179,10 @@ export class MimiChatClient {
   }
 
   async bootstrap(draftSessionId = `mimi-chat-${randomUUID()}`): Promise<MimiChatSnapshot> {
-    const snapshot = await this.rpc<MimiChatSnapshot>('chat.bootstrap', { draftSessionId });
+    const snapshot = await this.rpc<MimiChatSnapshot>('chat.bootstrap', {
+      draftSessionId,
+      workspaceRoot: this.config.workspaceRoot,
+    });
     this.assertWorkspace(snapshot.workspaceRoot);
     return snapshot;
   }
@@ -235,6 +238,7 @@ export class MimiChatClient {
       trust: 'owner',
       profileId: 'owner',
       sessionKey,
+      workspaceRoot: this.config.workspaceRoot,
       eventId,
       externalId: `local-cli:${eventId}`,
     };

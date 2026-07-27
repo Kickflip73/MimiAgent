@@ -792,6 +792,13 @@ test('loads skill metadata and content on demand', async () => {
   assert.match(loader.catalog(), /review: Review code/);
   assert.match(loader.catalog(), /location:/);
   assert.match(loader.get('review')?.content ?? '', /Do it/);
+  assert.deepEqual(loader.activate('review'), {
+    name: 'review',
+    root: directory,
+    file: path.join(directory, 'SKILL.md'),
+    instructions: '---\nname: review\ndescription: Review code\n---\nDo it.',
+  });
+  assert.throws(() => loader.activate('missing'), /未找到 Skill/);
   assert.match((await loader.readResource('review', 'references/guide.md')).content, /carefully/);
   await assert.rejects(loader.readResource('review', '../secret'), /不能超出/);
   const outside = path.join(root, 'outside.txt');
@@ -809,6 +816,30 @@ test('reports invalid skills without breaking valid skill discovery', async () =
 
   assert.deepEqual(loader.list(), []);
   assert.equal(loader.diagnostics().length, 1);
+});
+
+test('does not advertise or activate a skill whose required runtime tools are unavailable', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-skill-capability-'));
+  const directory = path.join(root, 'desktop');
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, 'SKILL.md'), [
+    '---',
+    'name: desktop',
+    'description: Operate a desktop app',
+    'required-tools: computer_observe, computer_act',
+    '---',
+    'Use the computer tools.',
+  ].join('\n'));
+  const loader = new SkillLoader(root);
+  await loader.load();
+
+  assert.equal(loader.catalog(['read_file']), '');
+  assert.match(loader.catalog(['computer_observe', 'computer_act']), /desktop/);
+  assert.throws(
+    () => loader.activate('desktop', ['computer_observe']),
+    /缺少必需工具：computer_act/,
+  );
+  assert.equal(loader.activate('desktop', ['computer_observe', 'computer_act']).name, 'desktop');
 });
 
 test('rejects oversized skill instructions and resources before loading them fully', async () => {

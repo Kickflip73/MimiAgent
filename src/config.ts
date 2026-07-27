@@ -369,6 +369,19 @@ export function adoptWorkspaceConfig(
   };
 }
 
+export function adoptRuntimeWorkspaceConfig(
+  config: AppConfig,
+  workspaceRoot: string,
+  homeDirectory = os.homedir(),
+): AppConfig {
+  const adopted = adoptWorkspaceConfig(config, workspaceRoot, homeDirectory);
+  return {
+    ...adopted,
+    dataRoot: config.dataRoot,
+    daemonDataRoot: config.daemonDataRoot,
+  };
+}
+
 export function loadConfig(homeDirectory = os.homedir()): AppConfig {
   const explicitWorkspace = preferredEnvironmentValue('MIMI_WORKSPACE', 'AGENT_WORKSPACE');
   const workspaceRoot = explicitWorkspace ? expandHome(explicitWorkspace, homeDirectory) : path.resolve(process.cwd());
