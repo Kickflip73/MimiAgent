@@ -201,7 +201,7 @@ function createConnectorActionRuntimeTool(
     name: 'connector_action',
     description: '通过隔离的 Connector 执行外部副作用，如发送 IM、创建日程或发送邮件。调用前先用 inspect_mimi_capabilities 获取当前 connector/action、target 格式和 readiness：已知 ID 时传 connector 精确过滤，不确定微信等渠道 ID 时传 query 关键词搜索，避免加载完整目录。不要猜测能力名。只能使用目录中已声明的能力；payloadJson 必须是严格 JSON。结果超时或不确定时不要自动重试，避免重复事务。',
     parameters: z.object({
-      connector: identifier.describe('Connector ID，例如 daxiang'),
+      connector: identifier.describe('Connector ID，例如 macos-mail'),
       action: identifier.describe('Connector 声明的 action 名称，例如 send_message'),
       target: z.string().min(1).max(2_000).describe('主要操作对象，例如 single:zhangsan 或 group:123'),
       payloadJson: z.string().min(1).max(50_000).describe('要传给 Connector 的 JSON 载荷'),

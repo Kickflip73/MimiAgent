@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- remove the Daxiang, QQ OneBot/NapCat and generic HTTP Action/Event connectors,
+  delete all QQ/Weixin/Daxiang AppleScript IM fallbacks and QQ installer paths,
+  retain only OpenClaw iLink for Weixin and the CUA Skill for QQ, and purge retired
+  connectors from existing runtime configurations during initialization
 - discover Agent Skills across configured, project, user and package roots with
   deterministic precedence, manifest-allowlisted builtins, canonical deduplication
   and structured shadow diagnostics

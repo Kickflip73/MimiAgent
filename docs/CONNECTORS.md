@@ -1,10 +1,10 @@
 # MimiAgent Connector Protocol
 
-Connector 把大象、QQ、微信、邮件、新闻、天气、日历或其他事件源适配为 MimiAgent 的统一事件协议。它运行在独立子进程中，通过 stdin/stdout 交换一行一个 JSON 的 NDJSON；渠道 SDK、崩溃和凭证不会进入 MimiAgent Runtime。
+Connector 把微信 Bot、邮件、Messages、新闻、天气、日历或其他事件源适配为 MimiAgent 的统一事件协议。它运行在独立子进程中，通过 stdin/stdout 交换一行一个 JSON 的 NDJSON；渠道 SDK、崩溃和凭证不会进入 MimiAgent Runtime。QQ 仅通过 `qq-messenger-skill` 的 CUA 路线操作，不属于 Connector。
 
 ## 配置
 
-首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认只启用不启动 GUI App 的 System Connector；Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Desktop、Browser、Screen 和 Voice 均需用户显式启用。旧版自动启用的 canonical 本机 Connector 会一次性迁移到这个无界面默认，之后用户的显式启停选择继续保留。Calendar/Reminders 启用后通过 EventKit 静默访问系统数据；Mail 的主动轮询只在 Mail 已经运行时读取，绝不为了后台轮询重新打开 App。需要 Token 或额外数据源配置的大象、QQ、OpenClaw 微信、Radar 和 File Radar 同样默认关闭。QQ/微信不会默认启用 AppleScript、截图、OCR、键盘或点击式 Connector；正式 IM 接入必须使用后台 API/协议桥。后续初始化会补齐缺失的 enabled 默认本机 Connector，但不会加入默认关闭的外部通道；同 ID、仍指向 canonical 内置脚本的 Connector 会补充发布包新增的 action。已有命令、参数、环境白名单、来源和 owner action 描述保持不变。写入是原子的，无新增项时不改文件。也可用 `MIMI_CONNECTORS_CONFIG` 指向其他绝对配置文件。
+首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认只启用不启动 GUI App 的 System Connector；Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Desktop、Browser、Screen 和 Voice 均需用户显式启用。旧版自动启用的 canonical 本机 Connector 会一次性迁移到这个无界面默认，之后用户的显式启停选择继续保留。Calendar/Reminders 启用后通过 EventKit 静默访问系统数据；Mail 的主动轮询只在 Mail 已经运行时读取，绝不为了后台轮询重新打开 App。OpenClaw 微信、Radar 和 File Radar 默认关闭。初始化会移除已退役的大象、QQ OneBot/NapCat、通用 HTTP Action 及 QQ/微信/大象 AppleScript Connector 配置，防止旧安装继续启动这些实现。后续初始化会补齐缺失的 enabled 默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充发布包新增的 action。已有其他 owner 路径、环境、来源和 action 描述保持不变。写入是原子的，无变更时不改文件。也可用 `MIMI_CONNECTORS_CONFIG` 指向其他绝对配置文件。
 
 `~/.mimi-agent/daemon` 是唯一默认常驻状态目录。三个配置示例文件均使用统一的 MimiAgent 命名。
 
@@ -84,7 +84,7 @@ OpenClaw 插件只在 `inbound_claim` 截获微信入站并写入本用户的 Mi
 
 插件目录、package name 和 ID 统一为 `mimiagent-bridge`，显示名为 **MimiAgent Bridge**。Socket 优先级是插件 `socketPath` → `MIMI_DAEMON_SOCKET` → `MIMI_DAEMON_DATA_DIR` 下的 socket → 默认 `~/.mimi-agent/daemon/mimi.sock`。
 
-这条通道是腾讯 iLink Bot，不是个人微信桌面账号的完整收件箱：只能回复已经与机器人建立上下文的配对用户，不能按个人微信通讯录昵称主动联系任意好友，也没有联系人目录或任意历史消息查询 API。MimiAgent 只保留 bridge 接通后自己持久化的 Bot Event；`local_history` 可按精确 account/to 路由读取本机 OpenClaw 会话文件中仍留存的有界微信入站记录（包括 `.deleted.*` 归档），但它不是腾讯上游历史，已被 sync cursor 消费且本机未落盘的消息仍不可恢复。读取过程不打开或操控 WeChat.app。仓库中的 `wechat-applescript-connector.mjs` 仅为旧安装兼容保留，不在默认目录和支持路径中；后台通道失败时不得自动降级为启动 WeChat.app、截图/OCR 或模拟输入。
+这条通道是腾讯 iLink Bot，不是个人微信桌面账号的完整收件箱：只能回复已经与机器人建立上下文的配对用户，不能按个人微信通讯录昵称主动联系任意好友，也没有联系人目录或任意历史消息查询 API。MimiAgent 只保留 bridge 接通后自己持久化的 Bot Event；`local_history` 可按精确 account/to 路由读取本机 OpenClaw 会话文件中仍留存的有界微信入站记录（包括 `.deleted.*` 归档），但它不是腾讯上游历史，已被 sync cursor 消费且本机未落盘的消息仍不可恢复。读取过程不打开或操控 WeChat.app，也不存在 UI 自动化降级路线。
 
 Connector 应在渠道状态变化时输出就绪度；这和子进程是否存活是两件事：
 
@@ -114,14 +114,14 @@ Webhook 来信固定为 `external`，请求体不能指定 trust；默认通过�
 
 ```json
 {
-  "externalId": "daxiang-message-42",
-  "channel": "daxiang",
+  "externalId": "service-message-42",
+  "channel": "internal-service",
   "kind": "command",
   "payload": { "text": "请处理这项工作" },
   "priority": 85,
   "actor": { "id": "user-42", "displayName": "Alice" },
   "conversation": { "id": "group-7", "threadId": "thread-9" },
-  "reply": { "connector": "daxiang", "target": "group:group-7" }
+  "reply": { "connector": "internal-service", "target": "thread:thread-9" }
 }
 ```
 
@@ -163,134 +163,9 @@ Connector 执行完成后返回：
 
 运行 `mimi daemon connectors` 可查看每个 Connector 的当前进程状态、双向就绪度和 action 目录，输出不包含凭证。恢复通知仍需要通过上述稳定窗口。
 
-### 通用双向 HTTP Connector
+## 已退役的消息渠道
 
-`examples/connectors/http-action-connector.mjs` 把上述 `deliver` 和已声明的任意 `action` 原样 POST 到 `MIMI_HTTP_ACTION_URL`，并可从 `MIMI_HTTP_EVENT_URL` 按游标拉取标准 Connector Event，适合连接微信网关、内部服务、家庭自动化或 SaaS adapter，而无需再写本地 Connector。URL 固定在环境配置中，不接受模型输入；公网地址必须使用 HTTPS，本机 relay 可使用 loopback HTTP。可选 `MIMI_HTTP_ACTION_TOKEN` 以 Bearer Token 双向鉴权，响应大小、超时和轮询周期分别由 `MIMI_HTTP_ACTION_MAX_RESPONSE_BYTES`、`MIMI_HTTP_ACTION_TIMEOUT_MS`、`MIMI_HTTP_EVENT_POLL_INTERVAL_MS` 限制。
-
-POST 请求体包含 `version:1`、`type`、稳定 `id`、`target`、`payload`，Action 额外包含 `action`；同一 `id` 同时放入 `Idempotency-Key`，消息类型放入 `X-Mimi-Message-Type`。Relay 以 2xx 表示接收，Action 可返回 `{"ok":true,"result":...}`；非 2xx 或 `{"ok":false,"error":"..."}` 会沿既有失败语义返回。
-
-事件端点接收 `limit=100` 和可选 `cursor`，返回 `{"events":[...],"cursor":"next"}`；每个 Event 使用本章 Connector → MimiAgent 的字段。Cursor 是非破坏性读取位置：Relay 必须让旧 cursor 和无 cursor 请求在足够长的保留窗口内重放事件，不能因一次 GET 就删除消息。Connector 等待该批 Event 的持久化 ACK 后才在进程内推进 cursor；ACK 失败、丢失或进程异常都会保留旧 cursor 并主动重读，由中心 `source + externalId` 去重。通用 HTTP Connector 把三倍轮询周期（最少 5 秒、最多 7 天）声明为 freshness 窗口，每次成功轮询刷新 heartbeat；轮询卡死或持续失败会在窗口到期后形成 `connector_stale` 风险。轮询首次失败和恢复各产生一个有界健康 Event，失败期间指数退避但不影响出站能力。启用模板中的 `http-action` 后，可把 `actions` 目录替换成远端真正支持的明确事务名称；不配置事件 URL 时仍可结合 localhost Webhook 的 `reply.connector` 形成闭环。
-
-这只是一个通用适配协议，不代表 MimiAgent 已经登录或直连微信。只有外部微信网关同时提供真实事件端点、事务端点并完成账号侧配置后，才能启用并视为在线；缺少这些条件时应保持 Connector disabled，不能把模板存在误报为“微信已打通”。
-
-## 大象机器人 Bridge
-
-仓库提供 `examples/connectors/daxiang-connector.mjs`，使用大象开放平台机器人服务端 API，把 Outbox 文本发送到单聊或群聊：
-
-- `target=single:<mis或userId>`：机器人单聊
-- `target=group:<chatId>`：机器人群聊
-- 必填环境：`DX_APP_KEY`、`DX_APP_SECRET`、`DX_ROBOT_ID`
-- `DX_ENV=test|prod` 选择环境；st 与 prod 消息数据共用，测试时避免消息轰炸
-- `health_check` 只获取官方 access token，不发送消息；成功表示服务端出站认证可用，并会明确提示入站仍依赖已发布的事件订阅 Relay
-
-在首次初始化生成的 `~/.mimi-agent/daemon/connectors.json` 中配置脚本绝对路径并启用，随后执行 `mimi daemon connectors reload`。发布包模板 `mimi.connectors.example.json` 只用于首次物化，不是运行时配置。该 Connector 同时声明 `send_message`，所以 MimiAgent 既可回复原会话，也可主动发送。开放平台后台还需要启用机器人、申请相应能力并发布应用；`30002 auth fail` 或 `ability permission denied` 优先检查权限、token 环境和是否发布。
-
-大象的事件订阅走主干环境 Thrift/OCTO 回调，不是本机普通 HTTP Webhook。业务回调必须按官方规则注册接口、配置 `com.sankuai.dxenterprise.open.gateway` 白名单并发布应用；平台超时约 3 秒且会重试，因此回调应先快速返回非 null 的正确类型，再异步转发，并用大象消息 ID 作为 `externalId`。转发时带上上述 `actor`、`conversation` 和 `reply:{connector:"daxiang",target:"single:<uid>|group:<chatId>"}`，中心 Store 会吸收重复回调，Agent 结果再经现有大象 Outbox 回原会话。当前示例不会把本机端口暴露到公网，也不会臆造官方 Thrift IDL、签名或 OCTO 部署。动态卡片、侧边栏和网页应用是不同能力路线，不应塞进这个文本机器人 Bridge。
-
-`daxiang-applescript-connector.mjs` 可作为本机桌面 UI 出站兜底：它不需要 API Key，但只能尽力执行按键，不能接收入站消息，也不能确认服务端实际送达，不能视为完整大象接管。
-
-## QQ (OneBot 11) Bridge
-
-仓库提供 `examples/connectors/qq-napcat-connector.mjs`，通过 loopback HTTP 和鉴权反向 WebSocket 接入 OneBot 11 实现。它既可连接宿主在用户可见 QQ 进程内的 LLOneBot/LLBot，也兼容独立 NapCat 进程，支持私聊和群聊消息的接收、回复、目录和有界历史查询。这些都不是腾讯官方个人号 API，存在账号风控、客户端版本兼容和第三方供应链风险；不能接受时应改用腾讯官方 QQ Bot，但其能力范围不是个人 QQ 收件箱。
-
-**工作原理：** Connector 启动 WebSocket 服务，OneBot 实现作为客户端推送事件。收到消息后转为 MimiAgent 协议输出到 stdout；MimiAgent 的 deliver 指令通过 OneBot HTTP API 发回 QQ。
-
-### 桌面 QQ 共存模式（同一账号）
-
-当 OneBot 插件运行在当前桌面 QQ 进程内时，MimiAgent 复用这一个已登录会话，不再启动第二个模拟客户端。这是“桌面 QQ 正常使用 + MimiAgent 收发同一账号消息”的接入模式。
-
-1. 安装与当前 QQ 构建兼容的 LLOneBot/LLBot，并在它的设置中启用 HTTP Server `127.0.0.1:3000`。
-2. 运行 `./scripts/setup-qq-desktop-connector.sh`。脚本生成 owner-only token，但在 OneBot HTTP 真正就绪前保持 Connector disabled。
-3. 把 `~/.mimi-agent/.env` 中 `QQ_ONEBOT_ACCESS_TOKEN` 的值设为 OneBot HTTP token；把 `QQ_ONEBOT_WS_ACCESS_TOKEN` 设为反向 WebSocket token。两者可相同，不得留空。
-4. 在 OneBot 中新增反向 WebSocket Client：`ws://127.0.0.1:3080/`，配置同一 WS token，然后再运行一次 `./scripts/setup-qq-desktop-connector.sh`。
-5. 用 `mimi daemon connectors` 确认 `qq` 的 inbound/outbound 均 ready。
-
-脚本不下载、注入或修补 QQ.app，也不代替 OneBot 项目自身的版本兼容检查。LiteLoaderQQNT 上游已于 2026 年归档，而 LLOneBot/LLBot 仍在演进；每次 QQ 或插件升级后都应重新验证登录、收件和发件，不要使用来路不明的注入二进制。
-
-`QQ_ONEBOT_HTTP_URL`、`QQ_ONEBOT_WS_PORT`、`QQ_ONEBOT_ACCESS_TOKEN`、`QQ_ONEBOT_WS_ACCESS_TOKEN` 和 `QQ_ONEBOT_STATUS_POLL_MS` 是该模式的首选环境变量。后续的 `NC_*` 变量仅为 NapCat 安装和旧配置保留；两组同时存在时 `QQ_ONEBOT_*` 优先。`send_message`、`get_status`、`get_friend_list` 和 `get_group_list` 属于通用 OneBot 路径；`get_recent_contact` 和历史 action 是实现扩展，不支持时会显式返回 action 错误，不会降级到 UI 自动化。
-
-### 独立 NapCat 模式
-
-**前置条件：**
-- 必须是 NapCat 当前支持的 NTQQ 构建。`scripts/install-napcat-macos.mjs` 会在写入前读取 QQ `buildVersion` 并对照 Release 最低要求；不兼容时 fail closed，不自动下载或替换系统 QQ。
-- NapCat 仍依赖一个已登录的 NTQQ 进程，但日常消息收发只经过 OneBot HTTP/WebSocket，不读取窗口、不截图/OCR、不模拟键盘或点击。
-- 腾讯没有个人 QQ 完整收件箱的官方公共 API。腾讯官方 QQ Bot 可以完全服务端运行，但不能代替个人号好友目录、历史和任意私聊；需要这些能力时 NapCat 属于有账号风控的非官方选择。
-
-macOS 推荐按以下顺序安装：
-
-```bash
-./scripts/setup-qq-connector.sh
-./scripts/install-napcat-macos.mjs status
-./scripts/install-napcat-macos.mjs install
-./scripts/setup-qq-connector.sh
-```
-
-默认目标仍是 `/Applications/QQ.app`。更安全的推荐做法是先从腾讯官方渠道取得与 NapCat 兼容的 QQ，核对发布哈希、Apple 公证/Developer ID 和腾讯 Team ID 后复制到 owner-only 的 MimiAgent 私有目录，再显式选择该副本：
-
-```bash
-NAPCAT_QQ_APP="$HOME/.mimi-agent/runtime/qq/QQ.app" \
-  ./scripts/install-napcat-macos.mjs install --no-start
-```
-
-安装成功后，选择的绝对路径会写入 owner-only `~/.mimi-agent/napcat-installer.json`，后续 `status/start/stop/restore` 无需重复传环境变量。仓库安装器本身不会下载或复制 QQ，因此私有副本在修改前的来源校验仍由部署者负责。
-
-安装器只从 NapCat 官方 GitHub Release 获取 `NapCat.Shell.zip`，要求 Release 提供的 SHA-256 digest 匹配后才解压。它先验证目标 QQ 的完整代码签名、Apple 执行策略、腾讯 `TeamIdentifier=FN2V63AD2J` 和已知 Electron 入口，再创建精确备份并原子替换 `package.json`；由于这一步必然使腾讯 bundle 的资源封印失效，安装器随后只对已修改的目标副本执行 macOS ad-hoc 深度签名并立即复验，系统 QQ 不受影响。修改系统应用时可能需要终端中的管理员授权，私有 owner 可写副本不需要。NapCat Shell、loader、OneBot 配置、缓存和启动器全部位于 owner-only `~/.mimi-agent/runtime/qq/`，不依赖 QQ App Sandbox 容器中的脚本或配置文件；旧容器 loader 入口会在下一次 `install` 时单向迁移。安装器不通过 AppleScript、Terminal UI 或 LaunchServices 启动应用。用户级 LaunchAgent 直接运行带伪终端的受保护后台入口，并在导入 NapCat 前要求 Electron 支持并设置 `app.setActivationPolicy('prohibited')`；按 Electron 的平台契约，这个模式不出现在 Dock、不能创建窗口或被激活，不支持时启动失败关闭。LaunchAgent 丢弃原始 stdout/stderr，健康检查只读取结构化 OneBot 状态，避免 NapCat 启动期把历史消息正文写入日志。若系统 QQ 或选定副本中的普通 QQ 正在运行，`install/start` 不会替用户退出或激活它，而是明确停止并要求用户自行退出一次；之后执行 `start` 即可。目标 QQ 自动升级、入口重置或 NapCat Shell 缺失时，启动守卫会退出，绝不把普通 QQ 窗口误启动出来。
-
-```bash
-./scripts/install-napcat-macos.mjs start        # 后台启动
-./scripts/install-napcat-macos.mjs stop         # 只停止 MimiAgent 管理的进程
-./scripts/install-napcat-macos.mjs configure    # 原子更新 OneBot，并清理旧 Mimi 重复项
-./scripts/install-napcat-macos.mjs status --json
-./scripts/install-napcat-macos.mjs restore      # 恢复原始 QQ 入口，保留数据和备份
-```
-
-安装器会增量维护 NapCat 的 HTTP Server 和反向 WebSocket Client，并把旧 `mimi-http`/`mimi-reverse-ws` 精确迁移为唯一的 `mimiagent-*` 条目，避免同一端口重复监听；其他用户配置保持不变。`configure` 还会关闭 NapCat 文件/控制台消息日志并记录唯一历史账号。只有当前 NapCat Shell 明确内置精确的 `<QQ版本>-<build>-<arch>` 支持项时才生成快速登录 enable marker；不支持的较新 QQ 仍保留账号记录，但启动时不传 `-q`，避免卡死在不兼容的快速登录。每次 `start` 都会在启动新进程前删除旧的 `cache/qrcode.png`；首次登录只能使用当前后台进程重新生成的二维码，不能复用此前文件或截图。HTTP 固定 `127.0.0.1`，反向 WS 固定 `ws://127.0.0.1:<NC_WS_PORT>/`，token 与 MimiAgent owner-only 环境文件一致。无需打开 NapCat WebUI。
-
-**环境变量：**
-- `NAPCAT_QQ_APP`：要安装/管理的 QQ.app 绝对路径；首次成功安装后持久化，默认 `/Applications/QQ.app`
-- `NAPCAT_INSTALLER_STATE_FILE`：可选的安装器路径状态文件，默认 `~/.mimi-agent/napcat-installer.json`
-- `NC_HTTP_URL`：NapCat HTTP API 地址，如 `http://127.0.0.1:3000`（必填）
-- `NC_WS_PORT`：Connector 监听的 WebSocket 端口，默认 `3080`
-- `NC_ACCESS_TOKEN`：NapCat HTTP Server token；未配置独立 WS token 时也用于反向 WebSocket
-- `NC_WS_ACCESS_TOKEN`：可选的 NapCat WebSocket Client token；有效 WS token 为 `NC_WS_ACCESS_TOKEN || NC_ACCESS_TOKEN`，两者至少配置一个，否则 Connector 拒绝启动
-- `NC_STATUS_POLL_MS`：后台状态轮询周期，默认 30 秒
-
-反向 WebSocket 握手使用 OneBot 标准的 `Authorization: Bearer <token>`。为兼容旧集成也接受 URL 查询参数 `access_token`，但不建议这样配置，避免 token 进入 URL 或日志；header 与 query 同时出现且不同会拒绝。未认证连接和第二个并发上游会在进入事件管道前拒绝，且不改变当前健康状态；超过 1 MiB 的消息会关闭当前已认证上游并把入站标为 `unavailable`，等待 NapCat 重连。
-
-**消息路由：**
-- `target=private:<QQ号>`：私聊消息
-- `target=group:<QQ群号>`：群聊消息
-
-QQ 号、群号和消息 ID 全程作为字符串处理，避免超出 JavaScript 安全整数后失真。`recent_conversations`、`list_friends`、`list_groups`、`friend_history`、`group_history` 分别调用 NapCat 的近期会话、好友/群目录和历史接口；目录最多返回 500 项，单次历史最多 100 条，消息正文和 action 结果均有大小上限。
-
-`health_check` 会调用 NapCat 的 `get_status`，同时报告是否已有反向 WebSocket 客户端接入。HTTP API 可用只证明能够出站；只有 NapCat 登录状态正常且反向 WebSocket 已连接，才形成可收可发的双向闭环。`./scripts/setup-qq-connector.sh` 增量写入实际配置、生成 owner-only token 并关闭旧 QQ/微信 UI Connector；NapCat 未响应时脚本保持 `qq` disabled，避免误报在线。NapCat 首次 ready 后再运行一次该脚本即可启用并热重载 QQ Connector。
-
-仓库中的 `qq-applescript-connector.mjs` 仅为旧安装兼容保留，不在默认目录和支持路径中；NapCat 不在线时不得自动降级为启动 QQ.app、截图/OCR 或模拟输入。
-
-**配置示例（mimi.connectors.example.json）：**
-```json
-"qq": {
-  "enabled": true,
-  "command": "node",
-  "args": ["/absolute/path/to/MimiAgent/examples/connectors/qq-napcat-connector.mjs"],
-  "envAllowlist": ["QQ_ONEBOT_HTTP_URL", "QQ_ONEBOT_WS_PORT", "QQ_ONEBOT_ACCESS_TOKEN", "QQ_ONEBOT_WS_ACCESS_TOKEN", "QQ_ONEBOT_STATUS_POLL_MS"],
-  "source": "qq",
-  "trust": "external",
-  "profileId": "owner",
-  "restart": true,
-  "deliveryTimeoutMs": 30000,
-  "actionTimeoutMs": 30000,
-  "actions": {
-    "send_message": { "description": "向 QQ 私聊或群聊主动发送文本消息" },
-    "health_check": { "description": "检查 OneBot HTTP 状态与反向 WebSocket 入站连接" },
-    "recent_conversations": { "description": "读取有界近期 QQ 会话" },
-    "list_friends": { "description": "列出有界 QQ 好友目录" },
-    "list_groups": { "description": "列出有界 QQ 群目录" },
-    "friend_history": { "description": "读取指定好友的有界历史" },
-    "group_history": { "description": "读取指定群的有界历史" }
-  }
-}
-```
+大象 Connector、QQ OneBot/NapCat Connector、通用 HTTP Action/Event Connector，以及 QQ、微信、大象 AppleScript IM Connector 已从运行时、发布包和默认配置中移除。QQ 只保留 `skills/qq-messenger-skill` 的 CUA 路线；微信只保留上文的 OpenClaw iLink Bot 路线。旧配置会在初始化时删除这些已退役项。
 
 ## 信息雷达（RSS / Atom / 天气）
 

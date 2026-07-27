@@ -60,8 +60,8 @@ test('progressively discloses capabilities for owner conversation input', () => 
     '解释 src/index.ts 的逻辑',
     '总结 https://example.com/report',
     '为什么GitHub直连不通？你试一下。',
-    '大象 Connector 失败，你不会使用 Computer Use 去操作大象看看么？',
-    '帮我看看大象有哪些消息',
+    'Mail Connector 失败，你不会检查一下运行状态么？',
+    '帮我看看有哪些未读邮件',
     '查看修复进度并继续修改代码',
     '切换到上个会话，然后修复这个问题',
   ]) assert.equal(capabilityDisclosureForInput(input), 'full', input);

@@ -24,8 +24,7 @@ description: 通过 macOS CuaDriver 后台读取 QQ 可见会话、总结或理�
 1. **明确联系人和发送正文**：直接执行一次 `send`，不要读取上下文或检查 Connector。
 2. **总结、查看消息或依赖上下文回复**：先执行一次 `context`，再根据结构化消息完成总结或拟写回复；“回复某人的QQ消息”使用上面的快速路径。
 3. **用户明确要求“回复/告诉/发出去”**：生成回复后再执行一次 `send`。用户只问“怎么回”时仅给建议，不发送。
-4. **QQ 入站 Event**：使用 Event 自带的 actor、conversation 和 reply route 理解上下文；最终答案会由 Outbox 回复原会话。不要调用本脚本或 `connector_action` 重复发送。
-5. **需要当前窗口之外的长历史**：只在此时调用 `inspect_mimi_capabilities` 检查 QQ Connector。在线时用 `list_friends` 解析稳定 QQ 号，再用 `friend_history`/`group_history`；不可用时明确说明桌面快照不等于完整历史。
+4. **需要当前窗口之外的长历史**：明确说明 CUA 只能读取当前可见窗口，不能把快照冒充完整历史，也不要改用其他 QQ 接入方案。
 
 ## 脚本
 

@@ -56,7 +56,7 @@ owner 也可先调用 `get_mimi_settings` 读取完整快照，再用 `update_mi
     "locale": "zh-CN",
     "focus": ["项目风险", "重要日程", "家人消息"],
     "replyRoute": {
-      "channel": "connector:daxiang",
+      "channel": "connector:messages",
       "target": "owner-conversation-id"
     }
   },
@@ -114,7 +114,7 @@ owner 也可先调用 `get_mimi_settings` 读取完整快照，再用 `update_mi
       "aliases": [
         { "source": "mail", "actor": "alice@example.com" },
         { "source": "messages", "actor": "+15550001111" },
-        { "source": "daxiang", "actor": "alice-work-id" }
+        { "source": "messages", "actor": "alice-phone" }
       ],
       "context": [
         "负责 APAC 项目，偏好先看结论再看细节",
@@ -213,7 +213,7 @@ Routine prompt 不应复制外部消息正文；让 Agent 在运行时按需调�
 
 ## 跨渠道人物上下文
 
-`people` 是 owner 明确维护的轻量身份映射，让同一个人在 Mail、Messages、大象、QQ 或其他 Connector 中共享连续上下文。它不按显示名自动猜测身份，也不读取或镜像 Contacts：只有 `source + actor.id` 命中 alias 才解析为 canonical person。
+`people` 是 owner 明确维护的轻量身份映射，让同一个人在 Mail、Messages 或其他 Connector 中共享连续上下文。它不按显示名自动猜测身份，也不读取或镜像 Contacts：只有 `source + actor.id` 命中 alias 才解析为 canonical person。
 
 每个人支持：
 

@@ -373,7 +373,14 @@ const CONNECTOR_TEMPLATE_ROOTS = [
 ] as const;
 export interface MimiInitialization {
   root: string;
-  connectors: { file: string; created: boolean; updatedActions: number; total: number; enabled: string[] };
+  connectors: {
+    file: string;
+    created: boolean;
+    updatedActions: number;
+    removedRetired: number;
+    total: number;
+    enabled: string[];
+  };
   assistant: { file: string; created: boolean };
 }
 
@@ -582,10 +589,23 @@ function connectorScriptPath(connector: ConnectorFileConfig['connectors'][string
   return undefined;
 }
 
-const LEGACY_IM_CONNECTORS = [
-  { legacy: 'qq-applescript', preferred: 'qq', script: 'qq-applescript-connector.mjs' },
-  { legacy: 'wechat-applescript', preferred: 'openclaw-weixin', script: 'wechat-applescript-connector.mjs' },
-] as const;
+const RETIRED_CONNECTOR_IDS = new Set([
+  'daxiang',
+  'daxiang-applescript',
+  'http-action',
+  'qq',
+  'qq-applescript',
+  'wechat-applescript',
+]);
+
+const RETIRED_CONNECTOR_SCRIPTS = new Set([
+  'daxiang-applescript-connector.mjs',
+  'daxiang-connector.mjs',
+  'http-action-connector.mjs',
+  'qq-applescript-connector.mjs',
+  'qq-napcat-connector.mjs',
+  'wechat-applescript-connector.mjs',
+]);
 
 const REQUIRED_CONNECTOR_ENV: Readonly<Record<string, readonly string[]>> = {
   'openclaw-weixin': ['MIMI_DAEMON_SOCKET'],
@@ -631,8 +651,14 @@ async function sameConnectorScript(
 async function mergeTemplateActions(
   current: ConnectorFileConfig,
   template: ConnectorFileConfig,
-): Promise<{ config: ConnectorFileConfig; updatedActions: number; changed: boolean }> {
+): Promise<{
+  config: ConnectorFileConfig;
+  updatedActions: number;
+  removedRetired: number;
+  changed: boolean;
+}> {
   let updatedActions = 0;
+  let removedRetired = 0;
   let changed = false;
   const connectors = { ...current.connectors };
   let backgroundDefaultsVersion = current.backgroundDefaultsVersion;
@@ -656,12 +682,13 @@ async function mergeTemplateActions(
     backgroundDefaultsVersion = defaults.version;
     changed ||= defaults.changed;
   }
-  for (const migration of LEGACY_IM_CONNECTORS) {
-    const legacy = connectors[migration.legacy];
-    if (!legacy?.enabled || !connectors[migration.preferred]?.enabled) continue;
-    const script = connectorScriptPath(legacy);
-    if (!script || path.basename(script) !== migration.script) continue;
-    connectors[migration.legacy] = { ...legacy, enabled: false };
+  for (const [id, connector] of Object.entries(connectors)) {
+    const script = connectorScriptPath(connector);
+    if (!RETIRED_CONNECTOR_IDS.has(id) && (!script || !RETIRED_CONNECTOR_SCRIPTS.has(path.basename(script)))) {
+      continue;
+    }
+    delete connectors[id];
+    removedRetired += 1;
     changed = true;
   }
   for (const [id, connector] of Object.entries(template.connectors)) {
@@ -703,7 +730,12 @@ async function mergeTemplateActions(
       actions: { ...Object.fromEntries(missing), ...connector.actions },
     };
   }
-  return { config: { backgroundDefaultsVersion, connectors }, updatedActions, changed };
+  return {
+    config: { backgroundDefaultsVersion, connectors },
+    updatedActions,
+    removedRetired,
+    changed,
+  };
 }
 
 export async function initializeMimi(
@@ -729,10 +761,12 @@ export async function initializeMimi(
   }
   let connectorConfig = parseConnectorConfig(JSON.parse(await readFile(paths.connectorsConfig, 'utf8')) as unknown);
   let updatedActions = 0;
+  let removedRetired = 0;
   if (!connectorCreated) {
     const merged = await mergeTemplateActions(connectorConfig, localTemplate);
     connectorConfig = merged.config;
     updatedActions = merged.updatedActions;
+    removedRetired = merged.removedRetired;
     if (merged.changed) await writeAtomicJson(paths.connectorsConfig, connectorConfig);
   }
   await chmod(paths.connectorsConfig, 0o600);
@@ -750,6 +784,7 @@ export async function initializeMimi(
       file: paths.connectorsConfig,
       created: connectorCreated,
       updatedActions,
+      removedRetired,
       total: Object.keys(connectorConfig.connectors).length,
       enabled: Object.entries(connectorConfig.connectors)
         .filter(([, connector]) => connector.enabled)

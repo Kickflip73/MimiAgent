@@ -194,7 +194,7 @@ Daemon 启动前经过一个幂等 bootstrap，而不是额外安装服务：首
 
 恢复备份是独立于数据库迁移备份的用户运维边界。在线备份使用 SQLite Backup API，不直接复制活动 WAL；其余原子 JSON、Session、Memory Wiki、Trace 与配置按显式 allowlist 复制，control bearer、Socket、日志和临时 Computer 产物排除。完成标记 `manifest.json` 最后写入，逐文件记录大小和 SHA-256，并要求备份数据库通过 `integrity_check`。校验拒绝缺失、多余、篡改或符号链接文件。恢复仅对离线且不存在的数据根开放，先在同一父目录 staging、复验数据库，再以目录 rename 提交；不覆盖已有状态、不带回旧 IPC 身份，适用于空白环境恢复演练。
 
-渠道通过独立 NDJSON 子进程接入。Host 只传递 allowlist 环境变量，负责子进程退避重启；带 `replyTarget` 的结果走 Connector Outbox 并等待 delivery ACK，主动事务走 Action Bridge。没有专用 Bridge 或必须先经过官方服务端回调的来源可使用只绑定 `127.0.0.1` 的 Bearer Webhook；Webhook 固定产生 external provenance，限制 1MB 和每分钟 60 次，并接受有界 `reply:{connector,target}` 转换为现有 Connector route。`notify:false` 表示显式无回传，不继承 owner route。大象的官方 Thrift/OCTO 鉴权和 3 秒快速确认留在主干 relay，本机只负责持久化、去重、Agent 和 Outbox。两种入口都不把渠道 SDK 或凭证耦合进 Agent Runtime。
+渠道通过独立 NDJSON 子进程接入。Host 只传递 allowlist 环境变量，负责子进程退避重启；带 `replyTarget` 的结果走 Connector Outbox 并等待 delivery ACK，主动事务走 Action Bridge。没有专用 Bridge 或必须先经过官方服务端回调的来源可使用只绑定 `127.0.0.1` 的 Bearer Webhook；Webhook 固定产生 external provenance，限制 1MB 和每分钟 60 次，并接受有界 `reply:{connector,target}` 转换为现有 Connector route。`notify:false` 表示显式无回传，不继承 owner route。入口不把渠道 SDK 或凭证耦合进 Agent Runtime。
 
 Connector 配置换代复用同一个 Manager 对象和显式 Unix Socket RPC。新文件在触碰旧进程前完整解析；Manager 先确认没有 pending delivery/action，再 drain、停止并精确注销旧 notification sink，最后安装启动新 Map。每条 delivery/action 带绝对截止时间；外层超时会关闭 stdin、终止并按配置重启整个 Connector，UI Connector 同时负责终止自己的在途系统子进程，避免调用方已收到超时而动作仍晚到。Dispatcher 每个 Event 动态构造 action tool，execute 闭包也始终查询同一 Manager，因此无需重建 Agent、Dispatcher 或 Daemon。这里刻意没有文件 watcher、配置版本表或双进程交接协议。
 
