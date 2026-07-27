@@ -249,6 +249,8 @@ owner/system 以及命中 owner source policy 的 MimiAgent 事件可使用有�
 
 临时集成也可设置 `MIMI_WEBHOOK_PORT` 与 `MIMI_WEBHOOK_TOKEN` 开启仅监听 localhost 的认证 Webhook。所有 Webhook 来信固定记录为 external provenance；默认使用受限事件策略，只有命中 owner 明确配置的 source policy 才获得对应代办权。
 
+本机 IDE、脚本或其他客户端也可设置 `MIMI_RUNTIME_HTTP_PORT` 与至少 32 字节的 `MIMI_RUNTIME_HTTP_TOKEN` 复用 Runtime。适配器只监听 `127.0.0.1`，提供 Session、消息提交、Task 查询/取消和 SSE 事件接口；请求仍进入同一套 Event、Task、Session actor 与 `MimiHost`，`Idempotency-Key` 可避免客户端重试产生重复任务。
+
 查看命令帮助和版本不需要 API Key：
 
 ```bash
@@ -296,6 +298,8 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_ASSISTANT_CONFIG` | `<MIMI_DAEMON_DATA_DIR>/assistant.json` | 用户画像、Standing Orders、静默时段、预算、规则与主动简报配置 |
 | `MIMI_WEBHOOK_PORT` | 未启用 | localhost 认证 Webhook 端口 |
 | `MIMI_WEBHOOK_TOKEN` | 未设置 | Webhook Bearer Token，启用时至少 24 字符 |
+| `MIMI_RUNTIME_HTTP_PORT` | 未启用 | 仅监听 localhost 的 Runtime HTTP/SSE 端口 |
+| `MIMI_RUNTIME_HTTP_TOKEN` | 未设置 | Runtime HTTP Bearer Token，启用时至少 32 字节 |
 | `MIMI_SKILLS_DIR` | 未设置 | 最高优先级额外 Skill 根目录；不再替换标准发现位置 |
 | `MIMI_MCP_CONFIG` | `<workspace>/mcp.json` | MCP Server 配置文件 |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | MemoryHub Embedding 模型 |

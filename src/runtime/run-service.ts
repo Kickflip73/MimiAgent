@@ -1,4 +1,4 @@
-import type { RunStreamEvent } from '@openai/agents';
+import type { AgentInputItem, RunStreamEvent } from '@openai/agents';
 import type { RuntimeEffect } from './control.js';
 import type { RuntimeEvent } from './hooks.js';
 import type {
@@ -12,6 +12,7 @@ import { RunCommitCoordinator } from './pipeline/run-commit-coordinator.js';
 
 export interface AgentRunRequest {
   input: string;
+  modelInput?: AgentInputItem[];
   signal?: AbortSignal;
   options?: MimiRunOptions;
 }
@@ -106,7 +107,7 @@ export class AgentRunService {
     const stopRuntimeEvents = this.agent.onRuntimeEvent((event) => observe(observer.onRuntimeEvent, event));
     await observe(observer.onStart, request.input);
     try {
-      stream = await this.agent.stream(request.input, request.signal, request.options);
+      stream = await this.agent.stream(request.modelInput ?? request.input, request.signal, request.options);
       for await (const event of stream) {
         streamedAnswer += answerDelta(event);
         const hiddenCandidate = this.agent.completionGateRequired

@@ -109,9 +109,13 @@ export interface CommandTarget {
   listSessionSummaries(): ReturnType<MimiAgent['listSessionSummaries']>;
   history(): ReturnType<MimiAgent['history']>;
   clearSession(): ReturnType<MimiAgent['clearSession']>;
+  listUndoableRuns?(limit?: number): ReturnType<MimiAgent['listUndoableRuns']>;
+  previewUndo?(runId: string): ReturnType<MimiAgent['previewUndo']>;
+  undoRun?(runId: string): ReturnType<MimiAgent['undoRun']>;
   listSkills(): MaybePromise<ReturnType<MimiAgent['listSkills']>>;
   activeSkills?(): ReturnType<MimiAgent['activeSkills']>;
   deactivateSkill?(name: string): ReturnType<MimiAgent['deactivateSkill']>;
+  setSkillEnabled?(name: string, scope: 'project' | 'user', enabled: boolean): ReturnType<MimiAgent['setSkillEnabled']>;
   reloadSkills(): ReturnType<MimiAgent['reloadSkills']>;
   mcpStatuses(): MaybePromise<ReturnType<MimiAgent['mcpStatuses']>>;
   reloadMcp(): ReturnType<MimiAgent['reloadMcp']>;
@@ -154,6 +158,7 @@ export const COMMANDS = [
   { value: '/switch', description: '按 ID 切换对话' },
   { value: '/history', description: '查看当前历史' },
   { value: '/clear', description: '清空当前对话' },
+  { value: '/undo', description: '预览或安全撤销某个 Run 的文件变更' },
   { value: '/skills', description: '列出 Skills' },
   { value: '/tools', description: '列出可用工具' },
   { value: '/mcp', description: '查看 MCP 连接' },
@@ -183,8 +188,12 @@ const HELP = `内置命令：
   /switch <id>        按 ID 切换对话
   /history            查看当前对话历史
   /clear              清空当前对话
+  /undo [run-id] [--apply]
+                      列出、预览或显式确认撤销某个 Run 的文件变更
   /skills [reload|active|deactivate <name>]
                       列出、重新加载或管理当前 Session 的 Skills
+  /skills <enable|disable> <project|user> <name>
+                      持久启用或停用项目/用户范围 Skill
   /tools              列出当前可用工具
   /mcp [reload]       查看或重新连接 MCP Server
   /context            查看上下文、记忆和计划用量
@@ -453,6 +462,29 @@ export class CommandHandler {
       await this.ui.resetScreen?.();
       return this.handled('当前对话、Goal、Plan 与 Team 状态已清空。');
     }
+    if (command === '/undo') {
+      if (!this.agent.listUndoableRuns || !this.agent.previewUndo || !this.agent.undoRun) {
+        return this.handled('当前 Host 暂不支持运行级撤销。');
+      }
+      if (!argument) {
+        const runs = await this.agent.listUndoableRuns(20);
+        return this.handled(runs.map((run) =>
+          `${run.runId} · ${run.operations} 次修改 · ${run.files.length} 个文件${run.safe ? '' : ' [不可安全撤销]'}`
+        ).join('\n') || '没有可撤销的文件变更 Run');
+      }
+      const apply = argument.endsWith(' --apply');
+      const runId = apply ? argument.slice(0, -' --apply'.length).trim() : argument.trim();
+      if (!apply) {
+        const preview = await this.agent.previewUndo(runId);
+        return this.handled([
+          `Run ${preview.runId}：${preview.operations} 次修改，${preview.files.length} 个文件`,
+          ...preview.files.map((file) => `- ${file}`),
+          preview.safe ? `确认后执行：/undo ${runId} --apply` : '该记录不完整，不能安全撤销。',
+        ].join('\n'));
+      }
+      const result = await this.agent.undoRun(runId);
+      return this.handled(`已撤销 Run ${runId}，恢复 ${result.restored.length} 个文件。`);
+    }
     if (command === '/skills') {
       if (argument === 'reload') {
         const result = await this.agent.reloadSkills();
@@ -479,10 +511,20 @@ export class CommandHandler {
         return this.handled(deactivated ? `已停用 Skill：${name}` : `当前 Session 未激活 Skill：${name}`);
       }
       if (argument === 'deactivate') return this.handled('用法：/skills deactivate <name>');
+      const persistent = argument.match(/^(enable|disable)\s+(project|user)\s+([a-z0-9]+(?:-[a-z0-9]+)*)$/);
+      if (persistent) {
+        if (!this.agent.setSkillEnabled) return this.handled('当前远程 Host 暂不支持持久 Skill 开关。');
+        const [, action, scope, name] = persistent as [string, 'enable' | 'disable', 'project' | 'user', string];
+        await this.agent.setSkillEnabled(name, scope, action === 'enable');
+        return this.handled(`已在${scope === 'project' ? '项目' : '用户'}范围${action === 'enable' ? '启用' : '停用'} Skill：${name}`);
+      }
+      if (argument.startsWith('enable ') || argument.startsWith('disable ')) {
+        return this.handled('用法：/skills <enable|disable> <project|user> <name>');
+      }
       const skills = await this.agent.listSkills();
       return this.handled(skills.map((skill) => [
         `- ${skill.name}: ${skill.description}`,
-        `  source: ${skill.source.id}${skill.active ? ' [active]' : skill.stale ? ' [stale]' : ''}${skill.available ? '' : ` [unavailable: ${skill.unavailableReasons.join(', ')}]`}`,
+        `  source: ${skill.source.id}${skill.active ? ' [active]' : skill.stale ? ' [stale]' : ''}${skill.enabled ? '' : ` [disabled:${skill.disabledScope}]`}${skill.available ? '' : ` [unavailable: ${skill.unavailableReasons.join(', ')}]`}`,
         `  location: ${skill.file}`,
       ].join('\n')).join('\n') || '暂无 Skills');
     }

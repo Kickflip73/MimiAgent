@@ -351,6 +351,8 @@ SkillLoader 实现开放 Agent Skills 格式的最小完整客户端流程：
 
 资源读取要求当前 Session 存在同一份 active binding，且本轮仍 available；随后拒绝绝对路径、目录逃逸和 symlink 逃逸，单个文本资源限制为 256KB。无效 Skill 进入 diagnostics，不影响其他 Skill；`/skills reload` 可热重载 registry。
 
+项目与用户范围的 Skill enable/disable 状态分别保存在工作区数据根和 `~/.mimi-agent` 的原子 `0600` JSON 中。项目级停用优先于用户级；状态进入统一 availability evaluator，因此 catalog、显式 `$skill`、Session 恢复和资源读取不会出现不同步。
+
 ## MCP
 
 MCPManager 复用 Agents SDK 的 `MCPServerStdio` 与 `MCPServerStreamableHttp`，不实现自有 JSON-RPC Client。配置兼容 `servers` 和 `mcpServers`，支持：
@@ -360,8 +362,19 @@ MCPManager 复用 Agents SDK 的 `MCPServerStdio` 与 `MCPServerStreamableHttp`�
 - `${ENV_NAME}` 环境变量替换
 - 并行连接、单 Server 失败隔离、工具计数、状态与 reload
 - MCP Resources 的列出和读取
+- MCP Prompts 的列出和带显式参数获取；Prompt 返回值作为不可信上下文并限制为 256KB
 
 只有成功连接的 Server 才会进入候选工具集。工作区 `mcp.json` 需要 `MIMI_TRUST_WORKSPACE_MCP` 与工作区真实路径匹配；完成这一次配置授权后，owner 可在 `workspace/read-only` 使用其 Server Tools，不再叠加 `trusted`。只读 SubAgent 不继承 MCP，Plan 仅保留受控 Resource wrappers，external/public 事件禁用 MCP。Daemon executionKey 会在 MCP transport 调用边界复用 ExecutionLedger，因此成功结果可重放、失败或结果不确定的外部事务不会自动再次执行。远程认证保持在环境变量中，不应写入 `mcp.json`。
+
+## 文件输入、诊断与撤销
+
+终端输入支持 `@image:相对路径`、`@file:相对路径`，含空格时可使用引号。附件必须位于当前工作区且是不跟随符号链接的普通文件，最多 8 个、单个 10MB、合计 20MB；Daemon 以 SHA-256 内容快照保存为 `0600`，模型读取前再次校验摘要。图片作为 `input_image`，其余文件作为 `input_file` 进入原 Session，不把二进制写入事件数据库。
+
+`write_file`、`edit_file`、`apply_patch` 和 `move_file` 完成后自动返回写后诊断：JSON 立即解析，TypeScript/JavaScript 工作区在存在本地 `tsc` 与 `tsconfig.json` 时执行有界 `tsc --noEmit`。同一批文件修改还会记录运行级前后快照；`/undo` 列出可撤销 Run，`/undo <run-id>` 只预览，`/undo <run-id> --apply` 才执行恢复。撤销前会核对每个文件仍等于该 Run 的写后摘要，检测到后续人工或其他 Run 修改时拒绝覆盖；单文件快照上限 5MB、单 Run 合计 20MB，超限修改会在写入前失败关闭。
+
+## Runtime HTTP/SSE
+
+可选的 Runtime HTTP 适配器只监听 loopback，并要求至少 32 字节的 Bearer Token。它提供 `POST /v1/sessions`、`POST /v1/sessions/:id/messages`、`GET /v1/tasks/:id`、`POST /v1/tasks/:id/cancel` 和 `GET /v1/tasks/:id/events`；最后一个接口使用 SSE，并支持 `Last-Event-ID`/`after` 续读。HTTP 层不执行模型、不维护第二份历史，也不绕过 Attention、Task lease、Session FIFO、取消或 Execution Ledger。
 
 ## SubAgent
 

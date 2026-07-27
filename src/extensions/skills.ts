@@ -10,6 +10,7 @@ import type {
   ActivatedSkill,
   SkillActivationStatus,
 } from '../core/session.js';
+import { SkillPreferenceStore, type SkillPreferenceScope } from './skill-preferences.js';
 
 const metadataSchema = z.object({
   name: z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
@@ -82,7 +83,9 @@ export type SkillAvailabilityReason =
   | 'local-read-denied'
   | 'missing-required-tool'
   | 'stale-binding'
-  | 'instruction-budget';
+  | 'instruction-budget'
+  | 'disabled-by-project'
+  | 'disabled-by-user';
 
 export interface SkillRunAccess {
   canReadLocal: boolean;
@@ -153,7 +156,10 @@ export class SkillLoader {
   private issues: SkillDiagnostic[] = [];
   private readonly sources: SkillSource[];
 
-  constructor(directoryOrSources: string | readonly SkillSource[]) {
+  constructor(
+    directoryOrSources: string | readonly SkillSource[],
+    private readonly preferences?: SkillPreferenceStore,
+  ) {
     this.sources = (typeof directoryOrSources === 'string'
       ? [legacySource(directoryOrSources)]
       : [...directoryOrSources])
@@ -161,6 +167,7 @@ export class SkillLoader {
   }
 
   async load(): Promise<void> {
+    await this.preferences?.load();
     this.skills.clear();
     this.issues = [];
     const seenFiles = new Set<string>();
@@ -286,6 +293,16 @@ export class SkillLoader {
     }) => ({ name, description, root, file, source: { ...source }, contentHash }));
   }
 
+  preference(name: string) {
+    return this.preferences?.preference(name) ?? { disabled: false as const };
+  }
+
+  async setEnabled(name: string, scope: SkillPreferenceScope, enabled: boolean): Promise<void> {
+    if (!this.skills.has(name) && enabled) throw new Error(`未找到 Skill：${name}`);
+    if (!this.preferences) throw new Error('当前 Skill Loader 未配置持久状态存储');
+    await this.preferences.set(name, scope, enabled);
+  }
+
   diagnostics(): string[] {
     return this.issues.map(diagnosticMessage);
   }
@@ -305,6 +322,9 @@ export class SkillLoader {
   evaluateAvailability(skill: Skill, access: SkillRunAccess): SkillAvailability {
     const missingTools = this.missingRequiredTools(skill, access.availableTools);
     const reasons: SkillAvailabilityReason[] = [];
+    const preference = this.preference(skill.name);
+    if (preference.scope === 'project') reasons.push('disabled-by-project');
+    if (preference.scope === 'user') reasons.push('disabled-by-user');
     if (!access.canReadLocal) reasons.push('local-read-denied');
     if (missingTools.length) reasons.push('missing-required-tool');
     if (access.binding && (
@@ -450,6 +470,8 @@ export class SkillLoader {
       if (reason === 'local-read-denied') return '当前 Run 无本地读取权';
       if (reason === 'missing-required-tool') return `缺少必需工具：${availability.missingTools.join(', ')}`;
       if (reason === 'stale-binding') return '激活绑定已过期，需要重新激活';
+      if (reason === 'disabled-by-project') return '已在当前项目停用';
+      if (reason === 'disabled-by-user') return '已在用户范围停用';
       return '完整指令超出本轮 instruction budget';
     });
     throw new Error(`Skill ${skill.name} 当前不可用：${details.join('；')}`);

@@ -70,6 +70,8 @@ const TOOL_DESCRIPTOR_DEFINITIONS = {
   reload_skills: { capabilities: ['control'], sideEffect: true },
   list_mcp_resources: { capabilities: ['read'], modes: ALL_MODES },
   read_mcp_resource: { capabilities: ['read'], modes: ALL_MODES },
+  list_mcp_prompts: { capabilities: ['read'], modes: ALL_MODES },
+  get_mcp_prompt: { capabilities: ['read'], modes: ALL_MODES },
 
   update_plan: { capabilities: ['state-write'], modes: ALL_MODES, sideEffect: true },
   prepare_task: { capabilities: ['state-read'], modes: ALL_MODES },

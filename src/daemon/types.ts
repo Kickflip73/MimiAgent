@@ -338,6 +338,7 @@ export interface DaemonStatus {
   taskWorkers?: DaemonTaskWorkerStatus[];
   activeHostMutations: number;
   webhookAddress?: string;
+  runtimeHttpAddress?: string;
   connectorCount?: number;
   attention?: Record<string, unknown>;
   events: { total: number };

@@ -21,6 +21,7 @@ import { assertSessionId } from '../core/session-id.js';
 import { configureAgentRuntime, requireProviderApiKey } from '../runtime/bootstrap.js';
 import { MimiHost } from '../runtime/mimi-host.js';
 import { resolveTaskWorkspace } from '../runtime/workspace-resolution.js';
+import { stageAttachments, type LocalAttachmentRequest } from '../runtime/attachments.js';
 import { MimiDispatcher } from './dispatcher.js';
 import {
   ConnectorManager,
@@ -44,6 +45,7 @@ import {
 import { NotifierRegistry } from './notifier.js';
 import { MimiStore } from './store.js';
 import { MimiWebhookServer } from './webhook.js';
+import { MimiRuntimeHttpServer, runtimeHttpSessionId } from './runtime-http.js';
 import { AttentionEngine } from './attention.js';
 import { TaskProcessSupervisor } from './task-supervisor.js';
 import { backgroundTaskSummary, inspectBackgroundTaskSummary } from './task-tools.js';
@@ -467,6 +469,7 @@ interface SubmitParams {
   profileId?: string;
   sessionKey?: string;
   workspaceRoot?: string;
+  attachments?: LocalAttachmentRequest[];
   actor?: EventEnvelope['actor'];
   conversation?: EventEnvelope['conversation'];
   replyRoute?: ReplyRoute;
@@ -518,6 +521,17 @@ function createWebhook(store: MimiStore): MimiWebhookServer | undefined {
   const token = preferredEnvironmentValue('MIMI_WEBHOOK_TOKEN');
   if (!token) throw new Error('启用 Webhook 时必须设置 MIMI_WEBHOOK_TOKEN');
   return new MimiWebhookServer(store, Number(rawPort), token);
+}
+
+function runtimeHttpConfiguration(): { port: number; token: string } | undefined {
+  const rawPort = preferredEnvironmentValue('MIMI_RUNTIME_HTTP_PORT');
+  if (!rawPort) return undefined;
+  if (!/^\d+$/.test(rawPort)) throw new Error('MIMI_RUNTIME_HTTP_PORT 必须是整数');
+  const port = Number(rawPort);
+  if (port < 1 || port > 65_535) throw new Error('MIMI_RUNTIME_HTTP_PORT 必须在 1～65535 之间');
+  const token = preferredEnvironmentValue('MIMI_RUNTIME_HTTP_TOKEN');
+  if (!token) throw new Error('启用 Runtime HTTP 时必须设置 MIMI_RUNTIME_HTTP_TOKEN');
+  return { port, token };
 }
 
 function runtimeRoot(): string {
@@ -1137,6 +1151,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
   let host: MimiHost | undefined;
   let connectors: ConnectorManager | undefined;
   let webhook: MimiWebhookServer | undefined;
+  let runtimeHttp: MimiRuntimeHttpServer | undefined;
   let dispatcher: MimiDispatcher | undefined;
   let taskSupervisor: TaskProcessSupervisor | undefined;
   let server: MimiIpcServer | undefined;
@@ -1268,6 +1283,50 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         ...(snapshot?.recovery ? { checkpoint: snapshot.recovery } : {}),
       };
     };
+    const runtimeHttpConfig = runtimeHttpConfiguration();
+    if (runtimeHttpConfig) {
+      runtimeHttp = new MimiRuntimeHttpServer(runtimeHttpConfig.port, runtimeHttpConfig.token, {
+        createSession: runtimeHttpSessionId,
+        submit: async (sessionId, input, idempotencyKey) => {
+          const now = new Date().toISOString();
+          const eventId = randomUUID();
+          const accepted = store.ingestEvent({
+            id: eventId,
+            externalId: idempotencyKey
+              ? `runtime-http:${sessionId}:${idempotencyKey}`
+              : `runtime-http:${eventId}`,
+            source: 'runtime-http',
+            kind: 'command',
+            trust: 'owner',
+            payload: { prompt: input, workspaceRoot: config.workspaceRoot },
+            occurredAt: now,
+            receivedAt: now,
+            priority: 100,
+            profileId: 'owner',
+            sessionKey: assertSessionId(sessionId),
+          });
+          if (!accepted.task) throw new Error('MimiAgent 没有为 HTTP 命令创建 Task');
+          return { taskId: accepted.task.id, inserted: accepted.inserted };
+        },
+        task: (taskId) => taskSummaryWithRuntime(store.getTask(taskId)),
+        cancel: (taskId, reason) => {
+          const task = store.getTask(taskId);
+          return task?.executor === 'isolated_worker' || task?.executor === 'codex'
+            ? activeTaskSupervisor.cancel(taskId, reason)
+            : activeDispatcher.cancel(taskId, reason);
+        },
+        events: (taskId, after) => {
+          const page = liveEvents.page(taskId, after);
+          const task = mimiStreamTaskState(store.getTask(taskId));
+          return {
+            events: page.events,
+            next: page.nextSequence,
+            terminal: Boolean(task && ['completed', 'failed', 'cancelled', 'dead_letter'].includes(task.status)),
+            task,
+          };
+        },
+      });
+    }
     server = new MimiIpcServer(paths.socket, async (method, rawParams, signal, auth) => {
       if (method === WORKER_CONNECTOR_INSPECT_METHOD) {
         const params = workerConnectorInspectParamsSchema.parse(rawParams);
@@ -1292,7 +1351,10 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         buildVersion: MIMI_BUILD_VERSION,
         permissionMode: config.permissionMode ?? 'trusted',
         securityProfile: securityProfileSummary(config),
-        ...activeStatus(), connectorCount: activeConnectors.size, webhookAddress: activeWebhook?.address,
+        ...activeStatus(),
+        connectorCount: activeConnectors.size,
+        webhookAddress: activeWebhook?.address,
+        runtimeHttpAddress: runtimeHttp?.address,
         attention: activeAttention.status(), workspaceRoot: config.workspaceRoot,
       };
       if (stopping.signal.aborted) throw new Error('MimiAgent 正在关闭，不再接受新事务');
@@ -1368,6 +1430,15 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             }
             if (operation === 'skills') return agent.listSkills();
             if (operation === 'skills.reload') return agent.reloadSkills();
+            if (operation === 'skills.set') {
+              const request = object(params.value);
+              const scope = request.scope === 'project' || request.scope === 'user'
+                ? request.scope
+                : undefined;
+              if (!scope || typeof request.enabled !== 'boolean') throw new Error('skills.set 参数无效');
+              await agent.setSkillEnabled(requiredString(request.name, 'name'), scope, request.enabled);
+              return { updated: true };
+            }
             if (operation === 'tools') {
               return agent.visibleToolNames(createMimiCommandHostTools(
                 store,
@@ -1419,6 +1490,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
               await agent.clearSession();
               return { cleared: true, sessionId };
             }
+            if (operation === 'undo.list') return agent.listUndoableRuns(limit(params.value, 20));
+            if (operation === 'undo.preview') return agent.previewUndo(requiredString(params.value, 'value'));
+            if (operation === 'undo.apply') return agent.undoRun(requiredString(params.value, 'value'));
             throw new Error(`未知 MimiAgent Chat 操作：${operation}`);
           }, signal));
       }
@@ -1430,9 +1504,17 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const requestedWorkspaceRoot = source === 'local-cli' && trust === 'owner'
           ? optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot')
           : undefined;
+        const stagedAttachments = source === 'local-cli' && trust === 'owner' && params.attachments?.length
+          ? await stageAttachments(
+              params.attachments,
+              requestedWorkspaceRoot ?? config.workspaceRoot,
+              path.join(mimiPaths(config).root, 'attachments'),
+            )
+          : [];
         const payload = params.payload ?? {
           prompt: requiredString(params.text, 'text'),
           ...(requestedWorkspaceRoot ? { workspaceRoot: requestedWorkspaceRoot } : {}),
+          ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
         };
         const event: EventEnvelope = {
           id: params.eventId ? requiredString(params.eventId, 'eventId') : randomUUID(),
@@ -1589,6 +1671,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
     signalsRegistered = true;
     await server.start();
     await webhook?.start();
+    await runtimeHttp?.start();
     connectors.start();
     dispatcher.start();
     taskSupervisor.start();
@@ -1599,6 +1682,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       process.removeListener('SIGTERM', onSignal);
     }
     await webhook?.close().catch(() => undefined);
+    await runtimeHttp?.close().catch(() => undefined);
     await taskSupervisor?.stop().catch(() => undefined);
     await dispatcher?.stop().catch(() => undefined);
     await connectors?.stop().catch(() => undefined);

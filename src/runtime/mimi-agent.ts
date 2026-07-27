@@ -35,6 +35,7 @@ import {
 import { contentDigest, type CaptureInput, type MemoryHub, type SourceRef } from '../core/memory.js';
 import { PlanStore, type PlanStep } from '../core/plan.js';
 import { runAnswerDigest, type RunCommitJournal } from '../core/run-commit-journal.js';
+import { FileChangeJournal } from '../core/file-change-journal.js';
 import { TeamTaskStore } from '../core/team.js';
 import {
   FileSession,
@@ -78,6 +79,7 @@ import { withMcpExecutionLedger } from './mcp-ledger.js';
 import { createRuntimeComponents, type RuntimeComponents } from './components.js';
 import type { SessionStatePort } from './state-ports.js';
 import { createTeamWorkerTools } from './team-worker-tools.js';
+import { inputText } from './attachments.js';
 import { isTerminalRunInterruption } from './run-outcome.js';
 import { createCompletionTools } from './completion.js';
 import { CompletionCoordinator, incompleteCompletionAnswer } from './completion-coordinator.js';
@@ -284,6 +286,7 @@ export class MimiAgent {
   private readonly traces: TraceStore;
   private readonly ledger: ExecutionLedger;
   private readonly runCommits: RunCommitJournal;
+  private readonly fileChanges: FileChangeJournal;
   private readonly sessions: SessionStatePort;
   private readonly mcp: MCPManager;
   private readonly computer?: ComputerManager;
@@ -331,6 +334,11 @@ export class MimiAgent {
     this.traces = components.state.traces;
     this.ledger = components.state.executionLedger.store;
     this.runCommits = components.state.runCommits;
+    this.fileChanges = new FileChangeJournal(
+      path.join(config.dataRoot, 'file-changes'),
+      config.workspaceRoot,
+      () => this.activeRun?.options?.executionKey ?? this.activeRun?.runId,
+    );
     this.sessions = components.state.sessions;
     this.completion = new CompletionCoordinator(this.ledger);
     this.runtimeActions = new RuntimeActionCoordinator(
@@ -376,12 +384,14 @@ export class MimiAgent {
           allowShell: true,
           shellEnvironment: createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env),
           shellDetachedProcessGroup: createOptions.shellDetachedProcessGroup,
+          mutationObserver: this.fileChanges,
         }
       : {
           readablePaths: ['.'],
           writablePaths: this.permissionMode === 'read-only' ? [] : ['.'],
           allowWrite: this.permissionMode !== 'read-only',
           allowShell: false,
+          mutationObserver: this.fileChanges,
         };
     const computerTools = this.computer ? createComputerTools(this.computer, () => {
       const active = this.activeRun;
@@ -455,8 +465,10 @@ export class MimiAgent {
     return agent;
   }
 
-  async stream(input: string, signal?: AbortSignal, options?: MimiRunOptions) {
+  async stream(input: string | AgentInputItem[], signal?: AbortSignal, options?: MimiRunOptions) {
     if (this.activeRun) throw new Error('当前 Session 仍有任务运行中，请等待完成或先中止');
+    const textInput = inputText(input);
+    if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
     this.lastCommittedAnswer = undefined;
     const scope = captureRunScope({
       sessionId: this.sessionId,
@@ -466,18 +478,18 @@ export class MimiAgent {
       mode: this.mode,
       permissionMode: this.permissionMode,
       securityProfile: this.securityProfile,
-      input,
+      input: textInput,
       options,
     });
     const mode = scope.mode;
-    const developmentTask = this.runContexts.isDevelopmentTask(input);
+    const developmentTask = this.runContexts.isDevelopmentTask(textInput);
     const capabilities = this.capabilityResolver.resolve({
       scope,
       policy: options?.policy,
       requestedComputerAccess: options?.computerAccess,
       defaultComputerAccess: this.config.computer?.defaultAccess,
       developmentTask,
-      expectedArtifactCompletion: expectedCompletionKind(input) === 'artifact',
+      expectedArtifactCompletion: expectedCompletionKind(textInput) === 'artifact',
     });
     const completionToolsAllowed = capabilities.completionToolsAllowed;
     const run: ActiveRun = {
@@ -490,7 +502,7 @@ export class MimiAgent {
       session: options?.policy?.allowSessionContext === false
         ? this.createIsolatedSession(this.sessionId)
         : this.session,
-      input,
+      input: textInput,
       options,
       pendingActions: [],
       requireDurableBlocker: Boolean(options?.hostTools?.some((tool) => tool.name === 'request_background_task_input')),
@@ -543,7 +555,7 @@ export class MimiAgent {
     const recovery = canReadSessionContext ? await run.session.getCheckpoint() : undefined;
     run.recoveryRunId = recovery?.runId;
     await run.session.beginRun(
-      input,
+      textInput,
       run.runId,
       run.ownerId,
       options?.retainExecutionLedger === true,
@@ -551,13 +563,13 @@ export class MimiAgent {
     began = true;
     const resumesCheckpoint = recovery !== undefined
       && recovery.status !== 'completed'
-      && (recovery.input.trim() === input.trim() || input.includes('恢复最近一次未完成运行：'));
-    await this.hooks.emit({ type: 'run_start', sessionId: run.sessionId, input });
+      && (recovery.input.trim() === textInput.trim() || textInput.includes('恢复最近一次未完成运行：'));
+    await this.hooks.emit({ type: 'run_start', sessionId: run.sessionId, input: textInput });
     const memoryContext = this.runContexts.forRun(run, options?.cause);
     const state = await new RunStateLoader({
       hotProfile: () => this.memory.hotProfile(memoryContext),
       searchMemories: () => this.memory.search(
-        this.runContexts.memoryQuery(input, options?.cause),
+        this.runContexts.memoryQuery(textInput, options?.cause),
         memoryContext,
       ),
       loadPlan: () => runPlans.get(),
@@ -593,8 +605,8 @@ export class MimiAgent {
       : undefined;
     const resumesGoal = activeStoredGoal !== undefined && (
       (resumesCheckpoint && recovery.goalCreatedAt === activeStoredGoal.createdAt)
-      || input.includes('继续长期目标：')
-      || input.trim() === activeStoredGoal.objective.trim());
+      || textInput.includes('继续长期目标：')
+      || textInput.trim() === activeStoredGoal.objective.trim());
     const goal = resumesGoal ? activeStoredGoal : undefined;
     run.completionRequired = completionToolsAllowed && resumesGoal;
     if (resumesGoal && activeStoredGoal.completionContract) {
@@ -769,7 +781,7 @@ export class MimiAgent {
     const budget = context.requestBudget(toolSchemas);
     const instructionBudget = Math.floor(budget.inputBudget * 0.35);
     const invocation = parseSkillInvocation(
-      input,
+      textInput,
       options?.cause === undefined || options.cause.trust === 'owner',
     );
     let activeRecords: readonly Readonly<ActivatedSkill>[] = storedActiveSkills;
@@ -853,9 +865,9 @@ export class MimiAgent {
       Math.max(0, budget.inputBudget - estimateTokens(instructions)),
       focusedOwnerRun ? 8_000 : Number.POSITIVE_INFINITY,
     );
-    const currentContextInput = [
-      { role: 'user', content: input } as AgentInputItem,
-    ];
+    const currentContextInput = typeof input === 'string'
+      ? [{ role: 'user', content: input } as AgentInputItem]
+      : input;
     const effectiveResult = context.effectiveHistoryResult(history, currentContextInput, archive, historyBudget);
     const effectiveHistory = effectiveResult.items;
     this.lastContextTokens = budget.toolSchemaTokens + budget.protocolReserveTokens
@@ -869,7 +881,7 @@ export class MimiAgent {
       effective: effectiveResult,
       archive,
       archiveInput: [],
-      currentInput: [{ role: 'user', content: input } as AgentInputItem],
+      currentInput: currentContextInput,
       toolCount: toolSchemas.length,
     });
     const request = this.requestFactory.create({
@@ -1070,6 +1082,8 @@ export class MimiAgent {
       });
       return {
         ...skill,
+        enabled: !this.skills.preference(skill.name).disabled,
+        disabledScope: this.skills.preference(skill.name).scope,
         active,
         stale: Boolean(binding && !active),
         available: availability.available,
@@ -1098,6 +1112,12 @@ export class MimiAgent {
     return this.session.deactivateSkill(name);
   }
 
+  async setSkillEnabled(name: string, scope: 'project' | 'user', enabled: boolean): Promise<void> {
+    if (this.activeRun) throw new Error('当前 Session 仍有任务运行中，不能修改 Skill 状态');
+    await this.skills.setEnabled(name, scope, enabled);
+    if (!enabled) await this.session.deactivateSkill(name);
+  }
+
   async reloadSkills() {
     await this.skills.load();
     return {
@@ -1105,6 +1125,19 @@ export class MimiAgent {
       warnings: this.skills.diagnostics(),
       diagnostics: this.skills.diagnosticDetails(),
     };
+  }
+
+  listUndoableRuns(limit = 20) {
+    return this.fileChanges.list(limit);
+  }
+
+  previewUndo(runId: string) {
+    return this.fileChanges.preview(runId);
+  }
+
+  async undoRun(runId: string) {
+    if (this.activeRun) throw new Error('当前 Session 仍有任务运行中，不能撤销文件变更');
+    return this.fileChanges.undo(runId);
   }
 
   async memoryList(scope: 'private' | 'workspace' | 'all' = 'all') {

@@ -9,6 +9,7 @@ import type { MemoryHub } from '../core/memory.js';
 import { isMcpConfigurationTrusted, MCPManager } from '../extensions/mcp.js';
 import { createRoutedMemoryHub } from '../extensions/memory/hub.js';
 import { SkillLoader, type SkillSource } from '../extensions/skills.js';
+import { SkillPreferenceStore } from '../extensions/skill-preferences.js';
 import { ComputerManager } from '../extensions/computer/manager.js';
 import { CuaDriverClient } from '../extensions/computer/cua-driver-client.js';
 import { createModel, type ModelRuntime } from './model.js';
@@ -89,7 +90,13 @@ export async function createRuntimeComponents(
   const sessionId = requestedSessionId
     ?? preferredEnvironmentValue('MIMI_SESSION', 'AGENT_SESSION')
     ?? 'default';
-  const skills = new SkillLoader(skillSources(config));
+  const skills = new SkillLoader(
+    skillSources(config),
+    new SkillPreferenceStore(
+      path.join(config.dataRoot, 'skill-preferences.json'),
+      path.join(os.homedir(), '.mimi-agent', 'skill-preferences.json'),
+    ),
+  );
   const mcpTrusted = await isMcpConfigurationTrusted(
     config.mcpConfig,
     config.workspaceRoot,

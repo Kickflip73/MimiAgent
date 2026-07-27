@@ -29,6 +29,27 @@ function redactComputerToolInput(item: AgentInputItem): AgentInputItem {
   }
 }
 
+function redactAttachmentData(item: AgentInputItem): AgentInputItem {
+  const value = item as unknown as Record<string, unknown>;
+  if (value.role !== 'user' || !Array.isArray(value.content)) return item;
+  let changed = false;
+  const content = value.content.map((part: unknown) => {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) return part;
+    const record = part as Record<string, unknown>;
+    if (record.type === 'input_image' && typeof record.image === 'string' && record.image.startsWith('data:')) {
+      changed = true;
+      return { type: 'input_text', text: '[图片附件：本轮已读取，二进制未写入 Session 历史]' };
+    }
+    if (record.type === 'input_file' && typeof record.file === 'string' && record.file.startsWith('data:')) {
+      changed = true;
+      const name = typeof record.filename === 'string' ? record.filename : '文件';
+      return { type: 'input_text', text: `[文件附件：${name}；本轮已读取，二进制未写入 Session 历史]` };
+    }
+    return part;
+  });
+  return changed ? { ...value, content } as unknown as AgentInputItem : item;
+}
+
 export interface RunCheckpoint {
   runId: string;
   status: RunStatus;
@@ -321,7 +342,8 @@ export class FileSession implements Session {
 
   async addItems(items: AgentInputItem[]): Promise<void> {
     const validated = (z.array(z.record(z.string(), z.unknown())).parse(items) as unknown as AgentInputItem[])
-      .map(redactComputerToolInput);
+      .map(redactComputerToolInput)
+      .map(redactAttachmentData);
     await this.mutate((session) => {
       session.items.push(...validated);
       session.updatedAt = new Date().toISOString();

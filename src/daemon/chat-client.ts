@@ -25,6 +25,7 @@ import type {
   ImmutableEvent,
   TaskRecord,
 } from './types.js';
+import { parseAttachmentInput } from '../runtime/attachments.js';
 import type { SessionSummary } from '../core/session.js';
 import type { MemoryRef, MemoryScope } from '../core/memory.js';
 
@@ -232,8 +233,11 @@ export class MimiChatClient {
     sessionKey?: string,
   ): Promise<AcceptedMimiEvent> {
     const eventId = randomUUID();
+    const parsed = parseAttachmentInput(input);
+    if (!parsed.text && !parsed.attachments.length) throw new Error('命令不能为空');
     const params = {
-      text: input,
+      text: parsed.text || '请检查随附文件。',
+      ...(parsed.attachments.length ? { attachments: parsed.attachments } : {}),
       source: 'local-cli',
       trust: 'owner',
       profileId: 'owner',
@@ -486,12 +490,28 @@ export class RemoteCommandTarget implements CommandTarget {
     await this.client.invoke('clear', undefined, this.sessionId);
   }
 
+  listUndoableRuns(limit = 20): Promise<CommandMethodResult<'listUndoableRuns'>> {
+    return this.client.invoke('undo.list', limit, this.sessionId);
+  }
+
+  previewUndo(runId: string): Promise<CommandMethodResult<'previewUndo'>> {
+    return this.client.invoke('undo.preview', runId, this.sessionId);
+  }
+
+  undoRun(runId: string): Promise<CommandMethodResult<'undoRun'>> {
+    return this.client.invoke('undo.apply', runId, this.sessionId);
+  }
+
   listSkills(): Promise<CommandMethodResult<'listSkills'>> {
     return this.client.invoke('skills', undefined, this.sessionId);
   }
 
   reloadSkills(): Promise<CommandMethodResult<'reloadSkills'>> {
     return this.client.invoke('skills.reload', undefined, this.sessionId);
+  }
+
+  setSkillEnabled(name: string, scope: 'project' | 'user', enabled: boolean): Promise<void> {
+    return this.client.invoke('skills.set', { name, scope, enabled }, this.sessionId);
   }
 
   mcpStatuses(): Promise<CommandMethodResult<'mcpStatuses'>> {

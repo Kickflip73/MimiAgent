@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { RunStreamEvent } from '@openai/agents';
 import type { MimiAgent } from '../runtime/mimi-agent.js';
 import { MimiHost } from '../runtime/mimi-host.js';
+import { attachmentPayload, inputWithAttachments } from '../runtime/attachments.js';
 import type { RuntimeEvent } from '../runtime/hooks.js';
 import { TerminalRunInterruptedError } from '../runtime/run-outcome.js';
 import { CompletionGateError } from '../core/completion.js';
@@ -420,11 +421,13 @@ export class MimiDispatcher {
       preemptTimer = setInterval(checkPreemption, this.options.preemptPollMs ?? 250);
       preemptTimer.unref();
       refreshRunIdleWatchdog();
+      const modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
       const hostedRun = this.host.execute({
         executionId: task.id,
         sessionId: decision.sessionId!,
         workspaceRoot,
         input: decision.input!,
+        ...(typeof modelInput === 'string' ? {} : { modelInput }),
         signal: runSignal,
         options: {
           ...decision.options,

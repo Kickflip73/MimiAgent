@@ -11,6 +11,8 @@ import { Agent as HttpAgent, fetch } from 'undici';
 import { z } from 'zod';
 import { PRE_MIMI_DATA_DIRECTORY } from './core/mimi-legacy.js';
 import { withExclusiveFileLock } from './core/state-file.js';
+import { diagnoseWrittenFiles } from './runtime/file-diagnostics.js';
+import type { FileMutationObserver } from './core/file-change-journal.js';
 
 const MAX_TEXT_BYTES = 200_000;
 const MAX_RANGED_TEXT_BYTES = 5_000_000;
@@ -76,6 +78,8 @@ export interface ToolAccessPolicy {
   allowProtectedPathShellAccess?: boolean;
   shellEnvironment?: NodeJS.ProcessEnv;
   shellDetachedProcessGroup?: boolean;
+  postWriteDiagnostics?: boolean;
+  mutationObserver?: FileMutationObserver;
 }
 
 async function assertScopedPath(
@@ -239,13 +243,16 @@ export async function writeLocalFile(
   requestedPath: string,
   content: string,
   validate?: (target: string) => Promise<void>,
+  observer?: FileMutationObserver,
 ): Promise<string> {
   const target = resolvePath(workspaceRoot, requestedPath);
   let writtenTarget = target;
   await withMutationLocks([target], async () => {
     writtenTarget = await canonicalPotentialPath(target);
     await validate?.(writtenTarget);
+    const token = await observer?.prepare('write_file', [writtenTarget]);
     await atomicWrite(writtenTarget, content);
+    await observer?.commit(token);
   });
   return `已写入 ${writtenTarget}（${Buffer.byteLength(content, 'utf8')} 字节）`;
 }
@@ -257,6 +264,7 @@ export async function editLocalFile(
   newText: string,
   replaceAll = false,
   validate?: (target: string) => Promise<void>,
+  observer?: FileMutationObserver,
 ): Promise<{ path: string; replacements: number }> {
   if (!oldText) throw new Error('oldText 不能为空');
   const target = resolvePath(workspaceRoot, requestedPath);
@@ -267,7 +275,9 @@ export async function editLocalFile(
     const occurrences = content.split(oldText).length - 1;
     if (occurrences === 0) throw new Error('未找到要替换的原文');
     const next = replaceAll ? content.split(oldText).join(newText) : content.replace(oldText, newText);
+    const token = await observer?.prepare('edit_file', [operationTarget]);
     await atomicWrite(operationTarget, next);
+    await observer?.commit(token);
     return { path: target, replacements: replaceAll ? occurrences : 1 };
   });
 }
@@ -403,6 +413,7 @@ export async function applyLocalPatch(
   patch: string,
   expectedFiles: Array<{ path: string; sha256: string }> = [],
   validate?: (target: string) => Promise<void>,
+  observer?: FileMutationObserver,
 ): Promise<{ files: PatchFileResult[] }> {
   const parsed = parseUnifiedPatch(patch);
   const targets = parsed.map((file) => resolvePath(workspaceRoot, file.newPath!));
@@ -446,7 +457,9 @@ export async function applyLocalPatch(
         },
       });
     }
+    const token = await observer?.prepare('apply_patch', prepared.map((item) => item.target));
     for (const item of prepared) await atomicWrite(item.target, item.content);
+    await observer?.commit(token);
     return { files: prepared.map((item) => item.result) };
   });
 }
@@ -457,6 +470,7 @@ export async function moveLocalFile(
   destinationPath: string,
   overwrite = false,
   validate?: (source: string, destination: string) => Promise<void>,
+  observer?: FileMutationObserver,
 ): Promise<{ from: string; to: string }> {
   const source = resolvePath(workspaceRoot, sourcePath);
   const destination = resolvePath(workspaceRoot, destinationPath);
@@ -474,8 +488,10 @@ export async function moveLocalFile(
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
     }
+    const token = await observer?.prepare('move_file', [checkedSource, checkedDestination]);
     await mkdir(path.dirname(checkedDestination), { recursive: true });
     await rename(checkedSource, checkedDestination);
+    await observer?.commit(token);
     return { from: source, to: destination };
   });
 }
@@ -1194,10 +1210,12 @@ export function createTools(
     }),
     execute: async ({ path: requestedPath, content }) => {
       const target = resolvePath(workspaceRoot, requestedPath);
-      return writeLocalFile(workspaceRoot, requestedPath, content, async () => Promise.all([
+      const result = await writeLocalFile(workspaceRoot, requestedPath, content, async () => Promise.all([
         assertPathAllowed(target, protectedPaths),
         assertWritablePath(workspaceRoot, target, access.writablePaths),
-      ]).then(() => undefined));
+      ]).then(() => undefined), access.mutationObserver);
+      if (access.postWriteDiagnostics === false) return result;
+      return { result, diagnostics: await diagnoseWrittenFiles(workspaceRoot, [target]) };
     },
   });
 
@@ -1212,10 +1230,12 @@ export function createTools(
     }),
     execute: async ({ path: requestedPath, oldText, newText, replaceAll }) => {
       const target = resolvePath(workspaceRoot, requestedPath);
-      return editLocalFile(workspaceRoot, requestedPath, oldText, newText, replaceAll, async () => Promise.all([
+      const result = await editLocalFile(workspaceRoot, requestedPath, oldText, newText, replaceAll, async () => Promise.all([
         assertPathAllowed(target, protectedPaths),
         assertWritablePath(workspaceRoot, target, access.writablePaths),
-      ]).then(() => undefined));
+      ]).then(() => undefined), access.mutationObserver);
+      if (access.postWriteDiagnostics === false) return result;
+      return { ...result, diagnostics: await diagnoseWrittenFiles(workspaceRoot, [target]) };
     },
   });
 
@@ -1229,15 +1249,23 @@ export function createTools(
         sha256: z.string().regex(/^[a-fA-F0-9]{64}$/u),
       })).max(100).default([]),
     }),
-    execute: async ({ patch, expectedFiles }) => applyLocalPatch(
-      workspaceRoot,
-      patch,
-      expectedFiles,
-      async (target) => Promise.all([
-        assertPathAllowed(target, protectedPaths),
-        assertWritablePath(workspaceRoot, target, access.writablePaths ?? ['.']),
-      ]).then(() => undefined),
-    ),
+    execute: async ({ patch, expectedFiles }) => {
+      const result = await applyLocalPatch(
+        workspaceRoot,
+        patch,
+        expectedFiles,
+        async (target) => Promise.all([
+          assertPathAllowed(target, protectedPaths),
+          assertWritablePath(workspaceRoot, target, access.writablePaths ?? ['.']),
+        ]).then(() => undefined),
+        access.mutationObserver,
+      );
+      if (access.postWriteDiagnostics === false) return result;
+      return {
+        ...result,
+        diagnostics: await diagnoseWrittenFiles(workspaceRoot, result.files.map((file) => file.path)),
+      };
+    },
   });
 
   const moveFile = tool({
@@ -1251,12 +1279,17 @@ export function createTools(
     execute: async ({ source, destination, overwrite }) => {
       const sourceTarget = resolvePath(workspaceRoot, source);
       const destinationTarget = resolvePath(workspaceRoot, destination);
-      return moveLocalFile(workspaceRoot, source, destination, overwrite, async () => Promise.all([
+      const result = await moveLocalFile(workspaceRoot, source, destination, overwrite, async () => Promise.all([
         assertPathAllowed(sourceTarget, protectedPaths),
         assertPathAllowed(destinationTarget, protectedPaths),
         assertWritablePath(workspaceRoot, sourceTarget, access.writablePaths),
         assertWritablePath(workspaceRoot, destinationTarget, access.writablePaths),
-      ]).then(() => undefined));
+      ]).then(() => undefined), access.mutationObserver);
+      if (access.postWriteDiagnostics === false) return result;
+      return {
+        ...result,
+        diagnostics: await diagnoseWrittenFiles(workspaceRoot, [destinationTarget]),
+      };
     },
   });
 
