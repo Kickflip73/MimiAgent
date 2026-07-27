@@ -3,7 +3,15 @@ import { mkdir, mkdtemp, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { BASE_INSTRUCTIONS } from '../src/runtime/instructions.js';
 import { resolveTaskWorkspace } from '../src/runtime/workspace-resolution.js';
+
+test('tells Mimi where user work lives and treats stale memory paths only as clues', () => {
+  assert.match(BASE_INSTRUCTIONS, /默认用户工作根目录 ~\/MimiWorkspace/);
+  assert.match(BASE_INSTRUCTIONS, /Memory 和历史中的旧路径只作为线索/);
+  assert.match(BASE_INSTRUCTIONS, /禁止因旧路径不存在就断言项目或文件已经丢失/);
+  assert.match(BASE_INSTRUCTIONS, /MimiAgent 运行时代码目录.*不能作为.*用户工作内容的默认目录/);
+});
 
 test('uses an explicit project path instead of the directory where Mimi was started', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'mimi-workspace-explicit-'));
