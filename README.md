@@ -288,8 +288,8 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `OPENAI_MODELS` / `DEEPSEEK_MODELS` | 内置常用模型 | `/model` 选择器追加的逗号分隔模型列表 |
 | `MIMI_SESSION` | 未设置 | 显式进入已有 Session；未设置时 CLI 使用首次发言才落盘的新对话草稿 |
 | `MIMI_MODE` | `general` | 启动模式：`general`、`plan`、`ultra` |
-| `MIMI_SECURITY_PROFILE` | `safe` | 安全档位：`safe`、`workstation`、`full-owner`；分别绑定只读、工作区写入、完整本机 owner 能力 |
-| `MIMI_PERMISSION_MODE` | 由安全档位决定 | `safe=read-only`、`workstation=workspace`、`full-owner=trusted`；显式设置时必须与档位一致 |
+| `MIMI_SECURITY_PROFILE` | `safe` | 新 Session 的默认安全档位：`safe`、`workstation`、`full-owner`；当前 Session 可用 `/security` 实时切换 |
+| `MIMI_PERMISSION_MODE` | 由默认安全档位决定 | 启动默认值兼容项：`safe=read-only`、`workstation=workspace`、`full-owner=trusted`；显式设置时必须与档位一致 |
 | `MIMI_COMPUTER_BACKEND` | 未启用 | 设置为 `cua` 后注册可选的 `computer_observe` / `computer_act`；第一阶段仅 macOS |
 | `MIMI_CUA_DRIVER_COMMAND` | 未设置 | Cua Driver `>=0.8.3 <=0.9.0` 可执行文件的绝对路径；启用 Computer Use 时必填 |
 | `MIMI_COMPUTER_DEFAULT_ACCESS` | `background` | 本机交互 Run 的默认档位：`none/observe/background/foreground/admin`；Daemon 事件仍需 source policy 显式授权 |
@@ -316,9 +316,9 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 
 通用 `AGENT_*`、模型与 MCP 变量仍按明确白名单作为后备别名。`MIMI_CONFIG_VERSION>=2` 用于区分显式 `workspace` 限制与早期模板默认值。
 
-新安装默认使用 **Safe**：本地文件只读、无 Shell、无 Computer Use、无外部写事务。**Workstation** 允许工作区内文件写入和已配置 Connector 事务，但仍无 Shell、Computer Use 或受信工作区 MCP。只有 **Full Owner** 才开放当前 OS 用户权限下的 Shell，并允许显式配置 Computer Use 与受信工作区 MCP。`/status` 会同时显示安全档位和当前模式下的实际执行能力；旧配置若已显式写入 `MIMI_PERMISSION_MODE`，会按对应档位解释，避免升级时伪装成更低权限。
+新安装的新 Session 默认使用 **Safe**：本地文件只读、无 Shell、无 Computer Use、无外部写事务。**Workstation** 允许工作区内文件写入和已配置 Connector 事务，但仍无 Shell、Computer Use 或受信工作区 MCP。只有 **Full Owner** 才开放当前 OS 用户权限下的 Shell，并允许使用已显式配置的 Computer Use 与受信工作区 MCP。`/status` 会同时显示当前 Session 的安全档位和当前模式下的实际执行能力；旧配置若已显式写入 `MIMI_PERMISSION_MODE`，仍会按对应档位解释为新 Session 默认值。
 
-交互式 CLI 的启动横幅始终显示当前安全档位，首次启动因此不会在用户不知情时隐去授权面。输入 `/security` 可查看三档的 Shell、外部写事务、Computer Use 和受信工作区 MCP 边界，以及写入受保护环境文件并安全重启的明确切换方式；引导不阻塞首次启动，也不会代替用户升级到更高权限。
+交互式 CLI 的启动横幅始终显示当前 Session 的安全档位。输入 `/security` 会打开三档选择列表，用 `↑` / `↓` 移动、`Enter` 确认、`Esc` 取消；选择会持久化到当前 Session，并从下一轮实时生效，不修改环境文件，也不要求重启。环境变量只决定尚未设置偏好的新 Session 默认档位。未配置的 Computer Use 或未受信的工作区 MCP 不会因为切到 Full Owner 而凭空启用。
 
 Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Connector、Shortcuts 或正式 API；GUI 路径遵循“观察 → 单动作 → 再观察”，默认后台执行。`workspace/read-only`、SubAgent、Team worker 和独立后台 Task 不获得桌面能力；Daemon owner channel 还需在 `assistant.json` 的 source policy 中显式设置 `computerAccess`，并可用 `computerApps` 限制 bundle ID。完整设计与部署边界见 [docs/COMPUTER_USE.md](docs/COMPUTER_USE.md)。
 
@@ -462,7 +462,7 @@ CLI 斜杠命令和模型工具调用复用相同的 MimiAgent 运行时方法�
 | `/plan`、`/goal` | Plan 和 Goal 工具 |
 | `/exit` | `request_exit` |
 
-模型和模式切换从下一轮生效；Session、输出等级和退出在当前回答完整写入后生效，避免留下孤立 Tool Call。`/retry` 与 `/resume` 属于重新发起一轮对话的 CLI 入口，Agent 在当前轮中分别通过重试工具和 Goal 工具完成相同语义，不递归启动自身。
+模型、模式和安全档位切换从下一轮生效；Session、输出等级和退出在当前回答完整写入后生效，避免留下孤立 Tool Call。`/retry` 与 `/resume` 属于重新发起一轮对话的 CLI 入口，Agent 在当前轮中分别通过重试工具和 Goal 工具完成相同语义，不递归启动自身。
 
 `runtime_status` 同时返回当前工作区、运行时代码目录、安全档位和执行档位，CLI `/status` 会明确显示当前模式下 Shell 是否真的可用。新安装默认是 `safe/read-only`；只有显式选择 `full-owner/trusted` 才直接使用当前操作系统用户的 Shell。CLI 连接后台时采用后台的实际工作区，并同时核对协议和实际执行档位；旧 launchd 即使固化过 `workspace`，也只会在空闲时被安全替换，不会继续伪装成已升级实例或打断在途事务。
 

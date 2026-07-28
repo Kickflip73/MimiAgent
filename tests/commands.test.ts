@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MimiAgent } from '../src/agent.js';
 import { CommandHandler } from '../src/commands.js';
+import { SECURITY_PROFILES, type SecurityProfile } from '../src/config.js';
 import { AGENT_MODES } from '../src/runtime/instructions.js';
 import type { MemoryRef } from '../src/core/memory.js';
 
@@ -99,6 +100,7 @@ function fakeAgent(): MimiAgent {
       { id: 'ultra', label: 'Ultra Team', description: '大型任务' },
     ],
     switchMode: () => undefined,
+    switchSecurityProfile: () => undefined,
     toolNames: ['read_file', 'run_shell'],
     mcpServerNames: [],
     mcpStatuses: () => [],
@@ -133,7 +135,7 @@ test('handles status and high-frequency inspection commands', async () => {
     assert.match(output.join('\n'), /Full Owner \(full-owner\/trusted\)/);
     assert.match(output.join('\n'), /当前能力.*Computer Use 未配置/);
     assert.match(output.join('\n'), /Computer  未配置/);
-    assert.match(output.join('\n'), /MIMI_SECURITY_PROFILE/);
+    assert.match(output.join('\n'), /交互 TUI.*↑↓/);
     assert.match(output.join('\n'), /Review code/);
     assert.match(output.join('\n'), /uses TS/);
     assert.match(output.join('\n'), /running/);
@@ -291,6 +293,22 @@ test('selects a model and exposes common runtime inspection commands', async () 
   assert.match(output.join('\n'), /MCP 未配置/);
 });
 
+test('selects a model before the draft Session receives its first message', async () => {
+  const switched: string[] = [];
+  const output: string[] = [];
+  const agent = fakeAgent();
+  Object.defineProperty(agent, 'sessionReady', { value: false });
+  agent.switchModel = async (name) => { switched.push(name); };
+  const handler = new CommandHandler(agent, async () => undefined, {
+    write: (text) => output.push(text),
+    selectModel: async () => 'gpt-5-mini',
+  });
+
+  assert.equal(await handler.execute('/model'), 'handled');
+  assert.deepEqual(switched, ['gpt-5-mini']);
+  assert.match(output.join('\n'), /已切换模型：gpt-5-mini/);
+});
+
 test('selects a preset Agent mode', async () => {
   const switched: string[] = [];
   const agent = fakeAgent() as MimiAgent & { switchMode: (mode: string) => void };
@@ -302,6 +320,41 @@ test('selects a preset Agent mode', async () => {
 
   assert.equal(await handler.execute('/mode'), 'handled');
   assert.deepEqual(switched, ['ultra']);
+});
+
+test('selects and applies a Session security profile', async () => {
+  const selectedProfiles: string[][] = [];
+  let active: SecurityProfile = 'full-owner';
+  const agent = fakeAgent();
+  const runtimeInfo = agent.runtimeInfo.bind(agent);
+  agent.runtimeInfo = async () => ({
+    ...await runtimeInfo(),
+    permissionMode: SECURITY_PROFILES[active].permissionMode,
+    securityProfile: {
+      ...SECURITY_PROFILES[active],
+      computerUse: false,
+      trustedWorkspaceMcp: false,
+    },
+  });
+  agent.switchSecurityProfile = async (profile) => {
+    if (!(profile in SECURITY_PROFILES)) throw new Error(`未知安全档位：${profile}`);
+    active = profile as SecurityProfile;
+  };
+  const output: string[] = [];
+  const handler = new CommandHandler(agent, async () => undefined, {
+    write: (text) => output.push(text),
+    selectSecurityProfile: async (profiles, current) => {
+      selectedProfiles.push(profiles.map((profile) => profile.id));
+      assert.equal(current, 'full-owner');
+      return 'workstation';
+    },
+  });
+
+  assert.equal(await handler.execute('/security'), 'handled');
+  assert.equal(active, 'workstation');
+  assert.deepEqual(selectedProfiles, [['safe', 'workstation', 'full-owner']]);
+  assert.match(output.join('\n'), /Workstation \(workstation\/workspace\).*下一轮/);
+  await assert.rejects(handler.execute('/security unsafe'), /未知安全档位/);
 });
 
 test('switches terminal output detail level', async () => {

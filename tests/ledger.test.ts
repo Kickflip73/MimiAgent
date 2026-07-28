@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -369,6 +369,30 @@ test('fails closed when the execution ledger is corrupt', async () => {
   );
   assert.equal(executions, 0);
   assert.ok((await readdir(root)).some((name) => name.startsWith('ledger.json.corrupt-')));
+  const marker = JSON.parse(await readFile(`${file}.corrupt-state`, 'utf8')) as {
+    state?: unknown;
+    backup?: unknown;
+  };
+  assert.equal(marker.state, 'quarantined');
+  assert.equal(typeof marker.backup, 'string');
+  assert.match(String(marker.backup), /ledger\.json\.corrupt-/);
+});
+
+test('preserves a valid execution ledger written by an incompatible newer schema', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-incompatible-'));
+  const file = path.join(root, 'ledger.json');
+  const source = `${JSON.stringify({ version: 2, entries: {}, actionIntents: {} })}\n`;
+  await writeFile(file, source);
+  let executions = 0;
+
+  await assert.rejects(
+    new ExecutionLedger(file).executeOnce(call(), async () => ++executions),
+    /状态文件格式与当前程序不兼容，已保留原文件/,
+  );
+
+  assert.equal(executions, 0);
+  assert.equal(await readFile(file, 'utf8'), source);
+  assert.deepEqual(await readdir(root), ['ledger.json']);
 });
 
 test('bounds ledger outputs and entry growth without replaying side effects', async () => {

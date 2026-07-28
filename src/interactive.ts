@@ -297,12 +297,19 @@ export class InteractiveTerminal {
     this.draw();
   }
 
-  async select(items: SelectItem[], title = '选择'): Promise<string | undefined> {
+  async select(
+    items: SelectItem[],
+    title = '选择',
+    initialValue?: string,
+  ): Promise<string | undefined> {
     if (!items.length) return undefined;
     this.cancelInputRedraw();
     this.eraseUi();
     return new Promise((resolve) => {
-      this.selectState = { items, index: 0, title, resolve };
+      const initialIndex = initialValue === undefined
+        ? -1
+        : items.findIndex((item) => item.value === initialValue);
+      this.selectState = { items, index: Math.max(0, initialIndex), title, resolve };
       this.draw();
     });
   }

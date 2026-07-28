@@ -88,6 +88,7 @@ export interface SessionPreferences {
   provider?: 'openai' | 'deepseek';
   model?: string;
   outputLevel?: string;
+  securityProfile?: 'safe' | 'workstation' | 'full-owner';
 }
 
 export type ActivatedSkillSourceId =
@@ -161,6 +162,7 @@ const sessionFileSchema = z.object({
     provider: z.enum(['openai', 'deepseek']).optional(),
     model: z.string().optional(),
     outputLevel: z.string().optional(),
+    securityProfile: z.enum(['safe', 'workstation', 'full-owner']).optional(),
   }).optional(),
   activeSkills: z.array(z.object({
     name: z.string().min(1),

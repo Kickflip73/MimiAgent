@@ -1,5 +1,5 @@
 import process from 'node:process';
-import { preferredEnvironmentValue, securityProfileSummary, type AppConfig } from './config.js';
+import { preferredEnvironmentValue, type AppConfig } from './config.js';
 import {
   COMMANDS,
   CommandHandler,
@@ -40,14 +40,14 @@ export function renderChatHistory(snapshot: MimiChatSnapshot, tty: boolean): str
   ].filter(Boolean).join('\n\n');
 }
 
-function renderBanner(version: string, snapshot: MimiChatSnapshot, securityLabel: string): string {
+function renderBanner(version: string, snapshot: MimiChatSnapshot): string {
   return [
     `MimiAgent v${version}`,
     '全天候个人 Agent · CLI 已连接统一后台',
     `模型    ${snapshot.provider} · ${snapshot.model}`,
     `对话    ${snapshot.draft ? '新对话（发送消息后创建）' : snapshot.sessionId}`,
     `工作区  ${snapshot.workspaceRoot}`,
-    `安全    ${securityLabel} · /security 查看权限边界`,
+    `安全    ${snapshot.securityProfile.label} · /security 切换当前对话档位`,
   ].join('\n');
 }
 
@@ -61,7 +61,6 @@ export async function runMimiCli(
     ? new MimiChatClient(config, reconcileDaemon)
     : new MimiChatClient(config);
   await client.connect();
-  const securityLabel = securityProfileSummary(config).label;
   const configuredSession = preferredEnvironmentValue('MIMI_SESSION', 'AGENT_SESSION');
   const oneShotInput = args.join(' ').trim();
   if (oneShotInput) {
@@ -181,12 +180,12 @@ export async function runMimiCli(
   };
   const restoreSession = async () => {
     await refresh();
-    terminal.clearScreen([renderBanner(version, snapshot, securityLabel), renderChatHistory(snapshot, tty)]
+    terminal.clearScreen([renderBanner(version, snapshot), renderChatHistory(snapshot, tty)]
       .filter(Boolean).join('\n\n'));
   };
   const resetSession = async () => {
     await refresh();
-    terminal.clearScreen(renderBanner(version, snapshot, securityLabel));
+    terminal.clearScreen(renderBanner(version, snapshot));
   };
   const commands = new CommandHandler(target, submitAndDisplay, {
     write: (text) => terminal.notify(text),
@@ -198,16 +197,32 @@ export async function runMimiCli(
       value: session.id,
       label: `${session.id === target.currentSessionId ? '● ' : ''}${session.title}`,
       detail: `${session.recoverable ? '↻ 可恢复 · ' : ''}${session.turns} 轮 · ${session.preview}`,
-    })), '选择 MimiAgent 对话'),
+    })), '选择 MimiAgent 对话', target.currentSessionId),
     selectModel: async (models, current) => terminal.select(models.map((model) => ({
       value: model,
       label: `${model === current ? '● ' : ''}${model}`,
-    })), '选择模型'),
+    })), '选择模型', current),
     selectMode: async (modes, current) => terminal.select(modes.map((mode) => ({
       value: mode.id,
       label: `${mode.id === current ? '● ' : ''}${mode.label}`,
       detail: mode.description,
-    })), '选择模式'),
+    })), '选择模式', current),
+    selectSecurityProfile: async (profiles, current) => terminal.select(profiles.map((profile) => {
+      const workspaceAccess = profile.id === 'safe'
+        ? '只读工作区'
+        : profile.id === 'workstation' ? '工作区可写' : '当前 OS 用户权限';
+      const capabilities = [
+        profile.shell ? 'Shell' : '无 Shell',
+        profile.externalTransactions ? '外部写事务' : '无外部写事务',
+        profile.computerUse ? '可配置 Computer Use' : '无 Computer Use',
+        profile.trustedWorkspaceMcp ? '受信工作区 MCP' : '无受信工作区 MCP',
+      ].join(' · ');
+      return {
+        value: profile.id,
+        label: `${profile.id === current ? '● ' : ''}${profile.label}`,
+        detail: `${workspaceAccess} · ${capabilities}`,
+      };
+    }), '选择当前对话安全档位', current),
     getOutputLevel: () => normalizeOutputLevel(snapshot.outputLevel),
     setOutputLevel: async (level) => {
       await target.setOutputLevel(level);
@@ -217,7 +232,7 @@ export async function runMimiCli(
       value: level.id,
       label: `${level.id === current ? '● ' : ''}${level.label}`,
       detail: level.description,
-    })), '选择输出等级'),
+    })), '选择输出等级', current),
   });
   const drain = async () => {
     if (draining) return;
@@ -264,7 +279,7 @@ export async function runMimiCli(
   };
 
   await refresh();
-  process.stdout.write(`${renderBanner(version, snapshot, securityLabel)}\n`);
+  process.stdout.write(`${renderBanner(version, snapshot)}\n`);
   const history = renderChatHistory(snapshot, tty);
   if (history) process.stdout.write(`\n${history}\n`);
   terminal.start({
