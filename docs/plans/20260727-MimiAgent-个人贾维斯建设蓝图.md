@@ -1055,3 +1055,28 @@ idle 时追加同构建样本，忙时仅记录 blocked。历史 129/129 仍是�
 但不替代最终构建不可压缩的日历稳定性。大象真实目标和 QQ Adapter 仍按
 `BLOCKED.md` 诚实保持不可用，不以本只读 soak 伪造 bounded read、Draft、发送或
 72h 发送验收。
+
+### 16.4 2026-07-28 owner 临时敏感值修复后的最终 M1 基线
+
+owner 当前 Run 临时敏感值修复已合入并推送到
+`codex/mimiagent-integrated`（合并提交 `3ed080e`），最终运行构建更新为
+`0.12.0+9bf15be88f93`。Daemon 在 Event、Task、Outbox 和 host mutation 全部
+idle 时完成备份、安装和重启，运行状态明确显示
+`ephemeralSensitiveModelAccess=true`。该能力只允许已认证直接 owner 的 Full
+Owner 当前 Session/Run 通过单次、15 分钟租约把临时值交给 Provider；其他权限
+档位、外部来源、SubAgent、Team、后台任务和其他 Session 均不能继承，所有持久化
+和可见输出继续统一脱敏。实现不依赖业务关键词或特定 API 场景。
+
+发布级 `npm run ci` 通过 674/674；最新构建首轮正式 canary run
+`ac47a076-956d-469d-b5b7-4a9036cf7947`
+在 `2026-07-28T10:27:50.943Z`～`10:28:51.828Z` 完成。20 个场景全部
+eligible/executed/success/qualifying，Browser、Computer、Screen、Shortcuts
+各 5/5，blocked/failed/uncertain=0，S0/S1/S2/S3=0。证据为
+`artifacts/m1-eval/canary-9bf15be88f93-t0.json`。
+
+由于该修复改变最终运行时，24h 只读 soak 从
+`2026-07-28T10:28:51.828Z` 重新起算，最早在
+`2026-07-29T10:28:51.828Z` 后终验。heartbeat `m1-24h` 已绑定精确 build 和
+runId，每 4 小时仅在 idle 时追加同构建样本。M1.1 在日历窗口完成前仍处于
+“工程实现完成、运行验收进行中”；大象真实目标、QQ Adapter 和任何发送渠道 72h
+验收继续作为独立外部/后续边界，不得用只读样本替代。
