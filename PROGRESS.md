@@ -2,12 +2,12 @@
 
 ## 2026-07-28 M1 current closeout
 
-1. 正式实机门槛已达到：8 个 canary run 共 160 requested、103
+1. 正式实机门槛已达到：9 个 canary run 共 180 requested、123
    eligible/executed/success/qualifying、57 blocked、0 failed/uncertain，eligible
    execution success=100%，S0/S1/S2/S3=0。blocked 均未执行动作，保留在公开请求分母，
    不冒充成功。
-2. 分层结果：Browser `29/29`、Computer `28/28`、Screen `22/22`、Shortcuts
-   `24/24`，四个 App × 动作族 × 正式路径均为 100% eligible execution success。
+2. 分层结果：Browser `34/34`、Computer `33/33`、Screen `27/27`、Shortcuts
+   `29/29`，四个 App × 动作族 × 正式路径均为 100% eligible execution success。
 3. Screen/Shortcuts 旧配置未迁移的根因是 live config 指向内容相同但路径不同的 managed
    script 副本；`673b59f` 以同名、普通文件、2MB 上限和 SHA-256 相等为门禁同步稳定
    action metadata，不改变 owner 的执行路径。
@@ -20,12 +20,12 @@
    Accessibility/Screen Recording 均为 true，随后两轮各 `20/20` 全部成功。
 7. 发布级 `npm run ci` 通过：644/644，skip/todo=0；coverage line 85.73%、
    branch 76.57%、function 83.11%，Build 与 package smoke 通过。
-8. 运行态为 `0.12.0+2dafa9f6ab77`；Browser、Computer、Screen、Shortcuts 和其余
+8. 运行态为 `0.12.0+09c805fcf95b`；Browser、Computer、Screen、Shortcuts 和其余
    已就绪本机通道保持正式门禁。`personal-daxiang` 因 owner target 未绑定诚实标记
    unavailable，不影响其他能力族验收。
-9. 只读 24h soak 以 run `21559ddf-0bd3-4489-8772-3850c59baf19`
-   (`2026-07-28T07:46:52.864Z`～`07:48:09.171Z`, 20/20) 为首样本，计划在
-   `2026-07-29T07:46:52.864Z` 后验收。heartbeat `m1-24h` 每 4 小时只在运行态
+9. 只读 24h soak 以最终构建 run `60bc4470-74bc-43ed-a0e3-cc88943be38b`
+   (`2026-07-28T07:54:33.367Z`～`07:55:46.391Z`, 20/20) 为首样本，计划在
+   `2026-07-29T07:55:46.391Z` 后验收。heartbeat `m1-24h` 每 4 小时只在运行态
    idle 时追加正式只读样本；忙时只记录 blocked，不抢占。
 10. 部署前备份位于 `/tmp/mimi-backup-673b59f-20260728`，SQLite integrity、
     文件清单和摘要已校验；回滚仍必须在 Event/Task/Outbox/host mutation 全部 idle

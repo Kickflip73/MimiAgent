@@ -996,11 +996,11 @@ success 无可计算分母，S0/S1=0。距 100 次仍差 100 次，95% 门槛尚
 
 ### 16.1 2026-07-28 M1 实机门槛完成与 soak 起点
 
-运行态完成 metadata/readiness 自举修复后，8 个正式 canary run 累计 160
-requested、103 eligible/executed/success/qualifying、57 blocked、0
+运行态完成 metadata/readiness 自举修复后，9 个正式 canary run 累计 180
+requested、123 eligible/executed/success/qualifying、57 blocked、0
 failed/uncertain。blocked 均在动作前被 idle/readiness 门禁拒绝；合格动作成功率
-100%，S0/S1/S2/S3=0。分层为 Browser 29/29、Computer 28/28、Screen 22/22、
-Shortcuts 24/24，全部通过正式 ConnectorManager/ComputerManager 与固定只读
+100%，S0/S1/S2/S3=0。分层为 Browser 34/34、Computer 33/33、Screen 27/27、
+Shortcuts 29/29，全部通过正式 ConnectorManager/ComputerManager 与固定只读
 profile，不含 direct worker、readiness 冒充或敏感正文证据。
 
 canary 的全局门禁只判断 Event、Task、Outbox 和 host mutation 是否存在执行冲突；
@@ -1008,8 +1008,8 @@ canary 的全局门禁只判断 Event、Task、Outbox 和 host mutation 是否�
 enabled/online/catalog/effect/route/freshness 校验。只读 Connector 也只有在已注册
 `effect=read` 动作真实成功后才能建立有界 readiness 租约。
 
-M1 的 100 次与 95% 门槛已经满足，但 M1 尚未整体退出：24h 只读 soak 从
-`2026-07-28T07:46:52.864Z` 的成功 run 起算，最早在
-`2026-07-29T07:46:52.864Z` 后按首尾样本、成功率和 S0/S1 复核。大象/QQ 的真实
+M1 的 100 次与 95% 门槛已经满足，但 M1 尚未整体退出：24h 只读 soak 从最终构建
+`0.12.0+09c805fcf95b` 在 `2026-07-28T07:55:46.391Z` 完成的成功 run 起算，最早在
+`2026-07-29T07:55:46.391Z` 后按首尾样本、成功率和 S0/S1 复核。大象/QQ 的真实
 发送能力仍分别受 owner target 绑定和真实 Adapter 阻塞，不以本轮只读结果替代 72h
 发送 soak。
