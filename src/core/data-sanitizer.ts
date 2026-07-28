@@ -20,6 +20,12 @@ export interface SensitiveDataSanitizationOptions {
   preserveContacts?: boolean;
 }
 
+export interface CapturedSensitiveValue {
+  category: Exclude<SensitiveDataCategory, 'contact'>;
+  fingerprint: string;
+  value: string;
+}
+
 export interface DataLifecyclePolicy {
   surface: 'task' | 'work-unit' | 'trace' | 'memory' | 'management';
   retentionDays: number;
@@ -41,6 +47,7 @@ const SENSITIVE_KEY = /(?:api[-_]?key|access[-_]?token|refresh[-_]?token|passwor
 const VALUE_PATTERNS: readonly {
   category: SensitiveDataCategory;
   expression: RegExp;
+  capturedValue?: (match: string) => string;
 }[] = [
   {
     category: 'private-key',
@@ -49,6 +56,7 @@ const VALUE_PATTERNS: readonly {
   {
     category: 'authorization',
     expression: /\bBearer\s+[A-Za-z0-9._~+/=-]{12,}/giu,
+    capturedValue: (match) => match.replace(/^Bearer\s+/iu, ''),
   },
   {
     category: 'credential',
@@ -61,6 +69,10 @@ const VALUE_PATTERNS: readonly {
   {
     category: 'credential',
     expression: /\b(?:api[-_]?key|access[-_]?token|refresh[-_]?token|password|passwd|secret|cookie)\s*[:=]\s*["']?[^"'\s,;]{8,}["']?/giu,
+    capturedValue: (match) => match.replace(
+      /^[^:=]+[:=]\s*["']?/u,
+      '',
+    ).replace(/["']$/u, ''),
   },
   {
     category: 'contact',
@@ -85,11 +97,20 @@ function sanitizeString(
   path: string,
   findings?: SensitiveDataFinding[],
   options: SensitiveDataSanitizationOptions = {},
+  capturedValues?: CapturedSensitiveValue[],
 ): string {
   let sanitized = value;
   for (const pattern of VALUE_PATTERNS) {
     if (pattern.category === 'contact' && options.preserveContacts) continue;
     sanitized = sanitized.replace(pattern.expression, (match) => {
+      if (match.includes('[REDACTED:')) return match;
+      if (capturedValues && pattern.category !== 'contact') {
+        capturedValues.push({
+          category: pattern.category,
+          fingerprint: fingerprint(pattern.category, match),
+          value: pattern.capturedValue?.(match) ?? match,
+        });
+      }
       findings?.push({
         category: pattern.category,
         fingerprint: fingerprint(pattern.category, match),
@@ -151,6 +172,17 @@ export function sanitizeSensitiveText(
   options: SensitiveDataSanitizationOptions = {},
 ): string | undefined {
   return value === undefined ? undefined : sanitizeString(value, '$', undefined, options);
+}
+
+export function captureSensitiveText(
+  value: string,
+  options: SensitiveDataSanitizationOptions = {},
+): { sanitized: string; values: CapturedSensitiveValue[] } {
+  const captured: CapturedSensitiveValue[] = [];
+  const sanitized = sanitizeString(value, '$', undefined, options, captured);
+  const unique = new Map<string, CapturedSensitiveValue>();
+  for (const item of captured) unique.set(item.fingerprint, item);
+  return { sanitized, values: [...unique.values()] };
 }
 
 export function scanSensitiveData(

@@ -239,6 +239,38 @@ test('Shell uses an explicitly isolated environment when provided', async () => 
   assert.equal(result.stdout, 'yes:');
 });
 
+test('Shell resolves current Run secrets lazily and redacts accidental output', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-agent-shell-ephemeral-'));
+  let secret = ['sk', 'FirstEphemeralFixture123456'].join('-');
+  const tools = createTools(root, false, [], {
+    allowShell: true,
+    shellEnvironment: () => ({
+      PATH: process.env.PATH,
+      MIMI_EPHEMERAL_SECRET_1: secret,
+    }),
+    shellSensitiveValues: () => [secret],
+  });
+  const shell = tools.find((item) => item.name === 'run_shell');
+  assert.ok(shell && 'invoke' in shell);
+
+  const available = await shell.invoke(
+    new RunContext({}),
+    JSON.stringify({
+      command: 'test -n "$MIMI_EPHEMERAL_SECRET_1" && printf available',
+      timeoutSeconds: 5,
+    }),
+  );
+  assert.match(JSON.stringify(available), /available/);
+
+  secret = ['sk', 'SecondEphemeralFixture654321'].join('-');
+  const redacted = await shell.invoke(
+    new RunContext({}),
+    JSON.stringify({ command: 'printf %s "$MIMI_EPHEMERAL_SECRET_1"', timeoutSeconds: 5 }),
+  );
+  assert.doesNotMatch(JSON.stringify(redacted), new RegExp(secret));
+  assert.match(JSON.stringify(redacted), /REDACTED:ephemeral-secret/);
+});
+
 test('Darwin Shell sandbox blocks direct and interpreter-mediated system automation', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-automation-'));
   if (process.platform !== 'darwin') {

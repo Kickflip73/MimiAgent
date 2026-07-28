@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- keep credentials pasted by an authenticated local owner out of Event, Task,
+  Session, Trace, Memory, and ledger persistence while exposing them once to the
+  current Run as bounded ephemeral Shell environment variables; expire them on
+  timeout, restart, mismatch, or first use and redact accidental Shell output
 - serialize Attention configuration mutations across engine instances with the
   shared file lock so concurrent updates cannot silently overwrite each other
 - add a bounded read-only `inspect_processes` Host Tool for macOS CPU/memory

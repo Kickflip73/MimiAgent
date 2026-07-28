@@ -79,7 +79,8 @@ export interface ToolAccessPolicy {
   allowWrite?: boolean;
   allowShell?: boolean;
   allowProtectedPathShellAccess?: boolean;
-  shellEnvironment?: NodeJS.ProcessEnv;
+  shellEnvironment?: NodeJS.ProcessEnv | (() => NodeJS.ProcessEnv);
+  shellSensitiveValues?: () => readonly string[];
   shellDetachedProcessGroup?: boolean;
   blockedUnixSocketPaths?: string[];
   blockedLocalTcpPorts?: number[];
@@ -1212,6 +1213,7 @@ export async function runShellCommand(
   detachedProcessGroup = process.platform !== 'win32',
   blockedUnixSocketPaths: string[] = [],
   blockedLocalTcpPorts: number[] = [],
+  sensitiveValues: readonly string[] = [],
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   if (/(?:^|[;&|()\s])(?:nohup|disown|setsid)(?:$|[;&|()\s])/u.test(command)
     || /(^|[^&])&(?!&)(?:\s*(?:#.*)?)$/u.test(command)
@@ -1293,8 +1295,15 @@ export async function runShellCommand(
       settled = true;
       clearTimeout(timeoutTimer);
       signal?.removeEventListener('abort', abort);
-      const stdout = Buffer.concat(stdoutChunks).toString('utf8');
-      const stderr = Buffer.concat(stderrChunks).toString('utf8');
+      const redact = (value: string): string => sensitiveValues
+        .filter((secret) => secret.length >= 8)
+        .sort((left, right) => right.length - left.length)
+        .reduce(
+          (result, secret) => result.split(secret).join('[REDACTED:ephemeral-secret]'),
+          value,
+        );
+      const stdout = redact(Buffer.concat(stdoutChunks).toString('utf8'));
+      const stderr = redact(Buffer.concat(stderrChunks).toString('utf8'));
       resolve(boundShellResult({
         exitCode: terminating || spawnError ? 1 : (closeCode ?? 1),
         stdout: truncate(stdout),
@@ -1620,10 +1629,13 @@ export function createTools(
         timeoutSeconds,
         details?.signal,
         access.allowProtectedPathShellAccess ? [] : protectedPaths,
-        access.shellEnvironment,
+        typeof access.shellEnvironment === 'function'
+          ? access.shellEnvironment()
+          : access.shellEnvironment,
         access.shellDetachedProcessGroup,
         access.blockedUnixSocketPaths,
         access.blockedLocalTcpPorts,
+        access.shellSensitiveValues?.(),
       ),
   });
 

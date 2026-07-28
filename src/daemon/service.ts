@@ -55,6 +55,7 @@ import { MimiStore } from './store.js';
 import { MimiWebhookServer } from './webhook.js';
 import { MimiRuntimeHttpServer, runtimeHttpSessionId } from './runtime-http.js';
 import { AttentionEngine } from './attention.js';
+import { EphemeralSecretBroker } from './ephemeral-secrets.js';
 import { TaskProcessSupervisor } from './task-supervisor.js';
 import { backgroundTaskSummary, inspectBackgroundTaskSummary } from './task-tools.js';
 import {
@@ -1279,6 +1280,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
   let attention: AttentionEngine | undefined;
   const stopping = new AbortController();
   const mutationGate = new DaemonMutationGate();
+  const ephemeralSecrets = new EphemeralSecretBroker();
   const stop = () => {
     if (!stopping.signal.aborted) stopping.abort();
   };
@@ -1320,6 +1322,27 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       onStreamEvent: (eventId, event) => liveEvents.publish(eventId, event),
     });
     const activeTaskSupervisor = taskSupervisor;
+    const ingestOwnerPrompt = (event: EventEnvelope, prompt: string) => {
+      const captured = ephemeralSecrets.capture(event.id, prompt);
+      const payload = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload)
+        ? event.payload as Record<string, unknown>
+        : {};
+      try {
+        const accepted = store.ingestEvent({
+          ...event,
+          payload: {
+            ...payload,
+            prompt: captured.sanitized,
+            ...(captured.references.length ? { transientInputRefs: captured.references } : {}),
+          },
+        });
+        if (!accepted.inserted || !accepted.task) ephemeralSecrets.discard(event.id);
+        return accepted;
+      } catch (error) {
+        ephemeralSecrets.discard(event.id);
+        throw error;
+      }
+    };
     dispatcher = new MimiDispatcher(store, host, attention, notifier, connectors, {
       maxConcurrentTasks: config.sessionMaxConcurrency ?? 4,
       claimTaskTypes: ['conversation'],
@@ -1343,6 +1366,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           ? activeTaskSupervisor.pause(eventId, reason)
           : { state: 'not_pauseable' };
       },
+      takeEphemeralSecrets: (eventId, references) => ephemeralSecrets.take(eventId, references),
       resolveWorkspace: async (input, event, sessionId) => {
         const current = host!.workspaceRootFor(sessionId);
         if (event.trust !== 'owner') return current ?? config.workspaceRoot;
@@ -1432,7 +1456,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         submit: async (sessionId, input, idempotencyKey) => {
           const now = new Date().toISOString();
           const eventId = randomUUID();
-          const accepted = store.ingestEvent({
+          const accepted = ingestOwnerPrompt({
             id: eventId,
             externalId: idempotencyKey
               ? `runtime-http:${sessionId}:${idempotencyKey}`
@@ -1440,13 +1464,13 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             source: 'runtime-http',
             kind: 'command',
             trust: 'owner',
-            payload: { prompt: input, workspaceRoot: config.workspaceRoot },
+            payload: { workspaceRoot: config.workspaceRoot },
             occurredAt: now,
             receivedAt: now,
             priority: 100,
             profileId: 'owner',
             sessionKey: assertSessionId(sessionId),
-          });
+          }, input);
           if (!accepted.task) throw new Error('MimiAgent 没有为 HTTP 命令创建 Task');
           return { taskId: accepted.task.id, inserted: accepted.inserted };
         },
@@ -1701,8 +1725,8 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
               path.join(mimiPaths(config).root, 'attachments'),
             )
           : [];
+        const prompt = params.payload === undefined ? requiredString(params.text, 'text') : undefined;
         const payload = params.payload ?? {
-          prompt: requiredString(params.text, 'text'),
           ...(requestedWorkspaceRoot ? { workspaceRoot: requestedWorkspaceRoot } : {}),
           ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
         };
@@ -1718,7 +1742,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             : assertSessionId(requiredString(params.sessionKey, 'sessionKey')),
           actor: params.actor, conversation: params.conversation, replyRoute: params.replyRoute,
         };
-        return store.ingestEvent(event);
+        return prompt !== undefined && source === 'local-cli' && trust === 'owner'
+          ? ingestOwnerPrompt(event, prompt)
+          : store.ingestEvent(event);
       }
       if (method === 'task.cancel') {
         const params = object(rawParams);

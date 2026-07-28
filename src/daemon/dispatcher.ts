@@ -14,6 +14,12 @@ import { OutboxDeliveryCoordinator } from './dispatcher-delivery.js';
 import { AttentionEngine } from './attention.js';
 import { createMimiHostTools } from './host-tools.js';
 import { connectorEffectiveCapabilityItems } from './connector-action-tool.js';
+import {
+  ephemeralSecretInstructions,
+  ephemeralSecretReferences,
+  EphemeralSecretsExpiredError,
+  type EphemeralSecretReference,
+} from './ephemeral-secrets.js';
 import type { MemoryMaintenanceRuntime } from './memory-maintenance-tools.js';
 import { MimiStore } from './store.js';
 import { eventFailureAttemptLimit } from './dispatcher-retry-policy.js';
@@ -48,6 +54,10 @@ export interface DispatcherOptions {
   pauseEvent?: (eventId: string, reason?: string) => MaybePromise<BackgroundTaskPauseResult>;
   connectorRuntime?: ConnectorTaskRuntime;
   memoryMaintenance?: MemoryMaintenanceRuntime;
+  takeEphemeralSecrets?: (
+    eventId: string,
+    references: readonly EphemeralSecretReference[],
+  ) => Record<string, string> | undefined;
   resolveWorkspace?: (
     input: string,
     event: ImmutableEvent,
@@ -442,6 +452,13 @@ export class MimiDispatcher {
       preemptTimer.unref();
       refreshRunIdleWatchdog();
       const modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
+      const secretReferences = ephemeralSecretReferences(task.objective);
+      const ephemeralShellEnvironment = secretReferences.length
+        ? this.options.takeEphemeralSecrets?.(event.id, secretReferences)
+        : undefined;
+      if (secretReferences.length && !ephemeralShellEnvironment) {
+        throw new EphemeralSecretsExpiredError();
+      }
       const hostedRun = this.host.execute({
         executionId: task.id,
         sessionId: decision.sessionId!,
@@ -451,6 +468,13 @@ export class MimiDispatcher {
         signal: runSignal,
         options: {
           ...decision.options,
+          ...(ephemeralShellEnvironment ? { ephemeralShellEnvironment } : {}),
+          ...(secretReferences.length ? {
+            hostInstructions: [
+              decision.options?.hostInstructions,
+              ephemeralSecretInstructions(secretReferences),
+            ].filter(Boolean).join('\n\n'),
+          } : {}),
           capabilityItems: this.connectors
             ? connectorEffectiveCapabilityItems(this.connectors)
             : [],

@@ -212,6 +212,7 @@ export interface MimiRunOptions {
   policy?: RunPolicy;
   hostInstructions?: string;
   hostTools?: Tool[];
+  ephemeralShellEnvironment?: Readonly<Record<string, string>>;
   personalConnectorOnly?: boolean;
   executionKey?: string;
   retainExecutionLedger?: boolean;
@@ -425,6 +426,7 @@ export class MimiAgent {
       privateRuntimePaths(config),
       access,
     );
+    const baseShellEnvironment = createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env);
     this.localTools = {
       safe: createLocalTools({
         readablePaths: ['.'],
@@ -444,7 +446,13 @@ export class MimiAgent {
         ...(createOptions.restrictReadsToWorkspace ? { readablePaths: ['.'] } : {}),
         allowProtectedPathShellAccess: createOptions.protectRuntimePathsFromShell !== true,
         allowShell: true,
-        shellEnvironment: createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env),
+        shellEnvironment: () => ({
+          ...baseShellEnvironment,
+          ...this.activeRun?.options?.ephemeralShellEnvironment,
+        }),
+        shellSensitiveValues: () => Object.values(
+          this.activeRun?.options?.ephemeralShellEnvironment ?? {},
+        ),
         shellDetachedProcessGroup: createOptions.shellDetachedProcessGroup,
         ...(config.computer?.backend === 'cua' ? {
           blockedUnixSocketPaths: [

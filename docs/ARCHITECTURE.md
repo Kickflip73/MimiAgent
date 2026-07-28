@@ -146,7 +146,7 @@ Session 是完整运行状态边界。启动指定 Session、从历史列表切�
 
 本地 Function Tool 的副作用以 `sessionId + runId + toolName + logicalCallId` 记入执行账本。Daemon 的 logicalCallId 由规范化参数和同参数调用序号组成：同一 attempt 内的合法重复调用分别执行，跨 attempt 的对应序号才回放；`started` 或 `failed` 状态不会自动重试。原生 MCP transport 也使用同一 executionKey；Hosted Tools 仍不在本地账本控制内。
 
-模型可调用的 Shell 默认只获得 PATH、HOME、locale、终端和临时目录等显式白名单环境；Provider、数据库、遥测、Connector 和 Mimi 控制面变量都不进入 Shell。Shell 的正常退出、超时和取消都会回收完整 POSIX 进程组，文本后台语法检查只是早期提示。HTTP Tool 只允许公网 HTTP(S)，在初始 URL、实际 socket DNS lookup 和每次重定向处拒绝 loopback、私网、link-local、metadata、multicast、IPv4-mapped IPv6 与混合解析；禁止 HTTPS 降级，跨源只跟随无正文的 GET/HEAD 并仅保留安全读取头。
+模型可调用的 Shell 默认只获得 PATH、HOME、locale、终端和临时目录等显式白名单环境；Provider、数据库、遥测、Connector 和 Mimi 控制面变量都不进入 Shell。已认证本机 owner 在直接命令中粘贴的 credential/authorization/private key 例外地进入 Kernel 内存态临时 broker：持久化和模型输入只保留指纹引用，原值最多等待十五分钟、只可由同一 Event 的首次 Run 取出，并仅作为 `MIMI_EPHEMERAL_SECRET_n` 注入该 Run 的 Shell 子进程；Daemon 重启、超时、引用不匹配或首次取用后即失效，Shell 输出中的原值再次按精确值脱敏。非 owner、外部事件、后台委派、Session/Task 重试、MCP、Connector、Memory 和普通环境都不能取得这些临时值。Shell 的正常退出、超时和取消都会回收完整 POSIX 进程组，文本后台语法检查只是早期提示。HTTP Tool 只允许公网 HTTP(S)，在初始 URL、实际 socket DNS lookup 和每次重定向处拒绝 loopback、私网、link-local、metadata、multicast、IPv4-mapped IPv6 与混合解析；禁止 HTTPS 降级，跨源只跟随无正文的 GET/HEAD 并仅保留安全读取头。
 
 Session 模型偏好同时记录 provider；切换 Provider 或读取没有 provider 标记的旧偏好时回退当前 Provider 默认模型，不把一个 Provider 的模型名发送给另一个端点。
 

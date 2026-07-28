@@ -622,6 +622,8 @@ MimiAgent 不追求复刻大型 Agent 平台的全部能力。当前不在运行
 
 本机 owner 默认使用当前操作系统用户权限，不增加逐任务审批。`workspace` 会关闭 Shell、通用网络写入和未登记工具，`read-only` 再关闭本地文件写入；这两个档位只在用户显式选择时生效。owner/system 可使用已配置的 Connector 和已明确信任的 MCP；external/public 默认由最小事件策略隔离，只有命中 owner source policy 才获得不含配置控制与未知 MCP 的有界代办工具，Plan 模式始终只读。
 
+在本机 owner 的直接命令中临时粘贴 API Key、Bearer token 或 private key 时，MimiAgent 不再要求手工另开终端重复设置：持久 Event、Task、Session、Trace、Memory 和模型输入只保留脱敏指纹，原值只在当前 Daemon 内存中短暂存在，并以 `MIMI_EPHEMERAL_SECRET_1` 等变量提供给当前 Run 的 Shell。模型可用该变量调用明确指定的脚本或 CLI，但不得回显或保存；变量首次取用、十五分钟超时或 Daemon 重启后失效，不能被重试、后台任务、其他 Session、MCP 或 Connector 继承。Safe/Workstation 没有 Shell 时不会因此扩大权限。
+
 ## 项目文档
 
 - [架构与设计不变量](docs/ARCHITECTURE.md)

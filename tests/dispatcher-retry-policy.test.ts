@@ -7,6 +7,7 @@ test('dispatcher retry policy stops terminal and deterministic run failures imme
   assert.equal(eventFailureAttemptLimit(new TerminalRunInterruptedError('cancelled'), 2, 5), 2);
   assert.equal(eventFailureAttemptLimit({ name: 'ContextProtocolBudgetError' }, 1, 5), 1);
   assert.equal(eventFailureAttemptLimit({ name: 'MaxTurnsExceededError' }, 3, 5), 3);
+  assert.equal(eventFailureAttemptLimit({ name: 'EphemeralSecretsExpiredError' }, 2, 5), 2);
   assert.equal(eventFailureAttemptLimit(new Error('Max turns (12) exceeded'), 1, 5), 1);
   assert.equal(eventFailureAttemptLimit(new Error('Max turns exceeded later'), 1, 5), 5);
 });

@@ -14,6 +14,7 @@ function isNonRetryableRunFailure(error: unknown): boolean {
   return isTerminalRunInterruption(error)
     || value.name === 'ContextProtocolBudgetError'
     || value.name === 'MaxTurnsExceededError'
+    || value.name === 'EphemeralSecretsExpiredError'
     || /^Max turns \(\d+\) exceeded$/i.test(message);
 }
 
