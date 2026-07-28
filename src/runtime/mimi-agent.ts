@@ -33,7 +33,13 @@ import {
   type CompletionGateDecision,
   type CompletionReport,
 } from '../core/completion.js';
-import { contentDigest, type CaptureInput, type MemoryHub, type SourceRef } from '../core/memory.js';
+import {
+  contentDigest,
+  type CaptureInput,
+  type MemoryHub,
+  type MemoryRef,
+  type SourceRef,
+} from '../core/memory.js';
 import { PlanStore, type PlanStep } from '../core/plan.js';
 import { runAnswerDigest, type RunCommitJournal } from '../core/run-commit-journal.js';
 import { FileChangeJournal } from '../core/file-change-journal.js';
@@ -1248,6 +1254,47 @@ export class MimiAgent {
     return this.memory.capture(input, this.runContexts.forInspection(profileId, 'memory-maintenance'));
   }
 
+  async memoryMerge(input: Parameters<MemoryHub['merge']>[0], profileId = 'owner') {
+    return this.memory.merge(input, this.runContexts.forInspection(profileId, 'memory-maintenance'));
+  }
+
+  async memorySupersede(
+    ref: MemoryRef,
+    replacementRef: MemoryRef | undefined,
+    reasonCode: string,
+    profileId = 'owner',
+  ) {
+    return this.memory.supersede(
+      ref,
+      replacementRef,
+      reasonCode,
+      this.runContexts.forInspection(profileId, 'memory-maintenance'),
+    );
+  }
+
+  async memoryAddLinks(ref: MemoryRef, links: string[], reasonCode: string, profileId = 'owner') {
+    return this.memory.addLinks(
+      ref,
+      links,
+      reasonCode,
+      this.runContexts.forInspection(profileId, 'memory-maintenance'),
+    );
+  }
+
+  async memoryMove(
+    ref: MemoryRef,
+    targetScope: 'private' | 'workspace',
+    reasonCode: string,
+    profileId = 'owner',
+  ) {
+    return this.memory.move(
+      ref,
+      targetScope,
+      reasonCode,
+      this.runContexts.forInspection(profileId, 'memory-maintenance'),
+    );
+  }
+
   async memoryCaptureRound(roundRef?: string) {
     const value = roundRef?.trim();
     let title: string;
@@ -1301,8 +1348,8 @@ export class MimiAgent {
     return this.memory.lint(this.runContexts.forInspection(profileId, 'memory-lint'));
   }
 
-  async memoryRefresh(limit = 20) {
-    return this.memory.refreshStale(limit, this.runContexts.forInspection());
+  async memoryRefresh(limit = 20, profileId = 'owner') {
+    return this.memory.refreshStale(limit, this.runContexts.forInspection(profileId, 'memory-maintenance'));
   }
 
   async memoryReindex() {

@@ -64,6 +64,11 @@ const TOOL_DESCRIPTOR_DEFINITIONS = {
   memory_ingest: { capabilities: ['memory-write'], sideEffect: true },
   list_memory_observations: { capabilities: ['state-read'], modes: ALL_MODES },
   upsert_memory_page: { capabilities: ['memory-write'], sideEffect: true },
+  merge_memory_pages: { capabilities: ['memory-write'], sideEffect: true },
+  supersede_memory_page: { capabilities: ['memory-write'], sideEffect: true },
+  add_memory_links: { capabilities: ['memory-write'], sideEffect: true },
+  move_memory_scope: { capabilities: ['memory-write'], sideEffect: true },
+  refresh_memory_from_source: { capabilities: ['memory-write'], sideEffect: true },
   complete_memory_observations: { capabilities: ['state-write'], sideEffect: true },
 
   list_skills: { capabilities: ['read'], modes: ALL_MODES },

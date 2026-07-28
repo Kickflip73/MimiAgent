@@ -1,7 +1,7 @@
 export type MemoryScope = 'private' | 'workspace';
 export type MemoryKind = 'profile' | 'fact' | 'concept' | 'entity' | 'decision'
   | 'lesson' | 'source-summary' | 'synthesis' | 'procedure-ref';
-export type MemoryStatus = 'active' | 'conflicted' | 'superseded';
+export type MemoryStatus = 'proposed' | 'active' | 'conflicted' | 'superseded' | 'expired';
 export type MemoryConfidence = 'user-confirmed' | 'source-grounded' | 'inferred';
 export type MemoryTrust = 'owner' | 'trusted' | 'external' | 'public' | 'system';
 
@@ -36,6 +36,7 @@ export interface MemoryRef {
 export interface MemoryPageMetadata {
   schemaVersion: 1;
   id: string;
+  canonicalKey?: string;
   title: string;
   kind: MemoryKind;
   scope: MemoryScope;
@@ -47,6 +48,9 @@ export interface MemoryPageMetadata {
   sourceRefs: SourceRef[];
   validFrom: string | null;
   validUntil: string | null;
+  lastVerifiedAt?: string | null;
+  refreshAfter?: string | null;
+  mergedInto?: string | null;
   supersedes: string[];
   createdAt: string;
   updatedAt: string;
@@ -107,6 +111,9 @@ export interface RememberInput {
   sourceRefs?: SourceRef[];
   sourcePaths?: string[];
   supersedes?: string[];
+  links?: string[];
+  targetRef?: MemoryRef;
+  canonicalKey?: string;
   autonomous?: boolean;
 }
 

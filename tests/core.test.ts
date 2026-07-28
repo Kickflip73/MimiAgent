@@ -23,6 +23,7 @@ import { FileSession, registerSessionRunOwner } from '../src/core/session.js';
 import { TeamTaskStore } from '../src/core/team.js';
 import { TraceStore } from '../src/core/trace.js';
 import { HookBus } from '../src/runtime/hooks.js';
+import { resolveUserSoulFile } from '../src/runtime/components.js';
 import { createPlanTools } from '../src/runtime/plan-tools.js';
 import { decideEvent } from '../src/daemon/policy.js';
 import {
@@ -586,6 +587,13 @@ test('keeps Mimi Soul separate from AGENTS project guidance', async () => {
   assert.doesNotMatch(soul.instructions, /Run the current test suite/);
   assert.match(project.instructions, /Run the current test suite/);
   assert.doesNotMatch(project.instructions, /Use tabs/);
+});
+
+test('keeps the canonical Mimi Soul in the user data directory', () => {
+  assert.equal(
+    resolveUserSoulFile('/Users/owner'),
+    path.join('/Users/owner', '.mimi-agent', 'MIMI.md'),
+  );
 });
 
 test('reads only the bounded prefix of oversized persistent guidance', async () => {

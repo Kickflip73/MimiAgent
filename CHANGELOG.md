@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- make MemoryHub a maintained three-layer LLMWiki with an Obsidian-ready owner
+  Vault (`raw/`, `wiki/`, executable `WIKI.md`), one canonical topic resolver
+  across remember/capture/maintenance, deterministic page rendering, Wiki-first
+  retrieval, evidence compounding, lifecycle metadata, and receipt-backed merge,
+  supersede, link, scope-move, stale-refresh, and deterministic lint repair;
+  legacy hashed profile storage is backed up before one-time layout migration
 - make `/security` an interactive `↑`/`↓` Session selector whose confirmed
   profile is persisted per conversation and applied to the next Run without
   editing environment files or restarting the Daemon

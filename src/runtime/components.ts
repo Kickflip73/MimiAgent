@@ -28,6 +28,10 @@ export interface RuntimeComponents {
   computer?: ComputerManager;
 }
 
+export function resolveUserSoulFile(homeDirectory = os.homedir()): string {
+  return path.join(homeDirectory, '.mimi-agent', 'MIMI.md');
+}
+
 export function skillSources(config: AppConfig, homeDirectory = os.homedir()): SkillSource[] {
   const projectNative = path.join(config.workspaceRoot, 'skills');
   const configured = config.skillsRootConfigured === true
@@ -123,7 +127,7 @@ export async function createRuntimeComponents(
       : undefined,
   });
   const packagedSoulFile = fileURLToPath(new URL('../../MIMI.md', import.meta.url));
-  const soul = new SoulLoader(path.join(config.dataRoot, 'MIMI.md'), packagedSoulFile);
+  const soul = new SoulLoader(resolveUserSoulFile(), packagedSoulFile);
   const state = createFileRuntimeStatePorts(config, sessionId);
   const memory = createRoutedMemoryHub({
     workspaceRoot: config.workspaceRoot,

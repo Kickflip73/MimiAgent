@@ -26,7 +26,7 @@ export function createMemoryTools(
         query: z.string().trim().min(1),
         scope: z.enum(['private', 'workspace', 'all']).default('all'),
         kind: z.enum(['profile', 'fact', 'concept', 'entity', 'decision', 'lesson', 'source-summary', 'synthesis', 'procedure-ref']).optional(),
-        status: z.enum(['active', 'conflicted', 'superseded', 'all']).optional(),
+        status: z.enum(['proposed', 'active', 'conflicted', 'superseded', 'expired', 'all']).optional(),
         from: z.string().datetime().optional(),
         to: z.string().datetime().optional(),
         includeEvidence: z.boolean().default(false),

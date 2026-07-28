@@ -293,20 +293,46 @@ test('selects a model and exposes common runtime inspection commands', async () 
   assert.match(output.join('\n'), /MCP 未配置/);
 });
 
-test('selects a model before the draft Session receives its first message', async () => {
+test('allows runtime commands before the draft Session receives its first message', async () => {
   const switched: string[] = [];
+  const modes: string[] = [];
+  const profiles: string[] = [];
   const output: string[] = [];
   const agent = fakeAgent();
+  const baseRuntimeInfo = agent.runtimeInfo.bind(agent);
+  let activeProfile: SecurityProfile = 'full-owner';
   Object.defineProperty(agent, 'sessionReady', { value: false });
+  agent.runtimeInfo = async () => ({
+    ...await baseRuntimeInfo(),
+    permissionMode: SECURITY_PROFILES[activeProfile].permissionMode,
+    securityProfile: {
+      ...SECURITY_PROFILES[activeProfile],
+      computerUse: false,
+      trustedWorkspaceMcp: false,
+    },
+  });
   agent.switchModel = async (name) => { switched.push(name); };
+  agent.switchMode = async (mode) => { modes.push(mode); };
+  agent.switchSecurityProfile = async (profile) => {
+    profiles.push(profile);
+    activeProfile = profile as SecurityProfile;
+  };
   const handler = new CommandHandler(agent, async () => undefined, {
     write: (text) => output.push(text),
     selectModel: async () => 'gpt-5-mini',
   });
 
+  assert.equal(await handler.execute('/status'), 'handled');
   assert.equal(await handler.execute('/model'), 'handled');
+  assert.equal(await handler.execute('/mode ultra'), 'handled');
+  assert.equal(await handler.execute('/security workstation'), 'handled');
   assert.deepEqual(switched, ['gpt-5-mini']);
+  assert.deepEqual(modes, ['ultra']);
+  assert.deepEqual(profiles, ['workstation']);
+  assert.match(output.join('\n'), /模型\s+deepseek/);
   assert.match(output.join('\n'), /已切换模型：gpt-5-mini/);
+  assert.match(output.join('\n'), /已切换模式：Ultra Team/);
+  assert.match(output.join('\n'), /Workstation/);
 });
 
 test('selects a preset Agent mode', async () => {

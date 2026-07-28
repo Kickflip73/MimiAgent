@@ -326,17 +326,35 @@ test('a model selection is sent to a draft without marking its first message as 
   }
 });
 
-test('Session-bound commands do not materialize a draft', async () => {
+test('commands are not centrally blocked while the Session is still a draft', async () => {
   const output: string[] = [];
+  let runtimeRequests = 0;
   const target = {
     currentSessionId: 'mimi-chat-draft',
     sessionReady: false,
-    runtimeInfo: async () => { throw new Error('must not touch the draft Session'); },
+    runtimeInfo: async () => {
+      runtimeRequests += 1;
+      return {
+        provider: 'openai',
+        model: 'gpt-5.4-mini',
+        mode: { id: 'general', label: '通用' },
+        sessionId: 'mimi-chat-draft',
+        workspaceRoot: '/tmp/draft',
+        permissionMode: 'read-only',
+        skillCount: 0,
+        memoryCount: 0,
+        mcpServers: [],
+        guidanceFiles: [],
+        team: { total: 0, running: 0, completed: 0 },
+      };
+    },
   } as unknown as CommandTarget;
   const handler = new CommandHandler(target, async () => undefined, {
     write: (message) => { output.push(message); },
   });
 
   assert.equal(await handler.execute('/status'), 'handled');
-  assert.match(output[0] ?? '', /发送第一条消息后才会创建 Session/);
+  assert.equal(runtimeRequests, 1);
+  assert.match(output[0] ?? '', /gpt-5\.4-mini/);
+  assert.doesNotMatch(output[0] ?? '', /发送第一条消息后才会创建 Session/);
 });

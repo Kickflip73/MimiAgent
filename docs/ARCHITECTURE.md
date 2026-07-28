@@ -275,7 +275,7 @@ macOS Voice 适配是 action + event 双向 Connector。Swift helper 只负责 S
 
 `SoulLoader` 每轮只读取用户级 `~/.mimi-agent/MIMI.md`（缺失时使用包内模板），承载身份、人格、价值观和表达风格。开发任务才由 `ProjectGuidanceLoader` 从 workspace root 到当前目录层级读取 `AGENTS.md` 与 `CLAUDE.md`；同目录以后加载的 `AGENTS.md` 为准。可写开发项目缺失两者时原子创建最小 `AGENTS.md`，只读项目只注入未持久化的扫描摘要。两类内容进入不同上下文字段，单文件最多 20000 字符，均不能扩大 Runtime 权限。
 
-MemoryHub 是 Runtime 的唯一记忆门面。Session/Event/Document 保持原始证据，private/workspace LLMWiki Markdown 保存 semantic memory；每个 profile 使用独立私有 Vault 与 SQLite catalog，workspace Wiki 位于 `knowledge/wiki/`。SQLite FTS5/BM25 始终作为基线，配置 Embedding Provider 时用 vector + RRF 增强，失败回退词法通道。`source_receipts`、`suppressions` 和 `decision_events` 是不可随 reindex 删除的控制真相；页面、FTS、vector 和 links 是可重建派生数据。`knowledge/sources/` 对 MemoryHub 只读。
+MemoryHub 是 Runtime 的唯一记忆门面。Session/Event/Document 保持原始证据，private/workspace LLMWiki Markdown 保存 semantic memory。owner 私有三层 Vault 位于 `<dataRoot>/memory/vaults/owner/`：`raw/` 是内容寻址、正常维护不可改写的证据快照，`wiki/` 是 LLM 编译的当前知识，根目录 `WIKI.md` 是可执行维护 Schema；其他 profile 使用独立 Vault。内部 SQLite catalog 位于 `<dataRoot>/memory/state/profiles/<hash>/memory.db`，旧 `profiles/<hash>` 首次打开时先备份再一次性迁移。workspace Wiki 位于 `knowledge/wiki/`，Schema 位于 `knowledge/WIKI.md`。SQLite FTS5/BM25 始终作为基线，配置 Embedding Provider 时用 vector + RRF 增强，失败回退词法通道。`source_receipts`、`suppressions` 和 `decision_events` 是不可随 reindex 删除的控制真相；页面、FTS、vector 和 links 是可重建派生数据。`knowledge/sources/` 对 MemoryHub 只读。
 
 Runtime 只暴露 `memory_search`、`memory_read`、`memory_links`、`remember`、`forget` 和 `memory_ingest`。Plan 模式及 SubAgent/Team 只有 workspace 读工具；private Wiki 与 episode 不下放。完整 round 作为 private episode 证据索引，只有 owner 明确历史访问时可检索。首次切换在修改旧状态前备份 Mimi SQLite/WAL/SHM、`memories.json`、`rag-index.json` 与旧 guidance；用户事实进入 private Wiki，用户 MIMI 被纯 Soul 模板替换，转换、Lint 和控制账本验证完成后才写 cutover marker。新 Runtime 不再读取旧文件。
 
@@ -447,9 +447,11 @@ stores，SQLite 收敛门槛及禁止双写决策见
 
 ## MemoryHub
 
-MemoryHub 统一 private/workspace semantic Wiki 与 workspace 文档来源，但不改写 Session/Event 原始证据。每轮捕获不可变 `profileId + workspaceRoot + sessionId + runId + cause`；私有 profile 使用独立目录和 SQLite 文件，workspace 页面只接受明确文件 provenance。主 Agent 可按未来价值调用 `remember`，本轮明确“不记住”时 Tool 拒绝；external/public Run 不能直接写 active Memory。`forget` 删除页面和派生索引并写无正文 suppression，reindex 不能清空控制账本。
+MemoryHub 统一 private/workspace semantic Wiki 与 workspace 文档来源，但不改写 Session/Event 原始证据。每轮捕获不可变 `profileId + workspaceRoot + sessionId + runId + cause`；私有 profile 使用独立三层 Vault 与 SQLite 控制面，workspace 页面只接受明确文件 provenance。主 Agent 可按未来价值调用 `remember`，本轮明确“不记住”时 Tool 拒绝；external/public Run 不能直接写 active Memory，单来源 inferred 默认保持 proposed。`forget` 删除页面和派生索引并写无正文 suppression，reindex 不能清空控制账本。
 
-Wiki 页面使用严格 YAML frontmatter、SourceRef、窄主题正文和单页 atomic rename。所有 remember/capture/ingest/maintenance 写入先持久化 `MemoryCandidate` 和 `CompilationJob(applying)`，再 atomic rename 页面，最后提交 `MemoryPageRevision`、current pointer 与 terminal `CompilationReceiptV2`；重复 digest 返回同一结果。进程在 rename 后退出时用 planned digest 恢复，冲突或部分写入标记 `uncertain`，不会猜测重放。查询只读，不在热路径偷偷刷新 stale 来源；`/memory refresh` 显式重编译并保留旧 revision。查询先检索 private/workspace Wiki，SQLite FTS5/BM25 为始终可用基线，可选 Embedding vector 以 RRF 合并；Provider 失败立即回退词法通道。
+Wiki 页面使用严格 YAML frontmatter、稳定 `pageId + canonicalKey`、SourceRef、窄主题正文和单页 atomic rename。所有 remember/capture/maintenance 写入共用 Canonical Topic Resolver，按 targetRef、canonical ID、标题和 alias 查找现有主题；命中时更新并累计来源，不存在时才创建。模型不直接拼接页面 envelope，确定性 renderer 统一生成标题、当前结论、关系与来源。所有写入先持久化 `MemoryCandidate` 和 `CompilationJob(applying)`，再 atomic rename 页面，最后提交 `MemoryPageRevision`、current pointer 与 terminal `CompilationReceiptV2`；重复 digest 返回同一结果。进程在 rename 后退出时用 planned digest 恢复，冲突或部分写入标记 `uncertain`，不会猜测重放。
+
+`WIKI.md` 的 YAML policy 控制 prefer-existing、SourceRef、canonicalKey、inferred-active、页面/来源上限和需要关系的页面类型；Markdown 正文给维护 Agent 定义 Ingest/Query/Lint 纪律，但不能扩大 scope、trust 或工具权限。确定性 Lint 可经 `lint-repair` Revision 修复 envelope、canonicalKey 和 inferred-active；语义维护使用有界 merge、supersede、link、move 与 refresh 工具形成 receipt 闭环。查询只读，不在热路径偷偷刷新 stale 来源；`/memory refresh` 显式重编译并保留旧 revision。查询优先返回 private/workspace Wiki，只有 Wiki 不足时才补充 Session episode/raw evidence；SQLite FTS5/BM25 为始终可用基线，可选 Embedding vector 以 RRF 合并，Provider 失败立即回退词法通道。
 
 自动探测的 `.mimi-agent`、旧 `.mimi-agent` 与默认 Daemon 数据根必须是实体目录，符号链接会在启动时失败关闭。文件、搜索和目录工具会拒绝这些根与显式运行数据目录，包括符号链接解析后的路径。默认 owner Shell 使用当前操作系统用户权限；处理陌生仓库时可显式选择 `workspace/read-only` 关闭 Shell。Plan 无论部署档位都没有 Shell；外部事件只有命中 owner source policy 且当前模式/部署权限允许时才可获得 Shell。
 

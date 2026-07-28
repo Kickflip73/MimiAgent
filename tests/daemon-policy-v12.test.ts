@@ -135,7 +135,10 @@ test('memory maintenance and revoked recurring schedules fail closed to dedicate
   );
   assert.deepEqual(maintenance.options?.policy?.allowedTools, [
     'memory_search', 'memory_read', 'memory_links',
-    'list_memory_observations', 'upsert_memory_page', 'complete_memory_observations',
+    'list_memory_observations', 'upsert_memory_page',
+    'merge_memory_pages', 'supersede_memory_page', 'add_memory_links',
+    'move_memory_scope', 'refresh_memory_from_source',
+    'complete_memory_observations',
   ]);
   assert.equal(maintenance.options?.policy?.allowSessionContext, false);
   assert.match(instructions(maintenance), /semantic lint|Memory maintenance/i);

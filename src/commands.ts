@@ -343,21 +343,6 @@ export class CommandHandler {
 
     if (command === '/exit') return 'exit';
     if (command === '/help') return this.handled(HELP);
-    const draftSafeCommands = new Set([
-      '/new',
-      '/sessions',
-      '/session',
-      '/switch',
-      '/tasks',
-      '/task',
-      '/security',
-      '/model',
-      '/mode',
-      '/output',
-    ]);
-    if (this.agent.sessionReady === false && !draftSafeCommands.has(command ?? '')) {
-      return this.handled('当前是尚未创建的新对话。发送第一条消息后才会创建 Session；也可以先用 /sessions 切换到已有对话。');
-    }
     if (command === '/status') {
       const info = await this.agent.runtimeInfo();
       const executionAccess = info.mode.id === 'plan'

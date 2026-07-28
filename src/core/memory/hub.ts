@@ -15,6 +15,13 @@ import type {
   WikiLintReport,
 } from './types.js';
 
+export interface MemoryGovernanceReceipt {
+  action: 'merge' | 'supersede' | 'link' | 'move';
+  targetRef: MemoryRef;
+  affectedRefs: MemoryRef[];
+  timestamp: string;
+}
+
 export interface MemoryHub {
   hotProfile(context: RunMemoryContext): Promise<MemoryCard[]>;
   search(query: string, context: RunMemoryContext, options?: MemorySearchOptions): Promise<MemoryHit[]>;
@@ -24,6 +31,34 @@ export interface MemoryHub {
   forget(ref: MemoryRef, context: RunMemoryContext): Promise<ForgetReceipt>;
   ingest(sourcePath: string, context: RunMemoryContext): Promise<CompilationReceipt>;
   capture(input: CaptureInput, context: RunMemoryContext): Promise<CompilationReceipt>;
+  merge(
+    input: {
+      targetRef: MemoryRef;
+      mergedRefs: MemoryRef[];
+      title: string;
+      content: string;
+      reasonCode: string;
+    },
+    context: RunMemoryContext,
+  ): Promise<MemoryGovernanceReceipt>;
+  supersede(
+    ref: MemoryRef,
+    replacementRef: MemoryRef | undefined,
+    reasonCode: string,
+    context: RunMemoryContext,
+  ): Promise<MemoryGovernanceReceipt>;
+  addLinks(
+    ref: MemoryRef,
+    links: string[],
+    reasonCode: string,
+    context: RunMemoryContext,
+  ): Promise<MemoryGovernanceReceipt>;
+  move(
+    ref: MemoryRef,
+    targetScope: 'private' | 'workspace',
+    reasonCode: string,
+    context: RunMemoryContext,
+  ): Promise<MemoryGovernanceReceipt>;
   refreshStale(limit: number, context: RunMemoryContext): Promise<CompilationReceipt[]>;
   reject(sourceRefs: import('./types.js').SourceRef[], reasonCode: string, context: RunMemoryContext): Promise<CompilationReceipt>;
   recordEpisode(input: EpisodeInput, context: RunMemoryContext): Promise<MemoryRef>;

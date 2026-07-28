@@ -7,6 +7,7 @@ import test from 'node:test';
 import { stableDirectoryId, type MemoryDocument } from '../src/core/memory.js';
 import { MemoryCompilationCoordinator } from '../src/extensions/memory/compilation-coordinator.js';
 import { createMemoryHub } from '../src/extensions/memory/hub.js';
+import { privateMemoryLayout } from '../src/extensions/memory/layout.js';
 import { SqliteMemoryCatalog } from '../src/extensions/memory/sqlite-catalog.js';
 import { parsePage, serializePage, WikiVault } from '../src/extensions/memory/wiki-vault.js';
 
@@ -183,13 +184,7 @@ test('remember, capture, reject, and ingest all produce V2 terminal receipts', a
   await hub.reject([sourceRef], 'not_durable', context);
   await hub.ingest('knowledge/sources/guide.md', context);
 
-  const privateDb = new DatabaseSync(path.join(
-    dataRoot,
-    'memory',
-    'profiles',
-    stableDirectoryId('owner'),
-    'memory.db',
-  ), { readOnly: true });
+  const privateDb = new DatabaseSync(privateMemoryLayout(dataRoot, 'owner').databaseFile, { readOnly: true });
   const workspaceDb = new DatabaseSync(path.join(
     dataRoot,
     'memory',

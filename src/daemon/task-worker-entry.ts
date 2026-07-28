@@ -116,6 +116,14 @@ async function run(raw: unknown): Promise<void> {
       memoryMaintenance: {
         capture: (input, profileId) => agent.memoryCapture(input, profileId),
         reject: (sourceRefs, reasonCode, profileId) => agent.memoryReject(sourceRefs, reasonCode, profileId),
+        merge: (input, profileId) => agent.memoryMerge(input, profileId),
+        supersede: (ref, replacementRef, reasonCode, profileId) =>
+          agent.memorySupersede(ref, replacementRef, reasonCode, profileId),
+        addLinks: (ref, links, reasonCode, profileId) =>
+          agent.memoryAddLinks(ref, links, reasonCode, profileId),
+        move: (ref, targetScope, reasonCode, profileId) =>
+          agent.memoryMove(ref, targetScope, reasonCode, profileId),
+        refresh: (limit, profileId) => agent.memoryRefresh(limit, profileId),
         lint: (profileId) => agent.memoryLint(profileId),
       },
       onStreamEvent: (eventId, event) => {

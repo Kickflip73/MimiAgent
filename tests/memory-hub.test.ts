@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { RunContext } from '@openai/agents';
 import type OpenAI from 'openai';
 import { createMemoryHub } from '../src/extensions/memory/hub.js';
+import { privateMemoryLayout } from '../src/extensions/memory/layout.js';
+import { WikiVault } from '../src/extensions/memory/wiki-vault.js';
 import { SqliteMemoryCatalog } from '../src/extensions/memory/sqlite-catalog.js';
 import { createMemoryTools } from '../src/extensions/memory/tools.js';
 import { stableDirectoryId, type MemoryDocument, type RunMemoryContext, type SourceRef } from '../src/core/memory.js';
@@ -46,6 +48,181 @@ test('MemoryHub isolates private profiles and forget suppresses automatic resurr
     scope: 'private',
     autonomous: true,
   }, ownerContext), /已被 owner 遗忘/);
+});
+
+test('remember and maintenance capture resolve one canonical topic and compound its evidence', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-topic-resolver-'));
+  const dataRoot = path.join(root, 'data');
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot, profileId: 'owner' });
+  const ctx = context(root);
+  const remembered = await hub.remember({
+    title: 'GUI 自动化后台偏好',
+    content: 'GUI 自动化必须在后台执行。',
+    kind: 'profile',
+    aliases: ['后台 GUI 偏好'],
+  }, ctx);
+  const captured = await hub.capture({
+    title: '后台 GUI 偏好',
+    content: '# 后台 GUI 偏好\n\n## 摘要\n\n不要干扰当前桌面。\n\n## 来源\n\n- duplicated envelope',
+    kind: 'profile',
+    confidence: 'source-grounded',
+    aliases: ['GUI 自动化后台偏好'],
+    sourceRefs: [{
+      type: 'mimi-event',
+      id: 'event-gui-preference',
+      digest: `sha256:${'a'.repeat(64)}`,
+      occurredAt: new Date(Date.now() + 1_000).toISOString(),
+      trust: 'system',
+    }],
+  }, { ...ctx, cause: { trust: 'system', source: 'memory-maintenance' } });
+
+  assert.deepEqual(captured.pageRefs, [remembered.ref]);
+  const pages = await hub.list(ctx, { scope: 'private', documentTypes: ['wiki'], limit: 20 });
+  assert.equal(pages.length, 1);
+  const current = await hub.read(remembered.ref, ctx);
+  assert.equal(current.metadata.sourceRefs.length, 2);
+  assert.equal(current.metadata.canonicalKey, 'private:gui 自动化后台偏好');
+  assert.equal((current.body.match(/^#\s/gm) ?? []).length, 1);
+  assert.equal((current.body.match(/^## 来源$/gm) ?? []).length, 1);
+  assert.match(current.body, /不要干扰当前桌面/);
+  const rawFiles = await readdir(path.join(privateMemoryLayout(dataRoot, 'owner').rawRoot, 'user'));
+  assert.equal(rawFiles.length, 1);
+});
+
+test('private memory layout migrates the legacy hashed profile into an Obsidian owner Vault with backup', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-layout-'));
+  const dataRoot = path.join(root, 'data');
+  const layout = privateMemoryLayout(dataRoot, 'owner');
+  const legacyWiki = path.join(layout.legacyRoot, 'wiki');
+  const legacyVault = new WikiVault(legacyWiki, 'private', 'owner');
+  await legacyVault.initialize();
+  const timestamp = new Date().toISOString();
+  await legacyVault.write({
+    schemaVersion: 1,
+    id: `mem_${'a'.repeat(24)}`,
+    title: 'Legacy layout fact',
+    kind: 'fact',
+    scope: 'private',
+    profileId: 'owner',
+    status: 'active',
+    confidence: 'user-confirmed',
+    aliases: [],
+    tags: [],
+    sourceRefs: [{
+      type: 'user-explicit',
+      id: 'legacy/session',
+      digest: `sha256:${'b'.repeat(64)}`,
+      occurredAt: timestamp,
+      trust: 'owner',
+    }],
+    validFrom: null,
+    validUntil: null,
+    supersedes: [],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }, 'Legacy durable knowledge.');
+  const legacyCatalog = new SqliteMemoryCatalog(path.join(layout.legacyRoot, 'memory.db'), 'private', 'owner');
+  legacyCatalog.close();
+
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot, profileId: 'owner', cutover: false });
+
+  assert.equal((await hub.search('Legacy durable knowledge', context(root)))[0]?.title, 'Legacy layout fact');
+  await access(layout.schemaFile);
+  await access(path.join(layout.wikiRoot, 'fact', `mem_${'a'.repeat(24)}.md`));
+  await access(path.join(layout.rawRoot, 'sessions'));
+  await access(path.join(layout.backupRoot, 'wiki', 'fact', `mem_${'a'.repeat(24)}.md`));
+  await access(layout.databaseFile);
+});
+
+test('targeted topic rename preserves page identity and records the old title as an alias', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-topic-rename-'));
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot: path.join(root, 'data'), profileId: 'owner' });
+  const ctx = context(root);
+  const original = await hub.remember({
+    title: 'Skill 查找来源优先级 v1',
+    content: '先查本地 Skill。',
+    kind: 'procedure-ref',
+  }, ctx);
+  const renamed = await hub.remember({
+    title: 'Skill 查找来源优先级',
+    content: '先查本地 Skill，再查内部市场。',
+    kind: 'procedure-ref',
+    targetRef: original.ref,
+  }, ctx);
+
+  assert.equal(renamed.ref.id, original.ref.id);
+  assert.ok(renamed.metadata.aliases.includes('Skill 查找来源优先级 v1'));
+  assert.equal((await hub.list(ctx, { scope: 'private', documentTypes: ['wiki'] })).length, 1);
+});
+
+test('governance merge preserves evidence and supersedes duplicate pages through revisions', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-governance-merge-'));
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot: path.join(root, 'data'), profileId: 'owner' });
+  const ctx = context(root);
+  const target = await hub.remember({
+    title: '自主推进任务偏好',
+    content: '遇到障碍时主动寻找替代方案。',
+    kind: 'profile',
+  }, ctx);
+  const duplicate = await hub.remember({
+    title: '端到端完成工作偏好',
+    content: '多步骤任务不要停在中间。',
+    kind: 'profile',
+  }, { ...ctx, runId: 'run-duplicate' });
+
+  const receipt = await hub.merge({
+    targetRef: target.ref,
+    mergedRefs: [duplicate.ref],
+    title: '自主推进与端到端完成偏好',
+    content: '遇到障碍时主动切换方案，并持续推进到可验证的最终结果。',
+    reasonCode: 'same_owner_work_style',
+  }, ctx);
+
+  assert.equal(receipt.action, 'merge');
+  const current = await hub.read(target.ref, ctx);
+  const old = await hub.read(duplicate.ref, ctx);
+  assert.equal(current.metadata.sourceRefs.length, 2);
+  assert.ok(current.metadata.supersedes.includes(duplicate.ref.id));
+  assert.equal(old.metadata.status, 'superseded');
+  assert.equal(old.metadata.mergedInto, target.ref.id);
+  assert.ok(old.metadata.validUntil);
+  assert.equal((await hub.search('端到端完成工作偏好', ctx, { scope: 'private' }))
+    .some((hit) => hit.ref.id === duplicate.ref.id), false);
+  assert.equal((await hub.search('端到端完成工作偏好', ctx, { scope: 'private', status: 'all' }))
+    .some((hit) => hit.ref.id === duplicate.ref.id), true);
+
+  await hub.lint(ctx);
+  const index = await readFile(path.join(root, 'data', 'memory', 'vaults', 'owner', 'wiki', '_index.md'), 'utf8');
+  const currentSection = index.split('## 当前知识')[1]!.split('## 历史版本')[0]!;
+  const historySection = index.split('## 历史版本')[1]!;
+  assert.match(currentSection, new RegExp(current.metadata.title));
+  assert.doesNotMatch(currentSection, new RegExp(duplicate.metadata.title));
+  assert.match(historySection, new RegExp(duplicate.metadata.title));
+  assert.doesNotMatch(currentSection, /关系|来源/);
+});
+
+test('governance links create resolvable Obsidian relationships', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-governance-links-'));
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot: path.join(root, 'data'), profileId: 'owner' });
+  const ctx = context(root);
+  const entity = await hub.remember({
+    title: 'MimiAgent 项目',
+    content: 'MimiAgent 是本地优先的个人 Agent。',
+    kind: 'entity',
+  }, ctx);
+  const decision = await hub.remember({
+    title: '后台 GUI 决策',
+    content: 'GUI 自动化必须在后台执行。',
+    kind: 'decision',
+  }, { ...ctx, runId: 'run-decision' });
+
+  await hub.addLinks(decision.ref, ['MimiAgent 项目'], 'connect_decision_to_project', ctx);
+
+  assert.deepEqual(await hub.links(decision.ref, ctx), [{
+    direction: 'out',
+    ref: entity.ref,
+    title: 'MimiAgent 项目',
+  }]);
 });
 
 test('automatic semantic recall fails fast instead of retrying a slow embedding request', async () => {
@@ -143,10 +320,44 @@ test('repeated lint findings enter the bounded Error Book and maintenance log', 
   await hub.remember({ title: 'Second isolated fact', content: 'This fact also has no wiki links.', kind: 'fact' }, ctx);
   await hub.lint(ctx);
   await hub.lint(ctx);
-  const vault = path.join(dataRoot, 'memory', 'profiles', stableDirectoryId('owner'), 'wiki');
+  const vault = privateMemoryLayout(dataRoot, 'owner').wikiRoot;
   assert.match(await readFile(path.join(vault, '_error-book.md'), 'utf8'), /open · orphan/);
   assert.match(await readFile(path.join(vault, '_log.md'), 'utf8'), new RegExp(`## ${new Date().getUTCFullYear()}`));
   assert.match(await readFile(path.join(vault, '_log.md'), 'utf8'), /lint -/);
+});
+
+test('lint repairs deterministic page envelope and canonical identity through a revision', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-lint-repair-'));
+  const dataRoot = path.join(root, 'data');
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot, profileId: 'owner' });
+  const ctx = context(root);
+  const page = await hub.remember({
+    title: 'Repairable fact',
+    content: 'A durable fact.',
+    kind: 'fact',
+  }, ctx);
+  const layout = privateMemoryLayout(dataRoot, 'owner');
+  const vault = new WikiVault(layout.wikiRoot, 'private', 'owner', layout.schemaFile);
+  const current = await vault.read(page.ref);
+  const { canonicalKey: _canonicalKey, ...legacyMetadata } = current.metadata;
+  await vault.write(
+    legacyMetadata,
+    '# Repairable fact\n\n# Nested title\n\nA durable fact.\n\n## 来源\n\n- old\n\n## 来源\n\n- duplicate',
+    current.digest,
+  );
+
+  await hub.lint(ctx);
+
+  const repaired = await hub.read(page.ref, ctx);
+  assert.equal(repaired.metadata.canonicalKey, 'private:repairable fact');
+  assert.equal((repaired.body.match(/^#\s/gm) ?? []).length, 1);
+  assert.equal((repaired.body.match(/^## 来源$/gm) ?? []).length, 1);
+  const catalog = new SqliteMemoryCatalog(layout.databaseFile, 'private', 'owner');
+  try {
+    assert.equal(catalog.currentRevision(page.ref.id)?.revision, 2);
+  } finally {
+    catalog.close();
+  }
 });
 
 test('MemoryHub falls back to bounded workspace source evidence when Wiki is insufficient', async () => {
@@ -202,6 +413,30 @@ test('MemoryHub searches all owner Session rounds by default', async () => {
 
   await hub.reindex(ctx);
   assert.equal((await hub.search('cobalt lane', ctx, { scope: 'private' }))[0]?.ref.id, ref.id);
+});
+
+test('compiled Wiki knowledge ranks before matching raw Session episodes', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-wiki-first-'));
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot: path.join(root, 'data'), profileId: 'owner' });
+  const ctx = context(root);
+  await hub.recordEpisode({
+    sessionId: ctx.sessionId,
+    runId: ctx.runId,
+    input: 'What is the cobalt deployment policy?',
+    answer: 'An old conversation mentioned a cobalt deployment policy.',
+    occurredAt: new Date().toISOString(),
+  }, ctx);
+  const page = await hub.remember({
+    title: 'Cobalt deployment policy',
+    content: 'The compiled current policy is authoritative.',
+    kind: 'decision',
+  }, { ...ctx, runId: 'run-current-policy' });
+
+  const hits = await hub.search('cobalt deployment policy', ctx, { scope: 'private' });
+
+  assert.equal(hits[0]?.ref.id, page.ref.id);
+  assert.equal(hits[0]?.documentType, 'wiki');
+  assert.ok(hits.some((hit) => hit.documentType === 'episode'));
 });
 
 test('MemoryHub rejects external writes and workspace private provenance', async () => {
