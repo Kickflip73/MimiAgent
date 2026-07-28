@@ -38,6 +38,7 @@ function statusFor(health) {
     contextRead: health.contextRead || 'unavailable',
     targetBound: health.targetBound === true,
     targetBindingStatus: health.targetBindingStatus || 'target_not_bound',
+    ...(health.errorCategory ? { reasonCode: health.errorCategory } : {}),
     ...(health.lastObservedAt ? { lastObservedAt: health.lastObservedAt } : {}),
   };
 }
@@ -69,6 +70,10 @@ class UnavailableAdapter {
   }
 
   async getContext() {
+    throw this.error;
+  }
+
+  async listTargets() {
     throw this.error;
   }
 
@@ -160,35 +165,7 @@ async function handleAction(message) {
     : {};
   if (message.action === 'health_check') return reportHealth(payload.probe === true);
   if (message.action === 'sync_now') return poll({ fromAction: true });
-  if (message.action === 'list_targets') {
-    const health = await adapter.health();
-    const configuredTargets = [
-      ...(adapter.config?.selfConversation
-        ? [{ ...adapter.config.selfConversation, role: 'self' }]
-        : []),
-      ...(adapter.config?.watch?.conversations || []).map((target) => ({
-        ...target,
-        role: 'watch',
-      })),
-    ];
-    const targets = configuredTargets.map(({ binding, ...target }) => ({
-      ...target,
-      bound: binding?.selectedBy === 'owner'
-        && binding.accountFingerprint === health.accountFingerprint,
-      ...(binding?.authorizationRevision
-        ? { authorizationRevision: binding.authorizationRevision }
-        : {}),
-    }));
-    return {
-      channel,
-      accountVerified: health.accountVerified === true,
-      coverage: health.coverage || 'unavailable',
-      targets,
-      targetBindingStatus: targets.some((target) => target.bound)
-        ? 'bound'
-        : 'target_not_bound',
-    };
-  }
+  if (message.action === 'list_targets') return adapter.listTargets();
   const target = targetConversation(message.target);
   if (message.action === 'get_context') {
     const health = await adapter.health();

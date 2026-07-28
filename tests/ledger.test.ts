@@ -16,6 +16,7 @@ import {
   type ActionIntent,
   type ActionIntentV2,
 } from '../src/core/action-intent.js';
+import { TOOL_ACTION_INTENT } from '../src/core/tool-metadata.js';
 import { withExecutionLedger } from '../src/runtime/tool-ledger.js';
 import { withMcpExecutionLedger } from '../src/runtime/mcp-ledger.js';
 
@@ -426,6 +427,62 @@ test('wraps SDK side-effect tools with the active run ledger', async () => {
 
   assert.deepEqual(replay, first);
   assert.equal(executions, 1);
+});
+
+test('declared read actions bypass side-effect authorization and uncertain ledger fencing', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-read-action-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  let executions = 0;
+  let authorizations = 0;
+  const original = tool({
+    name: 'invoke_capability',
+    description: 'bounded read capability',
+    parameters: z.object({ target: z.string() }),
+    execute: async () => {
+      executions += 1;
+      if (executions === 1) throw new Error('read failed before returning');
+      return { outcome: 'confirmed', messages: ['bounded'] };
+    },
+  }) as ReturnType<typeof tool> & {
+    [TOOL_ACTION_INTENT]?: (rawInput: string) => {
+      actionFamily: string;
+      targetRef: string;
+      payload: unknown;
+      selectedRoute: string;
+      effect: 'read';
+    };
+  };
+  original[TOOL_ACTION_INTENT] = (rawInput) => ({
+    actionFamily: 'connector.message.context.read',
+    targetRef: JSON.parse(rawInput).target as string,
+    payload: rawInput,
+    selectedRoute: 'capability-router',
+    effect: 'read',
+  });
+  const [wrapped] = withExecutionLedger([original], ledger, () => ({
+    sessionId: 'owner',
+    runId: 'event:read-retry',
+    semanticCallIds: true,
+    authorizeSideEffect: async () => { authorizations += 1; },
+  }));
+  assert.ok(wrapped && 'invoke' in wrapped);
+  const input = '{"target":"owner"}';
+
+  assert.match(
+    String(await wrapped.invoke(
+      new RunContext({}),
+      input,
+      { toolCall: { callId: 'read-a' } } as never,
+    )),
+    /read failed/,
+  );
+  assert.deepEqual(
+    await wrapped.invoke(new RunContext({}), input, { toolCall: { callId: 'read-b' } } as never),
+    { outcome: 'confirmed', messages: ['bounded'] },
+  );
+  assert.equal(executions, 2);
+  assert.equal(authorizations, 0);
+  assert.deepEqual(await ledger.listCalls('owner', 'event:read-retry'), []);
 });
 
 test('confirmed Connector actions expose a verifiable external receipt for Plan completion', async () => {

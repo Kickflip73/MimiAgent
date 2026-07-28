@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- keep bounded Daxiang web reads available when its dedicated tab is selected in a
+  background Chrome window, restore the prior conversation after access, expose
+  structured readiness reasons, detect missing owner bindings in Doctor, keep
+  declared read capabilities out of the side-effect ledger, stop retrying uncertain
+  external actions, filter currently unavailable Daxiang targets, forbid Connector
+  fallback suggestions, and reject model answers that only promise the next step
 - make `/model` a global selector across every configured Provider and route
   cross-Provider model choices through the existing atomic Provider restart
   path while preserving current-Provider model allowlists

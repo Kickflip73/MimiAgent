@@ -16,6 +16,8 @@ function isNonRetryableRunFailure(error: unknown): boolean {
     || value.name === 'MaxTurnsExceededError'
     || value.name === 'EphemeralSecretsExpiredError'
     || value.name === 'EphemeralSensitiveRunFailedError'
+    || value.name === 'ActionIntentUncertainError'
+    || /ActionIntent.*(?:uncertain|结果不确定)|之前处于 uncertain 状态|禁止.*(?:自动重放|换路)/i.test(message)
     || /^Max turns \(\d+\) exceeded$/i.test(message);
 }
 

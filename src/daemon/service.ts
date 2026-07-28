@@ -508,6 +508,28 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+export function countMissingDaxiangOwnerBindings(raw: unknown): number {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 0;
+  const config = raw as Record<string, unknown>;
+  const expectedAccountFingerprint = config.expectedAccountFingerprint;
+  if (typeof expectedAccountFingerprint !== 'string' || !expectedAccountFingerprint) return 0;
+  const selfConversation = config.selfConversation;
+  const watch = config.watch && typeof config.watch === 'object' && !Array.isArray(config.watch)
+    ? config.watch as Record<string, unknown>
+    : undefined;
+  const watched = Array.isArray(watch?.conversations) ? watch.conversations : [];
+  return [selfConversation, ...watched].filter((target) => {
+    if (!target || typeof target !== 'object' || Array.isArray(target)) return true;
+    const binding = (target as Record<string, unknown>).binding;
+    if (!binding || typeof binding !== 'object' || Array.isArray(binding)) return true;
+    const value = binding as Record<string, unknown>;
+    return value.selectedBy !== 'owner'
+      || value.accountFingerprint !== expectedAccountFingerprint
+      || typeof value.authorizationRevision !== 'string'
+      || !/^[A-Za-z0-9._:-]{1,120}$/.test(value.authorizationRevision);
+  }).length;
+}
+
 function requiredString(value: unknown, name: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} 不能为空`);
   return value.trim();
@@ -948,13 +970,30 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
     : [];
   if (connectorConfig && enabled.length === 0) issues.push('没有启用任何 Connector');
   const daxiangEnabled = enabled.includes('personal-daxiang');
+  const daxiangConnector = connectorConfig?.connectors['personal-daxiang'];
+  const daxiangScript = daxiangConnector ? connectorScriptPath(daxiangConnector) : undefined;
+  const packagedDaxiangScript = path.join(
+    runtimeRoot(),
+    'examples',
+    'connectors',
+    'personal-message-connector.mjs',
+  );
+  const daxiangManagedScriptDrift = daxiangEnabled
+    && daxiangConnector?.syncTemplateActions !== false
+    && daxiangScript !== undefined
+    && path.basename(daxiangScript) === path.basename(packagedDaxiangScript)
+    && path.resolve(daxiangScript) !== path.resolve(packagedDaxiangScript);
   const daxiangConfigFile = process.env.DAXIANG_WEB_CONFIG
     ? path.resolve(process.env.DAXIANG_WEB_CONFIG)
     : path.join(paths.root, 'personal-daxiang.json');
   let daxiangConfigMissing = false;
   let daxiangFingerprintsMissing = false;
+  let daxiangBindingsMissing = 0;
   if (daxiangEnabled) {
     if (platform !== 'darwin') issues.push('personal-daxiang 只支持 macOS Google Chrome');
+    if (daxiangManagedScriptDrift) {
+      issues.push(`personal-daxiang 仍指向其他 checkout 的托管脚本：${daxiangScript}`);
+    }
     if (!await exists(daxiangConfigFile)) {
       daxiangConfigMissing = true;
       issues.push(`personal-daxiang 业务配置不存在：${daxiangConfigFile}`);
@@ -967,6 +1006,11 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
           || daxiangConfig.allowedPageFingerprints.length === 0;
         if (daxiangFingerprintsMissing) {
           issues.push('personal-daxiang 尚未锁定账号指纹和页面指纹，只能执行 health_check probe');
+        } else {
+          daxiangBindingsMissing = countMissingDaxiangOwnerBindings(daxiangConfig);
+          if (daxiangBindingsMissing > 0) {
+            issues.push(`personal-daxiang 有 ${daxiangBindingsMissing} 个 allowlist 目标缺少当前账号的 owner binding`);
+          }
         }
       } catch (error) {
         issues.push(`personal-daxiang 业务配置无效：${error instanceof Error ? error.message : String(error)}`);
@@ -1084,6 +1128,11 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
     nextActions.push(`复制 daxiang-web.example.json 到 ${daxiangConfigFile}，准备已登录且非活动的大象专用标签`);
   } else if (daxiangFingerprintsMissing) {
     nextActions.push('对 personal-daxiang 执行 health_check probe，核对摘要后写回账号和页面指纹并 reload');
+  } else if (daxiangBindingsMissing > 0) {
+    nextActions.push(`为 personal-daxiang 的 ${daxiangBindingsMissing} 个 allowlist 目标补齐当前账号 owner binding 并 reload`);
+  }
+  if (daxiangManagedScriptDrift) {
+    nextActions.push(`把 personal-daxiang 脚本路径更新为当前构建 ${packagedDaxiangScript} 并 reload`);
   }
   if (!daemonStatus && configured && connectorConfig) nextActions.push('运行 mimi，后台服务会自动启动');
   if (health) {

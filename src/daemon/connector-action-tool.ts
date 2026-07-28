@@ -53,6 +53,7 @@ export interface ConnectorCapabilitySnapshot {
       lastObservedAt?: string;
       targetBound?: boolean;
       targetBindingStatus?: 'bound' | 'target_not_bound';
+      reasonCode?: string;
     };
     source: string;
     routeOwner: string;
@@ -344,6 +345,7 @@ export function createInvokeCapabilityTool(
         'invoke_capability',
         request,
         selected.result,
+        selected.effect,
       );
       onAction?.(request, receipt);
       return receipt;
@@ -356,6 +358,9 @@ export function createInvokeCapabilityTool(
     const capability = String(input.capability ?? '');
     const action = String(input.action ?? '');
     const target = String(input.target ?? '');
+    const declarations = connectors.listCapabilities().flatMap((connector) => connector.actions
+      .filter((candidate) => candidate.name === action && candidate.capability === capability));
+    const effect = declarations.length === 1 ? declarations[0]!.effect : 'unknown';
     return {
       actionFamily: `connector.${capability}.${action}`,
       targetRef: target,
@@ -366,6 +371,7 @@ export function createInvokeCapabilityTool(
         payloadJson: String(input.payloadJson ?? ''),
       },
       selectedRoute: 'capability-router',
+      effect,
       guarded: {
         exactTarget: target.length > 0,
         lowRisk: false,
@@ -386,13 +392,16 @@ function connectorReceipt(
   toolName: ConnectorActionReceipt['tool'],
   request: ConnectorActionRequest,
   result: unknown,
+  effect: 'read' | 'write' | 'unknown' = 'unknown',
 ): ConnectorActionReceipt {
   const boundedResult = boundedActionResult(result);
   const value = boundedResult !== null && typeof boundedResult === 'object' && !Array.isArray(boundedResult)
     ? boundedResult as Record<string, unknown>
     : undefined;
   const declaredOutcome = value?.outcome;
-  const outcome = declaredOutcome === 'confirmed' || declaredOutcome === 'accepted'
+  const outcome = effect === 'read'
+    ? 'confirmed'
+    : declaredOutcome === 'confirmed' || declaredOutcome === 'accepted'
     ? declaredOutcome
     : value?.deliveryConfirmed === true
       || typeof value?.messageId === 'string'
@@ -409,6 +418,7 @@ function connectorReceipt(
     connector: request.connector,
     action: request.action,
     target: request.target,
+    effect,
     outcome,
     ...(value ? {} : { evidence: boundedResult }),
     occurredAt: new Date().toISOString(),

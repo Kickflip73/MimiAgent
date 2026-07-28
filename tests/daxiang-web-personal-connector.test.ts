@@ -48,7 +48,11 @@ class FakeDriver {
   commits = 0;
   observeStatus: 'observed' | 'failed' | 'pending' = 'observed';
   candidateMatched = true;
-  candidateType: 'chat' | 'groupchat' = 'chat';
+  candidateType: 'chat' | 'groupchat' | undefined;
+  missingCandidateSids = new Set<string>();
+  selectedSid = '123';
+  selectedType: 'chat' | 'groupchat' = 'chat';
+  selectionCalls: string[] = [];
   messages = [{
     mid: '9001',
     direction: 'incoming',
@@ -63,8 +67,10 @@ class FakeDriver {
   }
 
   async execute(_marker: string, script: string): Promise<{ value: string | null }> {
-    const method = /__mimiDaxiangBridge\.([a-zA-Z]+)\(/.exec(script)?.[1];
+    const invocation = /__mimiDaxiangBridge\.([a-zA-Z]+)\((\{.*\})\)\)/.exec(script);
+    const method = invocation?.[1];
     if (!method) return { value: null };
+    const input = invocation?.[2] ? JSON.parse(invocation[2]) as Record<string, unknown> : {};
     let result: unknown;
     if (method === 'inspect') {
       result = {
@@ -74,21 +80,35 @@ class FakeDriver {
         pageShape,
         readable: true,
         sendStructureReady: true,
+        selected: { sid: this.selectedSid, type: this.selectedType },
       };
     } else if (method === 'installObserver') result = { installed: true };
     else if (method === 'drain') result = [];
-    else if (method === 'targetCandidate') result = {
-      matched: this.candidateMatched,
-      sid: '123',
-      type: this.candidateType,
-      count: this.candidateMatched ? 1 : 0,
-    };
-    else if (method === 'selectConversation') result = { selected: true, changed: false };
-    else if (method === 'readCurrentConversation') {
+    else if (method === 'targetCandidate') {
+      const matched = this.candidateMatched && !this.missingCandidateSids.has(String(input.sid));
       result = {
-        matched: true,
-        sid: '123',
-        type: 'chat',
+        matched,
+        sid: String(input.sid),
+        type: this.candidateType ?? input.type,
+        count: matched ? 1 : 0,
+      };
+    }
+    else if (method === 'selectConversation') {
+      const nextSid = String(input.sid);
+      const nextType = input.type as 'chat' | 'groupchat';
+      const changed = this.selectedSid !== nextSid || this.selectedType !== nextType;
+      this.selectedSid = nextSid;
+      this.selectedType = nextType;
+      this.selectionCalls.push(`${nextType}:${nextSid}`);
+      result = { selected: true, changed };
+    }
+    else if (method === 'readCurrentConversation') {
+      const requestedSid = String(input.sid);
+      const requestedType = input.type as 'chat' | 'groupchat';
+      result = {
+        matched: requestedSid === this.selectedSid && requestedType === this.selectedType,
+        sid: requestedSid,
+        type: requestedType,
         messages: this.messages,
         capturedAt: '2026-07-27T10:00:01.000Z',
         readStateChanged: 'unknown',
@@ -111,6 +131,98 @@ class FakeDriver {
     return { value: JSON.stringify(result) };
   }
 }
+
+test('Daxiang bounded reads restore the previously selected conversation', async () => {
+  const driver = new FakeDriver();
+  const alternate = parseDaxiangConfig({
+    ...config(),
+    watch: {
+      ...config().watch,
+      conversations: [
+        ...config().watch.conversations,
+        {
+          sid: '456',
+          type: 'groupchat',
+          label: 'alternate',
+          binding: {
+            selectedBy: 'owner',
+            accountFingerprint,
+            authorizationRevision: 'owner-revision-2',
+          },
+        },
+      ],
+    },
+  });
+  const adapter = new DaxiangWebAdapter({
+    config: alternate,
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-restore-${Date.now()}.json`),
+  });
+  await adapter.health({ probe: true });
+
+  const context = await adapter.getContext({
+    accountFingerprint,
+    sid: '456',
+    type: 'groupchat',
+    limit: 1,
+  });
+
+  assert.match(String(context.conversationId), /:456$/);
+  assert.equal(driver.selectedSid, '123');
+  assert.equal(driver.selectedType, 'chat');
+  assert.deepEqual(driver.selectionCalls, ['groupchat:456', 'chat:123']);
+});
+
+test('Daxiang target listing excludes configured conversations missing from the current page', async () => {
+  const driver = new FakeDriver();
+  driver.missingCandidateSids.add('456');
+  const alternate = parseDaxiangConfig({
+    ...config(),
+    watch: {
+      ...config().watch,
+      conversations: [
+        ...config().watch.conversations,
+        {
+          sid: '456',
+          type: 'groupchat',
+          binding: {
+            selectedBy: 'owner',
+            accountFingerprint,
+            authorizationRevision: 'owner-revision-2',
+          },
+        },
+      ],
+    },
+  });
+  const adapter = new DaxiangWebAdapter({
+    config: alternate,
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-targets-${Date.now()}.json`),
+  });
+  await adapter.health({ probe: true });
+
+  const listed = await (adapter as unknown as {
+    listTargets(): Promise<{
+      configuredTargetCount: number;
+      unavailableTargetCount: number;
+      targets: Array<{ sid: string }>;
+      targetBindingStatus: string;
+    }>;
+  }).listTargets();
+
+  assert.equal(listed.configuredTargetCount, 3);
+  assert.equal(listed.unavailableTargetCount, 1);
+  assert.deepEqual(listed.targets.map((target: { sid: string }) => target.sid), ['123', '123']);
+  assert.equal(listed.targetBindingStatus, 'target_not_bound');
+  await assert.rejects(() => adapter.getContext({
+    accountFingerprint,
+    sid: '456',
+    type: 'groupchat',
+    limit: 1,
+  }), /target_not_bound/);
+});
 
 function config() {
   return parseDaxiangConfig({

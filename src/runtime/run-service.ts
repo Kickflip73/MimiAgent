@@ -123,6 +123,23 @@ function progressFrom(event: RunStreamEvent): Record<string, unknown> | undefine
   return undefined;
 }
 
+export class PrematureRunCompletionError extends Error {
+  override readonly name = 'PrematureRunCompletionError';
+}
+
+export function isPrematureProgressAnswer(answer: string, completedToolCalls: number): boolean {
+  if (completedToolCalls < 1) return false;
+  const sentences = answer.trim().split(/(?:\r?\n)+|(?<=[。！？!?])/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const tail = sentences.at(-1)?.replace(/^[，,。；;\s]+|[，,。；;\s]+$/gu, '') ?? '';
+  if (/(?:成功|失败|被拒绝|无法|未能|已完成|没有可用|需要你|请你)/u.test(tail)) return false;
+  const action = /(?:继续|尝试|试试|检查|调用|读取|观察|启动|重启|改用|换用|执行|处理|确认|验证|看看)/u;
+  const futureLead = /^(?:让我|我(?:会|将|先|再|现在|接下来|直接|改用|换个思路)|接下来|下一步|先)/u;
+  return (futureLead.test(tail) && action.test(tail))
+    || (/^我尝试(?:用|通过)?/u.test(tail) && action.test(tail));
+}
+
 async function observe<T>(callback: ((value: T) => void | Promise<void>) | undefined, value: T): Promise<void> {
   if (!callback) return;
   try {
@@ -173,6 +190,7 @@ export class AgentRunService {
   async execute(request: AgentRunRequest, observer: AgentRunObserver = {}): Promise<AgentRunResult> {
     let stream: RunStream | undefined;
     let streamedAnswer = '';
+    let completedToolCalls = 0;
     let selectedProvider = this.providerId;
     let streamAcquired = false;
     const stopRuntimeEvents = this.agent.onRuntimeEvent((event) => observe(
@@ -214,6 +232,9 @@ export class AgentRunService {
       streamAcquired = true;
       for await (const event of stream) {
         streamedAnswer += answerDelta(event);
+        if (event.type === 'run_item_stream_event' && event.name === 'tool_output') {
+          completedToolCalls += 1;
+        }
         const safeEvent = this.agent.redactActiveRunData?.(event) ?? event;
         const hiddenCandidate = this.agent.completionGateRequired
           && event.type === 'raw_model_stream_event'
@@ -238,6 +259,11 @@ export class AgentRunService {
         ? finalOutput
         : finalOutput === undefined ? streamedAnswer : JSON.stringify(finalOutput)).slice(0, 20_000);
       const answer = this.agent.redactActiveRunText?.(rawAnswer) ?? rawAnswer;
+      if (isPrematureProgressAnswer(answer, completedToolCalls)) {
+        throw new PrematureRunCompletionError(
+          '模型只给出了下一步动作，尚未返回实际结果、明确阻塞条件或已验证终态',
+        );
+      }
       const usage = usageFrom(stream);
       const effects = await this.commits.complete({ answer, usage });
       const committedAnswer = this.agent.completedRunAnswer ?? answer;

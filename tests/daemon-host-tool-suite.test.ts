@@ -266,6 +266,7 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       executeAction: async () => ({ outcome: 'confirmed', messageId: 'message-1' }),
       executeCapability: async () => ({
         connector: 'mail',
+        effect: 'write' as const,
         result: { outcome: 'confirmed', messageId: 'message-1' },
       }),
     } as unknown as ConnectorManager;

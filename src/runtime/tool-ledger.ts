@@ -148,7 +148,8 @@ export function withExecutionLedger(
             throw run?.sanitizeError?.(error) ?? error;
           }
         };
-        if (!sideEffect) return invokeSanitized();
+        const action = (tool as LedgerAwareTool)[TOOL_ACTION_INTENT]?.(input);
+        if (!sideEffect || action?.effect === 'read') return invokeSanitized();
         const sdkCallId = details?.toolCall?.callId;
         const ledgerInput = (tool as LedgerAwareTool)[TOOL_LEDGER_ARGUMENTS]?.(input) ?? input;
         const argumentsJson = run?.semanticCallIds ? semanticArguments(ledgerInput) : ledgerInput;
@@ -171,7 +172,6 @@ export function withExecutionLedger(
           return invokeSanitized();
         };
         if (!run || !callId) return invokeAuthorized();
-        const action = (tool as LedgerAwareTool)[TOOL_ACTION_INTENT]?.(input);
         if (action) {
           const payloadDigest = actionPayloadDigest(action.payload);
           const policyRevision = run.policyRevision ?? 'guarded:v1';

@@ -99,7 +99,7 @@ Connector 应在渠道状态变化时输出就绪度；这和子进程是否存�
 {"type":"status","inbound":"ready","outbound":"ready","deliveryConfirmed":true,"eventAcknowledgement":true,"freshForMs":90000}
 ```
 
-`inbound` / `outbound` 只能是 `ready | unavailable | unknown`。`deliveryConfirmed:false` 表示 UI 自动化等执行面只能确认动作已尝试，不能确认远端实际收到。`eventAcknowledgement:true` 表示 Connector 会等待 Inbox 持久化 ACK；未声明时 Host 保持旧协议兼容。轮询 Connector 可声明 1 秒到 7 天的 `freshForMs`，并在每次成功轮询后重发同一 status 作为 heartbeat；Host 以接收时间计算 `reportedAt` / `freshUntil`，过期后即使进程仍在线也标记 `stale`，从 readiness 计数中移除并进入统一 health 风险。不能持续报告 heartbeat 的 Connector 应省略该字段，不能伪造 freshness。未上报 status 的旧 Connector 保持 `unknown`；进程离线时两项统一为 `unavailable`。因此 `online` 只用于诊断子进程，不能再被解释为渠道已经可收发。
+`inbound` / `outbound` 只能是 `ready | unavailable | unknown`。可选 `reasonCode` 使用稳定的小写故障码，让 Host 区分 owner binding 缺失、页面不可读等根因，而不是只显示笼统 unavailable。`deliveryConfirmed:false` 表示 UI 自动化等执行面只能确认动作已尝试，不能确认远端实际收到。`eventAcknowledgement:true` 表示 Connector 会等待 Inbox 持久化 ACK；未声明时 Host 保持旧协议兼容。轮询 Connector 可声明 1 秒到 7 天的 `freshForMs`，并在每次成功轮询后重发同一 status 作为 heartbeat；Host 以接收时间计算 `reportedAt` / `freshUntil`，过期后即使进程仍在线也标记 `stale`，从 readiness 计数中移除并进入统一 health 风险。不能持续报告 heartbeat 的 Connector 应省略该字段，不能伪造 freshness。未上报 status 的旧 Connector 保持 `unknown`；进程离线时两项统一为 `unavailable`。因此 `online` 只用于诊断子进程，不能再被解释为渠道已经可收发。
 
 ## 通用本机 Webhook
 
@@ -152,7 +152,7 @@ Connector 完成远端发送后必须确认：
 
 ## 主动事务 Action Bridge
 
-Agent 需要主动执行 Connector 事务时，依据本轮 Effective Capability Snapshot 的精确 `capability/action` 调用 `invoke_capability`。Daemon 只在恰好一个已就绪 Connector 声明该组合时执行；零个返回 unavailable，多个返回 ambiguous，不要求模型猜 Connector ID。底层 Task/operator 兼容面仍可使用 `connector_action`，但不再暴露给普通模型 Run。
+Agent 需要主动执行 Connector 事务时，依据本轮 Effective Capability Snapshot 的精确 `capability/action` 调用 `invoke_capability`。Daemon 只在恰好一个在线且新鲜的 Connector 声明该组合时执行；写或 unknown effect 还必须要求 outbound ready，零个返回 unavailable，多个返回 ambiguous，不要求模型猜 Connector ID。精确声明的 `effect=read` 动作不进入副作用账本，可在明确失败后安全重试；写或 unknown effect 继续由 ActionIntent 和 ExecutionLedger 提供 at-most-once 防护。底层 Task/operator 兼容面仍可使用 `connector_action`，但不再暴露给普通模型 Run。
 
 每个 Daemon Agent Run 还会获得只读 `inspect_mimi_capabilities`，动态返回当前 Connector 的 enabled/online、inbound/outbound readiness、`capability/effect/routeOwner` 与 action 目录。能力选择优先使用 `capability` 精确过滤；`query` 只检索展示元数据，业务词零命中时 `total=0` 但 `catalogTotal/catalogActions` 和 `availableCapabilities` 仍明确保留，不能据此声称没有 Connector 或切换到更宽权限路线。精确 ID 未注册会明确报错。输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals、`filterMatched` 与 `truncated` 明示过滤和截断。状态仍可能随后变化，因此 Manager 在真正发送前再次校验。
 
@@ -189,7 +189,8 @@ unavailable 即重新停用并保留配置。恢复检查不得触发发送、�
 
 个人消息 Event 由 Host 结构化绑定为 `PersonalMessageScope`，不是根据 owner 文本或渠道
 关键词分类。该 Scope 只开放绑定 Connector 的有界读取/发送工具；`list_targets` 只返回
-配置允许访问的 self/watch 稳定 sid，不扫描或复制全部联系人。readiness、账号、页面、
+配置允许且当前页面存在唯一候选的 self/watch 稳定 sid，不扫描或复制全部联系人；配置
+存在但当前页面不可用的目标只计入 `unavailableTargetCount`，不会作为可调用 target 返回。readiness、账号、页面、
 target 或 outbound 任一失败时都失败关闭，同一资源不能降级到 Shell、Computer/CUA、
 Browser/Desktop 或其他 Connector。
 
@@ -214,13 +215,13 @@ revision 无效或当前页面不存在该唯一候选时，status/list_targets 
 `targetBindingStatus=target_not_bound`，`contextRead/coverage/outbound` 不会冒充
 可用。页面指纹仅影响写能力时，已验证 binding 的 bounded read 和 Draft 仍可用。
 
-大象 Adapter 使用已登录的 `https://x.sankuai.com/` 专用 Chrome 后台标签。它通过 Chrome Apple Events JavaScript 接口注入窄页面 Bridge，不激活 Chrome、不发送键盘鼠标事件，也不读取或导出浏览器认证资料。标签必须通过 `origin + window.name tabMarker` 唯一绑定，并且不能是任何 Chrome 窗口的当前标签；账号指纹、页面指纹、稳定 `sid` 和稳定 `mid` 任一不匹配都会停止写操作。
+大象 Adapter 使用已登录的 `https://x.sankuai.com/` 专用 Chrome 后台标签。它通过 Chrome Apple Events JavaScript 接口注入窄页面 Bridge，不激活 Chrome、不发送键盘鼠标事件，也不读取或导出浏览器认证资料。标签必须通过 `origin + window.name tabMarker` 唯一绑定；Chrome 在前台时，专用标签不能是当前标签，Chrome 整体处于后台时则允许该标签是窗口当前页。读取或发送结束后会恢复原会话选择；恢复失败时失败关闭。账号指纹、页面指纹、稳定 `sid` 和稳定 `mid` 任一不匹配都会停止写操作。
 
 业务配置从 `DAXIANG_WEB_CONFIG` 读取，模板为
 `examples/connectors/personal-message/daxiang-web.example.json`。初次启用时先保持
 `expectedAccountFingerprint` 和 `allowedPageFingerprints` 为空，只调用
 `health_check` 的 probe 获取摘要；写回并重载后才开放有界读取。配置缺失、Chrome
-未运行、专用标签处于活动状态或 Apple Events JavaScript 未获准时，Connector
+未运行、专用标签在 Chrome 前台时处于活动状态或 Apple Events JavaScript 未获准时，Connector
 保持 `unavailable`，不会打开或激活浏览器。
 
 健康检查发现绑定标签丢失时，Adapter 会自动执行一次后台安全恢复：仅当当前恰好存在

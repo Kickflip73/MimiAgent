@@ -5,6 +5,7 @@ export interface ToolActionIntentMetadata {
   targetRef: string;
   payload: unknown;
   selectedRoute: string;
+  effect?: 'read' | 'write' | 'unknown';
   targetEvidenceRef?: string;
   guarded?: {
     exactTarget: boolean;

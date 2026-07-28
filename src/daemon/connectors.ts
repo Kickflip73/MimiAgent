@@ -112,6 +112,7 @@ interface ConnectorStatusMessage {
   lastObservedAt?: string;
   targetBound?: boolean;
   targetBindingStatus?: 'bound' | 'target_not_bound';
+  reasonCode?: string;
 }
 
 interface PendingDelivery {
@@ -147,6 +148,7 @@ export interface ConnectorCapability {
     lastObservedAt?: string;
     targetBound?: boolean;
     targetBindingStatus?: 'bound' | 'target_not_bound';
+    reasonCode?: string;
   };
   source: string;
   trust: EventTrust;
@@ -561,6 +563,11 @@ class ConnectorProcess implements NotificationSink {
       && !['bound', 'target_not_bound'].includes(message.targetBindingStatus)) {
       throw new Error('status.targetBindingStatus 无效');
     }
+    if (message.reasonCode !== undefined
+      && (typeof message.reasonCode !== 'string'
+        || !/^[a-z0-9._-]{1,100}$/.test(message.reasonCode))) {
+      throw new Error('status.reasonCode 无效');
+    }
     if (message.lastObservedAt !== undefined && !validDate(message.lastObservedAt)) {
       throw new Error('status.lastObservedAt 必须是有效时间');
     }
@@ -583,6 +590,7 @@ class ConnectorProcess implements NotificationSink {
       ...(message.targetBindingStatus === undefined
         ? {}
         : { targetBindingStatus: message.targetBindingStatus }),
+      ...(message.reasonCode === undefined ? {} : { reasonCode: message.reasonCode }),
     };
   }
 
@@ -889,6 +897,7 @@ export class ConnectorManager {
 
   async executeCapability(request: ConnectorCapabilityRequest): Promise<{
     connector: string;
+    effect: 'read' | 'write' | 'unknown';
     result: unknown;
   }> {
     const catalog = this.listCapabilities();
@@ -900,10 +909,10 @@ export class ConnectorManager {
         `capability_unavailable：没有 Connector 声明 ${request.capability}/${request.action}`,
       );
     }
-    const ready = declared.filter(({ connector }) => connector.enabled
+    const ready = declared.filter(({ connector, action }) => connector.enabled
       && connector.online
       && connector.readiness.stale !== true
-      && connector.readiness.outbound !== 'unavailable');
+      && (action.effect === 'read' || connector.readiness.outbound === 'ready'));
     if (ready.length === 0) {
       const reasons = declared.map(({ connector }) => (
         `${connector.id}=${!connector.enabled ? 'disabled'
@@ -930,7 +939,11 @@ export class ConnectorManager {
       target: request.target,
       payload: request.payload,
     });
-    return { connector: selected.connector.id, result };
+    return {
+      connector: selected.connector.id,
+      effect: selected.action.effect,
+      result,
+    };
   }
 
   async executeReadProbe(request: ConnectorReadProbeRequest): Promise<ConnectorReadProbeReceipt> {

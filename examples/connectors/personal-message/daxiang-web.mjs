@@ -185,6 +185,12 @@ function run(argv) {
   var input = JSON.parse(argv[0]);
   var app = Application('Google Chrome');
   if (!app.running()) throw new Error('Google Chrome is not running');
+  var chromeFrontmost = true;
+  try {
+    chromeFrontmost = Boolean(
+      Application('System Events').applicationProcesses.byName('Google Chrome').frontmost()
+    );
+  } catch (_) {}
   var windows = app.windows();
   var originCandidates = [];
   var markerCandidates = [];
@@ -198,14 +204,23 @@ function run(argv) {
       if (url !== input.origin && url.indexOf(input.origin + '/') !== 0) continue;
       var active = ti + 1 === activeIndex;
       var marker = String(execute(tab, 'window.name') || '');
-      var item = { window: wi + 1, tab: ti + 1, active: active, marker: marker, url: url };
+      var item = {
+        window: wi + 1,
+        tab: ti + 1,
+        active: active,
+        chromeFrontmost: chromeFrontmost,
+        marker: marker,
+        url: url
+      };
       originCandidates.push({ item: item, tab: tab });
       if (marker === input.marker) markerCandidates.push({ item: item, tab: tab });
     }
   }
   if (!markerCandidates.length && input.allowBind) {
     if (originCandidates.length !== 1) throw new Error('expected exactly one Daxiang origin tab for initial binding');
-    if (originCandidates[0].item.active) throw new Error('Daxiang dedicated tab is active');
+    if (originCandidates[0].item.active && originCandidates[0].item.chromeFrontmost) {
+      throw new Error('Daxiang dedicated tab is active while Chrome is frontmost');
+    }
     if (originCandidates[0].item.marker && originCandidates[0].item.marker !== input.marker) {
       throw new Error('Daxiang tab already has another marker');
     }
@@ -214,7 +229,9 @@ function run(argv) {
   }
   if (markerCandidates.length !== 1) throw new Error('Daxiang bound tab is missing or ambiguous');
   var target = markerCandidates[0];
-  if (target.item.active) throw new Error('Daxiang dedicated tab is active');
+  if (target.item.active && target.item.chromeFrontmost) {
+    throw new Error('Daxiang dedicated tab is active while Chrome is frontmost');
+  }
   if (input.script) {
     var value = execute(target.tab, input.script);
     return JSON.stringify({ tab: target.item, value: value === undefined ? null : value });
@@ -421,6 +438,13 @@ export class DaxiangWebAdapter {
         }
       }
       const now = new Date().toISOString();
+      const errorCategory = !readable
+        ? 'page_unreadable'
+        : !accountVerified
+          ? 'account_fingerprint_mismatch'
+          : !targetBound
+            ? configuredBindings.length === 0 ? 'owner_binding_missing' : 'target_candidate_missing'
+            : !pageAllowed ? 'page_fingerprint_mismatch' : undefined;
       this.lastHealth = {
         available: readable,
         accountVerified,
@@ -441,6 +465,7 @@ export class DaxiangWebAdapter {
         stableConversationId: inspect.pageShape?.stableSessionCount > 0,
         stableMessageId: inspect.pageShape?.stableMessageCount > 0,
         probedAt: now,
+        ...(errorCategory ? { errorCategory } : {}),
       };
       if (readable) await this.#bridgeCall('installObserver', {});
       await this.#recordDiagnostics({
@@ -519,6 +544,9 @@ export class DaxiangWebAdapter {
   async getContext(input) {
     this.#assertAccount(input.accountFingerprint);
     const target = this.#allowedConversation(input.sid, input.type);
+    if (!await this.#targetAvailable(target)) {
+      throw new Error('target_not_bound: Daxiang conversation is not uniquely available on the current page');
+    }
     const limit = integer(input.limit, 'limit', 1, 100, this.config.limits.contextMessages);
     const snapshot = await this.#readConversation(target, limit);
     const messages = snapshot.messages
@@ -546,6 +574,44 @@ export class DaxiangWebAdapter {
     };
   }
 
+  async listTargets() {
+    const health = await this.health();
+    if (!health.accountVerified) {
+      return {
+        channel: 'daxiang',
+        accountVerified: false,
+        coverage: 'unavailable',
+        configuredTargetCount: 0,
+        unavailableTargetCount: 0,
+        targets: [],
+        targetBindingStatus: 'target_not_bound',
+      };
+    }
+    const configured = [
+      { ...this.config.selfConversation, role: 'self' },
+      ...this.config.watch.conversations.map((target) => ({ ...target, role: 'watch' })),
+    ];
+    const targets = [];
+    for (const target of configured) {
+      if (!this.#bindingMatches(target) || !await this.#targetAvailable(target)) continue;
+      const { binding, ...visible } = target;
+      targets.push({
+        ...visible,
+        bound: true,
+        authorizationRevision: binding.authorizationRevision,
+      });
+    }
+    return {
+      channel: 'daxiang',
+      accountVerified: true,
+      coverage: health.coverage,
+      configuredTargetCount: configured.length,
+      unavailableTargetCount: configured.length - targets.length,
+      targets,
+      targetBindingStatus: targets.length === configured.length ? 'bound' : 'target_not_bound',
+    };
+  }
+
   async poll() {
     const health = await this.health();
     if (!this.config.watch.enabled || !health.accountVerified || health.inbound !== 'ready') {
@@ -555,6 +621,7 @@ export class DaxiangWebAdapter {
     const events = [];
     let stateChanged = false;
     for (const target of this.config.watch.conversations) {
+      if (!this.#bindingMatches(target) || !await this.#targetAvailable(target)) continue;
       const snapshot = await this.#readConversation(target, this.config.limits.contextMessages);
       const current = this.state.conversations[target.sid];
       if (!current?.initialized) {
@@ -627,49 +694,58 @@ export class DaxiangWebAdapter {
     }
     const target = this.#allowedConversation(input.sid, input.type);
     const text = boundedString(input.text, 'text', 4_000);
-    const context = await this.getContext({
-      accountFingerprint: input.accountFingerprint,
-      sid: target.sid,
-      type: target.type,
-      limit: 1,
-    });
-    if (context.latestFingerprint !== input.latestFingerprint) {
-      return this.#failure('会话最新消息已经变化');
-    }
-    const attemptId = randomUUID();
-    const selected = await this.#select(target);
-    if (!selected) return this.#failure('目标会话无法稳定选中');
-    const prepared = await this.#bridgeCall('prepareSend', {
-      attemptId,
-      sid: target.sid,
-      type: target.type,
-      text,
-    });
-    if (!prepared.prepared) return this.#failure(`发送准备失败：${prepared.reason || 'unknown'}`);
-    const committed = await this.#bridgeCall('commitSend', { attemptId });
-    if (!committed.dispatched) return this.#failure(`发送前校验失败：${committed.reason || 'unknown'}`);
-    const deadline = Date.now() + this.sendObservationTimeoutMs;
-    while (Date.now() < deadline) {
-      try {
-        const observed = await this.#bridgeCall('observeSend', { attemptId });
-        if (observed.status === 'observed') {
-          return {
-            status: 'observed',
-            route: 'browser',
-            deliveryConfirmed: false,
-            accountVerified: true,
-            targetVerified: true,
-            evidence: `new stable message id ${observed.message.mid} observed once`,
-          };
-        }
-        if (observed.status === 'failed') return this.#failure(observed.reason);
-        if (observed.status === 'uncertain') return this.#uncertain(observed.reason);
-      } catch (error) {
-        return this.#uncertain(errorCategory(error));
+    const original = await this.#selectedConversation();
+    const restore = original
+      && (original.sid !== target.sid || original.type !== target.type);
+    try {
+      const context = await this.getContext({
+        accountFingerprint: input.accountFingerprint,
+        sid: target.sid,
+        type: target.type,
+        limit: 1,
+      });
+      if (context.latestFingerprint !== input.latestFingerprint) {
+        return this.#failure('会话最新消息已经变化');
       }
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      const attemptId = randomUUID();
+      const selected = await this.#select(target);
+      if (!selected) return this.#failure('目标会话无法稳定选中');
+      const prepared = await this.#bridgeCall('prepareSend', {
+        attemptId,
+        sid: target.sid,
+        type: target.type,
+        text,
+      });
+      if (!prepared.prepared) return this.#failure(`发送准备失败：${prepared.reason || 'unknown'}`);
+      const committed = await this.#bridgeCall('commitSend', { attemptId });
+      if (!committed.dispatched) return this.#failure(`发送前校验失败：${committed.reason || 'unknown'}`);
+      const deadline = Date.now() + this.sendObservationTimeoutMs;
+      while (Date.now() < deadline) {
+        try {
+          const observed = await this.#bridgeCall('observeSend', { attemptId });
+          if (observed.status === 'observed') {
+            return {
+              status: 'observed',
+              route: 'browser',
+              deliveryConfirmed: false,
+              accountVerified: true,
+              targetVerified: true,
+              evidence: `new stable message id ${observed.message.mid} observed once`,
+            };
+          }
+          if (observed.status === 'failed') return this.#failure(observed.reason);
+          if (observed.status === 'uncertain') return this.#uncertain(observed.reason);
+        } catch (error) {
+          return this.#uncertain(errorCategory(error));
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      return this.#uncertain('post-click observation timed out');
+    } finally {
+      if (restore && !await this.#select(original)) {
+        throw new Error('uncertain: Daxiang original conversation could not be restored');
+      }
     }
-    return this.#uncertain('post-click observation timed out');
   }
 
   #failure(error) {
@@ -715,33 +791,68 @@ export class DaxiangWebAdapter {
   }
 
   async #readConversation(target, limit) {
-    const selection = await this.#select(target);
-    if (!selection) throw new Error('Daxiang conversation route did not stabilize');
-    const deadline = Date.now() + 10_000;
-    const settleAfter = selection.changed === true
-      ? Date.now() + CONVERSATION_SETTLE_MS
-      : 0;
-    let previousSignature;
-    while (Date.now() < deadline) {
-      const snapshot = await this.#bridgeCall('readCurrentConversation', {
-        sid: target.sid,
-        type: target.type,
-        limit,
-      });
-      if (snapshot.matched) {
-        const signature = JSON.stringify(snapshot.messages.map((message) => [
-          message.mid,
-          message.direction,
-          message.receipt,
-        ]));
-        if (Date.now() >= settleAfter && signature === previousSignature) return snapshot;
-        previousSignature = signature;
-      } else {
-        previousSignature = undefined;
+    const original = await this.#selectedConversation();
+    const restore = original
+      && (original.sid !== target.sid || original.type !== target.type);
+    try {
+      const selection = await this.#select(target);
+      if (!selection) throw new Error('Daxiang conversation route did not stabilize');
+      const deadline = Date.now() + 10_000;
+      const settleAfter = selection.changed === true
+        ? Date.now() + CONVERSATION_SETTLE_MS
+        : 0;
+      let previousSignature;
+      while (Date.now() < deadline) {
+        const snapshot = await this.#bridgeCall('readCurrentConversation', {
+          sid: target.sid,
+          type: target.type,
+          limit,
+        });
+        if (snapshot.matched) {
+          const signature = JSON.stringify(snapshot.messages.map((message) => [
+            message.mid,
+            message.direction,
+            message.receipt,
+          ]));
+          if (Date.now() >= settleAfter && signature === previousSignature) return snapshot;
+          previousSignature = signature;
+        } else {
+          previousSignature = undefined;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 150));
       }
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      throw new Error('Daxiang conversation read timed out');
+    } finally {
+      if (restore && !await this.#select(original)) {
+        throw new Error('Daxiang original conversation could not be restored');
+      }
     }
-    throw new Error('Daxiang conversation read timed out');
+  }
+
+  async #selectedConversation() {
+    const inspected = await this.#bridgeCall('inspect', {
+      selfSid: this.config.selfConversation.sid,
+    });
+    return inspected.selected
+      && /^\d+$/.test(String(inspected.selected.sid))
+      && (inspected.selected.type === 'chat' || inspected.selected.type === 'groupchat')
+      ? { sid: String(inspected.selected.sid), type: inspected.selected.type }
+      : undefined;
+  }
+
+  #bindingMatches(target) {
+    return target.binding?.selectedBy === 'owner'
+      && target.binding.accountFingerprint === this.lastHealth?.accountFingerprint;
+  }
+
+  async #targetAvailable(target) {
+    const candidate = await this.#bridgeCall('targetCandidate', {
+      sid: target.sid,
+      type: target.type,
+    });
+    return candidate.matched === true
+      && candidate.sid === target.sid
+      && candidate.type === target.type;
   }
 
   async #select(target) {

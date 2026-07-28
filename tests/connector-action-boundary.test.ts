@@ -143,7 +143,7 @@ test('model-facing host tools expose only inspect and capability invocation with
           : (request.payload as { mode?: string }).mode === 'large'
             ? { data: 'x'.repeat(40_000) }
             : 'plain-result';
-      return { connector: 'mail', result };
+      return { connector: 'mail', effect: 'write' as const, result };
     },
   } as unknown as ConnectorManager;
   const observed: Array<{ request: ConnectorActionRequest; outcome: string }> = [];
@@ -196,6 +196,36 @@ test('model-facing host tools expose only inspect and capability invocation with
   assert.ok(Number(large.originalBytes) > 32_000);
   assert.equal(requests.length, 4);
   assert.equal(observed.length, 4);
+});
+
+test('read capability receipts are confirmed from the declared effect', async () => {
+  const capabilities = [capability('mail', [{
+    name: 'list',
+    description: 'list inbox',
+    capability: 'mail.list.read',
+    effect: 'read',
+    routeOwner: 'mail',
+  }])];
+  const manager = {
+    configPath: '/fixture/connectors.json',
+    listCapabilities: () => capabilities,
+    executeCapability: async () => ({
+      connector: 'mail',
+      effect: 'read' as const,
+      result: { messages: ['bounded'] },
+    }),
+  } as unknown as ConnectorManager;
+
+  const receipt = await invoke(createConnectorHostTools(manager), 'invoke_capability', {
+    capability: 'mail.list.read',
+    action: 'list',
+    target: 'owner',
+    payloadJson: '{}',
+  }) as Record<string, unknown>;
+
+  assert.equal(receipt.effect, 'read');
+  assert.equal(receipt.outcome, 'confirmed');
+  assert.deepEqual(receipt.messages, ['bounded']);
 });
 
 test('task connector tools proxy only inspect and action with the exact signal and payload', async () => {
