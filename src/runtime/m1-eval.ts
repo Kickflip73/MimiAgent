@@ -7,6 +7,25 @@ import { withExclusiveFileLock } from '../core/state-file.js';
 const revisionSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,79}$/);
 const identifierSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,119}$/);
 
+export function isM1CanaryHostIdle(value: unknown): boolean {
+  const root = value as {
+    daemon?: { status?: {
+      activeEventCount?: number;
+      activeTaskCount?: number;
+      activeHostMutations?: number;
+      tasks?: { running?: number };
+      outbox?: { pending?: number; sending?: number };
+    } };
+  };
+  const status = root.daemon?.status;
+  return status?.activeEventCount === 0
+    && status.activeTaskCount === 0
+    && status.activeHostMutations === 0
+    && status.tasks?.running === 0
+    && status.outbox?.pending === 0
+    && status.outbox.sending === 0;
+}
+
 export const m1EvalEvidenceKindSchema = z.enum([
   'fixture', 'readiness', 'live_action', 'soak',
 ]);

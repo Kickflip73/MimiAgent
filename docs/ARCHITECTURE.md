@@ -593,15 +593,17 @@ run 文件通过排他锁和原子替换写入，冲突覆盖、损坏输入、�
 `npm run eval:m1` 会按 manifest 中的公共边界测试文件执行真实 deterministic suite，
 然后按 evidence kind × App × action family × execution path 报告 requested coverage
 与 eligible execution success；suite 失败不会被 expected blocked/failed 场景掩盖。
-`npm run eval:m1:canary` 先复核 Doctor、Event、Task、Outbox 和 host mutation idle，
-再通过 control-auth Unix Socket 的固定 `probe.read` profile 执行最多 20 个 Browser、
-Shortcuts、Computer、Screen 只读动作。Connector 由同一 ConnectorManager 复核
-enabled/online/catalog/effect/route owner；已明确 unavailable 的通道直接拒绝，未上报或
-已过期的 readiness 只能在该注册 `effect=read` 动作真实成功后建立或刷新 15 分钟租约，
-失败、write、unknown effect 和 route drift 都不能借 probe 晋级 ready。Computer 复用同一
-ComputerManager、CapabilityResolver 和 Tool policy，并执行 allowlist、控制面、
-frontmost 和前后目标漂移检查。标签、URL、快捷指令名、OCR 正文和临时图像不会进入
-IPC evidence；只有正式 Manager 返回动作结果的 `live_action` 才计入 100 次。readiness、
-direct worker、blocked/skipped 和 uncertain 均不能晋级。该 canary 不是 24/72h soak。
+`npm run eval:m1:canary` 先读取 Doctor 的 Daemon status，并用 Event、Task、Outbox 和
+host mutation 判断整机是否存在执行冲突；无关 Connector 的 readiness warning 不伪装成
+“主机忙”，也不会阻断其他能力族。随后通过 control-auth Unix Socket 的固定
+`probe.read` profile 执行最多 20 个 Browser、Shortcuts、Computer、Screen 只读动作。
+Connector 由同一 ConnectorManager 独立复核 enabled/online/catalog/effect/route owner；
+已明确 unavailable 的目标通道直接拒绝，未上报或已过期的 readiness 只能在该注册
+`effect=read` 动作真实成功后建立或刷新 15 分钟租约，失败、write、unknown effect 和
+route drift 都不能借 probe 晋级 ready。Computer 复用同一 ComputerManager、
+CapabilityResolver 和 Tool policy，并执行 allowlist、控制面、frontmost 和前后目标漂移
+检查。标签、URL、快捷指令名、OCR 正文和临时图像不会进入 IPC evidence；只有正式
+Manager 返回动作结果的 `live_action` 才计入 100 次。readiness、direct worker、
+blocked/skipped 和 uncertain 均不能晋级。该 canary 不是 24/72h soak。
 默认输出使用不覆盖的时间戳文件名；`run-m1-eval.ts report <run...>` 只聚合同一 dataset
 revision 的多次 run，因此分母可以持续累计而不会混入不同口径。

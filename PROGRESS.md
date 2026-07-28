@@ -1,4 +1,38 @@
 # Progress
+
+## 2026-07-28 M1 current closeout
+
+1. 正式实机门槛已达到：8 个 canary run 共 160 requested、103
+   eligible/executed/success/qualifying、57 blocked、0 failed/uncertain，eligible
+   execution success=100%，S0/S1/S2/S3=0。blocked 均未执行动作，保留在公开请求分母，
+   不冒充成功。
+2. 分层结果：Browser `29/29`、Computer `28/28`、Screen `22/22`、Shortcuts
+   `24/24`，四个 App × 动作族 × 正式路径均为 100% eligible execution success。
+3. Screen/Shortcuts 旧配置未迁移的根因是 live config 指向内容相同但路径不同的 managed
+   script 副本；`673b59f` 以同名、普通文件、2MB 上限和 SHA-256 相等为门禁同步稳定
+   action metadata，不改变 owner 的执行路径。
+4. 无启动 status 的只读 Connector 不再陷入 readiness 自举死锁：只有已注册
+   `effect=read` 动作真实成功后才建立 15 分钟 readiness 租约；显式 unavailable、
+   write/unknown、route drift 和失败仍 fail closed。
+5. M1 canary 的主机冲突门禁只判断 Event/Task/Outbox/host mutation；无关 Connector
+   warning 不再误裁剪其他能力，目标能力仍由各自正式 Manager 独立校验。
+6. CuaDriver 曾出现“进程和 socket 存在但客户端不响应”的假在线，后台精确重启后
+   Accessibility/Screen Recording 均为 true，随后两轮各 `20/20` 全部成功。
+7. 发布级 `npm run ci` 通过：644/644，skip/todo=0；coverage line 85.73%、
+   branch 76.57%、function 83.11%，Build 与 package smoke 通过。
+8. 运行态为 `0.12.0+2dafa9f6ab77`；Browser、Computer、Screen、Shortcuts 和其余
+   已就绪本机通道保持正式门禁。`personal-daxiang` 因 owner target 未绑定诚实标记
+   unavailable，不影响其他能力族验收。
+9. 只读 24h soak 以 run `21559ddf-0bd3-4489-8772-3850c59baf19`
+   (`2026-07-28T07:46:52.864Z`～`07:48:09.171Z`, 20/20) 为首样本，计划在
+   `2026-07-29T07:46:52.864Z` 后验收。heartbeat `m1-24h` 每 4 小时只在运行态
+   idle 时追加正式只读样本；忙时只记录 blocked，不抢占。
+10. 部署前备份位于 `/tmp/mimi-backup-673b59f-20260728`，SQLite integrity、
+    文件清单和摘要已校验；回滚仍必须在 Event/Task/Outbox/host mutation 全部 idle
+    时执行。
+
+## Previous checkpoint
+
 1. 目标已落地：只有正式注册边界返回动作结果的 `live_action` 可计入 100 次；direct worker/readiness/blocked/uncertain 均不能晋级。
 2. 证据 v2 已实现 `fixture|readiness|live_action|soak`、完整分母、分层报告、v1 明确迁移错误、原子并发/重复/uncertain 防重试。
 3. 反向验证：证据测试先 0/9 红、后 9/9 绿；正式 probe 测试先 23/26 红、后 26/26 绿；最新聚焦 47/47。

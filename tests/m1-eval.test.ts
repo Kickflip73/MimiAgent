@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   m1EvalManifestSchema,
   m1EvalRecordSchema,
+  isM1CanaryHostIdle,
   readM1EvalManifest,
   readM1EvalRun,
   reportM1Eval,
@@ -16,6 +17,32 @@ import {
   type M1EvalEvidence,
   type M1EvalRun,
 } from '../src/runtime/m1-eval.js';
+
+test('M1 canary host-idle gate ignores unrelated connector readiness warnings', () => {
+  const idleStatus = {
+    ready: false,
+    daemon: {
+      status: {
+        activeEventCount: 0,
+        activeTaskCount: 0,
+        activeHostMutations: 0,
+        tasks: { running: 0 },
+        outbox: { pending: 0, sending: 0 },
+      },
+    },
+  };
+  assert.equal(isM1CanaryHostIdle(idleStatus), true);
+  assert.equal(isM1CanaryHostIdle({
+    ...idleStatus,
+    daemon: {
+      status: {
+        ...idleStatus.daemon.status,
+        activeTaskCount: 1,
+        tasks: { running: 1 },
+      },
+    },
+  }), false);
+});
 
 function fixtureEvidence() {
   return {

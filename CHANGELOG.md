@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- keep the M1 canary host-idle gate independent from unrelated Connector readiness
+  warnings; active Event, Task, Outbox, and host mutations still stop the whole run,
+  while each fixed probe continues to enforce its own registered capability and
+  readiness boundary
 - let an authenticated fixed-profile read probe establish or refresh a 15-minute
   Connector readiness lease only after the registered `effect=read` action succeeds;
   keep declared unavailable, write, unknown-effect, route-drift, and failed actions

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import {
+  isM1CanaryHostIdle,
   m1EvalEvidenceSchema,
   m1EvalManifestSchema,
   reportM1Eval,
@@ -55,27 +56,6 @@ async function commandJson(command: string, args: string[]): Promise<unknown> {
     throw error;
   }
   return JSON.parse(output) as unknown;
-}
-
-function idleDoctor(value: unknown): boolean {
-  const root = value as {
-    ready?: boolean;
-    daemon?: { status?: {
-      activeEventCount?: number;
-      activeTaskCount?: number;
-      activeHostMutations?: number;
-      tasks?: { running?: number };
-      outbox?: { pending?: number; sending?: number };
-    } };
-  };
-  const status = root.daemon?.status;
-  return root.ready === true
-    && status?.activeEventCount === 0
-    && status.activeTaskCount === 0
-    && status.activeHostMutations === 0
-    && status.tasks?.running === 0
-    && status.outbox?.pending === 0
-    && status.outbox.sending === 0;
 }
 
 const profiles = {
@@ -210,7 +190,7 @@ async function main(): Promise<void> {
     scenarios,
   });
   const doctor = await commandJson('mimi', ['daemon', 'doctor']);
-  let stopReason = idleDoctor(doctor) ? undefined : 'daemon-not-idle';
+  let stopReason = isM1CanaryHostIdle(doctor) ? undefined : 'daemon-not-idle';
   const run = await runM1Eval(manifest, {
     buildIdentity: argument('--build', 'working-tree'),
     provider: 'none',
