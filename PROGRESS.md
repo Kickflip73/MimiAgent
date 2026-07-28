@@ -1,5 +1,18 @@
 # Progress
 
+## 2026-07-28 M1 heartbeat blocked by runtime drift
+
+1. `2026-07-28T12:22:34.171Z` heartbeat 观察到 Daemon 已从目标构建
+   `0.12.0+9bf15be88f93` 变为 `0.12.0+316eb41416db`，并于
+   `2026-07-28T12:07:07.169Z` 重新启动；因此 T0 建立的同构建连续 24h 窗口已中断。
+2. 观察时还有 1 个 active Event（Task/Outbox/host mutation 均无活动），不满足
+   idle 门禁。本轮没有执行只读 canary，没有重启、抢占、写动作、发送、前台激活
+   或权限变更，也没有把 blocked 计为成功。
+3. 工作区同时存在一组未提交的运行时开发改动，本 heartbeat 未修改或提交这些改动。
+   只有这些改动形成可追溯提交、通过发布验证并部署为新的冻结构建后，才能重新建立
+   M1 T0；原 run `ac47a076-956d-469d-b5b7-4a9036cf7947` 仍保留为历史成功证据，
+   但不再满足最终构建连续 24h 的退出条件。
+
 ## 2026-07-28 M1 final runtime soak after owner-sensitive fix
 
 1. owner 当前 Run 临时敏感值修复已合入并推送到完整集成分支
