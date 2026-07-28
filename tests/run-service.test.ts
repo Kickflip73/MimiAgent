@@ -282,6 +282,13 @@ test('production backup route configuration is exact and requires its own creden
     id: 'openai:default',
     provider: 'openai',
   });
+  assert.deepEqual(providerBackupRouteFromEnvironment('openai-compatible', {
+    MIMI_BACKUP_PROVIDER: 'openai',
+    OPENAI_API_KEY: 'fixture-openai-key',
+  }), {
+    id: 'openai:default',
+    provider: 'openai',
+  });
 });
 
 test('shared run service preserves a terminal signal when the SDK throws a generic abort error', async () => {

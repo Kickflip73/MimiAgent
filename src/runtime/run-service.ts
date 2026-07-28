@@ -1,4 +1,5 @@
 import type { AgentInputItem, RunStreamEvent } from '@openai/agents';
+import type { ModelProvider } from '../config.js';
 import type { RuntimeEffect } from './control.js';
 import type { RuntimeEvent } from './hooks.js';
 import type {
@@ -46,7 +47,7 @@ export interface ProviderBackupRoute {
 }
 
 export function providerBackupRouteFromEnvironment(
-  primaryProvider: 'openai' | 'deepseek',
+  primaryProvider: ModelProvider,
   environment: NodeJS.ProcessEnv = process.env,
 ): ProviderBackupRoute | undefined {
   const value = environment.MIMI_BACKUP_PROVIDER?.trim();
