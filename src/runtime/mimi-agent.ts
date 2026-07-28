@@ -822,6 +822,9 @@ export class MimiAgent {
           exactTarget: true,
           lowRisk: true,
           reversible: false,
+          boundedLocal: runComputerAccess === 'background'
+            || runComputerAccess === 'foreground'
+            || runComputerAccess === 'admin',
         },
         resolveActionAuthorization: run.options?.resolveActionAuthorization,
         authorizeTool: async (toolName, argumentsJson) => {

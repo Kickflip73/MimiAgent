@@ -239,6 +239,20 @@ test('guarded owner fast path and one-time authorization stay exact and single-u
     lowRisk: true,
     reversible: false,
   }).allowed, false);
+  assert.deepEqual(evaluateActionAuthorization(intent, {
+    ownerAuthenticated: true,
+    exactTarget: true,
+    lowRisk: false,
+    reversible: false,
+    boundedLocal: true,
+  }), { allowed: true, source: 'guarded-owner-fast-path' });
+  assert.equal(evaluateActionAuthorization(intent, {
+    ownerAuthenticated: false,
+    exactTarget: true,
+    lowRisk: false,
+    reversible: false,
+    boundedLocal: true,
+  }).allowed, false);
 
   const authorization = {
     schemaVersion: 1 as const,

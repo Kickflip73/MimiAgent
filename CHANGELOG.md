@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- allow authenticated owner Runs with explicit background Computer capability to execute
+  Observation-bound background UI actions through ActionIntent without an unreachable
+  per-gesture approval; keep runtime target checks inside ComputerManager and external,
+  foreground/admin, URL launch, and ungranted Computer actions fail-closed
 - upgrade M1 Jarvis Eval to provenance-safe v2 evidence layers and explicit
   requested/eligible/executed denominators; reject v1 live credit, duplicate/conflicting
   runs, forged readiness-as-live evidence, and uncertain retry; replace direct Connector

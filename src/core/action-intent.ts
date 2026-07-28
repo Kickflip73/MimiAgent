@@ -61,6 +61,7 @@ export interface GuardedActionContext {
   exactTarget: boolean;
   lowRisk: boolean;
   reversible: boolean;
+  boundedLocal?: boolean;
 }
 
 export type ActionAuthorizationDecision =
@@ -96,7 +97,9 @@ export function evaluateActionAuthorization(
   now = new Date(),
 ): ActionAuthorizationDecision {
   const intent = actionIntentSchema.parse(intentInput);
-  if (context.ownerAuthenticated && context.exactTarget && context.lowRisk && context.reversible) {
+  const guardedReversible = context.lowRisk && context.reversible;
+  if (context.ownerAuthenticated && context.exactTarget
+    && (guardedReversible || context.boundedLocal === true)) {
     return { allowed: true, source: 'guarded-owner-fast-path' };
   }
   if (!authorizationInput) return { allowed: false, reason: '动作不满足 guarded owner 快速通道且缺少一次性授权' };

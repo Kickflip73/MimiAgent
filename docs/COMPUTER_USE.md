@@ -554,6 +554,13 @@ computerApps?: string[];                                                // optio
 - 本地交互 Session 可以在动作发生前签发一次性 approval grant；grant 绑定 runId、动作类型、目标 pid/window、最长持续时间和参数摘要，不能被模型复制到其他动作。
 - `get_desktop_state`、真实鼠标和 foreground delivery 至少需要 `foreground`；`kill_app`、录制、回放、Driver 配置和主动权限弹窗需要 `admin`。
 
+`background` 是当前 Run 的结构化能力授权，不是只读提示。已认证 owner 的
+Observation-bound background UI 动作不再为每个 click/type/scroll 重复要求一个系统中
+无法取得的一次性授权。Observation 新鲜度、精确 pid/window、应用 allowlist/route
+owner、用户活动保护和后台投递由 ComputerManager 在执行时自动校验，不要求模型理解或
+补充额外字段。该通道不读取元素标签或自然语言来判断场景；外部来源和前台/管理动作不
+继承它。
+
 ### 11.3 高影响动作
 
 Computer Use 不能仅凭坐标可靠判断“这个按钮是否付款/删除/发送”。因此：
@@ -605,7 +612,8 @@ interface LedgerAwareTool {
 
 Backend 响应也必须经过固定结果映射；即使驱动回显输入参数，`computer_act` 输出也不能包含输入明文。
 
-`observationId` 只作为 `targetEvidenceRef`：它证明目标窗口和元素仍新鲜，不提供执行授权。
+`observationId` 作为 `targetEvidenceRef`；owner Run 的结构化 `background` 能力负责
+授权，ComputerManager 负责在执行时验证该 Observation 仍新鲜且目标未漂移。
 高风险动作若携带 `authorizationId`，Host 必须把它解析成与当前 ActionIntent 精确绑定、
 未过期且未消费的一次性授权；无法解析时在 Backend 调用前失败关闭。精确 bundleId、
 不携带 URL 的低风险 `launch_app` 仍保留已认证 owner 的 guarded 快速通道。

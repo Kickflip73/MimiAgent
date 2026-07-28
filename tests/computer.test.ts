@@ -376,6 +376,43 @@ test('production ledger wiring keeps exact low-risk owner launch on the guarded 
   assert.equal(backend.actions.length, 1);
 });
 
+test('production ledger wiring permits an authenticated owner bounded background UI action', async () => {
+  const { backend, manager, authority } = await fixture({
+    allowedApps: [target.bundleId],
+  });
+  const observed = await observeWindow(manager, authority);
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-owner-bounded-ui-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const act = createComputerTools(manager, () => authority).find((item) => item.name === 'computer_act')!;
+  const [wrapped] = withExecutionLedger([act], ledger, () => ({
+    sessionId: 'owner',
+    runId: authority.runId,
+    guardedActionContext: {
+      ownerAuthenticated: true,
+      exactTarget: true,
+      lowRisk: true,
+      reversible: false,
+      boundedLocal: true,
+    },
+  }));
+  assert.ok(wrapped && 'invoke' in wrapped);
+
+  const result = await wrapped.invoke(
+    new RunContext({}),
+    JSON.stringify({
+      observationId: observed.observationId,
+      action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
+    }),
+    { toolCall: { callId: 'bounded-background-click' } } as never,
+  ) as Record<string, unknown>;
+
+  assert.equal(result.status, 'applied');
+  assert.equal(result.delivery, 'background');
+  assert.equal(backend.actions.length, 1);
+  assert.equal(backend.actions[0]?.target?.bundleId, target.bundleId);
+  assert.equal(backend.actions[0]?.element?.index, 1);
+});
+
 test('a fresh Computer observation is target evidence, not high-risk authorization', async () => {
   const { backend, manager, authority } = await fixture();
   const observed = await observeWindow(manager, authority);

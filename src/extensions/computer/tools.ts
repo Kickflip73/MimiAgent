@@ -111,6 +111,7 @@ export function createComputerTools(
         exactTarget: boolean;
         lowRisk: boolean;
         reversible: boolean;
+        boundedLocal?: boolean;
       };
       authorizationId?: string;
       targetEvidenceRef?: string;
@@ -121,9 +122,9 @@ export function createComputerTools(
   act[TOOL_LEDGER_ARGUMENTS] = computerLedgerArguments;
   act[TOOL_ACTION_INTENT] = (rawInput) => {
     const input = JSON.parse(rawInput) as Record<string, unknown>;
-    const action = input.action && typeof input.action === 'object' && !Array.isArray(input.action)
-      ? input.action as Record<string, unknown>
-      : {};
+    const { authorizationId: _, ...managerInput } = input;
+    const parsed = computerActInputSchema.parse(managerInput);
+    const action = parsed.action as unknown as Record<string, unknown>;
     const observationId = typeof input.observationId === 'string' ? input.observationId : undefined;
     const authorizationId = typeof input.authorizationId === 'string' ? input.authorizationId : undefined;
     const actionType = typeof action.type === 'string' ? action.type : 'unknown';
@@ -134,13 +135,22 @@ export function createComputerTools(
     const target = action.target && typeof action.target === 'object'
       ? JSON.stringify(action.target)
       : observationId ?? (bundleId ? `bundle:${bundleId}` : actionType);
+    const boundedBackground = 'observationId' in parsed
+      && (!('dispatch' in parsed.action) || parsed.action.dispatch === 'background');
     return {
       actionFamily: `computer.${actionType}`,
       targetRef: target,
       payload: computerLedgerArguments(rawInput),
       selectedRoute: 'computer-manager',
       ...(observationId ? { targetEvidenceRef: observationId } : {}),
-      ...(bundleId && urls.length === 0 ? {
+      ...(boundedBackground ? {
+        guarded: {
+          exactTarget: true,
+          lowRisk: false,
+          reversible: false,
+          boundedLocal: true,
+        },
+      } : bundleId && urls.length === 0 ? {
         guarded: {
           exactTarget: true,
           lowRisk: true,

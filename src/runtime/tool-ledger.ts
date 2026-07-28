@@ -34,6 +34,7 @@ interface RunIdentity {
     exactTarget: boolean;
     lowRisk: boolean;
     reversible: boolean;
+    boundedLocal?: boolean;
   };
   resolveActionAuthorization?: (
     intent: ActionIntent,
@@ -201,6 +202,8 @@ export function withExecutionLedger(
               ? {
                   ownerAuthenticated: run.guardedActionContext?.ownerAuthenticated === true,
                   ...action.guarded,
+                  boundedLocal: action.guarded.boundedLocal === true
+                    && run.guardedActionContext?.boundedLocal === true,
                 }
               : run.guardedActionContext ?? {
                   ownerAuthenticated: false,

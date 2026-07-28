@@ -533,11 +533,13 @@ Tool/Provider/route 只执行一次，不同 Event 即使目标和载荷相同�
 - `started/uncertain` 永久禁止自动换路重放。
 - 只有 `failed_safe` 可以在新 route 重新尝试。
 - 已认证 owner 的精确、低风险、可逆动作在 `guarded` 下保留快速通道。
-- guarded 属性由具体 Tool 的 Intent 元数据声明，不能由 Run 全局猜测；Computer 目前
-  只对精确 bundleId 且不携带 URL 的 `launch_app` 开放该通道。外部来源、URL scheme、
-  kill/handoff/权限和其他高风险动作仍要求有效一次性授权或失败关闭。Computer 的
-  `targetEvidenceRef` 只证明 Observation 对目标仍新鲜，与 `authorizationId` 分字段保存；
-  Observation 本身永远不是授权。
+- guarded 属性由具体 Tool 的 Intent 元数据声明，不能由 Run 全局猜测。Computer 的
+  普通后台 UI 动作只要求已认证 owner、当前 Run 已有 `background` 或更高能力、动作声明
+  background；三者交集以 `boundedLocal` 进入快速通道，不读取按钮标题、应用文案或用户
+  关键词。Observation 新鲜度、窗口漂移、应用 route/allowlist 和前台保护仍由
+  ComputerManager 在真正执行前自动校验，不作为第二套授权。精确 bundleId 且不携带 URL
+  的 `launch_app` 继续走低风险可逆通道。外部来源、URL scheme、foreground/admin、
+  kill/handoff/权限和其他高风险动作仍要求有效一次性授权或失败关闭。
 - personal message 的 `contextToken` 只授权实际 send Tool，读取上下文不误占 Intent；
   它与 Computer 写动作都在原 Tool ledger 外层进入同一 Intent fence；传统
   call receipt 仍保留为 Completion evidence。

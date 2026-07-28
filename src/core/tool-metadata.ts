@@ -10,6 +10,7 @@ export interface ToolActionIntentMetadata {
     exactTarget: boolean;
     lowRisk: boolean;
     reversible: boolean;
+    boundedLocal?: boolean;
   };
   authorizationId?: string;
   authorizationExpiresAt?: string;

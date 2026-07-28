@@ -9,3 +9,17 @@
 8. 安装门禁连续 3 轮均为 activeEvent=1、running=1；按 Goal 停止安装/重启/实机，不启用 Screen/Shortcuts，也不触发 TCC 或前台操作。
 9. 本轮 canary 公开 20 requested、20 blocked、eligible/executed/success=0、coverage=0、qualifying=0、S0/S1=0；距 100 次仍差 100，95% 无可计算分母，24h soak 未开始。
 10. 可复跑：运行态 idle 后先备份/校验，再安装目标 build，执行 `npm run eval:m1:canary -- --output <file> --build <build>`；旧 20 次仍按 0。
+
+## 2026-07-28 Computer background ActionIntent Badcase
+
+- 根因确认：M0 提交 `cd99619` 接入 ActionIntent 后，只给无 URL 的精确
+  `launch_app` 声明 guarded 快速通道；正式 Ledger 下所有 Observation-bound
+  click/type/scroll 即使 owner Run 已持有 `background` 能力也会在 Manager 前被拒绝。
+- 修复最终收敛为轻量结构化授权：owner provenance、Run 的 background-or-higher
+  grant、动作 background 三者同时成立即可进入快速通道；Observation 新鲜度、精确
+  窗口、应用 route/allowlist 和前台保护由既有 ComputerManager 在执行时自动校验，
+  不形成第二套模型授权条件，也不读取 Obsidian、按钮标题或自然语言关键词。
+- 回归测试完整复现正式 `computer_observe → withExecutionLedger → computer_act`：
+  修复前 0/1，错误为“缺少一次性授权”；修复后 Computer+Ledger 聚焦 55/55。
+- 最终 `npm run ci` 通过：641/641，line 85.60%、branch 76.52%、
+  function 83.01%，build 与 package smoke 均通过。
