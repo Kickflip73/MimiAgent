@@ -879,11 +879,19 @@ export async function initializeMimi(
 function providerConfigured(config: AppConfig): boolean {
   return config.provider === 'deepseek'
     ? Boolean(process.env.DEEPSEEK_API_KEY)
-    : Boolean(process.env.OPENAI_API_KEY);
+    : config.provider === 'openai-compatible'
+      ? Boolean(process.env.MIMI_PROVIDER_API_KEY)
+      : Boolean(process.env.OPENAI_API_KEY);
 }
 
-function providerKeyName(config: AppConfig): 'OPENAI_API_KEY' | 'DEEPSEEK_API_KEY' {
-  return config.provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'OPENAI_API_KEY';
+function providerKeyName(
+  config: AppConfig,
+): 'OPENAI_API_KEY' | 'DEEPSEEK_API_KEY' | 'MIMI_PROVIDER_API_KEY' {
+  return config.provider === 'deepseek'
+    ? 'DEEPSEEK_API_KEY'
+    : config.provider === 'openai-compatible'
+      ? 'MIMI_PROVIDER_API_KEY'
+      : 'OPENAI_API_KEY';
 }
 
 export async function launchAgentProviderConfigured(
@@ -1058,7 +1066,7 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
   }
   const nextActions: string[] = [];
   if (!connectorConfig) nextActions.push('运行 mimi 完成自动初始化');
-  if (!configured) nextActions.push(`在 ~/.mimi-agent/.env（或旧目录）配置 ${config.provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'OPENAI_API_KEY'}`);
+  if (!configured) nextActions.push(`在 ~/.mimi-agent/.env（或旧目录）配置 ${providerKeyName(config)}`);
   if (launchAgentInstalled && !persistentProviderKey && configured) {
     nextActions.push(`把 ${providerKeyName(config)} 写入 ${resolveEnvironmentFile()} 后重新运行 mimi`);
   }
@@ -1168,6 +1176,18 @@ export function daemonLaunchEnvironment(config: AppConfig): Record<string, strin
   if (config.maxTurns !== null) environment.MIMI_MAX_TURNS = String(config.maxTurns);
   if (config.contextWindow !== undefined) environment.MIMI_CONTEXT_WINDOW = String(config.contextWindow);
   if (config.outputReserve !== undefined) environment.MIMI_OUTPUT_TOKEN_RESERVE = String(config.outputReserve);
+  if (config.provider === 'openai-compatible') {
+    if (config.providerBaseUrl !== undefined) environment.MIMI_PROVIDER_BASE_URL = config.providerBaseUrl;
+    if (config.defaultModel !== undefined) environment.MIMI_MODEL = config.defaultModel;
+    if (config.availableModels?.length) environment.MIMI_MODELS = config.availableModels.join(',');
+  } else if (config.provider === 'deepseek') {
+    if (config.providerBaseUrl !== undefined) environment.DEEPSEEK_BASE_URL = config.providerBaseUrl;
+    if (config.defaultModel !== undefined) environment.DEEPSEEK_MODEL = config.defaultModel;
+    if (config.availableModels?.length) environment.DEEPSEEK_MODELS = config.availableModels.join(',');
+  } else {
+    if (config.defaultModel !== undefined) environment.OPENAI_MODEL = config.defaultModel;
+    if (config.availableModels?.length) environment.OPENAI_MODELS = config.availableModels.join(',');
+  }
   if (config.computer) {
     environment.MIMI_COMPUTER_BACKEND = config.computer.backend;
     environment.MIMI_CUA_DRIVER_COMMAND = config.computer.driverCommand;

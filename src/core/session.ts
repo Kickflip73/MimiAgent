@@ -85,7 +85,7 @@ export interface ContextArchive {
 
 export interface SessionPreferences {
   mode?: string;
-  provider?: 'openai' | 'deepseek';
+  provider?: 'openai' | 'deepseek' | 'openai-compatible';
   model?: string;
   outputLevel?: string;
   securityProfile?: 'safe' | 'workstation' | 'full-owner';
@@ -159,7 +159,7 @@ const sessionFileSchema = z.object({
   }).optional(),
   preferences: z.object({
     mode: z.string().optional(),
-    provider: z.enum(['openai', 'deepseek']).optional(),
+    provider: z.enum(['openai', 'deepseek', 'openai-compatible']).optional(),
     model: z.string().optional(),
     outputLevel: z.string().optional(),
     securityProfile: z.enum(['safe', 'workstation', 'full-owner']).optional(),

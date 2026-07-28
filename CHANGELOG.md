@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- add a generic `openai-compatible` model Provider with validated custom endpoint,
+  API key and model configuration, including Session persistence, daemon Task
+  credential isolation, model switching, offline contracts and setup guidance
 - keep credentials pasted by an authenticated local owner out of Event, Task,
   Session, Trace, Memory, and ledger persistence while exposing them once to the
   current Run as bounded ephemeral Shell environment variables; expire them on

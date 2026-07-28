@@ -17,6 +17,10 @@ const providerCredentialSchema = z.discriminatedUnion('provider', [
     provider: z.literal('deepseek'),
     apiKey: z.string().trim().min(1).max(16_384),
   }).strict(),
+  z.object({
+    provider: z.literal('openai-compatible'),
+    apiKey: z.string().trim().min(1).max(16_384),
+  }).strict(),
 ]);
 
 const backupProviderSchema = z.object({
@@ -44,8 +48,12 @@ const taskMcpEnvironmentSchema = z.record(
 
 export function taskProviderEnvironmentName(
   provider: TaskProviderCredential['provider'],
-): 'OPENAI_API_KEY' | 'DEEPSEEK_API_KEY' {
-  return provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'OPENAI_API_KEY';
+): 'OPENAI_API_KEY' | 'DEEPSEEK_API_KEY' | 'MIMI_PROVIDER_API_KEY' {
+  return provider === 'deepseek'
+    ? 'DEEPSEEK_API_KEY'
+    : provider === 'openai-compatible'
+      ? 'MIMI_PROVIDER_API_KEY'
+      : 'OPENAI_API_KEY';
 }
 
 export async function withTaskProviderCredential<T>(
@@ -65,7 +73,10 @@ export async function withTaskProviderCredential<T>(
 }
 
 const appConfigSchema = z.object({
-  provider: z.enum(['openai', 'deepseek']),
+  provider: z.enum(['openai', 'deepseek', 'openai-compatible']),
+  providerBaseUrl: z.string().url().optional(),
+  defaultModel: z.string().min(1).optional(),
+  availableModels: z.array(z.string().min(1)).optional(),
   workspaceRoot: z.string().min(1),
   dataRoot: z.string().min(1),
   daemonDataRoot: z.string().min(1).optional(),
@@ -81,7 +92,23 @@ const appConfigSchema = z.object({
   permissionMode: z.enum(['workspace', 'read-only', 'trusted']).optional(),
   securityProfile: z.enum(['safe', 'workstation', 'full-owner']).optional(),
   trustedWorkspaceMcp: z.string().min(1).optional(),
-}).strict();
+}).strict().superRefine((config, context) => {
+  if (config.provider !== 'openai-compatible') return;
+  if (!config.providerBaseUrl) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'OpenAI-compatible Provider 必须配置 providerBaseUrl',
+      path: ['providerBaseUrl'],
+    });
+  }
+  if (!config.defaultModel) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'OpenAI-compatible Provider 必须配置 defaultModel',
+      path: ['defaultModel'],
+    });
+  }
+});
 
 export function taskWorkerConfig(config: AppConfig): z.infer<typeof appConfigSchema> {
   const workerConfig = { ...config };

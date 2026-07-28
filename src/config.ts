@@ -18,6 +18,7 @@ import type { ComputerConfig } from './extensions/computer/types.js';
 
 export type AgentPermissionMode = 'workspace' | 'read-only' | 'trusted';
 export type SecurityProfile = 'safe' | 'workstation' | 'full-owner';
+export type ModelProvider = 'openai' | 'deepseek' | 'openai-compatible';
 
 export interface SecurityProfileSummary {
   id: SecurityProfile;
@@ -60,7 +61,10 @@ export const SECURITY_PROFILES: Readonly<Record<SecurityProfile, SecurityProfile
 });
 
 export interface AppConfig {
-  provider: 'openai' | 'deepseek';
+  provider: ModelProvider;
+  providerBaseUrl?: string;
+  defaultModel?: string;
+  availableModels?: string[];
   workspaceRoot: string;
   dataRoot: string;
   daemonDataRoot?: string;
@@ -184,10 +188,55 @@ function positiveSafeInteger(names: readonly [string, ...string[]], fallback?: n
 function modelProvider(): AppConfig['provider'] {
   const selected = environmentEntry('MIMI_MODEL_PROVIDER', 'MODEL_PROVIDER');
   const value = selected?.value ?? 'openai';
-  if (value !== 'openai' && value !== 'deepseek') {
-    throw new Error(`${selected?.name ?? 'MIMI_MODEL_PROVIDER'} 只能是 openai 或 deepseek`);
+  if (value !== 'openai' && value !== 'deepseek' && value !== 'openai-compatible') {
+    throw new Error(`${selected?.name ?? 'MIMI_MODEL_PROVIDER'} 只能是 openai、deepseek 或 openai-compatible`);
   }
   return value;
+}
+
+function providerConfiguration(provider: AppConfig['provider']): Pick<
+  AppConfig,
+  'providerBaseUrl' | 'defaultModel' | 'availableModels'
+> {
+  const compatible = provider === 'openai-compatible';
+  const providerBaseUrl = compatible
+    ? environmentEntry('MIMI_PROVIDER_BASE_URL')?.value
+    : provider === 'deepseek'
+      ? environmentEntry('DEEPSEEK_BASE_URL')?.value ?? 'https://api.deepseek.com'
+      : undefined;
+  if (compatible && !providerBaseUrl) {
+    throw new Error('MIMI_MODEL_PROVIDER=openai-compatible 时必须配置 MIMI_PROVIDER_BASE_URL');
+  }
+  if (providerBaseUrl) {
+    let parsed: URL;
+    try {
+      parsed = new URL(providerBaseUrl);
+    } catch {
+      throw new Error(`${compatible ? 'MIMI_PROVIDER_BASE_URL' : 'DEEPSEEK_BASE_URL'} 必须是有效 URL`);
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      throw new Error(`${compatible ? 'MIMI_PROVIDER_BASE_URL' : 'DEEPSEEK_BASE_URL'} 必须使用 http 或 https`);
+    }
+  }
+  const defaultModel = compatible
+    ? environmentEntry('MIMI_MODEL')?.value
+    : provider === 'deepseek'
+      ? environmentEntry('DEEPSEEK_MODEL')?.value
+      : environmentEntry('OPENAI_MODEL')?.value;
+  if (compatible && !defaultModel) {
+    throw new Error('MIMI_MODEL_PROVIDER=openai-compatible 时必须配置 MIMI_MODEL');
+  }
+  const models = compatible
+    ? environmentEntry('MIMI_MODELS')?.value
+    : provider === 'deepseek'
+      ? environmentEntry('DEEPSEEK_MODELS')?.value
+      : environmentEntry('OPENAI_MODELS')?.value;
+  const availableModels = models?.split(',').map((item) => item.trim()).filter(Boolean);
+  return {
+    ...(providerBaseUrl ? { providerBaseUrl } : {}),
+    ...(defaultModel ? { defaultModel } : {}),
+    ...(availableModels?.length ? { availableModels } : {}),
+  };
 }
 
 function configurationVersion(): number | undefined {
@@ -477,8 +526,10 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
   const resolvedSkillsRoot = skillsRoot
     ? expandHome(skillsRoot, homeDirectory)
     : path.join(workspaceRoot, 'skills');
+  const provider = modelProvider();
   return {
-    provider: modelProvider(),
+    provider,
+    ...providerConfiguration(provider),
     workspaceRoot,
     dataRoot,
     daemonDataRoot,

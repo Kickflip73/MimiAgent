@@ -159,6 +159,24 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-v4-pro
 ```
 
+使用任意 OpenAI Chat Completions 兼容服务（包括 Kimi、通义千问或本地网关）：
+
+```dotenv
+MIMI_MODEL_PROVIDER=openai-compatible
+MIMI_PROVIDER_API_KEY=your-provider-api-key
+MIMI_PROVIDER_BASE_URL=https://api.provider.example/v1
+MIMI_MODEL=provider-model-id
+# 可选：/model 中展示的候选模型
+MIMI_MODELS=provider-model-id,provider-fast-model-id
+```
+
+`MIMI_PROVIDER_BASE_URL` 和 `MIMI_MODEL` 必须填写服务商当前文档给出的实际值。
+该通用 Provider 使用 OpenAI Chat Completions 协议；原生 `openai` Provider 仍使用
+OpenAI Responses API。兼容服务若只实现了部分 OpenAI 协议，Tool Calling、图片输入
+或流式响应能力仍取决于服务端实现。自定义模型默认关闭图片输入，并使用通用 context
+profile；可通过 `MIMI_CONTEXT_WINDOW`、`MIMI_OUTPUT_TOKEN_RESERVE` 和
+`MIMI_MODEL_SUPPORTS_IMAGE_INPUT` 显式覆盖。
+
 编辑 `~/.mimi-agent/.env` 填入所选 Provider 的配置，然后一键启动后台：
 
 ```bash
@@ -279,7 +297,10 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `MIMI_CONFIG_VERSION` | `4` | 配置模板版本；保留此项可区分主动权限限制与旧模板默认值 |
-| `MIMI_MODEL_PROVIDER` | `openai` | 模型 Provider：`openai` 或 `deepseek` |
+| `MIMI_MODEL_PROVIDER` | `openai` | 模型 Provider：`openai`、`deepseek` 或 `openai-compatible` |
+| `MIMI_PROVIDER_API_KEY` | 未设置 | `openai-compatible` Provider 的 API Key |
+| `MIMI_PROVIDER_BASE_URL` | 未设置 | `openai-compatible` Provider 的 OpenAI 兼容 API 根地址 |
+| `MIMI_MODEL` / `MIMI_MODELS` | 未设置 | 通用 Provider 的默认模型与 `/model` 候选列表 |
 | `MIMI_MAX_TURNS` | 不限制 | 可选的单次 Agent 运行轮数上限；默认由 Goal/Plan 状态、取消、空闲超时与上下文预算控制 |
 | `MIMI_HISTORY_LIMIT` | `40` | Token Budget 之外的历史条目上限；从完整用户轮次开始截取 |
 | `MIMI_CONTEXT_WINDOW` | 按模型 Profile | 全局覆盖模型上下文窗口；通常无需设置 |
