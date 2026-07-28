@@ -16,6 +16,10 @@
    `2026-07-28T15:19:07.099Z` 重启为 `0.12.0+376bb1fbacc9`，且有 1 个 active
    Task worker。构建和 idle 门禁仍同时不满足，本轮继续只记录 blocked，没有执行
    canary 或干预该任务。
+5. `2026-07-28T20:23:36.277Z` 观察时 Event/Task/Outbox/host mutation 已全部
+   idle，但运行构建仍为 `0.12.0+376bb1fbacc9`，不等于 heartbeat 锁定构建
+   `0.12.0+9bf15be88f93`。本轮因精确构建门禁失败继续 blocked，未执行 canary；
+   idle 不能弥补构建连续性中断。
 
 ## 2026-07-28 M1 final runtime soak after owner-sensitive fix
 

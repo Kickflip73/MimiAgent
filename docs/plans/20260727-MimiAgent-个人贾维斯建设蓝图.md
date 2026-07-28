@@ -1098,3 +1098,8 @@ canary，没有重启或抢占，也没有执行任何写动作、发送、前�
 `2026-07-28T15:19:07.099Z` 重启为 `0.12.0+376bb1fbacc9`，并有 1 个 active
 Task worker。由于精确构建和 idle 两项门禁均不满足，本轮继续只记录 blocked，
 没有执行 canary、重启或任务抢占。该样本不计入成功率或 24h 稳定性。
+
+`2026-07-28T20:23:36.277Z` 观察时 Event、Task、Outbox 和 host mutation 已全部
+idle，但 Daemon 仍运行 `0.12.0+376bb1fbacc9`，不等于 heartbeat 锁定构建
+`0.12.0+9bf15be88f93`。本轮仍因精确构建门禁失败而 blocked，没有执行 canary。
+运行面恢复 idle 不会恢复已中断的同构建连续 24h，仍需冻结新构建并建立新 T0。
