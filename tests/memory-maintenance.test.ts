@@ -57,7 +57,10 @@ test('terminal Tasks atomically register observations and emit one bounded maint
     }, [], undefined, undefined, false, emitted[0]);
     assert.deepEqual(decision.options?.policy?.allowedTools, [
       'memory_search', 'memory_read', 'memory_links',
-      'list_memory_observations', 'upsert_memory_page', 'complete_memory_observations',
+      'list_memory_observations', 'upsert_memory_page',
+      'merge_memory_pages', 'supersede_memory_page', 'add_memory_links',
+      'move_memory_scope', 'refresh_memory_from_source',
+      'complete_memory_observations',
     ]);
     assert.equal(decision.options?.policy?.allowMcp, false);
     assert.equal(decision.options?.policy?.allowSessionContext, false);

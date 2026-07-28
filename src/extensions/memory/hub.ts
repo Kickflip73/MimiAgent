@@ -7,6 +7,7 @@ import type {
   EpisodeInput,
   MemoryCard,
   MemoryDocument,
+  MemoryGovernanceReceipt,
   MemoryHit,
   MemoryHub,
   MemoryLink,
@@ -33,8 +34,15 @@ import { DocumentSource } from './document-source.js';
 import { SqliteMemoryCatalog } from './sqlite-catalog.js';
 import { WikiVault } from './wiki-vault.js';
 import { parsePage, serializePage } from './wiki-vault.js';
+import { canonicalTopicKey, resolveMemoryTopic } from './topic-resolver.js';
+import { extractWikiContent, mergeSourceRefs, renderWikiPage, wikiLinks } from './wiki-renderer.js';
 import { cutoverLegacyMemory } from './cutover.js';
 import { MemoryCompilationCoordinator } from './compilation-coordinator.js';
+import {
+  preparePrivateMemoryLayout,
+  type PrivateMemoryLayout,
+} from './layout.js';
+import { RawEvidenceStore } from './raw-evidence-store.js';
 
 const AUTOMATIC_EMBEDDING_TIMEOUT_MS = 1_500;
 
@@ -48,10 +56,7 @@ export interface MemoryHubOptions {
   cutover?: boolean;
   userSoulFile?: string;
   packagedSoulFile?: string;
-}
-
-function pageId(scope: string, title: string): string {
-  return `mem_${createHash('sha256').update(`${scope}\0${title.trim().toLowerCase()}`).digest('hex').slice(0, 24)}`;
+  privateLayout?: PrivateMemoryLayout;
 }
 
 function sourceFor(input: RememberInput, context: RunMemoryContext): SourceRef {
@@ -122,6 +127,7 @@ class DefaultMemoryHub implements MemoryHub {
   private readonly workspaceCatalog: SqliteMemoryCatalog;
   private readonly documents: DocumentSource;
   private readonly compiler: DefaultWikiCompiler;
+  private readonly rawEvidence: RawEvidenceStore;
   private readonly privateCompilation: MemoryCompilationCoordinator;
   private readonly workspaceCompilation: MemoryCompilationCoordinator;
   private readonly embeddingModel: string;
@@ -132,16 +138,23 @@ class DefaultMemoryHub implements MemoryHub {
     this.dataRoot = path.resolve(options.dataRoot);
     this.profileId = options.profileId;
     const memoryRoot = path.join(this.dataRoot, 'memory');
-    const profileRoot = path.join(memoryRoot, 'profiles', stableDirectoryId(options.profileId));
+    const privateLayout = options.privateLayout;
+    if (!privateLayout) throw new Error('MemoryHub 缺少已准备的 private Vault layout');
     const workspaceCatalogRoot = path.join(memoryRoot, 'workspaces', stableDirectoryId(this.workspaceRoot));
-    this.privateVault = new WikiVault(path.join(profileRoot, 'wiki'), 'private', options.profileId);
+    this.privateVault = new WikiVault(
+      privateLayout.wikiRoot,
+      'private',
+      options.profileId,
+      privateLayout.schemaFile,
+    );
     this.workspaceVault = new WikiVault(
       path.join(this.workspaceRoot, 'knowledge', 'wiki'),
       'workspace',
       undefined,
       path.join(this.workspaceRoot, 'knowledge', 'WIKI.md'),
     );
-    this.privateCatalog = new SqliteMemoryCatalog(path.join(profileRoot, 'memory.db'), 'private', options.profileId);
+    this.privateCatalog = new SqliteMemoryCatalog(privateLayout.databaseFile, 'private', options.profileId);
+    this.rawEvidence = new RawEvidenceStore(privateLayout.rawRoot);
     this.workspaceCatalog = new SqliteMemoryCatalog(path.join(workspaceCatalogRoot, 'memory.db'), 'workspace');
     this.documents = new DocumentSource(this.workspaceRoot, this.dataRoot);
     const workspaceId = stableDirectoryId(this.workspaceRoot);
@@ -167,7 +180,11 @@ class DefaultMemoryHub implements MemoryHub {
   }
 
   async initialize(): Promise<void> {
-    await Promise.all([this.privateVault.initialize(), this.workspaceVault.initialize()]);
+    await Promise.all([
+      this.privateVault.initialize(),
+      this.workspaceVault.initialize(),
+      this.rawEvidence.initialize(),
+    ]);
     await this.compiler.recover();
     await this.syncIndexes();
   }
@@ -188,26 +205,29 @@ class DefaultMemoryHub implements MemoryHub {
     const automatic = Object.keys(options).length === 0;
     const finish = (hits: MemoryHit[]) => automatic ? boundCards(hits, 1_200, 5) : hits;
     const queryVector = await this.embed(normalized, automatic);
-    const channels: Array<Array<{ item: MemoryHit; key: string }>> = [];
+    const wikiChannels: Array<Array<{ item: MemoryHit; key: string }>> = [];
+    const episodeChannels: Array<Array<{ item: MemoryHit; key: string }>> = [];
     if (!options.scope || options.scope === 'all' || options.scope === 'private') {
       const wikiHits = this.privateCatalog.search(normalized, {
         ...options, documentTypes: ['wiki'], limit,
       }, queryVector);
-      channels.push(wikiHits.map((item) => ({ item, key: `private:${item.ref.id}` })));
+      wikiChannels.push(wikiHits.map((item) => ({ item, key: `private:${item.ref.id}` })));
       if ((context.cause?.trust ?? 'owner') === 'owner') {
         const episodeHits = this.privateCatalog.search(normalized, {
           ...options, documentTypes: ['episode'], limit,
         }, queryVector);
-        channels.push(episodeHits.map((item) => ({ item, key: `episode:${item.ref.id}` })));
+        episodeChannels.push(episodeHits.map((item) => ({ item, key: `episode:${item.ref.id}` })));
       }
     }
     if (!options.scope || options.scope === 'all' || options.scope === 'workspace') {
       const hits = this.workspaceCatalog.search(normalized, {
         ...options, documentTypes: ['wiki'], limit,
       }, queryVector);
-      channels.push(hits.map((item) => ({ item, key: `workspace:${item.ref.id}` })));
+      wikiChannels.push(hits.map((item) => ({ item, key: `workspace:${item.ref.id}` })));
     }
-    const memoryHits = reciprocalRankFusion(channels.filter((channel) => channel.length), limit);
+    const wikiHits = reciprocalRankFusion(wikiChannels.filter((channel) => channel.length), limit);
+    const episodeHits = reciprocalRankFusion(episodeChannels.filter((channel) => channel.length), limit);
+    const memoryHits = [...wikiHits, ...episodeHits].slice(0, limit);
     const needsEvidence = options.includeEvidence
       || memoryHits.length < limit
       || memoryHits.some((hit) => hit.stale || hit.status === 'conflicted');
@@ -285,17 +305,21 @@ class DefaultMemoryHub implements MemoryHub {
     const scope = normalized.scope!;
     const vault = scope === 'private' ? this.privateVault : this.workspaceVault;
     const catalog = scope === 'private' ? this.privateCatalog : this.workspaceCatalog;
+    const policy = await vault.loadSchema();
     const digest = contentDigest(`${normalized.title}\0${normalized.content}`);
     if (catalog.isSuppressed(digest)) {
       if (normalized.autonomous) throw new Error('该内容已被 owner 遗忘，自动维护不得恢复');
       catalog.clearSuppression(digest);
     }
-    const id = pageId(scope, normalized.title);
-    const ref: MemoryRef = { scope, id, ...(scope === 'private' ? { profileId: context.profileId } : {}) };
-    let existing: MemoryDocument | undefined;
-    try { existing = await vault.read(ref); } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('不存在')) throw error;
-    }
+    const resolution = await resolveMemoryTopic(vault, {
+      scope,
+      profileId: scope === 'private' ? context.profileId : undefined,
+      title: normalized.title,
+      aliases: normalized.aliases,
+      targetRef: normalized.targetRef,
+      canonicalKey: normalized.canonicalKey,
+    });
+    const { ref, existing } = resolution;
     const timestamp = new Date().toISOString();
     const supersededPages = new Map<string, MemoryDocument>();
     for (const supersededId of new Set(normalized.supersedes ?? [])) {
@@ -305,32 +329,57 @@ class DefaultMemoryHub implements MemoryHub {
       };
       supersededPages.set(supersededId, await vault.read(supersededRef));
     }
-    const sources = normalized.sourceRefs?.length ? normalized.sourceRefs : [sourceFor(normalized, context)];
+    const hasExplicitSources = Boolean(normalized.sourceRefs?.length);
+    const incomingSources = hasExplicitSources ? normalized.sourceRefs! : [sourceFor(normalized, context)];
+    if (scope === 'private' && !hasExplicitSources) {
+      await Promise.all(incomingSources.map((source) => this.rawEvidence.preserve(source, normalized.content)));
+    }
     if (scope === 'workspace') {
-      for (const source of sources) {
+      for (const source of incomingSources) {
         const current = await this.documents.read(source.id);
         if (current.sourceRef.digest !== source.digest) throw new Error(`Workspace SourceRef digest 已变化：${source.id}`);
       }
     }
+    const sources = mergeSourceRefs(existing?.metadata.sourceRefs ?? [], incomingSources);
+    const aliases = [...new Set([
+      ...existing?.metadata.aliases ?? [],
+      ...(existing && existing.metadata.title !== normalized.title ? [existing.metadata.title] : []),
+      ...normalized.aliases ?? [],
+    ])].filter((alias) => alias !== normalized.title);
+    const tags = [...new Set([...existing?.metadata.tags ?? [], ...normalized.tags ?? []])];
+    const body = renderWikiPage({
+      title: normalized.title,
+      content: normalized.content,
+      sources,
+      links: [...new Set([...wikiLinks(existing?.body ?? ''), ...normalized.links ?? []])],
+    });
     const metadata: MemoryPageMetadata = {
       schemaVersion: 1,
-      id,
+      id: ref.id,
+      canonicalKey: resolution.canonicalKey,
       title: normalized.title,
       kind: normalized.kind,
       scope,
       profileId: scope === 'private' ? context.profileId : null,
-      status: 'active',
+      status: normalized.autonomous
+        && (normalized.confidence ?? 'inferred') === 'inferred'
+        && !policy.allowInferredActive
+        ? 'proposed'
+        : 'active',
       confidence: normalized.confidence ?? (normalized.autonomous ? 'inferred' : 'user-confirmed'),
-      aliases: [...new Set(normalized.aliases ?? [])],
-      tags: [...new Set(normalized.tags ?? [])],
+      aliases,
+      tags,
       sourceRefs: sources,
       validFrom: normalized.supersedes?.length ? timestamp : null,
       validUntil: null,
+      lastVerifiedAt: sources.map((source) => source.occurredAt).sort().at(-1) ?? timestamp,
+      refreshAfter: existing?.metadata.refreshAfter ?? null,
+      mergedInto: null,
       supersedes: [...new Set(normalized.supersedes ?? [])],
       createdAt: existing?.metadata.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
-    const embedding = await this.embedDocument(`${metadata.title}\n${normalized.content}`);
+    const embedding = await this.embedDocument(`${metadata.title}\n${body}`);
     const coordinator = scope === 'private' ? this.privateCompilation : this.workspaceCompilation;
     const prepared = coordinator.prepare({
       operation: 'remember',
@@ -341,17 +390,24 @@ class DefaultMemoryHub implements MemoryHub {
       confidence: metadata.confidence,
       sourceRefs: sources,
       metadata,
-      targetDigest: parsePage(serializePage(metadata, normalized.content)).digest,
+      targetDigest: parsePage(serializePage(metadata, body)).digest,
       createdBy: normalized.autonomous ? 'runtime' : 'owner',
       reasonCode: normalized.autonomous ? 'autonomous_future_value' : 'owner_explicit',
       context,
     });
     let page;
     try {
-      page = await vault.write(metadata, normalized.content, existing?.digest);
+      page = await vault.write(metadata, body, existing?.digest);
     } catch (error) {
       coordinator.fail(prepared, error);
       throw error;
+    }
+    if (resolution.duplicateRefs.length) {
+      catalog.recordDecision(
+        'duplicate-detected',
+        `resolver_${resolution.matchedBy}_${resolution.duplicateRefs.length}_pending_merge`,
+        ref.id,
+      );
     }
     try {
       coordinator.commit(prepared, page, embedding);
@@ -408,7 +464,7 @@ class DefaultMemoryHub implements MemoryHub {
     let digest: string | undefined;
     try {
       const page = await vault.read(ref);
-      digest = contentDigest(`${page.metadata.title}\0${page.body}`);
+      digest = contentDigest(`${page.metadata.title}\0${extractWikiContent(page.body)}`);
     } catch (error) {
       if (!(error instanceof Error) || !error.message.includes('不存在')) throw error;
     }
@@ -453,7 +509,187 @@ class DefaultMemoryHub implements MemoryHub {
       && input.sourceRefs.some((source) => source.type !== 'file')) {
       throw new Error('Workspace capture 只接受明确文件来源');
     }
+    if ((input.scope ?? 'private') === 'private' && input.rawEvidence?.length) {
+      const allowed = new Set(input.sourceRefs.map((source) => `${source.type}\0${source.id}\0${source.digest}`));
+      for (const evidence of input.rawEvidence) {
+        const key = `${evidence.sourceRef.type}\0${evidence.sourceRef.id}\0${evidence.sourceRef.digest}`;
+        if (!allowed.has(key)) throw new Error('Raw evidence 必须属于本次 Capture 的 SourceRef');
+        await this.rawEvidence.preserve(evidence.sourceRef, evidence.content);
+      }
+    }
     return this.compiler.capture(input, context);
+  }
+
+  async merge(
+    input: {
+      targetRef: MemoryRef;
+      mergedRefs: MemoryRef[];
+      title: string;
+      content: string;
+      reasonCode: string;
+    },
+    context: RunMemoryContext,
+  ): Promise<MemoryGovernanceReceipt> {
+    this.validate(context);
+    assertRefVisible(input.targetRef.scope, input.targetRef.profileId, context);
+    const target = await this.read(input.targetRef, context);
+    const merged = await Promise.all(input.mergedRefs
+      .filter((ref) => ref.id !== input.targetRef.id)
+      .map(async (ref) => {
+        if (ref.scope !== input.targetRef.scope || ref.profileId !== input.targetRef.profileId) {
+          throw new Error('Memory merge 只能处理同一 scope/profile 的页面');
+        }
+        return this.read(ref, context);
+      }));
+    if (!merged.length) throw new Error('Memory merge 至少需要一个不同的来源页面');
+    const sourceRefs = mergeSourceRefs(
+      target.metadata.sourceRefs,
+      ...merged.map((page) => page.metadata.sourceRefs),
+    );
+    const aliases = [...new Set([
+      ...target.metadata.aliases,
+      target.metadata.title,
+      ...merged.flatMap((page) => [page.metadata.title, ...page.metadata.aliases]),
+    ])].filter((alias) => alias !== input.title.trim());
+    const links = [...new Set([
+      ...wikiLinks(target.body),
+      ...merged.flatMap((page) => wikiLinks(page.body)),
+    ])].filter((link) => link !== input.title.trim());
+    assertRememberAllowed({
+      title: input.title,
+      content: input.content,
+      kind: target.metadata.kind,
+      scope: target.ref.scope,
+      sourceRefs,
+      autonomous: true,
+    }, context);
+    await this.compiler.capture({
+      title: input.title,
+      content: input.content,
+      sourceRefs,
+      scope: target.ref.scope,
+      kind: target.metadata.kind,
+      status: target.metadata.status === 'proposed' ? 'active' : target.metadata.status,
+      confidence: target.metadata.confidence,
+      aliases,
+      tags: [...new Set([
+        ...target.metadata.tags,
+        ...merged.flatMap((page) => page.metadata.tags),
+      ])],
+      links,
+      targetRef: target.ref,
+      canonicalKey: target.metadata.canonicalKey,
+      supersedes: merged.map((page) => page.ref.id),
+      reasonCode: input.reasonCode,
+    }, context);
+    for (const page of merged) {
+      await this.setPageLifecycle(page.ref, 'superseded', input.reasonCode, context, target.ref.id);
+    }
+    const timestamp = new Date().toISOString();
+    return {
+      action: 'merge',
+      targetRef: target.ref,
+      affectedRefs: [target.ref, ...merged.map((page) => page.ref)],
+      timestamp,
+    };
+  }
+
+  async supersede(
+    ref: MemoryRef,
+    replacementRef: MemoryRef | undefined,
+    reasonCode: string,
+    context: RunMemoryContext,
+  ): Promise<MemoryGovernanceReceipt> {
+    this.validate(context);
+    assertRefVisible(ref.scope, ref.profileId, context);
+    if (replacementRef
+      && (replacementRef.scope !== ref.scope || replacementRef.profileId !== ref.profileId)) {
+      throw new Error('replacementRef 必须与被 supersede 页面属于同一 scope/profile');
+    }
+    if (replacementRef) await this.read(replacementRef, context);
+    await this.setPageLifecycle(ref, 'superseded', reasonCode, context, replacementRef?.id);
+    return {
+      action: 'supersede',
+      targetRef: replacementRef ?? ref,
+      affectedRefs: [ref],
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  async addLinks(
+    ref: MemoryRef,
+    links: string[],
+    reasonCode: string,
+    context: RunMemoryContext,
+  ): Promise<MemoryGovernanceReceipt> {
+    this.validate(context);
+    const page = await this.read(ref, context);
+    const normalizedLinks = [...new Set(links.map((link) => link.trim()).filter(Boolean))];
+    if (!normalizedLinks.length) throw new Error('Memory link 至少需要一个目标标题');
+    await this.compiler.capture({
+      title: page.metadata.title,
+      content: extractWikiContent(page.body),
+      sourceRefs: page.metadata.sourceRefs,
+      scope: page.ref.scope,
+      kind: page.metadata.kind,
+      status: page.metadata.status,
+      confidence: page.metadata.confidence,
+      aliases: page.metadata.aliases,
+      tags: page.metadata.tags,
+      links: [...new Set([...wikiLinks(page.body), ...normalizedLinks])],
+      targetRef: page.ref,
+      canonicalKey: page.metadata.canonicalKey,
+      reasonCode,
+    }, context);
+    return {
+      action: 'link',
+      targetRef: page.ref,
+      affectedRefs: [page.ref],
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  async move(
+    ref: MemoryRef,
+    targetScope: 'private' | 'workspace',
+    reasonCode: string,
+    context: RunMemoryContext,
+  ): Promise<MemoryGovernanceReceipt> {
+    this.validate(context);
+    const page = await this.read(ref, context);
+    if (page.ref.scope === targetScope) {
+      return {
+        action: 'move',
+        targetRef: page.ref,
+        affectedRefs: [page.ref],
+        timestamp: new Date().toISOString(),
+      };
+    }
+    if (targetScope === 'workspace' && page.metadata.sourceRefs.some((source) => source.type !== 'file')) {
+      throw new Error('迁入 workspace 的 Memory 必须全部来自明确的 workspace 文件');
+    }
+    const receipt = await this.compiler.capture({
+      title: page.metadata.title,
+      content: extractWikiContent(page.body),
+      sourceRefs: page.metadata.sourceRefs,
+      scope: targetScope,
+      kind: page.metadata.kind,
+      status: page.metadata.status,
+      confidence: page.metadata.confidence,
+      aliases: page.metadata.aliases,
+      tags: page.metadata.tags,
+      links: wikiLinks(page.body),
+      reasonCode,
+    }, context);
+    const targetRef = receipt.pageRefs[0];
+    if (!targetRef) throw new Error('Memory move 未产生目标页面');
+    await this.setPageLifecycle(page.ref, 'superseded', reasonCode, context, targetRef.id);
+    return {
+      action: 'move',
+      targetRef,
+      affectedRefs: [page.ref, targetRef],
+      timestamp: new Date().toISOString(),
+    };
   }
 
   async refreshStale(limit: number, context: RunMemoryContext) {
@@ -510,6 +746,7 @@ class DefaultMemoryHub implements MemoryHub {
       digest,
     };
     this.privateCatalog.index(document, undefined, 'episode');
+    await this.rawEvidence.preserve(sourceRef, content);
     this.privateCatalog.pruneEpisodes();
     return ref;
   }
@@ -548,6 +785,65 @@ class DefaultMemoryHub implements MemoryHub {
   async status(context: RunMemoryContext): Promise<MemoryStatusSnapshot> {
     this.validate(context);
     return mergeStatus(this.privateCatalog.status(), this.workspaceCatalog.status());
+  }
+
+  private async setPageLifecycle(
+    ref: MemoryRef,
+    status: 'superseded' | 'expired',
+    reasonCode: string,
+    context: RunMemoryContext,
+    mergedInto?: string,
+  ): Promise<MemoryPage> {
+    const vault = ref.scope === 'private' ? this.privateVault : this.workspaceVault;
+    const catalog = ref.scope === 'private' ? this.privateCatalog : this.workspaceCatalog;
+    const coordinator = ref.scope === 'private' ? this.privateCompilation : this.workspaceCompilation;
+    const existing = await vault.read(ref);
+    if (existing.metadata.status === status && existing.metadata.mergedInto === (mergedInto ?? null)) return existing;
+    const timestamp = new Date().toISOString();
+    const metadata: MemoryPageMetadata = {
+      ...existing.metadata,
+      canonicalKey: existing.metadata.canonicalKey ?? canonicalTopicKey(ref.scope, existing.metadata.title),
+      status,
+      validUntil: timestamp,
+      mergedInto: mergedInto ?? null,
+      updatedAt: timestamp,
+    };
+    const body = renderWikiPage({
+      title: metadata.title,
+      content: extractWikiContent(existing.body),
+      sources: metadata.sourceRefs,
+      links: wikiLinks(existing.body),
+    });
+    const prepared = coordinator.prepare({
+      operation: 'lint-repair',
+      scope: ref.scope,
+      title: metadata.title,
+      content: body,
+      kind: metadata.kind,
+      confidence: metadata.confidence,
+      sourceRefs: metadata.sourceRefs,
+      metadata,
+      targetDigest: parsePage(serializePage(metadata, body)).digest,
+      createdBy: context.cause?.source === 'memory-maintenance' ? 'maintenance' : 'owner',
+      reasonCode,
+      context,
+    });
+    let page: MemoryPage;
+    try {
+      page = await vault.write(metadata, body, existing.digest);
+    } catch (error) {
+      coordinator.fail(prepared, error);
+      throw error;
+    }
+    try {
+      coordinator.commit(prepared, page);
+    } catch (error) {
+      coordinator.fail(prepared, error, true);
+      throw error;
+    }
+    catalog.recordDecision(status, reasonCode, ref.id);
+    await vault.refreshNavigation('lint', contentDigest(`${status}\0${ref.id}\0${reasonCode}`), [ref]);
+    return page;
   }
 
   private async rebuildIndexes(): Promise<void> {
@@ -616,7 +912,9 @@ class DefaultMemoryHub implements MemoryHub {
 }
 
 export async function createMemoryHub(options: MemoryHubOptions): Promise<MemoryHub> {
-  const hub = new DefaultMemoryHub(options);
+  const privateLayout = options.privateLayout
+    ?? await preparePrivateMemoryLayout(options.dataRoot, options.profileId);
+  const hub = new DefaultMemoryHub({ ...options, privateLayout });
   await hub.initialize();
   if (options.cutover !== false) {
     await cutoverLegacyMemory(hub, options.workspaceRoot, options.dataRoot, {
@@ -643,6 +941,18 @@ class RoutedMemoryHub implements MemoryHub {
   forget(ref: MemoryRef, context: RunMemoryContext) { return this.forContext(context).then((hub) => hub.forget(ref, context)); }
   ingest(sourcePath: string, context: RunMemoryContext) { return this.forContext(context).then((hub) => hub.ingest(sourcePath, context)); }
   capture(input: CaptureInput, context: RunMemoryContext) { return this.forContext(context).then((hub) => hub.capture(input, context)); }
+  merge(input: Parameters<MemoryHub['merge']>[0], context: RunMemoryContext) {
+    return this.forContext(context).then((hub) => hub.merge(input, context));
+  }
+  supersede(ref: MemoryRef, replacementRef: MemoryRef | undefined, reasonCode: string, context: RunMemoryContext) {
+    return this.forContext(context).then((hub) => hub.supersede(ref, replacementRef, reasonCode, context));
+  }
+  addLinks(ref: MemoryRef, links: string[], reasonCode: string, context: RunMemoryContext) {
+    return this.forContext(context).then((hub) => hub.addLinks(ref, links, reasonCode, context));
+  }
+  move(ref: MemoryRef, targetScope: 'private' | 'workspace', reasonCode: string, context: RunMemoryContext) {
+    return this.forContext(context).then((hub) => hub.move(ref, targetScope, reasonCode, context));
+  }
   refreshStale(limit: number, context: RunMemoryContext) {
     return this.forContext(context).then((hub) => hub.refreshStale(limit, context));
   }

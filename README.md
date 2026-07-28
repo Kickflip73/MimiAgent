@@ -468,13 +468,15 @@ CLI 斜杠命令和模型工具调用复用相同的 MimiAgent 运行时方法�
 
 ## 统一 MemoryHub
 
-Session/Event/Document 是证据真相，LLMWiki Markdown 是持续编译的 semantic memory，SQLite 只是可重建索引与不可随 reindex 删除的 receipt/suppression 控制账本。private Wiki 按 profile 使用独立目录和数据库；workspace Wiki 位于 `knowledge/wiki/`，禁止私人 provenance。`knowledge/sources/` 对 MemoryHub 只读，更新来源要创建新版本。
+Session/Event/Document 是证据真相，LLMWiki Markdown 是持续编译的 semantic memory，SQLite 只是可重建索引与不可随 reindex 删除的 receipt/suppression 控制账本。owner 私有 Obsidian Vault 位于 `<dataRoot>/memory/vaults/owner/`，其中 `raw/` 保存内容寻址的不可变证据快照，`wiki/` 保存编译知识，`WIKI.md` 是机器可校验且人类可读的维护 Schema；内部 SQLite 位于 `<dataRoot>/memory/state/profiles/<hash>/memory.db`。workspace 继续使用 `knowledge/sources/`、`knowledge/wiki/` 与 `knowledge/WIKI.md`，禁止私人 provenance，Sources 对 MemoryHub 只读。
 
 - `memory_search`：Wiki-first 搜索，返回有界卡片和来源
 - `memory_read` / `memory_links`：按 ref 渐进读取正文与一跳关系
 - `remember`：保存稳定偏好、事实、决策或经验（不保存 todo）
 - `forget`：删除页面并写 suppression
 - `memory_ingest`：编译明确的 workspace 来源
+
+所有 `remember`、capture 和 maintenance 写入先经过同一个 Canonical Topic Resolver；标题和 alias 命中已有主题时更新原页面并累计 SourceRef，只有不存在主题时才创建。模型只提交内容、关系和来源，H1、当前结论、关系及来源章节由确定性 renderer 生成。Lint 会自动修复 canonicalKey、页面 envelope 和不合规的 inferred-active 状态；重复、冲突、过期、孤页和 Scope 错置由有 Revision/Receipt 的 merge、supersede、link、move、refresh 治理操作修复。
 
 用户明确说“记住……”时 Agent 会使用 `remember`；即使没有这句话，也可在硬门禁内主动沉淀未来有价值的信息。明确说“不要记住”会阻止本轮写入；外部未验证断言、瞬时内容、密码和密钥不能进入 active Memory。首次切换会备份 Mimi SQLite/WAL/SHM、旧 `memories.json` / `rag-index.json` 和两类旧 MIMI guidance；只转换带 `recordedAt` 或旧 `confirmedAt` 的非 todo 记忆及可识别 owner 事实，完成 Lint/控制账本校验后才写幂等 cutover marker。
 
