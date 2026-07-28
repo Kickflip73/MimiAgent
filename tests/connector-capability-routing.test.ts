@@ -51,6 +51,8 @@ test('capability routing instructions use stable declarations instead of busines
   assert.match(BASE_INSTRUCTIONS, /Connector 已声明并持有的资源只能走该 Connector/);
   assert.match(BASE_INSTRUCTIONS, /不得调用、建议或声称可改走 Browser、Computer\/CUA、MCP 或 Shell/);
   assert.match(BASE_INSTRUCTIONS, /CuaDriver.*绝不能通过 run_shell/);
+  assert.match(BASE_INSTRUCTIONS, /个人消息的查看、读取或汇总只使用 effect=read/);
+  assert.match(BASE_INSTRUCTIONS, /事件同步属于 effect=write/);
   assert.match(BASE_INSTRUCTIONS, /Shell 沙箱.*不是 SIP/);
   assert.match(BASE_INSTRUCTIONS, /只读诊断能力/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /大象|QQ|微信/);

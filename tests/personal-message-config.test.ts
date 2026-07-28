@@ -19,6 +19,8 @@ test('personal channel templates are disabled and only Daxiang declares actions'
   assert.deepEqual(Object.keys(daxiang.actions).sort(), [
     'get_context', 'health_check', 'list_targets', 'send_message', 'sync_now',
   ]);
+  assert.match(daxiang.actions.sync_now?.description ?? '', /查看、读取或汇总消息不得调用/);
+  assert.equal(daxiang.actions.sync_now?.effect, 'write');
   assert.equal(qq.enabled, false);
   assert.deepEqual(qq.actions, {});
   assert.equal(wechat.enabled, false);
