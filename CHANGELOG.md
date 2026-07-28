@@ -12,10 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - add a generic `openai-compatible` model Provider with validated custom endpoint,
   API key and model configuration, including Session persistence, daemon Task
   credential isolation, model switching, offline contracts and setup guidance
-- keep credentials pasted by an authenticated local owner out of Event, Task,
-  Session, Trace, Memory, and ledger persistence while exposing them once to the
-  current Run as bounded ephemeral Shell environment variables; expire them on
-  timeout, restart, mismatch, or first use and redact accidental Shell output
+- let a direct authenticated Owner in Full Owner mode expose a pasted sensitive
+  value once to the current configured model Provider and main-Agent Shell while
+  keeping the durable user input redacted; bind the in-memory lease to provenance,
+  Event, Session, and Run ownership, deny inheritance by Safe/Workstation,
+  background work, SubAgent/Team, MCP, and Connectors, and redact Session items,
+  tool/ledger data, errors, streaming, traces, and final output before persistence
 - serialize Attention configuration mutations across engine instances with the
   shared file lock so concurrent updates cannot silently overwrite each other
 - add a bounded read-only `inspect_processes` Host Tool for macOS CPU/memory

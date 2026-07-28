@@ -1343,7 +1343,14 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
     });
     const activeTaskSupervisor = taskSupervisor;
     const ingestOwnerPrompt = (event: EventEnvelope, prompt: string) => {
-      const captured = ephemeralSecrets.capture(event.id, prompt);
+      if (!event.sessionKey) throw new Error('认证 Owner 命令缺少 Session，无法绑定临时敏感输入');
+      const captured = ephemeralSecrets.capture({
+        eventId: event.id,
+        sessionId: event.sessionKey,
+        profileId: event.profileId,
+        source: event.source,
+        trust: event.trust,
+      }, prompt);
       const payload = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload)
         ? event.payload as Record<string, unknown>
         : {};
@@ -1386,7 +1393,8 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           ? activeTaskSupervisor.pause(eventId, reason)
           : { state: 'not_pauseable' };
       },
-      takeEphemeralSecrets: (eventId, references) => ephemeralSecrets.take(eventId, references),
+      takeEphemeralSecrets: (eventId, sessionId, references) =>
+        ephemeralSecrets.take(eventId, sessionId, references),
       resolveWorkspace: async (input, event, sessionId) => {
         const current = host!.workspaceRootFor(sessionId);
         if (event.trust !== 'owner') return current ?? config.workspaceRoot;

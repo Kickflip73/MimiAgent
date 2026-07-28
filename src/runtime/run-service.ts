@@ -175,7 +175,10 @@ export class AgentRunService {
     let streamedAnswer = '';
     let selectedProvider = this.providerId;
     let streamAcquired = false;
-    const stopRuntimeEvents = this.agent.onRuntimeEvent((event) => observe(observer.onRuntimeEvent, event));
+    const stopRuntimeEvents = this.agent.onRuntimeEvent((event) => observe(
+      observer.onRuntimeEvent,
+      this.agent.redactActiveRunData?.(event) ?? event,
+    ));
     await observe(observer.onStart, request.input);
     try {
       const candidates: ProviderCandidate[] = [
@@ -211,20 +214,27 @@ export class AgentRunService {
       streamAcquired = true;
       for await (const event of stream) {
         streamedAnswer += answerDelta(event);
+        const safeEvent = this.agent.redactActiveRunData?.(event) ?? event;
         const hiddenCandidate = this.agent.completionGateRequired
           && event.type === 'raw_model_stream_event'
           && event.data.type === 'output_text_delta';
-        if (!hiddenCandidate) await observe(observer.onStreamEvent, event);
-        const progress = progressFrom(event);
+        const sensitiveOutputDelta = this.agent.activeRunHasEphemeralSensitiveAccess
+          && event.type === 'raw_model_stream_event'
+          && event.data.type === 'output_text_delta';
+        if (!hiddenCandidate && !sensitiveOutputDelta) {
+          await observe(observer.onStreamEvent, safeEvent);
+        }
+        const progress = progressFrom(safeEvent);
         if (progress) await this.agent.recordEvent('status', progress);
       }
       await stream.completed;
       assertRunCanComplete(stream, request.signal);
       this.providerReliability.success(selectedProvider);
       const finalOutput = stream.finalOutput;
-      const answer = (typeof finalOutput === 'string'
+      const rawAnswer = (typeof finalOutput === 'string'
         ? finalOutput
         : finalOutput === undefined ? streamedAnswer : JSON.stringify(finalOutput)).slice(0, 20_000);
+      const answer = this.agent.redactActiveRunText?.(rawAnswer) ?? rawAnswer;
       const usage = usageFrom(stream);
       const effects = await this.commits.complete({ answer, usage });
       const committedAnswer = this.agent.completedRunAnswer ?? answer;
@@ -240,19 +250,24 @@ export class AgentRunService {
       if (streamAcquired && classifyProviderFault(error).kind !== 'other') {
         this.providerReliability.failure(selectedProvider, error);
       }
+      const safeError = this.agent.redactActiveRunError?.(error) ?? error;
       const terminalReason = request.signal?.aborted
         && isTerminalRunInterruption(request.signal.reason)
         ? request.signal.reason
         : undefined;
       const commitFailure = this.commits.fail({
-        error: isTerminalRunInterruption(error) ? error : terminalReason ?? error,
+        error: isTerminalRunInterruption(error)
+          ? safeError
+          : terminalReason
+            ? this.agent.redactActiveRunError?.(terminalReason) ?? terminalReason
+            : safeError,
         interrupted: isRunInterrupted(error, request.signal),
         usage: usageFrom(stream),
       });
       if (streamAcquired) await commitFailure;
       else await commitFailure.catch(() => undefined);
-      await observe(observer.onError, error);
-      throw error;
+      await observe(observer.onError, safeError);
+      throw safeError;
     } finally {
       stopRuntimeEvents();
     }

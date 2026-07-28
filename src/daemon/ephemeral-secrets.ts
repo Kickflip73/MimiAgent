@@ -1,18 +1,26 @@
-import { captureSensitiveText } from '../core/data-sanitizer.js';
+import {
+  captureSensitiveText,
+  redactExactSensitiveText,
+} from '../core/data-sanitizer.js';
+import {
+  DIRECT_OWNER_SENSITIVE_INPUT_SOURCES,
+  type DirectOwnerSensitiveInputSource,
+  type EphemeralOwnerInputLease,
+  type EphemeralSecretReference,
+} from '../runtime/ephemeral-owner-input.js';
+
+export type { EphemeralSecretReference } from '../runtime/ephemeral-owner-input.js';
 
 const DEFAULT_TTL_MS = 15 * 60_000;
 const MAX_ACTIVE_INPUTS = 32;
 const MAX_SECRETS_PER_INPUT = 8;
 const MAX_SECRET_BYTES = 16_384;
 
-export interface EphemeralSecretReference {
-  fingerprint: string;
-  environmentVariable: string;
-}
-
 interface EphemeralSecretRecord {
   expiresAt: number;
+  provenance: EphemeralOwnerInputLease['provenance'];
   references: EphemeralSecretReference[];
+  values: string[];
   environment: Record<string, string>;
 }
 
@@ -32,21 +40,18 @@ export function ephemeralSecretReferences(value: unknown): EphemeralSecretRefere
   return references.map((reference) => ({ ...reference }));
 }
 
-export function ephemeralSecretInstructions(references: readonly EphemeralSecretReference[]): string {
-  if (references.length === 0) return '';
-  return [
-    'owner 在当前命令中提供了临时敏感值。原值不会进入 user input、Session、Event、Task、Trace、Memory 或执行账本；仅在本轮 Shell 子进程环境中可用。',
-    `变量映射：${references.map((reference) => (
-      `${reference.fingerprint} → ${reference.environmentVariable}`
-    )).join('；')}。`,
-    '需要调用 CLI、脚本或 HTTP 客户端时直接引用相应环境变量；不要输出、回显、写文件、写配置、写日志或要求 owner 再次粘贴原值。若工具不可用或变量过期，明确说明需要重新提交。',
-  ].join('\n');
-}
-
 export class EphemeralSecretsExpiredError extends Error {
   constructor() {
     super('当前命令引用的临时敏感值已过期或 Daemon 已重启；为避免保存或重放凭证，请 owner 重新提交该命令');
     this.name = 'EphemeralSecretsExpiredError';
+  }
+}
+
+export class EphemeralSensitiveRunFailedError extends Error {
+  constructor(error: unknown, sensitiveValues: readonly string[] = []) {
+    const reason = error instanceof Error ? error.message : String(error);
+    super(`${redactExactSensitiveText(reason, sensitiveValues)}；本轮临时敏感值已销毁，任务不会自动重放，请由认证 Owner 重新提交`);
+    this.name = 'EphemeralSensitiveRunFailedError';
   }
 }
 
@@ -58,11 +63,28 @@ export class EphemeralSecretBroker {
     private readonly now: () => number = Date.now,
   ) {}
 
-  capture(eventId: string, input: string): {
+  capture(
+    provenance: {
+      eventId: string;
+      sessionId: string;
+      profileId: string;
+      source: string;
+      trust: string;
+    },
+    input: string,
+  ): {
     sanitized: string;
     references: EphemeralSecretReference[];
   } {
     this.prune();
+    if (
+      provenance.trust !== 'owner'
+      || !DIRECT_OWNER_SENSITIVE_INPUT_SOURCES.includes(
+        provenance.source as DirectOwnerSensitiveInputSource,
+      )
+    ) {
+      throw new Error('只有认证直接 Owner 输入可以创建临时敏感值租约');
+    }
     const captured = captureSensitiveText(input, { preserveContacts: true });
     if (captured.values.length === 0) return { sanitized: captured.sanitized, references: [] };
     if (captured.values.length > MAX_SECRETS_PER_INPUT) {
@@ -80,9 +102,18 @@ export class EphemeralSecretBroker {
       reference.environmentVariable,
       captured.values[index]!.value,
     ]));
-    this.records.set(eventId, {
+    const leaseProvenance: EphemeralOwnerInputLease['provenance'] = {
+      eventId: provenance.eventId,
+      sessionId: provenance.sessionId,
+      profileId: provenance.profileId,
+      source: provenance.source as DirectOwnerSensitiveInputSource,
+      trust: 'owner',
+    };
+    this.records.set(provenance.eventId, {
       expiresAt: this.now() + this.ttlMs,
+      provenance: leaseProvenance,
       references,
+      values: captured.values.map((item) => item.value),
       environment,
     });
     return { sanitized: captured.sanitized, references: references.map((reference) => ({ ...reference })) };
@@ -90,14 +121,23 @@ export class EphemeralSecretBroker {
 
   take(
     eventId: string,
+    sessionId: string,
     expectedReferences: readonly EphemeralSecretReference[],
-  ): Record<string, string> | undefined {
+  ): EphemeralOwnerInputLease | undefined {
     this.prune();
     const record = this.records.get(eventId);
     if (!record) return undefined;
     this.records.delete(eventId);
-    if (JSON.stringify(record.references) !== JSON.stringify(expectedReferences)) return undefined;
-    return { ...record.environment };
+    if (
+      record.provenance.sessionId !== sessionId
+      || JSON.stringify(record.references) !== JSON.stringify(expectedReferences)
+    ) return undefined;
+    return {
+      provenance: { ...record.provenance },
+      references: record.references.map((reference) => ({ ...reference })),
+      values: [...record.values],
+      shellEnvironment: { ...record.environment },
+    };
   }
 
   discard(eventId: string): void {

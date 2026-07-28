@@ -7,6 +7,8 @@ interface RunIdentity {
   runId: string;
   semanticCallIds?: boolean;
   authorizeSideEffect?: (toolName: string, argumentsJson: string) => Promise<void>;
+  sanitizeResult?: <T>(value: T) => T;
+  sanitizeError?: (error: unknown) => unknown;
 }
 
 function stableJson(value: unknown): string {
@@ -31,7 +33,12 @@ async function invokeMcp<T>(
   const ledgerToolName = `mcp:${server.name}:${toolName}`;
   const invokeAuthorized = async () => {
     await run?.authorizeSideEffect?.(ledgerToolName, argumentsJson);
-    return operation();
+    try {
+      const result = await operation();
+      return run?.sanitizeResult?.(result) ?? result;
+    } catch (error) {
+      throw run?.sanitizeError?.(error) ?? error;
+    }
   };
   if (!run?.semanticCallIds) return invokeAuthorized();
   const callId = createHash('sha256')

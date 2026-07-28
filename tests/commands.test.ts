@@ -23,6 +23,7 @@ function fakeAgent(): MimiAgent {
         label: 'Full Owner',
         permissionMode: 'trusted',
         shell: true,
+        ephemeralSensitiveModelAccess: true,
         externalTransactions: true,
         computerUse: false,
         trustedWorkspaceMcp: false,
@@ -134,6 +135,7 @@ test('handles status and high-frequency inspection commands', async () => {
     assert.match(output.join('\n'), /Shell 可用/);
     assert.match(output.join('\n'), /Full Owner \(full-owner\/trusted\)/);
     assert.match(output.join('\n'), /当前能力.*Computer Use 未配置/);
+    assert.match(output.join('\n'), /本轮敏感值可发模型 Provider/);
     assert.match(output.join('\n'), /Computer  未配置/);
     assert.match(output.join('\n'), /Skills\s+2/);
     assert.match(output.join('\n'), /交互 TUI.*↑↓/);
@@ -381,6 +383,7 @@ test('selects and applies a Session security profile', async () => {
   assert.equal(active, 'workstation');
   assert.deepEqual(selectedProfiles, [['safe', 'workstation', 'full-owner']]);
   assert.match(output.join('\n'), /Workstation \(workstation\/workspace\).*下一轮/);
+  assert.match(output.join('\n'), /敏感值不会发送给模型 Provider/);
   await assert.rejects(handler.execute('/security unsafe'), /未知安全档位/);
 });
 

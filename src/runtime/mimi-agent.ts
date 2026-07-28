@@ -90,7 +90,11 @@ import { createRuntimeComponents, type RuntimeComponents } from './components.js
 import type { SessionStatePort } from './state-ports.js';
 import { createTeamWorkerTools } from './team-worker-tools.js';
 import { inputText } from './attachments.js';
-import { isTerminalRunInterruption } from './run-outcome.js';
+import {
+  isTerminalRunInterruption,
+  RunInterruptedError,
+  TerminalRunInterruptedError,
+} from './run-outcome.js';
 import { createCompletionTools } from './completion.js';
 import { CompletionCoordinator, incompleteCompletionAnswer } from './completion-coordinator.js';
 import { restrictedShellEnvironment } from './shell-environment.js';
@@ -116,6 +120,15 @@ import {
   explicitlyRequestsSessionAccess,
   explicitlyRequestsSessionClear,
 } from '../core/user-intent.js';
+import {
+  activateEphemeralOwnerInput,
+  containsActiveEphemeralValue,
+  ephemeralOwnerInputInstructions,
+  redactActiveEphemeralData,
+  redactActiveEphemeralText,
+  type ActiveEphemeralOwnerInput,
+  type EphemeralOwnerInputLease,
+} from './ephemeral-owner-input.js';
 
 export { AGENT_MODES } from './instructions.js';
 export type { AgentMode } from './instructions.js';
@@ -143,6 +156,7 @@ interface ActiveRun {
   availableToolNames?: readonly string[];
   capabilitySnapshot?: Readonly<EffectiveCapabilitySnapshot>;
   canReadLocal?: boolean;
+  ephemeralSensitiveAccess?: ActiveEphemeralOwnerInput;
 }
 
 export interface ContextUsageSnapshot {
@@ -212,7 +226,7 @@ export interface MimiRunOptions {
   policy?: RunPolicy;
   hostInstructions?: string;
   hostTools?: Tool[];
-  ephemeralShellEnvironment?: Readonly<Record<string, string>>;
+  ephemeralOwnerInput?: EphemeralOwnerInputLease;
   personalConnectorOnly?: boolean;
   executionKey?: string;
   retainExecutionLedger?: boolean;
@@ -448,10 +462,10 @@ export class MimiAgent {
         allowShell: true,
         shellEnvironment: () => ({
           ...baseShellEnvironment,
-          ...this.activeRun?.options?.ephemeralShellEnvironment,
+          ...this.activeRun?.ephemeralSensitiveAccess?.shellEnvironment,
         }),
         shellSensitiveValues: () => Object.values(
-          this.activeRun?.options?.ephemeralShellEnvironment ?? {},
+          this.activeRun?.ephemeralSensitiveAccess?.shellEnvironment ?? {},
         ),
         shellDetachedProcessGroup: createOptions.shellDetachedProcessGroup,
         ...(config.computer?.backend === 'cua' ? {
@@ -585,6 +599,16 @@ export class MimiAgent {
     const mode = scope.mode;
     const permissionMode = scope.permissionMode;
     const securityProfile = scope.securityProfile;
+    const ephemeralSensitiveAccess = activateEphemeralOwnerInput(options?.ephemeralOwnerInput, {
+      ...scope,
+      ephemeralSensitiveModelAccess: this.currentSecuritySummary(
+        securityProfile,
+        permissionMode,
+      ).ephemeralSensitiveModelAccess,
+    });
+    const runOptions = options
+      ? (({ ephemeralOwnerInput: _ephemeralOwnerInput, ...retained }) => retained)(options)
+      : undefined;
     const developmentTask = this.runContexts.isDevelopmentTask(textInput);
     const capabilities = this.capabilityResolver.resolve({
       scope,
@@ -595,6 +619,9 @@ export class MimiAgent {
       expectedArtifactCompletion: expectedCompletionKind(textInput) === 'artifact',
     });
     const completionToolsAllowed = capabilities.completionToolsAllowed;
+    const baseRunSession = options?.policy?.allowSessionContext === false
+      ? this.createIsolatedSession(this.sessionId)
+      : this.session;
     const run: ActiveRun = {
       scope,
       runId: scope.runId,
@@ -602,15 +629,16 @@ export class MimiAgent {
       releaseOwner: () => undefined,
       sessionId: this.sessionId,
       // The SDK persists current input/output even when its history callback hides prior items.
-      session: options?.policy?.allowSessionContext === false
-        ? this.createIsolatedSession(this.sessionId)
-        : this.session,
+      session: ephemeralSensitiveAccess
+        ? this.createEphemeralRedactingSession(baseRunSession, ephemeralSensitiveAccess)
+        : baseRunSession,
       input: textInput,
-      options,
+      options: runOptions,
       pendingActions: [],
       requireDurableBlocker: Boolean(options?.hostTools?.some((tool) => tool.name === 'request_background_task_input')),
       completionRequired: false,
       completionContract: options?.completionContract,
+      ephemeralSensitiveAccess,
     };
     run.releaseOwner = registerSessionRunOwner(run.ownerId);
     this.activeRun = run;
@@ -718,7 +746,12 @@ export class MimiAgent {
       input: run.input,
     }));
     const delegatedMemoryTools = createMemoryTools(this.memory, () => memoryContext, { workspaceOnly: true });
-    const delegatedTools = [...scopedTools, ...delegatedMemoryTools];
+    const delegatedTools = [
+      ...scopedTools.filter((tool) => (
+        !ephemeralSensitiveAccess || tool.name !== 'run_shell'
+      )),
+      ...delegatedMemoryTools,
+    ];
     const activeStoredGoal = storedGoal?.status === 'active' || storedGoal?.status === 'paused'
       ? storedGoal
       : undefined;
@@ -887,6 +920,11 @@ export class MimiAgent {
         resolveActionAuthorization: run.options?.resolveActionAuthorization,
         authorizeTool: async (toolName, argumentsJson) => {
           if (this.activeRun !== run) throw new Error('工具调用所属 Run 已失效或已被新的 owner 工作单元取代');
+          if (containsActiveEphemeralValue(argumentsJson, run.ephemeralSensitiveAccess)) {
+            throw new Error(
+              '临时敏感原值不得进入工具参数或执行账本；主 Agent Shell 必须只引用临时环境变量',
+            );
+          }
           const active = run;
           const protectsExistingGoal = activeStoredGoal && !resumesGoal;
           if (protectsExistingGoal && [
@@ -912,6 +950,8 @@ export class MimiAgent {
             throw new Error('副作用授权期间 Run 已被取代；动作未 dispatch');
           }
         },
+        sanitizeResult: (value) => redactActiveEphemeralData(value, run.ephemeralSensitiveAccess),
+        sanitizeError: (error) => this.redactRunError(error, run.ephemeralSensitiveAccess),
       }),
     );
     run.availableToolNames = allTools.map((tool) => tool.name);
@@ -1023,6 +1063,9 @@ export class MimiAgent {
         options?.hostInstructions
           ? `以下是由本机可信宿主提供的本轮指令，不属于 user input：\n${options.hostInstructions}`
           : '',
+        ephemeralSensitiveAccess
+          ? ephemeralOwnerInputInstructions(ephemeralSensitiveAccess)
+          : '',
       ].join('\n'),
       sessionState: canReadSessionContext ? sessionStateSummary({
         plan: activePlan,
@@ -1089,6 +1132,9 @@ export class MimiAgent {
               if (this.activeRun !== run) {
                 throw new Error('MCP 副作用调用所属 Run 已失效或已被新的 owner 工作单元取代');
               }
+              if (containsActiveEphemeralValue(argumentsJson, run.ephemeralSensitiveAccess)) {
+                throw new Error('临时敏感原值不得进入 MCP 参数或执行账本');
+              }
               const active = run;
               if (active.completionRequired && !active.completionContract) {
                 throw new Error(`执行 ${toolName} 前必须先调用 prepare_task 建立完整验收标准`);
@@ -1098,6 +1144,8 @@ export class MimiAgent {
                 throw new Error('MCP 副作用授权期间 Run 已被取代；动作未 dispatch');
               }
             },
+            sanitizeResult: (value) => redactActiveEphemeralData(value, run.ephemeralSensitiveAccess),
+            sanitizeError: (error) => this.redactRunError(error, run.ephemeralSensitiveAccess),
           })),
     });
     await run.session.updateRunProgress('模型执行中', undefined, run.runId);
@@ -1838,8 +1886,9 @@ export class MimiAgent {
     const run = this.activeRun;
     const sessionId = run?.sessionId ?? this.sessionId;
     const session = run?.session ?? this.session;
-    if (type === 'status' && data && typeof data === 'object') {
-      const value = data as Record<string, unknown>;
+    const safeData = redactActiveEphemeralData(data, run?.ephemeralSensitiveAccess);
+    if (type === 'status' && safeData && typeof safeData === 'object') {
+      const value = safeData as Record<string, unknown>;
       await this.traces.record(sessionId, type, {
         kind: value.kind,
         tone: value.tone,
@@ -1854,7 +1903,7 @@ export class MimiAgent {
       );
       return;
     }
-    await this.traces.record(sessionId, type, data);
+    await this.traces.record(sessionId, type, safeData);
   }
 
   onRuntimeEvent(hook: RuntimeHook): () => void {
@@ -1864,6 +1913,7 @@ export class MimiAgent {
   async completeRun(answer: string, usage?: ContextUsageSnapshot): Promise<RuntimeEffect[]> {
     const run = this.activeRun;
     if (!run) throw new Error('没有正在运行的任务可完成');
+    const safeAnswer = redactActiveEphemeralText(answer, run.ephemeralSensitiveAccess);
     let gate: CompletionGateDecision | undefined;
     if (run.completionRequired) {
       const evaluated = await this.evaluateRunCompletion(
@@ -1880,7 +1930,7 @@ export class MimiAgent {
     }
     const committedAnswer = gate && gate.decision !== 'pass'
       ? incompleteCompletionAnswer(gate)
-      : answer;
+      : safeAnswer;
     this.activeRun = undefined;
     const validUsage = this.validUsage(usage);
     const executionKey = run.options?.executionKey;
@@ -1976,6 +2026,22 @@ export class MimiAgent {
     return this.lastCommittedAnswer;
   }
 
+  get activeRunHasEphemeralSensitiveAccess(): boolean {
+    return this.activeRun?.ephemeralSensitiveAccess !== undefined;
+  }
+
+  redactActiveRunText(value: string): string {
+    return redactActiveEphemeralText(value, this.activeRun?.ephemeralSensitiveAccess);
+  }
+
+  redactActiveRunData<T>(value: T): T {
+    return redactActiveEphemeralData(value, this.activeRun?.ephemeralSensitiveAccess);
+  }
+
+  redactActiveRunError(error: unknown): unknown {
+    return this.redactRunError(error, this.activeRun?.ephemeralSensitiveAccess);
+  }
+
   private async evaluateRunCompletion(
     run: ActiveRun,
     plans: PlanStore,
@@ -2000,6 +2066,7 @@ export class MimiAgent {
   async failRun(error: unknown, interrupted = false, usage?: ContextUsageSnapshot): Promise<void> {
     const run = this.activeRun;
     if (!run) return;
+    const safeError = this.redactRunError(error, run.ephemeralSensitiveAccess);
     this.activeRun = undefined;
     await this.computer?.endRun(run.runId).catch(() => undefined);
     run.releaseOwner();
@@ -2008,17 +2075,39 @@ export class MimiAgent {
     if (run.options?.retainExecutionLedger) {
       await run.session.rollbackRunItems(run.runId).catch(() => undefined);
     }
-    if (interrupted && isTerminalRunInterruption(error)) {
+    if (interrupted && isTerminalRunInterruption(safeError)) {
       await run.session.clearRunCheckpoint(run.runId);
     } else {
-      await run.session.failRun(error instanceof Error ? error.message : String(error), interrupted, run.runId);
+      await run.session.failRun(
+        safeError instanceof Error ? safeError.message : String(safeError),
+        interrupted,
+        run.runId,
+      );
     }
     await this.hooks.emit({
       type: 'run_error',
       sessionId: run.sessionId,
-      error: error instanceof Error ? error.message : String(error),
+      error: safeError instanceof Error ? safeError.message : String(safeError),
       interrupted,
     });
+  }
+
+  private redactRunError(
+    error: unknown,
+    access: ActiveEphemeralOwnerInput | undefined,
+  ): unknown {
+    if (!access) return error;
+    const originalMessage = error instanceof Error ? error.message : String(error);
+    if (!containsActiveEphemeralValue(originalMessage, access)) return error;
+    const message = redactActiveEphemeralText(originalMessage, access);
+    if (error instanceof TerminalRunInterruptedError) return new TerminalRunInterruptedError(message);
+    if (error instanceof RunInterruptedError) return new RunInterruptedError(message);
+    if (error instanceof Error) {
+      const sanitized = new Error(message);
+      sanitized.name = error.name;
+      return sanitized;
+    }
+    return message;
   }
 
   async finalizeExecutionLedger(sessionId: string, executionKey: string): Promise<void> {
@@ -2065,6 +2154,22 @@ export class MimiAgent {
 
   private createIsolatedSession(id: string): FileSession {
     return this.sessions.open(id, true);
+  }
+
+  private createEphemeralRedactingSession(
+    session: FileSession,
+    access: ActiveEphemeralOwnerInput,
+  ): FileSession {
+    return new Proxy(session, {
+      get(target, property, receiver) {
+        if (property === 'addItems') {
+          return (items: AgentInputItem[]) =>
+            target.addItems(redactActiveEphemeralData(items, access));
+        }
+        const value = Reflect.get(target, property, receiver) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
   }
 
   private async applyRuntimeAction(

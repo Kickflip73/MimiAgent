@@ -28,6 +28,8 @@ interface RunIdentity {
   semanticCallIds?: boolean;
   authorizeTool?: (toolName: string, argumentsJson: string) => Promise<void>;
   authorizeSideEffect?: (toolName: string, argumentsJson: string) => Promise<void>;
+  sanitizeResult?: <T>(value: T) => T;
+  sanitizeError?: (error: unknown) => unknown;
   policyRevision?: string;
   guardedActionContext?: {
     ownerAuthenticated: boolean;
@@ -132,7 +134,15 @@ export function withExecutionLedger(
       invoke: async (runContext, input, details) => {
         const run = currentRun();
         await run?.authorizeTool?.(tool.name, input);
-        if (!sideEffect) return originalInvoke(runContext, input, details);
+        const invokeSanitized = async () => {
+          try {
+            const result = await originalInvoke(runContext, input, details);
+            return run?.sanitizeResult?.(result) ?? result;
+          } catch (error) {
+            throw run?.sanitizeError?.(error) ?? error;
+          }
+        };
+        if (!sideEffect) return invokeSanitized();
         const sdkCallId = details?.toolCall?.callId;
         const ledgerInput = (tool as LedgerAwareTool)[TOOL_LEDGER_ARGUMENTS]?.(input) ?? input;
         const argumentsJson = run?.semanticCallIds ? semanticArguments(ledgerInput) : ledgerInput;
@@ -152,7 +162,7 @@ export function withExecutionLedger(
           : sdkCallId;
         const invokeAuthorized = async () => {
           await run?.authorizeSideEffect?.(tool.name, input);
-          return originalInvoke(runContext, input, details);
+          return invokeSanitized();
         };
         if (!run || !callId) return invokeAuthorized();
         const action = (tool as LedgerAwareTool)[TOOL_ACTION_INTENT]?.(input);
