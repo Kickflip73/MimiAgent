@@ -25,6 +25,7 @@ export interface SecurityProfileSummary {
   label: string;
   permissionMode: AgentPermissionMode;
   shell: boolean;
+  ephemeralSensitiveModelAccess: boolean;
   externalTransactions: boolean;
   computerUse: boolean;
   trustedWorkspaceMcp: boolean;
@@ -36,6 +37,7 @@ export const SECURITY_PROFILES: Readonly<Record<SecurityProfile, SecurityProfile
     label: 'Safe',
     permissionMode: 'read-only',
     shell: false,
+    ephemeralSensitiveModelAccess: false,
     externalTransactions: false,
     computerUse: false,
     trustedWorkspaceMcp: false,
@@ -45,6 +47,7 @@ export const SECURITY_PROFILES: Readonly<Record<SecurityProfile, SecurityProfile
     label: 'Workstation',
     permissionMode: 'workspace',
     shell: false,
+    ephemeralSensitiveModelAccess: false,
     externalTransactions: true,
     computerUse: false,
     trustedWorkspaceMcp: false,
@@ -54,6 +57,7 @@ export const SECURITY_PROFILES: Readonly<Record<SecurityProfile, SecurityProfile
     label: 'Full Owner',
     permissionMode: 'trusted',
     shell: true,
+    ephemeralSensitiveModelAccess: true,
     externalTransactions: true,
     computerUse: true,
     trustedWorkspaceMcp: true,

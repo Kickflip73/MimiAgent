@@ -15,11 +15,12 @@ import { AttentionEngine } from './attention.js';
 import { createMimiHostTools } from './host-tools.js';
 import { connectorEffectiveCapabilityItems } from './connector-action-tool.js';
 import {
-  ephemeralSecretInstructions,
   ephemeralSecretReferences,
+  EphemeralSensitiveRunFailedError,
   EphemeralSecretsExpiredError,
   type EphemeralSecretReference,
 } from './ephemeral-secrets.js';
+import type { EphemeralOwnerInputLease } from '../runtime/ephemeral-owner-input.js';
 import type { MemoryMaintenanceRuntime } from './memory-maintenance-tools.js';
 import { MimiStore } from './store.js';
 import { eventFailureAttemptLimit } from './dispatcher-retry-policy.js';
@@ -56,8 +57,9 @@ export interface DispatcherOptions {
   memoryMaintenance?: MemoryMaintenanceRuntime;
   takeEphemeralSecrets?: (
     eventId: string,
+    sessionId: string,
     references: readonly EphemeralSecretReference[],
-  ) => Record<string, string> | undefined;
+  ) => EphemeralOwnerInputLease | undefined;
   resolveWorkspace?: (
     input: string,
     event: ImmutableEvent,
@@ -337,6 +339,7 @@ export class MimiDispatcher {
     let runIdleTimer: NodeJS.Timeout | undefined;
     let execution: { sessionId: string; key: string } | undefined;
     let leaseFailure: Error | undefined;
+    let ephemeralSensitiveValues: readonly string[] = [];
     const leaseMs = this.options.leaseMs ?? 60_000;
     const renew = setInterval(() => {
       if (leaseFailure) return;
@@ -453,12 +456,18 @@ export class MimiDispatcher {
       refreshRunIdleWatchdog();
       const modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
       const secretReferences = ephemeralSecretReferences(task.objective);
-      const ephemeralShellEnvironment = secretReferences.length
-        ? this.options.takeEphemeralSecrets?.(event.id, secretReferences)
+      const directOwnerConversation = task.type === 'conversation'
+        && event.id === active.authority.id
+        && event.type === 'command.received'
+        && event.trust === 'owner'
+        && (event.source === 'local-cli' || event.source === 'runtime-http');
+      const ephemeralOwnerInput = secretReferences.length && directOwnerConversation
+        ? this.options.takeEphemeralSecrets?.(event.id, sessionId, secretReferences)
         : undefined;
-      if (secretReferences.length && !ephemeralShellEnvironment) {
+      if (secretReferences.length && !ephemeralOwnerInput) {
         throw new EphemeralSecretsExpiredError();
       }
+      ephemeralSensitiveValues = ephemeralOwnerInput?.values ?? [];
       const hostedRun = this.host.execute({
         executionId: task.id,
         sessionId: decision.sessionId!,
@@ -468,13 +477,7 @@ export class MimiDispatcher {
         signal: runSignal,
         options: {
           ...decision.options,
-          ...(ephemeralShellEnvironment ? { ephemeralShellEnvironment } : {}),
-          ...(secretReferences.length ? {
-            hostInstructions: [
-              decision.options?.hostInstructions,
-              ephemeralSecretInstructions(secretReferences),
-            ].filter(Boolean).join('\n\n'),
-          } : {}),
+          ...(ephemeralOwnerInput ? { ephemeralOwnerInput } : {}),
           capabilityItems: this.connectors
             ? connectorEffectiveCapabilityItems(this.connectors)
             : [],
@@ -719,11 +722,14 @@ export class MimiDispatcher {
         this.store.requeueTask(task.id, this.workerId, 'MimiAgent Dispatcher 正在停止，任务已安全重排队', attemptId);
       } else {
         const configuredMaxAttempts = this.options.maxAttempts ?? 5;
-        const attemptLimit = eventFailureAttemptLimit(error, task.attemptCount, configuredMaxAttempts);
+        const taskError = ephemeralSecretReferences(task.objective).length
+          ? new EphemeralSensitiveRunFailedError(error, ephemeralSensitiveValues)
+          : error;
+        const attemptLimit = eventFailureAttemptLimit(taskError, task.attemptCount, configuredMaxAttempts);
         this.store.failTask(
           task.id,
           this.workerId,
-          error,
+          taskError,
           attemptId,
           new Date(),
           task.attemptCount < attemptLimit,

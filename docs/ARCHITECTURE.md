@@ -146,7 +146,9 @@ Session 是完整运行状态边界。启动指定 Session、从历史列表切�
 
 本地 Function Tool 的副作用以 `sessionId + runId + toolName + logicalCallId` 记入执行账本。Daemon 的 logicalCallId 由规范化参数和同参数调用序号组成：同一 attempt 内的合法重复调用分别执行，跨 attempt 的对应序号才回放；`started` 或 `failed` 状态不会自动重试。原生 MCP transport 也使用同一 executionKey；Hosted Tools 仍不在本地账本控制内。
 
-模型可调用的 Shell 默认只获得 PATH、HOME、locale、终端和临时目录等显式白名单环境；Provider、数据库、遥测、Connector 和 Mimi 控制面变量都不进入 Shell。已认证本机 owner 在直接命令中粘贴的 credential/authorization/private key 例外地进入 Kernel 内存态临时 broker：持久化和模型输入只保留指纹引用，原值最多等待十五分钟、只可由同一 Event 的首次 Run 取出，并仅作为 `MIMI_EPHEMERAL_SECRET_n` 注入该 Run 的 Shell 子进程；Daemon 重启、超时、引用不匹配或首次取用后即失效，Shell 输出中的原值再次按精确值脱敏。非 owner、外部事件、后台委派、Session/Task 重试、MCP、Connector、Memory 和普通环境都不能取得这些临时值。Shell 的正常退出、超时和取消都会回收完整 POSIX 进程组，文本后台语法检查只是早期提示。HTTP Tool 只允许公网 HTTP(S)，在初始 URL、实际 socket DNS lookup 和每次重定向处拒绝 loopback、私网、link-local、metadata、multicast、IPv4-mapped IPv6 与混合解析；禁止 HTTPS 降级，跨源只跟随无正文的 GET/HEAD 并仅保留安全读取头。
+模型可调用的 Shell 默认只获得 PATH、HOME、locale、终端和临时目录等显式白名单环境；Provider、数据库、遥测、Connector 和 Mimi 控制面变量都不进入 Shell。已认证本机 Owner 在直接 CLI 或认证 localhost Runtime HTTP 命令中粘贴的 credential/authorization/private key 例外地进入 Kernel 内存态临时 broker：持久 user input 只保留指纹引用，原值最多等待十五分钟，只可由匹配 Event + Session + owner provenance 的首次 Conversation Run 取出。RunScope 冻结为 `full-owner/trusted` 时，Session 级安全档位同时构成 Owner 对当前配置模型 Provider（含已配置兼容备选路由）的临时披露授权；原值通过非持久宿主上下文发送给 Provider，并作为 `MIMI_EPHEMERAL_SECRET_n` 只注入主 Agent 的 Shell。Safe/Workstation、外部事件、后台 Task、其他 Session、SubAgent/Team、MCP、Connector 和普通环境不能取得或继承该 lease。
+
+临时能力不依赖自然语言或命令字符串分类。所有工具调用先按当前 Run 的精确值集合检查参数，命中即在 ExecutionLedger 之前拒绝；Shell 使用变量，输出再次精确脱敏。敏感 Run 使用只代理当前 FileSession 的净化 Session port，模型生成的 assistant/function_call/function_result item 在写入前精确脱敏；工具结果和异常在返回模型与进入账本前脱敏，Runtime Event/Trace 同样净化。为了覆盖跨 chunk 泄漏，敏感 Run 不转发模型文本 delta，只在完成后交付脱敏答案。Run 完成、取消、Provider 最终失败、首次领取、超时或 Daemon 重启后能力消失；失败任务终止而不携带原值自动重试。Shell 的正常退出、超时和取消都会回收完整 POSIX 进程组，文本后台语法检查只是早期提示。HTTP Tool 只允许公网 HTTP(S)，在初始 URL、实际 socket DNS lookup 和每次重定向处拒绝 loopback、私网、link-local、metadata、multicast、IPv4-mapped IPv6 与混合解析；禁止 HTTPS 降级，跨源只跟随无正文的 GET/HEAD 并仅保留安全读取头。
 
 Session 模型偏好同时记录 provider；切换 Provider 或读取没有 provider 标记的旧偏好时回退当前 Provider 默认模型，不把一个 Provider 的模型名发送给另一个端点。
 
@@ -190,7 +192,7 @@ Schema v7 在 v6 历史保留索引之上增加旧 Event 执行字段；v8 增�
 
 MimiAgent Event 获得一个只读运行自省 Host Tool 与四个 Schedule Host Tool。`inspect_mimi_activity` 直接从 Store 生成有界快照，包括 counts、积压、dead letter、Digest/Schedule 数量及近期 Event/Run/Outbox/Audit 元数据，不返回其他事务正文、答案、投递内容或 target。Schedule Tools 用于创建一次性 follow-up、周期 routine、查询和取消计划；新计划保留发起事件的 origin Session、profile、trust provenance、reply route 和不可变 Conversation authority root。到期 occurrence 总是进入独立 `mimi-task-*` Session 与 Task lane，由 OS worker 执行，不占用来源 Conversation actor；Task 每次从 durable root 与当前 source policy 重新计算权限。owner/system 的本机 CLI 计划使用可审计的合成 root；外部来源缺根、根被删除或 provenance 不匹配时失败关闭且不发出新 Task。撤销外部 work policy 后，一次性 follow-up 只能受限收尾，interval/watch 只获得绑定当前 authentic occurrence 的 `complete_current_mimi_schedule` 以停止轮询，伪造 occurrence 不获得该工具。非 command Event 额外获得 `finish_mimi_silently`：它只修改当前 attempt 的内存 DeliveryControl，成功提交时把 suppression reason 放入 Event result 并省略 Outbox；直接 command 没有该工具，失败/重试也不继承状态。所有能力继续位于同一个事务语境，不引入 RPC 回环或工作流引擎；创建/取消工具进入事件级语义账本，重试不会重复建立计划，静默控制不是外部副作用且不进入 ledger。
 
-最终工具集取 `mode capability ∩ Session security profile ∩ event policy`。新安装的新 Session 默认使用 `safe/read-only`；`workstation/workspace` 允许工作区写入和显式 Connector 事务但不开放 Shell、Computer Use 或受信工作区 MCP，只有 `full-owner/trusted` 直接使用当前 OS 用户权限。交互式启动横幅始终显示当前 Session 的有效安全档位；`/security` 用同一权威 profile catalog 打开 TUI 选择器，`↑` / `↓` 移动、`Enter` 确认后原子写入 Session preferences，并在下一轮重新构造本地工具集和权限交集。环境配置只提供未设置 Session 偏好时的默认档位；切换不修改环境文件、不重启 Daemon，也不能启用尚未配置的 Computer Use 或尚未受信的工作区 MCP。RunScope 在开始时冻结 profile 和 permissionMode，运行中不能切换，避免同一轮授权漂移。已认证本机 owner 的自由文本 Conversation 不按自然语言关键词或正则表达式选择工具流程，而是在当前模式、安全档位和来源策略允许的范围内获得统一工具面；模型结合完整 Session 上下文选择是否以及如何调用工具。`/status`、`/sessions` 等显式斜杠命令由 `CommandHandler` 作为结构化控制协议直接处理，不依赖语义猜测。Skills 仍由独立的 Catalog/激活协议渐进披露，这只控制 Skill 指令加载，不裁剪 owner 的基础工具面。已配置的 Connector Host Tools 继续经过 profile/mode/event policy；受信工作区 MCP 只允许 Full Owner 显式配置。外部事件默认禁用 Session/Memory、本地文件、Shell、MCP、未知工具和外部写事务。命中 owner source policy 后使用固定 `reply | work` 档位，旧配置默认 `reply`，多个匹配取最高档：`reply` 只有时间、计算、当前 Session 有界活动与投递控制，不能调用 Shell、文件写、任意写网络、Connector action、后台委派或 Team；`work` 才获得原静态工作 allowlist，但仍不能读写 Runtime/Attention/People/Standing Order/Connector 配置、写 Memory、管理任意既有后台任务或调用未知 MCP。Task 的 `workspaceAccess=read` 再与来源权限相交，形成固定只读研究/checkpoint 工具集。
+最终工具集取 `mode capability ∩ Session security profile ∩ event policy`。新安装的新 Session 默认使用 `safe/read-only`；`workstation/workspace` 允许工作区写入和显式 Connector 事务但不开放 Shell、Computer Use、受信工作区 MCP 或临时敏感值的模型披露，只有 `full-owner/trusted` 直接使用当前 OS 用户权限并授权认证直接 Owner 当前 Run 的临时敏感值发送给配置模型 Provider。交互式启动横幅始终显示当前 Session 的有效安全档位；`/security` 用同一权威 profile catalog 打开 TUI 选择器，`↑` / `↓` 移动、`Enter` 确认后原子写入 Session preferences，并在下一轮重新构造本地工具集和权限交集。该持久 Session 选择代替逐值审批，但不会让外部或后台来源借用 Owner 能力。环境配置只提供未设置 Session 偏好时的默认档位；切换不修改环境文件、不重启 Daemon，也不能启用尚未配置的 Computer Use 或尚未受信的工作区 MCP。RunScope 在开始时冻结 profile 和 permissionMode，运行中不能切换，避免同一轮授权漂移。已认证本机 owner 的自由文本 Conversation 不按自然语言关键词或正则表达式选择工具流程，而是在当前模式、安全档位和来源策略允许的范围内获得统一工具面；模型结合完整 Session 上下文选择是否以及如何调用工具。`/status`、`/sessions` 等显式斜杠命令由 `CommandHandler` 作为结构化控制协议直接处理，不依赖语义猜测。Skills 仍由独立的 Catalog/激活协议渐进披露，这只控制 Skill 指令加载，不裁剪 owner 的基础工具面。已配置的 Connector Host Tools 继续经过 profile/mode/event policy；受信工作区 MCP 只允许 Full Owner 显式配置。外部事件默认禁用 Session/Memory、本地文件、Shell、MCP、未知工具和外部写事务。命中 owner source policy 后使用固定 `reply | work` 档位，旧配置默认 `reply`，多个匹配取最高档：`reply` 只有时间、计算、当前 Session 有界活动与投递控制，不能调用 Shell、文件写、任意写网络、Connector action、后台委派或 Team；`work` 才获得原静态工作 allowlist，但仍不能读写 Runtime/Attention/People/Standing Order/Connector 配置、写 Memory、管理任意既有后台任务或调用未知 MCP。Task 的 `workspaceAccess=read` 再与来源权限相交，形成固定只读研究/checkpoint 工具集。
 
 Computer Use 不随 `work` 隐式授予。source policy 还必须显式声明 `computerAccess: observe|background|foreground|admin`，可用 `computerApps` 形成 bundle ID allowlist；多个匹配 policy 的应用列表取交集。所有后台 Task、SubAgent、Team worker、`workspace/read-only` 部署和未授权 Event 固定没有电脑操作能力。
 
@@ -498,6 +500,23 @@ SHA-256 指纹和逻辑 surface，不返回命中原文。
 凭证、授权头和私钥在所有 surface 始终净化；只有 `private/owner` Memory Wiki 可保留
 owner 明确要求记住的必要邮箱或电话。Task、WorkUnit、Trace、management、Memory evidence
 及非 owner Wiki 仍会净化联系方式，历史扫描与迁移使用同一 surface 规则。
+
+直接 Owner 的敏感输入采用单一短生命周期链路：
+
+```text
+captureSensitiveText
+→ EphemeralSecretBroker(Event + Session + provenance + TTL)
+→ Dispatcher 首次 Conversation claim
+→ MimiRunOptions.ephemeralOwnerInput（仅进程内）
+→ RunScope + Full Owner 激活
+→ Provider 临时宿主上下文 + 主 Agent Shell 环境
+→ Session/Trace/Tool/Ledger/Answer 精确脱敏
+→ complete | cancel | failure 时销毁
+```
+
+`MimiRunOptions` 中的 lease 在 RunScope 校验后立即从保留 options 移除，原值只存在于
+active Run 的 owner/run/session 绑定对象；Session port 只获得精确脱敏代理。Run replay、
+Daemon restart 和 Task retry 都只能看到持久指纹，不能恢复原值。
 
 历史处置由 `daemon/data-governance.ts` 完成：
 

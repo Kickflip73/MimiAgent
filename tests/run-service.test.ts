@@ -96,6 +96,98 @@ test('shared run service streams visible deltas and records bounded progress eve
   ]);
 });
 
+test('ephemeral sensitive Runs suppress text streaming and redact final output and tool telemetry', async () => {
+  const secret = ['sk', 'RunServiceEphemeralFixture123456'].join('-');
+  const redact = (value: string) => value.split(secret).join('[REDACTED:ephemeral-secret]');
+  const events = [
+    {
+      type: 'run_item_stream_event',
+      name: 'tool_called',
+      item: { rawItem: { name: 'run_shell', arguments: `{"command":"${secret}"}` } },
+    },
+    { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: secret } },
+  ];
+  const stream = {
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: `validated ${secret}`,
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) yield event;
+    },
+  };
+  const observed: unknown[] = [];
+  const progress: unknown[] = [];
+  let completed = '';
+  const agent = {
+    activeRunHasEphemeralSensitiveAccess: true,
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => stream,
+    redactActiveRunText: redact,
+    redactActiveRunData: <T>(value: T): T =>
+      JSON.parse(redact(JSON.stringify(value))) as T,
+    redactActiveRunError: (error: unknown) =>
+      new Error(redact(error instanceof Error ? error.message : String(error))),
+    recordEvent: async (_type: string, event: unknown) => { progress.push(event); },
+    completeRun: async (answer: string) => { completed = answer; return []; },
+    failRun: async () => assert.fail('sensitive output run must complete'),
+  } as unknown as MimiAgent;
+
+  const result = await new AgentRunService(agent).execute({ input: 'redacted durable input' }, {
+    onStreamEvent: (event) => { observed.push(event); },
+  });
+  assert.equal(result.answer, 'validated [REDACTED:ephemeral-secret]');
+  assert.equal(completed, result.answer);
+  assert.equal(observed.length, 1);
+  assert.doesNotMatch(JSON.stringify(observed), new RegExp(secret));
+  assert.doesNotMatch(JSON.stringify(progress), new RegExp(secret));
+});
+
+test('Provider failures in an ephemeral sensitive Run are redacted before failure persistence', async () => {
+  const secret = ['sk', 'ProviderFailureFixture123456'].join('-');
+  const stream = {
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: undefined,
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() {
+      throw Object.assign(new Error(`provider rejected ${secret}`), { status: 503 });
+    },
+  };
+  let failed: unknown;
+  let observed: unknown;
+  const agent = {
+    activeRunHasEphemeralSensitiveAccess: true,
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => stream,
+    redactActiveRunText: (value: string) =>
+      value.split(secret).join('[REDACTED:ephemeral-secret]'),
+    redactActiveRunData: <T>(value: T): T => value,
+    redactActiveRunError: (error: unknown) => new Error(
+      (error instanceof Error ? error.message : String(error))
+        .split(secret).join('[REDACTED:ephemeral-secret]'),
+    ),
+    failRun: async (error: unknown) => { failed = error; },
+  } as unknown as MimiAgent;
+
+  await assert.rejects(
+    new AgentRunService(agent).execute({ input: 'redacted durable input' }, {
+      onError: (error) => { observed = error; },
+    }),
+    (error: Error) => {
+      assert.doesNotMatch(error.message, new RegExp(secret));
+      assert.match(error.message, /REDACTED:ephemeral-secret/);
+      return true;
+    },
+  );
+  assert.doesNotMatch(String(failed), new RegExp(secret));
+  assert.doesNotMatch(String(observed), new RegExp(secret));
+});
+
 test('shared run service records one failed terminal outcome', async () => {
   const failure = new Error('provider unavailable');
   let failed: unknown;

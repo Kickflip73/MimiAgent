@@ -337,7 +337,7 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 
 通用 `AGENT_*`、模型与 MCP 变量仍按明确白名单作为后备别名。`MIMI_CONFIG_VERSION>=2` 用于区分显式 `workspace` 限制与早期模板默认值。
 
-新安装的新 Session 默认使用 **Safe**：本地文件只读、无 Shell、无 Computer Use、无外部写事务。**Workstation** 允许工作区内文件写入和已配置 Connector 事务，但仍无 Shell、Computer Use 或受信工作区 MCP。只有 **Full Owner** 才开放当前 OS 用户权限下的 Shell，并允许使用已显式配置的 Computer Use 与受信工作区 MCP。`/status` 会同时显示当前 Session 的安全档位和当前模式下的实际执行能力；旧配置若已显式写入 `MIMI_PERMISSION_MODE`，仍会按对应档位解释为新 Session 默认值。
+新安装的新 Session 默认使用 **Safe**：本地文件只读、无 Shell、无 Computer Use、无外部写事务。**Workstation** 允许工作区内文件写入和已配置 Connector 事务，但仍无 Shell、Computer Use 或受信工作区 MCP。只有 **Full Owner** 才开放当前 OS 用户权限下的 Shell，并允许使用已显式配置的 Computer Use 与受信工作区 MCP。Full Owner 还表示认证 Owner 同意：自己在直接命令中本轮提交、且被敏感数据治理识别的值，可以只在当前 Run 发送给当前配置的模型 Provider（配置了兼容备选路由时也包括该路由）；Safe/Workstation 不会发送。这是 Session 级轻量授权，不增加逐次审批。`/status` 会同时显示当前 Session 的安全档位和当前模式下的实际执行能力；旧配置若已显式写入 `MIMI_PERMISSION_MODE`，仍会按对应档位解释为新 Session 默认值。
 
 交互式 CLI 的启动横幅始终显示当前 Session 的安全档位。输入 `/security` 会打开三档选择列表，用 `↑` / `↓` 移动、`Enter` 确认、`Esc` 取消；选择会持久化到当前 Session，并从下一轮实时生效，不修改环境文件，也不要求重启。环境变量只决定尚未设置偏好的新 Session 默认档位。未配置的 Computer Use 或未受信的工作区 MCP 不会因为切到 Full Owner 而凭空启用。
 
@@ -643,7 +643,9 @@ MimiAgent 不追求复刻大型 Agent 平台的全部能力。当前不在运行
 
 本机 owner 默认使用当前操作系统用户权限，不增加逐任务审批。`workspace` 会关闭 Shell、通用网络写入和未登记工具，`read-only` 再关闭本地文件写入；这两个档位只在用户显式选择时生效。owner/system 可使用已配置的 Connector 和已明确信任的 MCP；external/public 默认由最小事件策略隔离，只有命中 owner source policy 才获得不含配置控制与未知 MCP 的有界代办工具，Plan 模式始终只读。
 
-在本机 owner 的直接命令中临时粘贴 API Key、Bearer token 或 private key 时，MimiAgent 不再要求手工另开终端重复设置：持久 Event、Task、Session、Trace、Memory 和模型输入只保留脱敏指纹，原值只在当前 Daemon 内存中短暂存在，并以 `MIMI_EPHEMERAL_SECRET_1` 等变量提供给当前 Run 的 Shell。模型可用该变量调用明确指定的脚本或 CLI，但不得回显或保存；变量首次取用、十五分钟超时或 Daemon 重启后失效，不能被重试、后台任务、其他 Session、MCP 或 Connector 继承。Safe/Workstation 没有 Shell 时不会因此扩大权限。
+在认证本机 Owner 的直接 CLI 或认证 localhost Runtime HTTP 命令中临时粘贴 credential、authorization 或 private key 时，MimiAgent 不再要求重复设置：`captureSensitiveText` 先生成脱敏输入和无原值指纹，Event、Task、正式 user input、Session、Trace、Memory、管理接口和 ExecutionLedger 始终只接触脱敏版本。原值只在 Daemon 内存 broker 中最多等待十五分钟，并以 Event + Session + provenance 绑定的一次性 lease 交给首次 Run。
+
+若该 Run 冻结的档位是 Full Owner，lease 会作为仅本轮宿主上下文发送给配置的模型 Provider，使模型能理解、比较、校验或按要求使用值；同时只向主 Agent Shell 注入 `MIMI_EPHEMERAL_SECRET_1` 等变量。原值不得进入工具参数，Shell 只引用变量；SubAgent/Team 不继承 Shell 注入，MCP/Connector 不继承 lease。包含原值的工具参数会在账本前被拒绝，工具结果、错误、Trace、流式输出和最终回答会按当前 lease 精确脱敏。Run 完成、取消、Provider 最终失败、首次领取、超时或 Daemon 重启都会销毁能力，任务不会带原值自动重放。Safe/Workstation 只处理脱敏输入，不把原值发送给模型，也不会因此扩大权限。
 
 ## 项目文档
 

@@ -174,6 +174,50 @@ export function sanitizeSensitiveText(
   return value === undefined ? undefined : sanitizeString(value, '$', undefined, options);
 }
 
+export function redactExactSensitiveText(
+  value: string,
+  sensitiveValues: readonly string[],
+): string {
+  return [...new Set(sensitiveValues.filter(Boolean))]
+    .sort((left, right) => right.length - left.length)
+    .reduce(
+      (result, sensitive) => result.split(sensitive).join('[REDACTED:ephemeral-secret]'),
+      value,
+    );
+}
+
+export function containsExactSensitiveValue(
+  value: string,
+  sensitiveValues: readonly string[],
+): boolean {
+  return sensitiveValues.some((sensitive) => sensitive.length > 0 && value.includes(sensitive));
+}
+
+export function redactExactSensitiveData<T>(
+  value: T,
+  sensitiveValues: readonly string[],
+): T {
+  if (sensitiveValues.length === 0) return value;
+  const seen = new WeakMap<object, unknown>();
+  const redact = (candidate: unknown): unknown => {
+    if (typeof candidate === 'string') return redactExactSensitiveText(candidate, sensitiveValues);
+    if (candidate === null || typeof candidate !== 'object') return candidate;
+    const existing = seen.get(candidate);
+    if (existing !== undefined) return existing;
+    if (Array.isArray(candidate)) {
+      const output: unknown[] = [];
+      seen.set(candidate, output);
+      for (const item of candidate) output.push(redact(item));
+      return output;
+    }
+    const output: Record<string, unknown> = {};
+    seen.set(candidate, output);
+    for (const [key, item] of Object.entries(candidate)) output[key] = redact(item);
+    return output;
+  };
+  return redact(value) as T;
+}
+
 export function captureSensitiveText(
   value: string,
   options: SensitiveDataSanitizationOptions = {},

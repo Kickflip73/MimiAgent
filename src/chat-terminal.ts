@@ -216,6 +216,7 @@ export async function runMimiCli(
         profile.externalTransactions ? '外部写事务' : '无外部写事务',
         profile.computerUse ? '可配置 Computer Use' : '无 Computer Use',
         profile.trustedWorkspaceMcp ? '受信工作区 MCP' : '无受信工作区 MCP',
+        profile.ephemeralSensitiveModelAccess ? '敏感值可发模型' : '敏感值不发模型',
       ].join(' · ');
       return {
         value: profile.id,
