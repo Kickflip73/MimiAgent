@@ -1032,3 +1032,26 @@ signal、kill、注入、提权或 GUI 控制能力，因此无需 ActionIntent 
 直接调用 `inspect_processes` 完成前 5 项内存进程诊断，没有触发 Shell、审批或人工
 接管。部署过程仅在无活动 Event/Task/Outbox/host mutation 的空档安全重启，持久化
 队列保持不变。
+
+### 16.3 2026-07-28 最新完整集成构建 M1 soak
+
+所有已发现开发分支合并后，最终运行基线更新为
+`codex/mimiagent-integrated` 的 `0.12.0+b8fc2ecaea9e`（Git `a8c8202`）。
+全局 CLI/Daemon 已从旧 canary worktree 切换到主项目目录，并在 Event、Task、
+Outbox 和 host mutation 全部 idle 时完成备份、安装和重启；运行 build 与当前产物
+一致。
+
+最新构建首轮正式 canary run
+`6513dc2c-3e64-4453-acba-46badda10f71`
+在 `2026-07-28T10:17:46.793Z`～`10:18:52.062Z` 完成。20 个场景全部
+eligible/executed/success/qualifying，Browser、Computer、Screen、Shortcuts 各
+5/5，coverage 和 eligible execution success 均为 100%，
+blocked/failed/uncertain=0，S0/S1/S2/S3=0。全部证据来自正式 Manager 的固定只读
+probe，不包含发送、写入、前台激活、direct worker 或 readiness 冒充。
+
+因此最新构建的 24h 只读 soak 从 `2026-07-28T10:18:52.062Z` 起算，最早在
+`2026-07-29T10:18:52.062Z` 后终验。heartbeat `m1-24h` 每 4 小时只在运行态
+idle 时追加同构建样本，忙时仅记录 blocked。历史 129/129 仍是能力数量和分层证据，
+但不替代最终构建不可压缩的日历稳定性。大象真实目标和 QQ Adapter 仍按
+`BLOCKED.md` 诚实保持不可用，不以本只读 soak 伪造 bounded read、Draft、发送或
+72h 发送验收。

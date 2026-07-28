@@ -1,5 +1,33 @@
 # Progress
 
+## 2026-07-28 M1 latest integrated build soak
+
+1. M1 最终运行基线已切换到完整集成分支 `codex/mimiagent-integrated` 的
+   `0.12.0+b8fc2ecaea9e`（Git `a8c8202`）。全局 `mimi` 不再链接旧 canary
+   worktree，而是链接 `/Users/liuyuran/Project/MimiAgent`；Daemon 已在无 active
+   Event/Task/Outbox/host mutation 的窗口安全重启，运行 build 与当前产物一致。
+2. 最新构建首轮正式 canary run
+   `6513dc2c-3e64-4453-acba-46badda10f71`
+   (`2026-07-28T10:17:46.793Z`～`10:18:52.062Z`) 完成：
+   20 requested/eligible/executed/success/qualifying，coverage=100%，eligible
+   execution success=100%，blocked/failed/uncertain=0，S0/S1/S2/S3=0。
+3. 分层结果为 Browser `5/5`、Computer `5/5`、Screen `5/5`、Shortcuts `5/5`；
+   全部通过正式 ConnectorManager/ComputerManager 固定只读 probe，不含 direct
+   worker、readiness 冒充、写动作、发送或前台激活。脱敏证据保存在
+   `artifacts/m1-eval/canary-b8fc2ecaea9e-t0.json`。
+4. 本轮真实 probe 后 Screen/Shortcuts readiness unknown 已消除；当前 7 个启用
+   Connector 全部 online，6 个 ready。`personal-daxiang` 因 owner 真实目标未绑定
+   保持 unavailable，不影响其他能力族，也不冒充 bounded read、Draft 或发送能力。
+5. 最新构建的 24h 只读窗口从
+   `2026-07-28T10:18:52.062Z`（北京时间 `2026-07-28 18:18:52`）起算，最早在
+   `2026-07-29T10:18:52.062Z` 后终验。heartbeat `m1-24h` 已更新为每 4 小时在
+   `/Users/liuyuran/Project/MimiAgent` 运行同构建正式 canary；忙时只记录 blocked，
+   不抢占、不重启、不把 blocked 计为成功。
+6. 集成发布级 `npm run ci` 已通过：671/671，skip/todo=0；coverage line 86.29%、
+   branch 76.63%、function 82.78%，Build 与 package smoke 通过。升级前 Daemon
+   备份位于 `/tmp/mimi-upgrade-20260728.qP6Y7H/daemon-backup`，清单、摘要和 SQLite
+   integrity 已验证。
+
 ## 2026-07-28 process diagnosis permission Badcase
 
 - 根因不是 SIP：Darwin `run_shell` 无条件进入 `sandbox-exec`，而 macOS 的
