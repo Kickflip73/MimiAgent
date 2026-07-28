@@ -318,8 +318,8 @@ export interface MimiSchedulePage {
   total: number;
 }
 
-// Protocol 10 adds structured actual/estimate/raw context status while retaining contextUsed.
-export const DAEMON_PROTOCOL_VERSION = 10;
+// Protocol 11 adds Session-scoped security profiles and live chat switching.
+export const DAEMON_PROTOCOL_VERSION = 11;
 
 export interface DaemonTaskWorkerStatus {
   taskId: string;
@@ -477,6 +477,8 @@ export interface MimiChatSnapshot {
   model: string;
   mode: string;
   outputLevel: 'answer' | 'thinking' | 'tools' | 'trace';
+  permissionMode: AgentPermissionMode;
+  securityProfile: SecurityProfileSummary;
   contextUsed: number;
   contextWindow: number;
   contextStatus?: MimiContextStatus;

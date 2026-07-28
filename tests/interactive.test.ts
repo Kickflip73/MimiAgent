@@ -487,6 +487,23 @@ test('selects a conversation with arrow keys and enter', async () => {
   terminal.close();
 });
 
+test('starts a selection on the supplied current value', async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const terminal = new InteractiveTerminal([], input as never, output as never);
+  terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
+  const selected = terminal.select([
+    { value: 'safe', label: 'Safe' },
+    { value: 'workstation', label: 'Workstation' },
+    { value: 'full-owner', label: 'Full Owner' },
+  ], '选择安全档位', 'full-owner');
+
+  input.emit('keypress', '\r', { name: 'return' });
+
+  assert.equal(await selected, 'full-owner');
+  terminal.close();
+});
+
 test('cancels an active selection when the terminal closes', async () => {
   const input = new FakeInput();
   const output = new FakeOutput();

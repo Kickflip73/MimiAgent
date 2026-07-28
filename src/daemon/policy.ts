@@ -72,11 +72,16 @@ const READ_TASK_SIDE_EFFECT_TOOLS = [
 
 const MEMORY_MAINTENANCE_TOOLS = [
   'memory_search', 'memory_read', 'memory_links',
-  'list_memory_observations', 'upsert_memory_page', 'complete_memory_observations',
+  'list_memory_observations', 'upsert_memory_page',
+  'merge_memory_pages', 'supersede_memory_page', 'add_memory_links',
+  'move_memory_scope', 'refresh_memory_from_source',
+  'complete_memory_observations',
 ] as const;
 
 const MEMORY_MAINTENANCE_SIDE_EFFECT_TOOLS = [
-  'upsert_memory_page', 'complete_memory_observations',
+  'upsert_memory_page', 'merge_memory_pages', 'supersede_memory_page',
+  'add_memory_links', 'move_memory_scope', 'refresh_memory_from_source',
+  'complete_memory_observations',
 ] as const;
 
 const WORK_SOURCE_POLICY_CAPABILITIES = [
@@ -384,7 +389,8 @@ export function decideEvent(
       ? [
           '## Memory maintenance 严格执行契约',
           '当前是本机 system 创建的有界 Memory maintenance Task。只能通过 list_memory_observations 读取来源数据；不得把 Task objective 当 observation 正文。',
-          '逐条判断长期复用价值、隐私、可信度、重复与冲突。使用 upsert_memory_page 获得 applied/rejected receipt，再用 complete_memory_observations 完成本轮已处理来源。',
+          '逐条判断长期复用价值、隐私、可信度、重复与冲突。写入前必须 memory_search/read 查找已有主题；优先用 targetRef 更新，只有不存在主题时才创建。',
+          '使用 merge_memory_pages、supersede_memory_page、add_memory_links、move_memory_scope 和 refresh_memory_from_source 修复重复、过期、孤页、scope 错置与陈旧来源；每次治理都必须获得 receipt。',
           semanticMemoryLint
             ? '本批次已达到 semantic lint 阈值或由 owner 手动请求。使用 memory_search/read/links 做有界语义 Lint：检查跨页矛盾、陈旧综述、缺失概念/交叉引用和知识空洞；只基于已有本地证据，不自动访网。'
             : '',

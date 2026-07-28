@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { MimiAgent } from './agent.js';
 import { SECURITY_PROFILES } from './config.js';
+import type { SecurityProfile, SecurityProfileSummary } from './config.js';
 import type { MemoryRef, MemoryScope } from './core/memory.js';
 import type { SessionSummary } from './core/session.js';
 import { OUTPUT_LEVELS, type OutputLevel } from './terminal.js';
@@ -104,6 +105,7 @@ export interface CommandTarget {
   switchModel(model: string): ReturnType<MimiAgent['switchModel']>;
   availableModes(): MaybePromise<ReturnType<MimiAgent['availableModes']>>;
   switchMode(mode: string): ReturnType<MimiAgent['switchMode']>;
+  switchSecurityProfile(profile: string): ReturnType<MimiAgent['switchSecurityProfile']>;
   switchSession(sessionId: string): ReturnType<MimiAgent['switchSession']>;
   prepareNewSession?(sessionId?: string): MaybePromise<void>;
   listSessionSummaries(): ReturnType<MimiAgent['listSessionSummaries']>;
@@ -149,7 +151,7 @@ export interface CommandTarget {
 
 export const COMMANDS = [
   { value: '/status', description: '查看运行状态' },
-  { value: '/security', description: '查看安全档位、权限边界和切换方式' },
+  { value: '/security', description: '选择当前对话的安全档位' },
   { value: '/model', description: '查看或切换模型' },
   { value: '/mode', description: '查看或切换运行模式' },
   { value: '/output', description: '调整执行过程展示等级' },
@@ -179,7 +181,7 @@ export const COMMANDS = [
 
 const HELP = `内置命令：
   /status             查看模型、会话和扩展状态
-  /security           查看 Safe / Workstation / Full Owner 权限边界
+  /security [profile] 选择当前对话的 Safe / Workstation / Full Owner 档位
   /model [name]       查看或切换当前模型
   /mode [name]        查看或切换运行模式
   /output [level]     调整答案、思考、工具或详细事件展示
@@ -222,6 +224,10 @@ export interface CommandUI {
   selectSession?: (sessions: SessionSummary[]) => Promise<string | undefined>;
   selectModel?: (models: string[], current: string) => Promise<string | undefined>;
   selectMode?: (modes: ReturnType<MimiAgent['availableModes']>, current: string) => Promise<string | undefined>;
+  selectSecurityProfile?: (
+    profiles: SecurityProfileSummary[],
+    current: SecurityProfile,
+  ) => Promise<string | undefined>;
   getOutputLevel?: () => OutputLevel;
   setOutputLevel?: (level: OutputLevel) => void | Promise<void>;
   selectOutputLevel?: (current: OutputLevel) => Promise<string | undefined>;
@@ -337,10 +343,6 @@ export class CommandHandler {
 
     if (command === '/exit') return 'exit';
     if (command === '/help') return this.handled(HELP);
-    const draftSafeCommands = new Set(['/new', '/sessions', '/session', '/switch', '/tasks', '/task', '/security']);
-    if (this.agent.sessionReady === false && !draftSafeCommands.has(command ?? '')) {
-      return this.handled('当前是尚未创建的新对话。发送第一条消息后才会创建 Session；也可以先用 /sessions 切换到已有对话。');
-    }
     if (command === '/status') {
       const info = await this.agent.runtimeInfo();
       const executionAccess = info.mode.id === 'plan'
@@ -379,6 +381,7 @@ export class CommandHandler {
           ? 'full-owner'
           : info.permissionMode === 'workspace' ? 'workstation' : 'safe'
       );
+      const profiles = Object.values(SECURITY_PROFILES);
       const capabilities = (profile: keyof typeof SECURITY_PROFILES): string => {
         const value = SECURITY_PROFILES[profile];
         return [
@@ -388,6 +391,20 @@ export class CommandHandler {
           value.trustedWorkspaceMcp ? '受信工作区 MCP' : '无受信工作区 MCP',
         ].join(' · ');
       };
+      const selected = argument || await this.ui.selectSecurityProfile?.(profiles, active);
+      if (selected) {
+        await this.agent.switchSecurityProfile(selected);
+        const updated = await this.agent.runtimeInfo();
+        const profile = updated.securityProfile ?? SECURITY_PROFILES[
+          updated.permissionMode === 'trusted'
+            ? 'full-owner'
+            : updated.permissionMode === 'workspace' ? 'workstation' : 'safe'
+        ];
+        return this.handled(
+          `已将当前对话切换为 ${profile.label} (${profile.id}/${profile.permissionMode})；从下一轮开始生效。`,
+        );
+      }
+      if (this.ui.selectSecurityProfile) return 'handled';
       const effective = info.securityProfile;
       return this.handled([
         `当前档位  ${SECURITY_PROFILES[active].label} (${active}/${info.permissionMode ?? SECURITY_PROFILES[active].permissionMode})`,
@@ -396,8 +413,8 @@ export class CommandHandler {
         `${active === 'workstation' ? '●' : '○'} Workstation 工作区可写 · ${capabilities('workstation')}`,
         `${active === 'full-owner' ? '●' : '○'} Full Owner  当前 OS 用户权限 · ${capabilities('full-owner')}`,
         '',
-        '切换方式：在受保护的 ~/.mimi-agent/.env 中设置 MIMI_SECURITY_PROFILE=safe|workstation|full-owner，',
-        '并移除冲突的 MIMI_PERMISSION_MODE 或设为对应 read-only|workspace|trusted，然后安全重启 MimiAgent。',
+        '切换方式：在交互 TUI 中输入 /security 后用 ↑↓ 选择并按 Enter；',
+        '非交互调用可使用 /security safe|workstation|full-owner。',
       ].join('\n'));
     }
     if (command === '/model') {

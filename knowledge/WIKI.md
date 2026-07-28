@@ -1,3 +1,19 @@
+---
+schemaVersion: 1
+preferExistingTopic: true
+requireSourceRefs: true
+requireCanonicalKey: true
+allowInferredActive: false
+maxPageBytes: 200000
+maxSourcesPerPage: 50
+requireLinksForKinds:
+  - concept
+  - entity
+  - decision
+  - lesson
+  - synthesis
+---
+
 # MimiAgent Wiki Maintenance Contract
 
 - 每个页面只表达一个稳定主题，并保留逐项 SourceRef。

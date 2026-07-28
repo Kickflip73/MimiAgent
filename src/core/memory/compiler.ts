@@ -30,6 +30,12 @@ export interface CaptureInput {
   confidence?: MemoryConfidence;
   reasonCode?: string;
   supersedes?: string[];
+  aliases?: string[];
+  tags?: string[];
+  links?: string[];
+  targetRef?: MemoryRef;
+  canonicalKey?: string;
+  rawEvidence?: Array<{ sourceRef: SourceRef; content: string }>;
 }
 
 export interface WikiCompiler {

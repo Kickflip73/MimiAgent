@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -34,6 +34,32 @@ async function fixture(name: string) {
   const attention = await AttentionEngine.load(configFile, store);
   return { root, store, configFile, attention };
 }
+
+test('separate AttentionEngine instances serialize config mutations without losing updates', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-attention-lock-'));
+  const configFile = path.join(root, 'assistant.json');
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  try {
+    const first = await AttentionEngine.load(configFile, store);
+    const second = await AttentionEngine.load(configFile, store);
+    await Promise.all([
+      first.addStandingOrder('Always preserve explicit owner deadlines.'),
+      second.upsertPerson({
+        id: 'alice',
+        displayName: 'Alice',
+        aliases: [{ source: 'connector:test', actor: 'alice-1' }],
+        context: ['Alice owns the release checklist.'],
+      }),
+    ]);
+
+    const reloaded = await AttentionEngine.load(configFile, store);
+    assert.deepEqual(reloaded.listStandingOrders(), ['Always preserve explicit owner deadlines.']);
+    assert.deepEqual(reloaded.listPeople().map((person) => person.id), ['alice']);
+    assert.equal((await readdir(root)).some((name) => name.endsWith('.lock') || name.endsWith('.tmp')), false);
+  } finally {
+    store.close();
+  }
+});
 
 test('attention config mutations are serialized, validated, cloned, and persisted privately', async () => {
   const { store, configFile, attention } = await fixture('mimi-attention-config-v12');

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- serialize Attention configuration mutations across engine instances with the
+  shared file lock so concurrent updates cannot silently overwrite each other
 - add a bounded read-only `inspect_processes` Host Tool for macOS CPU/memory
   diagnosis without command-line arguments or Shell approval; keep GUI/control
   capabilities sandboxed, propagate failed Shell pipeline stages, and stop
@@ -50,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - require structured capabilities before durable background delegation, expose
   confirmed ActionIntent/Connector receipts, and bind external Plan completion to
   those receipts while preventing completed steps from being silently reopened
+- make MemoryHub a maintained three-layer LLMWiki with an Obsidian-ready owner
+  Vault (`raw/`, `wiki/`, executable `WIKI.md`), one canonical topic resolver
+  across remember/capture/maintenance, deterministic page rendering, Wiki-first
+  retrieval, evidence compounding, lifecycle metadata, and receipt-backed merge,
+  supersede, link, scope-move, stale-refresh, and deterministic lint repair;
+  legacy hashed profile storage is backed up before one-time layout migration
+- make `/security` an interactive `↑`/`↓` Session selector whose confirmed
+  profile is persisted per conversation and applied to the next Run without
+  editing environment files or restarting the Daemon
 - bound combined `run_shell` output to the execution-ledger budget so large
   command responses are truncated with an explicit marker instead of turning a
   completed side effect into a non-retryable ledger failure
@@ -86,7 +97,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool set; `allowed-tools` remains non-authoritative metadata
 - add a per-request Context Manifest with section-level estimates, deterministic
   compression records, provider actual-usage backfill, and a structured
-  `actual`/`estimate`/`raw-history` chat status; daemon protocol 10 retains the
+  `actual`/`estimate`/`raw-history` chat status; daemon protocol 11 retains the
   derived `contextUsed` field for one compatibility cycle
 - add Memory compilation V2 candidates, jobs, immutable page revisions and
   terminal receipts across remember/capture/ingest/maintenance, with digest-based

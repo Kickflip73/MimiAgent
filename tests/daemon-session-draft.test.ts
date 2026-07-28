@@ -260,17 +260,101 @@ test('a draft can list and select an existing Session without materializing itse
   }
 });
 
-test('Session-bound commands do not materialize a draft', async () => {
+test('a security selection is sent to the draft Session and materializes it', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-security-draft-'));
+  const socket = path.join(root, 'mimi.sock');
+  let invocation: Record<string, unknown> | undefined;
+  const server = new MimiIpcServer(socket, (method, params) => {
+    if (method === 'chat.invoke') {
+      invocation = params as Record<string, unknown>;
+      return { updated: true };
+    }
+    throw new Error(`unexpected method: ${method}`);
+  });
+  await server.start();
+  try {
+    const client = new MimiChatClient({
+      dataRoot: root,
+      daemonDataRoot: root,
+      workspaceRoot: root,
+      provider: 'openai',
+      permissionMode: 'read-only',
+    } as AppConfig);
+    const target = new RemoteCommandTarget(client, 'mimi-chat-security-draft', false);
+
+    await target.switchSecurityProfile('workstation');
+
+    assert.equal(target.sessionReady, true);
+    assert.equal(invocation?.operation, 'security.set');
+    assert.equal(invocation?.value, 'workstation');
+    assert.equal(invocation?.sessionKey, 'mimi-chat-security-draft');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a model selection is sent to a draft without marking its first message as sent', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-model-draft-'));
+  const socket = path.join(root, 'mimi.sock');
+  let invocation: Record<string, unknown> | undefined;
+  const server = new MimiIpcServer(socket, (method, params) => {
+    if (method === 'chat.invoke') {
+      invocation = params as Record<string, unknown>;
+      return { updated: true };
+    }
+    throw new Error(`unexpected method: ${method}`);
+  });
+  await server.start();
+  try {
+    const client = new MimiChatClient({
+      dataRoot: root,
+      daemonDataRoot: root,
+      workspaceRoot: root,
+      provider: 'openai',
+      permissionMode: 'read-only',
+    } as AppConfig);
+    const target = new RemoteCommandTarget(client, 'mimi-chat-model-draft', false);
+
+    await target.switchModel('gpt-5-mini');
+
+    assert.equal(target.sessionReady, false);
+    assert.equal(invocation?.operation, 'model.set');
+    assert.equal(invocation?.value, 'gpt-5-mini');
+    assert.equal(invocation?.sessionKey, 'mimi-chat-model-draft');
+  } finally {
+    await server.close();
+  }
+});
+
+test('commands are not centrally blocked while the Session is still a draft', async () => {
   const output: string[] = [];
+  let runtimeRequests = 0;
   const target = {
     currentSessionId: 'mimi-chat-draft',
     sessionReady: false,
-    runtimeInfo: async () => { throw new Error('must not touch the draft Session'); },
+    runtimeInfo: async () => {
+      runtimeRequests += 1;
+      return {
+        provider: 'openai',
+        model: 'gpt-5.4-mini',
+        mode: { id: 'general', label: '通用' },
+        sessionId: 'mimi-chat-draft',
+        workspaceRoot: '/tmp/draft',
+        permissionMode: 'read-only',
+        skillCount: 0,
+        memoryCount: 0,
+        mcpServers: [],
+        guidanceFiles: [],
+        team: { total: 0, running: 0, completed: 0 },
+      };
+    },
   } as unknown as CommandTarget;
   const handler = new CommandHandler(target, async () => undefined, {
     write: (message) => { output.push(message); },
   });
 
   assert.equal(await handler.execute('/status'), 'handled');
-  assert.match(output[0] ?? '', /发送第一条消息后才会创建 Session/);
+  assert.equal(runtimeRequests, 1);
+  assert.match(output[0] ?? '', /gpt-5\.4-mini/);
+  assert.doesNotMatch(output[0] ?? '', /发送第一条消息后才会创建 Session/);
 });

@@ -206,6 +206,8 @@ export async function createMimiChatSnapshot(
     model: snapshot.runtime.model,
     mode: snapshot.runtime.mode.label,
     outputLevel: snapshot.runtime.outputLevel,
+    permissionMode: snapshot.runtime.permissionMode,
+    securityProfile: snapshot.runtime.securityProfile,
     contextUsed: snapshot.context.status.value,
     contextWindow: snapshot.context.contextWindow,
     contextStatus: snapshot.context.status,
@@ -1538,14 +1540,21 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const params = object(rawParams);
         const draftSessionId = assertSessionId(requiredString(params.draftSessionId, 'draftSessionId'));
         const requestedWorkspaceRoot = optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot');
+        const draftExists = (await host!.listSessionSummaries())
+          .some((summary) => summary.id === draftSessionId);
         const snapshot = await createMimiChatSnapshot(
-          host!, host!.currentSessionId, config.workspaceRoot, 1,
+          host!,
+          draftExists ? draftSessionId : host!.currentSessionId,
+          config.workspaceRoot,
+          1,
         );
         return sanitizeSensitiveData({
           ...snapshot,
           sessionId: draftSessionId,
           workspaceRoot: requestedWorkspaceRoot ?? snapshot.workspaceRoot,
           draft: true,
+          permissionMode: config.permissionMode ?? 'trusted',
+          securityProfile: securityProfileSummary(config),
           contextUsed: 0,
           contextStatus: {
             value: 0,
@@ -1595,6 +1604,10 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             if (operation === 'modes') return agent.availableModes();
             if (operation === 'mode.set') {
               await agent.switchMode(requiredString(params.value, 'value'));
+              return agent.runtimeInfo();
+            }
+            if (operation === 'security.set') {
+              await agent.switchSecurityProfile(requiredString(params.value, 'value'));
               return agent.runtimeInfo();
             }
             if (operation === 'output.set') {

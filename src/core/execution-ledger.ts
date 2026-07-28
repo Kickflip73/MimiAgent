@@ -212,6 +212,7 @@ export class ExecutionLedger {
       pretty: false,
       // Losing this ledger could replay a side effect whose outcome is unknown.
       // Quarantine the file, but fail closed until the user inspects it.
+      preserveSchemaMismatch: true,
       recoverCorrupt: false,
     });
   }

@@ -9,7 +9,14 @@ import {
   sanitizeSensitiveData,
   sanitizeSensitiveText,
 } from '../../core/data-sanitizer.js';
-import { DEFAULT_WIKI_SCHEMA, memoryPageMetadataSchema } from './wiki-schema.js';
+import {
+  DEFAULT_WIKI_SCHEMA,
+  ensureWikiSchemaFrontmatter,
+  memoryPageMetadataSchema,
+  parseWikiSchemaPolicy,
+  type WikiSchemaPolicy,
+} from './wiki-schema.js';
+import { extractWikiContent } from './wiki-renderer.js';
 import type { PersistedLintIssue } from './sqlite-catalog.js';
 
 const MAX_PAGE_BYTES = 200_000;
@@ -24,7 +31,11 @@ function pageFileName(page: Pick<MemoryPageMetadata, 'id' | 'kind'>): string {
 }
 
 export function serializePage(metadata: MemoryPageMetadata, body: string): string {
-  return `---\n${stringifyYaml(metadata, { lineWidth: 0 }).trimEnd()}\n---\n\n${body.trim()}\n`;
+  const serializedMetadata = memoryPageMetadataSchema.parse({
+    ...metadata,
+    aliases: [...new Set([metadata.title, ...metadata.aliases])],
+  });
+  return `---\n${stringifyYaml(serializedMetadata, { lineWidth: 0 }).trimEnd()}\n---\n\n${body.trim()}\n`;
 }
 
 export function parsePage(source: string, file?: string): MemoryPage {
@@ -56,16 +67,28 @@ export class WikiVault {
     if (this.scope === 'private') await chmod(this.root, 0o700);
     try {
       await stat(this.wikiFile);
+      const existing = await readFile(this.wikiFile, 'utf8');
+      const upgraded = ensureWikiSchemaFrontmatter(existing);
+      if (upgraded !== existing) {
+        await withExclusiveFileLock(this.wikiFile, async () => {
+          const temporary = `${this.wikiFile}.${process.pid}.${randomUUID()}.tmp`;
+          await writeFile(temporary, upgraded, {
+            flag: 'wx',
+            mode: this.scope === 'private' ? 0o600 : 0o644,
+          });
+          await rename(temporary, this.wikiFile);
+        });
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       await writeFile(this.wikiFile, DEFAULT_WIKI_SCHEMA, { mode: this.scope === 'private' ? 0o600 : 0o644, flag: 'wx' });
     }
   }
 
-  async loadSchema(): Promise<string> {
+  async loadSchema(): Promise<WikiSchemaPolicy> {
     const info = await stat(this.wikiFile);
     if (!info.isFile() || info.size > 100_000) throw new Error('WIKI.md 必须是小于 100KB 的常规文件');
-    return readFile(this.wikiFile, 'utf8');
+    return parseWikiSchemaPolicy(await readFile(this.wikiFile, 'utf8'));
   }
 
   async read(ref: MemoryRef): Promise<MemoryDocument> {
@@ -103,6 +126,7 @@ export class WikiVault {
   }
 
   async write(metadata: MemoryPageMetadata, body: string, expectedDigest?: string): Promise<MemoryPage> {
+    const policy = await this.loadSchema();
     const sanitization = {
       preserveContacts: this.scope === 'private' && this.profileId === 'owner',
     };
@@ -118,7 +142,12 @@ export class WikiVault {
     const file = path.resolve(this.root, pageFileName(parsedMetadata));
     if (!contained(this.root, file)) throw new Error('Wiki 页面路径越界');
     const source = serializePage(parsedMetadata, page.body);
-    if (Buffer.byteLength(source) > MAX_PAGE_BYTES) throw new Error(`Wiki 页面不能超过 ${MAX_PAGE_BYTES} 字节`);
+    const maxPageBytes = Math.min(MAX_PAGE_BYTES, policy.maxPageBytes);
+    if (Buffer.byteLength(source) > maxPageBytes) throw new Error(`Wiki 页面不能超过 ${maxPageBytes} 字节`);
+    if (policy.requireSourceRefs && parsedMetadata.sourceRefs.length === 0) throw new Error('Wiki 页面缺少 SourceRef');
+    if (parsedMetadata.sourceRefs.length > policy.maxSourcesPerPage) {
+      throw new Error(`Wiki 页面来源不能超过 ${policy.maxSourcesPerPage} 个`);
+    }
     await withExclusiveFileLock(this.root, async () => {
       await mkdir(path.dirname(file), { recursive: true, mode: this.scope === 'private' ? 0o700 : 0o755 });
       if (expectedDigest) {
@@ -156,12 +185,23 @@ export class WikiVault {
 
   async refreshNavigation(operation: 'ingest' | 'capture' | 'lint', digest: string, refs: readonly MemoryRef[]): Promise<void> {
     const pages = await this.list();
+    const sorted = pages.sort((left, right) => left.metadata.title.localeCompare(right.metadata.title));
+    const current = sorted.filter((page) => page.metadata.status !== 'superseded' && page.metadata.status !== 'expired');
+    const history = sorted.filter((page) => page.metadata.status === 'superseded' || page.metadata.status === 'expired');
+    const entry = (page: MemoryDocument): string => {
+      const summary = extractWikiContent(page.body).replace(/\s+/g, ' ').trim().slice(0, 140);
+      return `- [[${page.metadata.kind}/${page.ref.id}|${page.metadata.title}]] · ${page.metadata.status} · ${page.metadata.kind} · ${page.metadata.updatedAt.slice(0, 10)} · ${page.metadata.sourceRefs.length} source(s) — ${summary}`;
+    };
     const index = [
       '# Wiki Index',
       '',
-      ...pages.sort((left, right) => left.metadata.title.localeCompare(right.metadata.title)).map((page) =>
-        `- [[${page.metadata.title}]] · ${page.metadata.kind} · ${page.metadata.updatedAt.slice(0, 10)} · ${page.metadata.sourceRefs.length} source(s) — ${page.body.replace(/^#.*$/gm, '').replace(/\s+/g, ' ').trim().slice(0, 140)}`
-      ),
+      '## 当前知识',
+      '',
+      ...(current.length > 0 ? current.map(entry) : ['- 暂无']),
+      '',
+      '## 历史版本',
+      '',
+      ...(history.length > 0 ? history.map(entry) : ['- 暂无']),
       '',
     ].join('\n');
     await withExclusiveFileLock(this.root, async () => {

@@ -12,6 +12,7 @@ import { z } from 'zod';
 import {
   preferredEnvironmentValue,
   privateRuntimePaths,
+  SECURITY_PROFILES,
   securityProfileSummary,
   type AgentPermissionMode,
   type AppConfig,
@@ -34,7 +35,13 @@ import {
   type CompletionGateDecision,
   type CompletionReport,
 } from '../core/completion.js';
-import { contentDigest, type CaptureInput, type MemoryHub, type SourceRef } from '../core/memory.js';
+import {
+  contentDigest,
+  type CaptureInput,
+  type MemoryHub,
+  type MemoryRef,
+  type SourceRef,
+} from '../core/memory.js';
 import { PlanStore, type PlanStep } from '../core/plan.js';
 import { runAnswerDigest, type RunCommitJournal } from '../core/run-commit-journal.js';
 import { FileChangeJournal } from '../core/file-change-journal.js';
@@ -239,6 +246,8 @@ export interface AgentSessionSnapshot {
     model: string;
     mode: (typeof AGENT_MODES)[number];
     outputLevel: RuntimeOutputLevel;
+    permissionMode: AgentPermissionMode;
+    securityProfile: ReturnType<typeof securityProfileSummary>;
   };
   context: {
     estimatedTokens: number;
@@ -323,7 +332,9 @@ export class MimiAgent {
   private readonly toolSetBuilder = new ToolSetBuilder();
   private readonly requestFactory = new AgentRequestFactory();
   private readonly personalMessages = new PersonalMessageHub();
-  private readonly tools: Tool[];
+  private readonly localTools: Readonly<Record<SecurityProfile, Tool[]>>;
+  private readonly extensionTools: Tool[];
+  private readonly mcpTools: Tool[];
   private session: FileSession;
   private sessionId: string;
   private mode: AgentMode = initialMode();
@@ -331,8 +342,10 @@ export class MimiAgent {
   private readonly defaultMode: AgentMode;
   private readonly defaultOutputLevel: RuntimeOutputLevel;
   private readonly defaultModelName: string;
-  private readonly permissionMode: AgentPermissionMode;
-  private readonly securityProfile: SecurityProfile;
+  private permissionMode: AgentPermissionMode;
+  private securityProfile: SecurityProfile;
+  private readonly defaultPermissionMode: AgentPermissionMode;
+  private readonly defaultSecurityProfile: SecurityProfile;
   private boundSessionActorId?: string;
   private activeRun?: ActiveRun;
   private lastCapabilitySnapshot?: Readonly<EffectiveCapabilitySnapshot>;
@@ -377,12 +390,15 @@ export class MimiAgent {
     this.sessionId = components.sessionId;
     this.modelName = components.modelRuntime.name;
     this.modelProfile = components.modelRuntime.profile;
-    this.permissionMode = config.permissionMode ?? 'trusted';
-    this.securityProfile = securityProfileSummary(config).id;
+    const initialSecurity = securityProfileSummary(config);
+    this.permissionMode = initialSecurity.permissionMode;
+    this.securityProfile = initialSecurity.id;
     this.runContexts = new RunContextBuilder(config.workspaceRoot, () => this.sessionId);
     this.defaultMode = this.mode;
     this.defaultOutputLevel = this.outputLevel;
     this.defaultModelName = this.modelName;
+    this.defaultPermissionMode = this.permissionMode;
+    this.defaultSecurityProfile = this.securityProfile;
     this.session = this.createSession(this.sessionId);
     this.plans.onChange((sessionId, steps) => this.hooks.emit({ type: 'plan_updated', sessionId, steps }));
     this.runner = new Runner({
@@ -403,27 +419,41 @@ export class MimiAgent {
           : event.type === 'run_error' ? (event.interrupted ? 'turn_interrupted' : 'error') : event.type;
       await this.traces.record(event.sessionId, traceType, event);
     });
-    const localAccess = this.permissionMode === 'trusted'
-      ? {
-          ...(createOptions.restrictReadsToWorkspace ? { readablePaths: ['.'] } : {}),
-          allowProtectedPathShellAccess: createOptions.protectRuntimePathsFromShell !== true,
-          allowShell: true,
-          shellEnvironment: createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env),
-          shellDetachedProcessGroup: createOptions.shellDetachedProcessGroup,
-          ...(config.computer?.backend === 'cua' ? {
-            blockedUnixSocketPaths: [
-              path.join(os.homedir(), 'Library', 'Caches', 'cua-driver', 'cua-driver.sock'),
-            ],
-          } : {}),
-          mutationObserver: this.fileChanges,
-        }
-      : {
-          readablePaths: ['.'],
-          writablePaths: this.permissionMode === 'read-only' ? [] : ['.'],
-          allowWrite: this.permissionMode !== 'read-only',
-          allowShell: false,
-          mutationObserver: this.fileChanges,
-        };
+    const createLocalTools = (access: Parameters<typeof createTools>[3]) => createTools(
+      config.workspaceRoot,
+      config.provider === 'openai',
+      privateRuntimePaths(config),
+      access,
+    );
+    this.localTools = {
+      safe: createLocalTools({
+        readablePaths: ['.'],
+        writablePaths: [],
+        allowWrite: false,
+        allowShell: false,
+        mutationObserver: this.fileChanges,
+      }),
+      workstation: createLocalTools({
+        readablePaths: ['.'],
+        writablePaths: ['.'],
+        allowWrite: true,
+        allowShell: false,
+        mutationObserver: this.fileChanges,
+      }),
+      'full-owner': createLocalTools({
+        ...(createOptions.restrictReadsToWorkspace ? { readablePaths: ['.'] } : {}),
+        allowProtectedPathShellAccess: createOptions.protectRuntimePathsFromShell !== true,
+        allowShell: true,
+        shellEnvironment: createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env),
+        shellDetachedProcessGroup: createOptions.shellDetachedProcessGroup,
+        ...(config.computer?.backend === 'cua' ? {
+          blockedUnixSocketPaths: [
+            path.join(os.homedir(), 'Library', 'Caches', 'cua-driver', 'cua-driver.sock'),
+          ],
+        } : {}),
+        mutationObserver: this.fileChanges,
+      }),
+    };
     const computerTools = this.computer ? createComputerTools(this.computer, () => {
       const active = this.activeRun;
       if (!active) return undefined;
@@ -441,8 +471,8 @@ export class MimiAgent {
         supportsImageInput: this.modelProfile.supportsImageInput,
       };
     }) : [];
-    this.tools = toolsForPermission(this.permissionMode, [
-      ...createTools(config.workspaceRoot, config.provider === 'openai', privateRuntimePaths(config), localAccess),
+    this.mcpTools = this.mcp.createTools();
+    this.extensionTools = [
       ...computerTools,
       ...this.skills.createTools({
         access: () => ({
@@ -463,7 +493,6 @@ export class MimiAgent {
           }, active.runId);
         },
       }),
-      ...this.mcp.createTools(),
       ...createRuntimeControlTools({
         status: () => this.runtimeInfo(),
         models: () => this.availableModels(),
@@ -479,7 +508,26 @@ export class MimiAgent {
           this.activeRun.pendingActions.push(action);
         },
       }),
-    ], {}, this.securityProfile);
+    ];
+  }
+
+  private registeredTools(profile = this.securityProfile): Tool[] {
+    return [
+      ...this.localTools[profile],
+      ...this.extensionTools,
+      ...(profile === 'full-owner' ? this.mcpTools : []),
+    ];
+  }
+
+  private currentSecuritySummary(
+    profile = this.securityProfile,
+    permissionMode = this.permissionMode,
+  ): ReturnType<typeof securityProfileSummary> {
+    return securityProfileSummary({
+      ...this.config,
+      securityProfile: profile,
+      permissionMode,
+    });
   }
 
   private modelName: string;
@@ -527,6 +575,8 @@ export class MimiAgent {
       options,
     });
     const mode = scope.mode;
+    const permissionMode = scope.permissionMode;
+    const securityProfile = scope.securityProfile;
     const developmentTask = this.runContexts.isDevelopmentTask(textInput);
     const capabilities = this.capabilityResolver.resolve({
       scope,
@@ -595,9 +645,9 @@ export class MimiAgent {
     }
     const runComputerAccess = capabilities.computerAccess;
     const availableScopedTools = this.toolSetBuilder.scoped(
-      [...this.tools, ...(options?.hostTools ?? [])],
-      this.permissionMode,
-      this.securityProfile,
+      [...this.registeredTools(securityProfile), ...(options?.hostTools ?? [])],
+      permissionMode,
+      securityProfile,
       runPolicy,
       runComputerAccess !== 'none',
     );
@@ -719,7 +769,7 @@ export class MimiAgent {
         createTeamWorkerTools({
           workspaceRoot: this.config.workspaceRoot,
           dataRoot: this.config.dataRoot,
-          permissionMode: this.permissionMode,
+          permissionMode,
           task,
           memorySearchTool: delegatedMemoryTools.find((tool) => tool.name === 'memory_search'),
         }),
@@ -746,7 +796,7 @@ export class MimiAgent {
         observation,
       }),
     });
-    const runTools = toolsForPermission(this.permissionMode, [
+    const runTools = toolsForPermission(permissionMode, [
       ...scopedTools,
       ...memoryTools,
       ...(options?.personalMessage
@@ -793,14 +843,14 @@ export class MimiAgent {
           return gate;
         },
       }) : []),
-    ], {}, this.securityProfile);
+    ], {}, securityProfile);
     const preparedTools = this.toolSetBuilder.final(
       mode,
       runTools,
       teamTools,
       subAgentTools,
-      this.permissionMode,
-      this.securityProfile,
+      permissionMode,
+      securityProfile,
       runPolicy,
     );
     const allTools = withExecutionLedger(
@@ -953,7 +1003,7 @@ export class MimiAgent {
         BASE_INSTRUCTIONS,
         `当前模式：${currentMode.label}。${currentMode.instruction}`,
         canReadLocal
-          ? `当前工作区：${this.config.workspaceRoot}。MimiAgent 运行时代码目录：${this.runtimeRoot}。本地工具权限：${this.permissionMode}。用户要求检查或修改项目/Agent 自身时，使用当前权限提供的文件工具和 Shell（若可用）实际读取、编辑并验证。`
+          ? `当前工作区：${this.config.workspaceRoot}。MimiAgent 运行时代码目录：${this.runtimeRoot}。本地工具权限：${permissionMode}。用户要求检查或修改项目/Agent 自身时，使用当前权限提供的文件工具和 Shell（若可用）实际读取、编辑并验证。`
           : '本轮来源无权读取本地工作区、Skills、记忆或持久状态；不要猜测、泄露或声称访问了这些数据。',
         this.runContexts.causeInstructions(options?.cause),
         personalConnectorOnly
@@ -1018,7 +1068,10 @@ export class MimiAgent {
       outputReserve: modelProfile.outputReserve,
       focusedOutputLimit: focusedOwnerRun ? 4_096 : undefined,
       // Plan mode keeps only the explicit read-only MCP resource wrappers above.
-      mcpServers: mode === 'plan' || runPolicy?.allowMcp === false || personalConnectorOnly
+      mcpServers: mode === 'plan'
+        || securityProfile !== 'full-owner'
+        || runPolicy?.allowMcp === false
+        || personalConnectorOnly
         ? []
         : withMcpExecutionLedger(this.mcp.servers, this.ledger, () => ({
             sessionId: run.sessionId,
@@ -1109,6 +1162,10 @@ export class MimiAgent {
     const nextOutputLevel = RUNTIME_OUTPUT_LEVELS.includes(preferences.outputLevel as RuntimeOutputLevel)
       ? preferences.outputLevel as RuntimeOutputLevel
       : this.defaultOutputLevel;
+    const nextSecurityProfile = preferences.securityProfile ?? this.defaultSecurityProfile;
+    const nextPermissionMode = preferences.securityProfile
+      ? SECURITY_PROFILES[nextSecurityProfile].permissionMode
+      : this.defaultPermissionMode;
     const requestedModel = preferences.provider === this.config.provider
       && preferences.model && /^[a-zA-Z0-9._:/-]+$/.test(preferences.model)
       ? preferences.model
@@ -1121,6 +1178,8 @@ export class MimiAgent {
     this.session = nextSession;
     this.mode = nextMode;
     this.outputLevel = nextOutputLevel;
+    this.securityProfile = nextSecurityProfile;
+    this.permissionMode = nextPermissionMode;
     this.modelName = nextModel.name;
     this.model = nextModel.model;
     this.modelProfile = nextModel.profile;
@@ -1166,6 +1225,10 @@ export class MimiAgent {
     const outputLevel = RUNTIME_OUTPUT_LEVELS.includes(preferences.outputLevel as RuntimeOutputLevel)
       ? preferences.outputLevel as RuntimeOutputLevel
       : this.defaultOutputLevel;
+    const securityProfile = preferences.securityProfile ?? this.defaultSecurityProfile;
+    const permissionMode = preferences.securityProfile
+      ? SECURITY_PROFILES[securityProfile].permissionMode
+      : this.defaultPermissionMode;
     const requestedModel = preferences.provider === this.config.provider
       && preferences.model && /^[a-zA-Z0-9._:/-]+$/.test(preferences.model)
       ? preferences.model
@@ -1185,6 +1248,8 @@ export class MimiAgent {
         model: model.name,
         mode,
         outputLevel,
+        permissionMode,
+        securityProfile: this.currentSecuritySummary(securityProfile, permissionMode),
       },
       context: {
         estimatedTokens: this.contextStatusFor(sessionId, items, model.profile.contextWindow).value,
@@ -1297,6 +1362,47 @@ export class MimiAgent {
     return this.memory.capture(input, this.runContexts.forInspection(profileId, 'memory-maintenance'));
   }
 
+  async memoryMerge(input: Parameters<MemoryHub['merge']>[0], profileId = 'owner') {
+    return this.memory.merge(input, this.runContexts.forInspection(profileId, 'memory-maintenance'));
+  }
+
+  async memorySupersede(
+    ref: MemoryRef,
+    replacementRef: MemoryRef | undefined,
+    reasonCode: string,
+    profileId = 'owner',
+  ) {
+    return this.memory.supersede(
+      ref,
+      replacementRef,
+      reasonCode,
+      this.runContexts.forInspection(profileId, 'memory-maintenance'),
+    );
+  }
+
+  async memoryAddLinks(ref: MemoryRef, links: string[], reasonCode: string, profileId = 'owner') {
+    return this.memory.addLinks(
+      ref,
+      links,
+      reasonCode,
+      this.runContexts.forInspection(profileId, 'memory-maintenance'),
+    );
+  }
+
+  async memoryMove(
+    ref: MemoryRef,
+    targetScope: 'private' | 'workspace',
+    reasonCode: string,
+    profileId = 'owner',
+  ) {
+    return this.memory.move(
+      ref,
+      targetScope,
+      reasonCode,
+      this.runContexts.forInspection(profileId, 'memory-maintenance'),
+    );
+  }
+
   async memoryCaptureRound(roundRef?: string) {
     const value = roundRef?.trim();
     let title: string;
@@ -1350,8 +1456,8 @@ export class MimiAgent {
     return this.memory.lint(this.runContexts.forInspection(profileId, 'memory-lint'));
   }
 
-  async memoryRefresh(limit = 20) {
-    return this.memory.refreshStale(limit, this.runContexts.forInspection());
+  async memoryRefresh(limit = 20, profileId = 'owner') {
+    return this.memory.refreshStale(limit, this.runContexts.forInspection(profileId, 'memory-maintenance'));
   }
 
   async memoryReindex() {
@@ -1424,12 +1530,14 @@ export class MimiAgent {
       outputLevel: this.outputLevel,
       maxTurns: this.config.maxTurns,
       permissionMode: this.permissionMode,
-      securityProfile: securityProfileSummary(this.config),
+      securityProfile: this.currentSecuritySummary(),
       skillCount: capabilitySnapshot?.skills.length ?? this.skills.list().length,
       memoryCount: memoryStatus.pages,
-      mcpServers: this.mcpServerNames,
-      mcpStatuses: this.mcp.statuses(),
-      computer: this.computer?.status() ?? { configured: false },
+      mcpServers: this.securityProfile === 'full-owner' ? this.mcpServerNames : [],
+      mcpStatuses: this.securityProfile === 'full-owner' ? this.mcp.statuses() : [],
+      computer: this.securityProfile === 'full-owner'
+        ? this.computer?.status() ?? { configured: false, backend: undefined }
+        : { configured: false, backend: undefined },
       capabilitySnapshot,
       guidanceFiles: [...soul.files, ...projectGuidance.files]
         .map((file) => ({ scope: file.scope, path: file.path, truncated: file.truncated })),
@@ -1513,7 +1621,7 @@ export class MimiAgent {
       expectedArtifactCompletion: false,
     });
     const tools = this.toolSetBuilder.scoped(
-      this.tools,
+      this.registeredTools(),
       this.permissionMode,
       this.securityProfile,
       policy,
@@ -1581,6 +1689,15 @@ export class MimiAgent {
     await this.session.setPreferences({ mode: this.mode });
   }
 
+  async switchSecurityProfile(profile: string): Promise<void> {
+    if (!Object.hasOwn(SECURITY_PROFILES, profile)) throw new Error(`未知安全档位：${profile}`);
+    if (this.activeRun) throw new Error(`Session ${this.activeRun.sessionId} 仍有任务运行中，不能切换安全档位`);
+    const next = profile as SecurityProfile;
+    await this.session.setPreferences({ securityProfile: next });
+    this.securityProfile = next;
+    this.permissionMode = SECURITY_PROFILES[next].permissionMode;
+  }
+
   async setOutputLevel(level: RuntimeOutputLevel): Promise<void> {
     if (!RUNTIME_OUTPUT_LEVELS.includes(level)) throw new Error(`未知输出等级：${level}`);
     this.outputLevel = level;
@@ -1638,13 +1755,17 @@ export class MimiAgent {
   }
 
   get toolNames(): string[] {
-    const scoped = [...this.tools, ...createMemoryTools(this.memory, () => this.runContexts.forInspection()), ...createPlanTools(this.plans)];
+    const scoped = [
+      ...this.registeredTools(),
+      ...createMemoryTools(this.memory, () => this.runContexts.forInspection()),
+      ...createPlanTools(this.plans),
+    ];
     return toolNamesForMode(this.mode, scoped, this.permissionMode, this.securityProfile);
   }
 
   async visibleToolNames(hostTools: Tool[] = []): Promise<string[]> {
     const scoped = [
-      ...this.tools,
+      ...this.registeredTools(),
       ...hostTools,
       ...createMemoryTools(this.memory, () => this.runContexts.forInspection()),
       ...createPlanTools(this.plans),
@@ -1655,7 +1776,11 @@ export class MimiAgent {
       this.permissionMode,
       this.securityProfile,
     );
-    if (this.mode === 'plan' || this.mcp.servers.length === 0) return functionNames;
+    if (
+      this.mode === 'plan'
+      || this.securityProfile !== 'full-owner'
+      || this.mcp.servers.length === 0
+    ) return functionNames;
     const mcpTools = await getAllMcpTools({
       mcpServers: this.mcp.servers,
       includeServerInToolNames: true,
