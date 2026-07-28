@@ -10,7 +10,15 @@ Connector 把个人大象、微信 Bot、邮件、Messages、新闻、天气、�
 
 `mimi daemon doctor` 复用与 Host 相同的 schema，只读检查配置、启用项、脚本路径、必要系统命令、Provider Key 是否存在以及本机 Socket/launchd 状态。它不启动 Connector、不读取邮件、消息、联系人、屏幕等私人数据，也不主动触发 macOS 权限提示。
 
-已有渠道可由 Agent 调用 `set_mimi_connector_enabled` 原子启停：它只修改目标 Connector 的 `enabled`，不读取或改写凭证、命令、环境白名单和 action 目录。修改其他配置后运行 `mimi daemon connectors reload` 或让 Agent 调用 `reload_mimi_connectors`，可在不重启 Daemon 的情况下换代 Connector 子进程。`inspect_mimi_capabilities` 返回配置文件绝对路径和有界能力目录。Host 会完整解析新配置；JSON/schema 无效时旧集合保持在线。启停和重载都仅在没有进行中的 delivery/action 时切换，避免中断结果不确定的真实事务；繁忙时配置不变并快速失败。切换会短暂停止旧渠道再启动新渠道，不运行双份 Connector，也不自动监视文件变化。
+已有渠道可由 Agent 调用 `set_mimi_connector_enabled`，或由 operator 执行
+`mimi daemon connectors enable <id>` / `mimi daemon connectors disable <id>`
+原子启停。两条路径都只修改目标 Connector 的 `enabled`，不读取或改写凭证、命令、
+环境白名单和 action 目录。修改其他配置后运行 `mimi daemon connectors reload`
+或让 Agent 调用 `reload_mimi_connectors`，可在不重启 Daemon 的情况下换代 Connector
+子进程。`inspect_mimi_capabilities` 返回配置文件绝对路径和有界能力目录。Host 会
+完整解析新配置；JSON/schema 无效时旧集合保持在线。启停和重载都仅在没有进行中的
+delivery/action 时切换，避免中断结果不确定的真实事务；繁忙时配置不变并快速失败。
+切换会短暂停止旧渠道再启动新渠道，不运行双份 Connector，也不自动监视文件变化。
 
 ```json
 {
@@ -167,11 +175,45 @@ Connector 执行完成后返回：
 
 `personal-message-connector.mjs` 是大象、QQ、微信个人账号 Adapter 的共享 NDJSON host。当前只实现 `--channel=daxiang`；`personal-qq` 和 `personal-wechat` 仅保留默认关闭、无 action 的配置槽位，启用时会明确报告尚未实现，不会冒充可用通道。
 
+M0 运行基线允许把尚未达到其所属阶段门禁的实验渠道暂时停用，但不得删除配置。
+当前阶段归属和恢复门禁如下：
+
+| Connector | 阶段 | 恢复启用门禁 |
+|---|---|---|
+| `personal-qq` | M1 | 真实 Adapter 已实现；账号、bounded coverage、稳定会话 ID、后台安全和超时 uncertain 测试全部通过 |
+| `personal-daxiang` | M1 | 当前账号和后台网页会话已验证；owner 选择与 stable sid、账号指纹、会话类型和授权 revision 绑定；target-not-bound、页面失效和禁止跨 Browser/Computer/Shell 降级测试通过 |
+| `macos-life` | M4 | Calendar/Reminders TCC 已由 owner 授予；只读 probe、稳定 UID/ID、后台安全和动作后核验通过 |
+
+恢复时逐项执行 `mimi daemon connectors enable <id>`，等待启动宽限期后复查
+`mimi daemon connectors` 与 `mimi daemon doctor`；出现 offline、unknown、stale 或
+unavailable 即重新停用并保留配置。恢复检查不得触发发送、日历写入或授权点击。
+
 个人消息 Event 由 Host 结构化绑定为 `PersonalMessageScope`，不是根据 owner 文本或渠道
 关键词分类。该 Scope 只开放绑定 Connector 的有界读取/发送工具；`list_targets` 只返回
 配置允许访问的 self/watch 稳定 sid，不扫描或复制全部联系人。readiness、账号、页面、
 target 或 outbound 任一失败时都失败关闭，同一资源不能降级到 Shell、Computer/CUA、
 Browser/Desktop 或其他 Connector。
+
+allowlist 中的会话只有带 owner binding 才能读取或发送：
+
+```json
+{
+  "sid": "123456",
+  "type": "chat",
+  "binding": {
+    "selectedBy": "owner",
+    "accountFingerprint": "sha256:...",
+    "authorizationRevision": "owner-revision-1"
+  }
+}
+```
+
+`sid + type` 必须在当前已验证账号的专用网页会话列表中精确匹配一个候选；显示名不
+参与查找，也不能作为发送目标。配置文件本身就是现有 allowlist 的持久真相，
+`authorizationRevision` 使 owner 的每次重新选择可审计。缺 binding、账号变化、
+revision 无效或当前页面不存在该唯一候选时，status/list_targets 结构化返回
+`targetBindingStatus=target_not_bound`，`contextRead/coverage/outbound` 不会冒充
+可用。页面指纹仅影响写能力时，已验证 binding 的 bounded read 和 Draft 仍可用。
 
 大象 Adapter 使用已登录的 `https://x.sankuai.com/` 专用 Chrome 后台标签。它通过 Chrome Apple Events JavaScript 接口注入窄页面 Bridge，不激活 Chrome、不发送键盘鼠标事件，也不读取或导出浏览器认证资料。标签必须通过 `origin + window.name tabMarker` 唯一绑定，并且不能是任何 Chrome 窗口的当前标签；账号指纹、页面指纹、稳定 `sid` 和稳定 `mid` 任一不匹配都会停止写操作。
 

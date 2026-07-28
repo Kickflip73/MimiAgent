@@ -18,6 +18,7 @@ import { WikiVault } from '../src/extensions/memory/wiki-vault.js';
 
 const fixture = Object.freeze({
   token: ['sk', 'JRV001FixtureNotARealKey12345'].join('-'),
+  multicaToken: ['mul', 'abcdef0123456789abcdef0123456789'].join('_'),
   email: 'jarvis-fixture@example.test',
   phone: '13800138000',
 });
@@ -29,10 +30,10 @@ function assertFixtureAbsent(value: unknown): void {
 
 test('sensitive scan reports only category, fingerprint and location', () => {
   const findings = scanSensitiveData({
-    objective: `use ${fixture.token} for ${fixture.email}`,
+    objective: `use ${fixture.token} and ${fixture.multicaToken} for ${fixture.email}`,
     password: 'fixture-password-value',
   });
-  assert.ok(findings.length >= 3);
+  assert.ok(findings.length >= 4);
   assertFixtureAbsent(findings);
   assert.ok(findings.every((finding) => /^.+:sha256:[a-f0-9]{16}$/.test(finding.fingerprint)));
   assert.ok(findings.every((finding) => finding.disposition === 'detected'));

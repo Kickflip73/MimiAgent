@@ -196,6 +196,19 @@
     return { selected: true, changed: true, requested: { sid, type }, current: selectedSession() };
   }
 
+  function targetCandidate(raw) {
+    const input = requireObject(raw, 'input');
+    const sid = requireSid(input.sid);
+    const type = requireType(input.type);
+    const rows = document.querySelectorAll(`.comp-session[data-sid="${sid}"].${type}`);
+    return {
+      matched: rows.length === 1,
+      sid,
+      type,
+      count: rows.length,
+    };
+  }
+
   function readCurrentConversation(raw) {
     const input = requireObject(raw, 'input');
     const sid = requireSid(input.sid);
@@ -335,6 +348,7 @@
       inspect,
       installObserver,
       drain,
+      targetCandidate,
       selectConversation,
       readCurrentConversation,
       prepareSend,

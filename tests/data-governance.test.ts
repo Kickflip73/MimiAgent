@@ -13,6 +13,7 @@ import {
 import { MimiStore } from '../src/daemon/store.js';
 
 const FIXTURE_TOKEN = ['sk', 'fixture', 'abcdefghijklmnopqrstuvwxyz123456'].join('-');
+const FIXTURE_MULTICA_TOKEN = ['mul', 'abcdef0123456789abcdef0123456789'].join('_');
 const FIXTURE_EMAIL = 'fixture.owner@example.invalid';
 
 test('historical dry-run reports only categories and fingerprints, then verified backup gates reversible apply', async () => {
@@ -43,7 +44,7 @@ test('historical dry-run reports only categories and fingerprints, then verified
       idempotencyKey: 'task',
       authorityEventId: event.id,
       profileId: 'owner',
-      objective: { prompt: `use ${FIXTURE_TOKEN}` },
+      objective: { prompt: `use ${FIXTURE_TOKEN} and ${FIXTURE_MULTICA_TOKEN}` },
       executor: 'isolated_worker',
       workspaceAccess: 'write',
       priority: 50,
@@ -62,7 +63,7 @@ test('historical dry-run reports only categories and fingerprints, then verified
   }
   const legacyDatabase = new DatabaseSync(databaseFile);
   legacyDatabase.prepare('UPDATE tasks SET objective_json = ? WHERE id = ?').run(
-    JSON.stringify({ prompt: `use ${FIXTURE_TOKEN}` }),
+    JSON.stringify({ prompt: `use ${FIXTURE_TOKEN} and ${FIXTURE_MULTICA_TOKEN}` }),
     'task',
   );
   legacyDatabase.prepare('UPDATE schedules SET prompt = ?').run(
@@ -92,6 +93,7 @@ test('historical dry-run reports only categories and fingerprints, then verified
   assert.ok(dryRun.findings >= 4);
   assert.equal(dryRun.rawValuesIncluded, false);
   assert.equal(JSON.stringify(dryRun).includes(FIXTURE_TOKEN), false);
+  assert.equal(JSON.stringify(dryRun).includes(FIXTURE_MULTICA_TOKEN), false);
   assert.equal(JSON.stringify(dryRun).includes(FIXTURE_EMAIL), false);
 
   const backupDirectory = path.join(root, 'backup');

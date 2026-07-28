@@ -52,7 +52,7 @@ const VALUE_PATTERNS: readonly {
   },
   {
     category: 'credential',
-    expression: /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})\b/gu,
+    expression: /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|mul_[A-Fa-f0-9]{32,}|AKIA[A-Z0-9]{16})\b/gu,
   },
   {
     category: 'credential',

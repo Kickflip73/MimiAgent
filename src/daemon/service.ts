@@ -54,7 +54,11 @@ import { MimiRuntimeHttpServer, runtimeHttpSessionId } from './runtime-http.js';
 import { AttentionEngine } from './attention.js';
 import { TaskProcessSupervisor } from './task-supervisor.js';
 import { backgroundTaskSummary, inspectBackgroundTaskSummary } from './task-tools.js';
-import { buildDaemonHealth, type DaemonHealthSnapshot } from './health-model.js';
+import {
+  buildDaemonHealth,
+  doctorBlockingHealthRisks,
+  type DaemonHealthSnapshot,
+} from './health-model.js';
 import {
   inspectDiagnosticStorage,
   type DiagnosticStorageSnapshot,
@@ -1014,7 +1018,12 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
         taskWorkerRuntime: daemonStatus.taskWorkerRuntime,
       })
     : undefined;
-  if (health) issues.push(...health.risks.map((risk) => risk.message));
+  if (health) {
+    issues.push(...doctorBlockingHealthRisks(
+      health,
+      activity?.failureClassification?.unclassifiedDeadLetters ?? taskDeadLetters,
+    ).map((risk) => risk.message));
+  }
   let storage: DiagnosticStorageSnapshot | undefined;
   try {
     storage = await inspectDiagnosticStorage(config);
@@ -1741,6 +1750,13 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       if (method === 'attention.reload') return mutationGate.run(() => activeAttention.reload());
       if (method === 'attention.brief') return activeAttention.forceBriefing();
       if (method === 'connectors.list') return activeConnectors.listCapabilities();
+      if (method === 'connectors.setEnabled') {
+        const params = object(rawParams);
+        return mutationGate.run(() => activeConnectors.setEnabled(
+          requiredString(params.id, 'id'),
+          params.enabled === true,
+        ));
+      }
       if (method === 'connectors.reload') {
         return mutationGate.run(async () => {
           await initializeMimi(config);

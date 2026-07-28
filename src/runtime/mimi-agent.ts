@@ -1409,6 +1409,7 @@ export class MimiAgent {
       this.session.summary(), this.soul.load(), this.projectGuidance.load(), this.team.list(),
       this.memory.status(this.runContexts.forInspection()),
     ]);
+    const capabilitySnapshot = this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot;
     return {
       provider: this.config.provider,
       model: this.modelName,
@@ -1421,12 +1422,12 @@ export class MimiAgent {
       maxTurns: this.config.maxTurns,
       permissionMode: this.permissionMode,
       securityProfile: securityProfileSummary(this.config),
-      skillCount: this.skills.list().length,
+      skillCount: capabilitySnapshot?.skills.length ?? this.skills.list().length,
       memoryCount: memoryStatus.pages,
       mcpServers: this.mcpServerNames,
       mcpStatuses: this.mcp.statuses(),
       computer: this.computer?.status() ?? { configured: false },
-      capabilitySnapshot: this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot,
+      capabilitySnapshot,
       guidanceFiles: [...soul.files, ...projectGuidance.files]
         .map((file) => ({ scope: file.scope, path: file.path, truncated: file.truncated })),
       team: {

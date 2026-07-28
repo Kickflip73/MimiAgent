@@ -953,3 +953,20 @@ Mimi 可以被称为“个人贾维斯”前，至少满足：
 
 M0 是否最终退出只认 `PROGRESS.md` 中最后一次全量门禁和 `BLOCKED.md`。当前外部真实
 状态（账号、Connector readiness、Computer 权限和长期 soak）不因代码完成而标绿。
+
+## 15. 2026-07-28 M0 收口与 JRV-102 首个安全纵切面
+
+M0 收口的实际命令、CI 数字、备份、Doctor 红→绿和 build identity 只认同提交的
+`PROGRESS.md`。历史 dead letter 保持不可变且继续在 status 中显示 degraded；Doctor
+只在它们全部有结构化分类时不再把这批历史记录当作当前运行 blocker，未分类失败仍
+会 fail closed。尚未达到所属阶段门禁的 `personal-qq`、`personal-daxiang` 和
+`macos-life` 只修改 enabled 状态，配置和恢复条件保留在 `docs/CONNECTORS.md`。
+
+M0 全绿后启动的 JRV-102 仅交付不扩大副作用面的代码纵切面：Daxiang allowlist 目标
+必须持久携带 owner authorization revision，并同时绑定当前验证账号指纹、stable sid
+和 `chat|groupchat` 类型；页面 Bridge 只确认当前网页会话中是否存在唯一候选，不按
+显示名查找或扫描联系人。未绑定结构化报告 `target_not_bound`，不开放 context/send；
+页面写指纹变化但账号和目标仍验证时保留 bounded read 与 Draft。发送仍只有
+PersonalMessageHub 可达，post-click timeout 固定为 uncertain 且不切 Browser、
+Computer 或 Shell。本轮没有 owner 精确目标与正文，因此不执行真实绑定、发送或
+72 小时 soak，外部阻塞记录在 `BLOCKED.md`。

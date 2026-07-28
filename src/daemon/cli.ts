@@ -23,6 +23,8 @@ export function daemonHelp(): string {
   mimi daemon retry outbox <id>            重新投递失败消息（可能重复）
   mimi daemon archive outbox <id>          归档失败投递
   mimi daemon connectors [reload]          查看或重载 Connector 在线状态和可执行能力
+  mimi daemon connectors <enable|disable> <id>
+                                             原子启停已配置 Connector，不改命令、凭证或 action
   mimi daemon attention [reload]           查看或重载注意力策略
   mimi daemon digest [数量]                 查看待简报摘要
   mimi daemon brief                        立即生成主动简报
@@ -300,6 +302,17 @@ export async function runDaemonCommand(config: AppConfig, args: string[]): Promi
     return;
   }
   if (command === 'connectors') {
+    if (args[1] === 'enable' || args[1] === 'disable') {
+      const id = args[2]?.trim();
+      if (!id || !/^[a-zA-Z0-9._-]+$/.test(id)) {
+        throw new Error(`connectors ${args[1]} 需要精确 Connector ID`);
+      }
+      output(await mimiRpc(socket, 'connectors.setEnabled', {
+        id,
+        enabled: args[1] === 'enable',
+      }, 15_000));
+      return;
+    }
     output(await mimiRpc(
       socket,
       args[1] === 'reload' ? 'connectors.reload' : 'connectors.list',

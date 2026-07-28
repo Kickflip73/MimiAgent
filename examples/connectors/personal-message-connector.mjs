@@ -36,6 +36,8 @@ function statusFor(health) {
     stableConversationId: health.stableConversationId === true,
     stableMessageId: health.stableMessageId === true,
     contextRead: health.contextRead || 'unavailable',
+    targetBound: health.targetBound === true,
+    targetBindingStatus: health.targetBindingStatus || 'target_not_bound',
     ...(health.lastObservedAt ? { lastObservedAt: health.lastObservedAt } : {}),
   };
 }
@@ -160,7 +162,7 @@ async function handleAction(message) {
   if (message.action === 'sync_now') return poll({ fromAction: true });
   if (message.action === 'list_targets') {
     const health = await adapter.health();
-    const targets = [
+    const configuredTargets = [
       ...(adapter.config?.selfConversation
         ? [{ ...adapter.config.selfConversation, role: 'self' }]
         : []),
@@ -169,11 +171,22 @@ async function handleAction(message) {
         role: 'watch',
       })),
     ];
+    const targets = configuredTargets.map(({ binding, ...target }) => ({
+      ...target,
+      bound: binding?.selectedBy === 'owner'
+        && binding.accountFingerprint === health.accountFingerprint,
+      ...(binding?.authorizationRevision
+        ? { authorizationRevision: binding.authorizationRevision }
+        : {}),
+    }));
     return {
       channel,
       accountVerified: health.accountVerified === true,
       coverage: health.coverage || 'unavailable',
       targets,
+      targetBindingStatus: targets.some((target) => target.bound)
+        ? 'bound'
+        : 'target_not_bound',
     };
   }
   const target = targetConversation(message.target);

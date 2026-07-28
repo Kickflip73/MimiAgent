@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import type { AgentInputItem } from '@openai/agents';
 import type { Tool } from '@openai/agents';
@@ -140,8 +141,15 @@ test('tool set builder keeps mode and run-policy filtering in one stage', () => 
   });
   assert.deepEqual(snapshot.tools, ['delegate_research', 'read_file']);
   assert.deepEqual(snapshot.skills, ['researcher', 'reviewer']);
-  assert.match(snapshot.toolSetDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(
+    snapshot.toolSetDigest,
+    `sha256:${createHash('sha256').update(JSON.stringify(snapshot.tools)).digest('hex')}`,
+  );
   assert.match(snapshot.snapshotDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.deepEqual(
+    snapshot.items.filter((item) => item.kind === 'skill').map((item) => item.id),
+    snapshot.skills,
+  );
   assert.equal(snapshot.items.find((item) => item.id === 'read_file')?.availability, 'available');
   assert.ok(Object.isFrozen(snapshot));
   assert.ok(Object.isFrozen(snapshot.items));

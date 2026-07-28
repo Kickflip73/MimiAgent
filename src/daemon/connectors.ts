@@ -108,6 +108,8 @@ interface ConnectorStatusMessage {
   stableMessageId?: boolean;
   contextRead?: 'stable' | 'bounded' | 'unavailable';
   lastObservedAt?: string;
+  targetBound?: boolean;
+  targetBindingStatus?: 'bound' | 'target_not_bound';
 }
 
 interface PendingDelivery {
@@ -141,6 +143,8 @@ export interface ConnectorCapability {
     stableMessageId?: boolean;
     contextRead?: 'stable' | 'bounded' | 'unavailable';
     lastObservedAt?: string;
+    targetBound?: boolean;
+    targetBindingStatus?: 'bound' | 'target_not_bound';
   };
   source: string;
   trust: EventTrust;
@@ -515,6 +519,13 @@ class ConnectorProcess implements NotificationSink {
       && !['stable', 'bounded', 'unavailable'].includes(message.contextRead)) {
       throw new Error('status.contextRead 无效');
     }
+    if (message.targetBound !== undefined && typeof message.targetBound !== 'boolean') {
+      throw new Error('status.targetBound 必须是 boolean');
+    }
+    if (message.targetBindingStatus !== undefined
+      && !['bound', 'target_not_bound'].includes(message.targetBindingStatus)) {
+      throw new Error('status.targetBindingStatus 无效');
+    }
     if (message.lastObservedAt !== undefined && !validDate(message.lastObservedAt)) {
       throw new Error('status.lastObservedAt 必须是有效时间');
     }
@@ -533,6 +544,10 @@ class ConnectorProcess implements NotificationSink {
       ...(message.stableMessageId === undefined ? {} : { stableMessageId: message.stableMessageId }),
       ...(message.contextRead === undefined ? {} : { contextRead: message.contextRead }),
       ...(message.lastObservedAt === undefined ? {} : { lastObservedAt: validDate(message.lastObservedAt) }),
+      ...(message.targetBound === undefined ? {} : { targetBound: message.targetBound }),
+      ...(message.targetBindingStatus === undefined
+        ? {}
+        : { targetBindingStatus: message.targetBindingStatus }),
     };
   }
 

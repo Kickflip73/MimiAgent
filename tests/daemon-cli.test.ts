@@ -124,13 +124,12 @@ test('daemon status presents retained failures as attention rather than a crashe
   assert.match(rendered, /2 个任务进入 dead letter/);
 });
 
-test('daemon connectors command requests capability status and reload', async () => {
+test('daemon connectors command requests capability status, reload, and exact atomic toggles', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cli-connectors-'));
   const localConfig = { ...config, daemonDataRoot: root };
-  const methods: string[] = [];
+  const requests: Array<{ method: string; params: unknown }> = [];
   const server = new MimiIpcServer(path.join(root, 'mimi.sock'), async (method, params) => {
-    methods.push(method);
-    assert.deepEqual(params, {});
+    requests.push({ method, params });
     return [{ id: 'fixture', online: true, actions: [{ name: 'send_message' }] }];
   });
   await server.start();
@@ -139,11 +138,28 @@ test('daemon connectors command requests capability status and reload', async ()
   try {
     await runDaemonCommand(localConfig, ['connectors']);
     await runDaemonCommand(localConfig, ['connectors', 'reload']);
+    await runDaemonCommand(localConfig, ['connectors', 'disable', 'personal-qq']);
+    await runDaemonCommand(localConfig, ['connectors', 'enable', 'personal-qq']);
+    await assert.rejects(
+      runDaemonCommand(localConfig, ['connectors', 'disable', '../personal-qq']),
+      /精确 Connector ID/,
+    );
   } finally {
     process.stdout.write = write;
     await server.close();
   }
-  assert.deepEqual(methods, ['connectors.list', 'connectors.reload']);
+  assert.deepEqual(requests, [
+    { method: 'connectors.list', params: {} },
+    { method: 'connectors.reload', params: {} },
+    {
+      method: 'connectors.setEnabled',
+      params: { id: 'personal-qq', enabled: false },
+    },
+    {
+      method: 'connectors.setEnabled',
+      params: { id: 'personal-qq', enabled: true },
+    },
+  ]);
 });
 
 test('daemon stop is idempotent when the background service is already offline', async () => {

@@ -2,6 +2,11 @@ export interface DaxiangConversationConfig {
   sid: string;
   type: 'chat' | 'groupchat';
   label?: string;
+  binding?: {
+    selectedBy: 'owner';
+    accountFingerprint: string;
+    authorizationRevision: string;
+  };
 }
 
 export interface DaxiangWebConfig {
@@ -40,6 +45,7 @@ export class DaxiangWebAdapter {
     bridgeSource: string;
     stateFile: string;
     diagnosticsFile?: string;
+    sendObservationTimeoutMs?: number;
   });
   static create(options?: Record<string, unknown>): Promise<DaxiangWebAdapter>;
   readonly config: DaxiangWebConfig;

@@ -133,6 +133,7 @@ test('handles status and high-frequency inspection commands', async () => {
     assert.match(output.join('\n'), /Full Owner \(full-owner\/trusted\)/);
     assert.match(output.join('\n'), /当前能力.*Computer Use 未配置/);
     assert.match(output.join('\n'), /Computer  未配置/);
+    assert.match(output.join('\n'), /Skills\s+2/);
     assert.match(output.join('\n'), /MIMI_SECURITY_PROFILE/);
     assert.match(output.join('\n'), /Review code/);
     assert.match(output.join('\n'), /uses TS/);

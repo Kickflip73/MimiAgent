@@ -120,6 +120,33 @@ test('personal auto runs receive only narrow message tools', () => {
   assert.equal(tools.includes('computer_act'), false);
 });
 
+test('OpenAI and DeepSeek fixtures share the same no-fallback personal-message policy', () => {
+  for (const provider of ['openai', 'deepseek']) {
+    const decision = decideEvent(
+      event(),
+      [`provider fixture: ${provider}`],
+      undefined,
+      'work',
+      false,
+      undefined,
+      undefined,
+      'background',
+      ['com.sankuai.xmpp'],
+      'auto',
+    );
+    assert.equal(decision.options?.personalConnectorOnly, true, provider);
+    const tools = decision.options?.policy?.allowedTools ?? [];
+    assert.equal(tools.includes('run_shell'), false, provider);
+    assert.equal(tools.includes('computer_act'), false, provider);
+    assert.equal(tools.includes('connector_action'), false, provider);
+    assert.deepEqual(
+      tools.filter((tool) => tool.includes('personal_message')),
+      ['get_personal_message_context', 'send_personal_message'],
+      provider,
+    );
+  }
+});
+
 test('personal messages without a source policy remain draft-only', () => {
   const decision = decideEvent(
     event(),

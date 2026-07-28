@@ -43,6 +43,8 @@ export interface ConnectorCapabilitySnapshot {
       stableMessageId?: boolean;
       contextRead?: 'stable' | 'bounded' | 'unavailable';
       lastObservedAt?: string;
+      targetBound?: boolean;
+      targetBindingStatus?: 'bound' | 'target_not_bound';
     };
     source: string;
     routeOwner: string;

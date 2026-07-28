@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- recognize Multica access tokens at the common persistence/display sanitization boundary,
+  keep classified historical Task dead letters visible without blocking Doctor readiness,
+  derive `/status` Skill availability from the effective capability snapshot, and
+  add exact atomic Connector enable/disable CLI controls for staged runtime closeout
+- require Daxiang allowlist targets to carry an owner authorization revision bound to the
+  verified account fingerprint, stable sid, and conversation type; expose target-not-bound
+  readiness, preserve bounded read/Draft on page-write mismatch, and keep timeout outcomes
+  uncertain without Browser, Computer, or Shell fallback
+
 - remove owner free-text and Shell command-string classification from capability
   routing; Darwin Shell now always runs behind a process capability sandbox that
   blocks Apple Events, Accessibility, LaunchServices, and registered local Unix

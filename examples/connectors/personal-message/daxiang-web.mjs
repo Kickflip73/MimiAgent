@@ -63,13 +63,42 @@ function sid(value, label = 'sid') {
 
 function conversation(value, label) {
   const item = object(value, label);
-  exactKeys(item, new Set(['sid', 'type', 'label']), label);
+  exactKeys(item, new Set(['sid', 'type', 'label', 'binding']), label);
   const type = item.type;
   if (type !== 'chat' && type !== 'groupchat') throw new Error(`${label}.type must be chat or groupchat`);
+  let binding;
+  if (item.binding !== undefined) {
+    const rawBinding = object(item.binding, `${label}.binding`);
+    exactKeys(
+      rawBinding,
+      new Set(['selectedBy', 'accountFingerprint', 'authorizationRevision']),
+      `${label}.binding`,
+    );
+    if (rawBinding.selectedBy !== 'owner') {
+      throw new Error(`${label}.binding.selectedBy must be owner`);
+    }
+    const authorizationRevision = boundedString(
+      rawBinding.authorizationRevision,
+      `${label}.binding.authorizationRevision`,
+      120,
+    );
+    if (!/^[A-Za-z0-9._:-]+$/.test(authorizationRevision)) {
+      throw new Error(`${label}.binding.authorizationRevision is invalid`);
+    }
+    binding = {
+      selectedBy: 'owner',
+      accountFingerprint: fingerprint(
+        rawBinding.accountFingerprint,
+        `${label}.binding.accountFingerprint`,
+      ),
+      authorizationRevision,
+    };
+  }
   return {
     sid: sid(item.sid, `${label}.sid`),
     type,
     ...(item.label === undefined ? {} : { label: boundedString(item.label, `${label}.label`, 200) }),
+    ...(binding ? { binding } : {}),
   };
 }
 
@@ -272,12 +301,26 @@ function defaultState(configDigest) {
 }
 
 export class DaxiangWebAdapter {
-  constructor({ config, driver, bridgeSource, stateFile, diagnosticsFile }) {
+  constructor({
+    config,
+    driver,
+    bridgeSource,
+    stateFile,
+    diagnosticsFile,
+    sendObservationTimeoutMs = 15_000,
+  }) {
     this.config = config;
     this.driver = driver;
     this.bridgeSource = bridgeSource;
     this.stateFile = stateFile;
     this.diagnosticsFile = diagnosticsFile || path.join(path.dirname(stateFile), 'diagnostics.json');
+    this.sendObservationTimeoutMs = integer(
+      sendObservationTimeoutMs,
+      'sendObservationTimeoutMs',
+      1,
+      120_000,
+      15_000,
+    );
     this.configDigest = sha256(JSON.stringify({
       tabMarker: config.tabMarker,
       expectedAccountFingerprint: config.expectedAccountFingerprint,
@@ -357,6 +400,26 @@ export class DaxiangWebAdapter {
       );
       const pageAllowed = this.config.allowedPageFingerprints.includes(pageFingerprint);
       const readable = Boolean(inspect.readable && inspect.pageShape?.bridgeMajor === 1);
+      const configuredBindings = [
+        this.config.selfConversation,
+        ...this.config.watch.conversations,
+      ].filter((target) => target.binding?.selectedBy === 'owner'
+        && target.binding.accountFingerprint === accountFingerprint);
+      let targetBound = false;
+      if (accountVerified) {
+        for (const target of configuredBindings) {
+          const candidate = await this.#bridgeCall('targetCandidate', {
+            sid: target.sid,
+            type: target.type,
+          });
+          if (candidate.matched === true
+            && candidate.sid === target.sid
+            && candidate.type === target.type) {
+            targetBound = true;
+            break;
+          }
+        }
+      }
       const now = new Date().toISOString();
       this.lastHealth = {
         available: readable,
@@ -365,10 +428,12 @@ export class DaxiangWebAdapter {
         pageFingerprint,
         pageAllowed,
         backgroundSafe: true,
-        coverage: readable && accountVerified ? 'bounded' : 'unavailable',
-        contextRead: readable && accountVerified ? 'bounded' : 'unavailable',
-        inbound: readable && accountVerified ? 'ready' : 'unavailable',
-        outbound: readable && accountVerified && pageAllowed && inspect.sendStructureReady
+        targetBound,
+        ...(targetBound ? { targetBindingStatus: 'bound' } : { targetBindingStatus: 'target_not_bound' }),
+        coverage: readable && accountVerified && targetBound ? 'bounded' : 'unavailable',
+        contextRead: readable && accountVerified && targetBound ? 'bounded' : 'unavailable',
+        inbound: readable && accountVerified && targetBound ? 'ready' : 'unavailable',
+        outbound: readable && accountVerified && targetBound && pageAllowed && inspect.sendStructureReady
           ? 'ready'
           : 'unavailable',
         deliveryConfirmed: false,
@@ -435,6 +500,8 @@ export class DaxiangWebAdapter {
         changesReadState: 'unknown',
         stableConversationId: false,
         stableMessageId: false,
+        targetBound: false,
+        targetBindingStatus: 'target_not_bound',
         probedAt: now,
         errorCategory: category,
       };
@@ -581,7 +648,7 @@ export class DaxiangWebAdapter {
     if (!prepared.prepared) return this.#failure(`发送准备失败：${prepared.reason || 'unknown'}`);
     const committed = await this.#bridgeCall('commitSend', { attemptId });
     if (!committed.dispatched) return this.#failure(`发送前校验失败：${committed.reason || 'unknown'}`);
-    const deadline = Date.now() + 15_000;
+    const deadline = Date.now() + this.sendObservationTimeoutMs;
     while (Date.now() < deadline) {
       try {
         const observed = await this.#bridgeCall('observeSend', { attemptId });
@@ -640,6 +707,10 @@ export class DaxiangWebAdapter {
       ...this.config.watch.conversations,
     ].find((item) => item.sid === normalizedSid && (!targetType || item.type === targetType));
     if (!available) throw new Error('conversation is not in the configured allowlist');
+    if (available.binding?.selectedBy !== 'owner'
+      || available.binding.accountFingerprint !== this.lastHealth?.accountFingerprint) {
+      throw new Error('target_not_bound: owner stable sid binding is missing or stale');
+    }
     return available;
   }
 

@@ -52,6 +52,15 @@ export interface DaemonHealthInput {
   taskWorkerRuntime?: { ready: boolean; reason?: string };
 }
 
+export function doctorBlockingHealthRisks(
+  health: DaemonHealthSnapshot,
+  unclassifiedDeadLetters: number,
+): DaemonHealthRisk[] {
+  return health.risks.filter((risk) => (
+    risk.code !== 'task_dead_letters' || unclassifiedDeadLetters > 0
+  ));
+}
+
 function connectorIds(
   connectors: readonly ConnectorCapability[],
   predicate: (connector: ConnectorCapability) => boolean,

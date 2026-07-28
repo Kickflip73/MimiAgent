@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ConnectorCapability } from '../src/daemon/connectors.js';
-import { buildDaemonHealth } from '../src/daemon/health-model.js';
+import {
+  buildDaemonHealth,
+  doctorBlockingHealthRisks,
+} from '../src/daemon/health-model.js';
 import type { OutboxStatus, TaskStatus } from '../src/daemon/types.js';
 
 function taskCounts(overrides: Partial<Record<TaskStatus, number>> = {}): Record<TaskStatus, number> {
@@ -131,6 +134,20 @@ test('retained dead letters degrade daemon health without implying the process i
     { code: 'task_dead_letters', severity: 'warning', nextAction: 'mimi daemon tasks' },
     { code: 'outbox_dead_letters', severity: 'warning', nextAction: 'mimi daemon outbox' },
   ]);
+});
+
+test('Doctor keeps retained classified dead letters visible without treating them as a current blocker', () => {
+  const health = buildDaemonHealth({
+    tasks: taskCounts({ dead_letter: 2 }),
+    outbox: outboxCounts(),
+  });
+
+  assert.equal(health.state, 'degraded');
+  assert.deepEqual(doctorBlockingHealthRisks(health, 0), []);
+  assert.deepEqual(
+    doctorBlockingHealthRisks(health, 1).map((risk) => risk.code),
+    ['task_dead_letters'],
+  );
 });
 
 test('Task worker runtime dependency failure is an unhealthy fail-closed risk', () => {
