@@ -1,7 +1,20 @@
 import type { Tool } from '@openai/agents';
 import { createHash } from 'node:crypto';
 import type { ExecutionLedger } from '../core/execution-ledger.js';
-import { TOOL_LEDGER_ARGUMENTS } from '../core/tool-metadata.js';
+import {
+  ACTION_INTENT_SCHEMA_VERSION,
+  actionExecutionKey,
+  actionPayloadDigest,
+  ActionFailedSafeError,
+  ActionIntentUncertainError,
+  type ActionIntent,
+  type OneTimeActionAuthorization,
+} from '../core/action-intent.js';
+import {
+  TOOL_ACTION_INTENT,
+  TOOL_LEDGER_ARGUMENTS,
+  type ToolActionIntentMetadata,
+} from '../core/tool-metadata.js';
 import { isSideEffectTool } from './tool-policy.js';
 
 export { TOOL_LEDGER_ARGUMENTS } from '../core/tool-metadata.js';
@@ -12,6 +25,17 @@ interface RunIdentity {
   semanticCallIds?: boolean;
   authorizeTool?: (toolName: string, argumentsJson: string) => Promise<void>;
   authorizeSideEffect?: (toolName: string, argumentsJson: string) => Promise<void>;
+  policyRevision?: string;
+  guardedActionContext?: {
+    ownerAuthenticated: boolean;
+    exactTarget: boolean;
+    lowRisk: boolean;
+    reversible: boolean;
+  };
+  resolveActionAuthorization?: (
+    intent: ActionIntent,
+    authorizationId: string,
+  ) => Promise<OneTimeActionAuthorization | undefined>;
 }
 
 type InvokableTool = Tool & {
@@ -25,6 +49,7 @@ type InvokableTool = Tool & {
 
 type LedgerAwareTool = Tool & {
   [TOOL_LEDGER_ARGUMENTS]?: (rawInput: string) => string;
+  [TOOL_ACTION_INTENT]?: (rawInput: string) => ToolActionIntentMetadata;
 };
 
 function isInvokable(tool: Tool): tool is InvokableTool {
@@ -100,6 +125,78 @@ export function withExecutionLedger(
           return originalInvoke(runContext, input, details);
         };
         if (!run || !callId) return invokeAuthorized();
+        const action = (tool as LedgerAwareTool)[TOOL_ACTION_INTENT]?.(input);
+        if (action) {
+          const payloadDigest = actionPayloadDigest(action.payload);
+          const policyRevision = run.policyRevision ?? 'guarded:v1';
+          const businessActionRef = `${run.runId}:${callId}`;
+          const executionKeyValue = actionExecutionKey(
+            action.actionFamily,
+            action.targetRef,
+            payloadDigest,
+            policyRevision,
+            businessActionRef,
+          );
+          const intent: ActionIntent = {
+            schemaVersion: ACTION_INTENT_SCHEMA_VERSION,
+            intentId: `${run.runId}:${callId}`,
+            businessActionRef,
+            actionFamily: action.actionFamily,
+            targetRef: action.targetRef,
+            ...(action.targetEvidenceRef ? { targetEvidenceRef: action.targetEvidenceRef } : {}),
+            payloadDigest,
+            selectedRoute: action.selectedRoute,
+            executionKey: executionKeyValue,
+            policyRevision,
+            status: 'not_started' as const,
+          };
+          let authorization = action.authorizationId ? {
+            schemaVersion: 1 as const,
+            authorizationId: action.authorizationId,
+            intentId: intent.intentId,
+            targetRef: intent.targetRef,
+            payloadDigest: intent.payloadDigest,
+            policyRevision,
+            expiresAt: action.authorizationExpiresAt
+              ?? new Date(Date.now() + 5 * 60_000).toISOString(),
+            maxUses: 1 as const,
+          } : undefined;
+          if (!authorization && action.requestedAuthorizationId && run.resolveActionAuthorization) {
+            authorization = await run.resolveActionAuthorization(intent, action.requestedAuthorizationId);
+          }
+          const receipt = await ledger.executeActionIntent(
+            run.sessionId,
+            run.runId,
+            intent,
+            action.guarded
+              ? {
+                  ownerAuthenticated: run.guardedActionContext?.ownerAuthenticated === true,
+                  ...action.guarded,
+                }
+              : run.guardedActionContext ?? {
+                  ownerAuthenticated: false,
+                  exactTarget: false,
+                  lowRisk: false,
+                  reversible: false,
+                },
+            authorization,
+            async () => {
+              const output = await ledger.executeOnce({
+                sessionId: run.sessionId,
+                runId: run.runId,
+                toolName: tool.name,
+                callId,
+                ...(sdkCallId && sdkCallId !== callId ? { modelCallId: sdkCallId } : {}),
+                argumentsJson,
+              }, invokeAuthorized);
+              const outcome = action.outcome?.(output) ?? 'confirmed';
+              if (outcome === 'failed_safe') throw new ActionFailedSafeError('动作明确未执行，可安全换路');
+              if (outcome === 'uncertain') throw new ActionIntentUncertainError('动作结果不确定');
+              return output;
+            },
+          );
+          return receipt.result;
+        }
         const result = await ledger.executeOnce({
           sessionId: run.sessionId,
           runId: run.runId,

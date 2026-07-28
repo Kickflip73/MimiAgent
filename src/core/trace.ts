@@ -1,6 +1,7 @@
 import { appendFile, chmod, mkdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { assertSessionId } from './session-id.js';
+import { sanitizeSensitiveData } from './data-sanitizer.js';
 
 export class TraceStore {
   private readonly ready: Promise<void>;
@@ -18,7 +19,12 @@ export class TraceStore {
 
   async record(sessionId: string, type: string, data: unknown = {}): Promise<void> {
     assertSessionId(sessionId);
-    const event = { timestamp: new Date().toISOString(), sessionId, type, data };
+    const event = {
+      timestamp: new Date().toISOString(),
+      sessionId,
+      type,
+      data: sanitizeSensitiveData(data),
+    };
     const line = `${JSON.stringify(event)}\n`;
     const bytes = Buffer.byteLength(line);
     const operation = this.queue.then(async () => {

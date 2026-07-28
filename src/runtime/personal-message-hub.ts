@@ -9,6 +9,7 @@ import {
   type PersonalMessageMode,
   type PersonalMessageResult,
 } from '../core/personal-message.js';
+import { TOOL_ACTION_INTENT } from '../core/tool-metadata.js';
 
 const TOKEN_TTL_MS = 5 * 60_000;
 const sendInputSchema = z.object({
@@ -123,7 +124,7 @@ export class PersonalMessageHub {
   }
 
   private sendTool(scope: PersonalMessageScope, runId: string): Tool {
-    return tool({
+    const send = tool({
       name: 'send_personal_message',
       description: '向 contextToken 已锁定的个人消息会话发送一次低风险文本。工具不接受渠道、账号、联系人或会话参数；结果 uncertain 时禁止重试或切换路线。',
       parameters: sendInputSchema,
@@ -158,7 +159,37 @@ export class PersonalMessageHub {
           latestFingerprint: token.latestFingerprint,
         }, details?.signal));
       },
-    });
+    }) as Tool & {
+      [TOOL_ACTION_INTENT]?: (rawInput: string) => {
+        actionFamily: string;
+        targetRef: string;
+        payload: unknown;
+        selectedRoute: string;
+        authorizationId: string;
+        authorizationExpiresAt: string;
+        outcome: (result: unknown) => 'confirmed' | 'failed_safe' | 'uncertain';
+      };
+    };
+    send[TOOL_ACTION_INTENT] = (rawInput) => {
+      const input = sendInputSchema.parse(JSON.parse(rawInput) as unknown);
+      const token = this.verify(input.contextToken);
+      this.assertBoundToken(scope, runId, token);
+      return {
+        actionFamily: 'personal-message.send',
+        targetRef: `${scope.channel}:${scope.accountFingerprint}:${scope.conversationId}`,
+        payload: { text: input.text },
+        selectedRoute: scope.capability.sendRoute,
+        authorizationId: this.tokenDigest(input.contextToken),
+        authorizationExpiresAt: new Date(token.expiresAt).toISOString(),
+        outcome: (result) => {
+          const status = personalMessageResultSchema.parse(result).status;
+          if (status === 'uncertain' || status === 'accepted' || status === 'observed') return 'uncertain';
+          if (status === 'not_executed' || status === 'failed') return 'failed_safe';
+          return 'confirmed';
+        },
+      };
+    };
+    return send;
   }
 
   private sign(payload: TokenPayload): string {

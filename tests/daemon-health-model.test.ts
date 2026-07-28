@@ -131,3 +131,22 @@ test('retained dead letters degrade daemon health without implying the process i
     { code: 'outbox_dead_letters', severity: 'warning', nextAction: 'mimi daemon outbox' },
   ]);
 });
+
+test('Task worker runtime dependency failure is an unhealthy fail-closed risk', () => {
+  const health = buildDaemonHealth({
+    tasks: taskCounts(),
+    outbox: outboxCounts(),
+    taskWorkerRuntime: {
+      ready: false,
+      reason: 'Task worker runtime 缺少 @openai/agents',
+    },
+  });
+
+  assert.equal(health.state, 'unhealthy');
+  assert.deepEqual(health.risks, [{
+    code: 'task_worker_runtime_unavailable',
+    severity: 'error',
+    message: 'Task worker runtime 缺少 @openai/agents',
+    nextAction: '修复 Task worker 依赖或 LaunchAgent 运行路径后重启 MimiAgent',
+  }]);
+});

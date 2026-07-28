@@ -12,6 +12,9 @@ import path from 'node:path';
 
 const osascript = process.env.MACOS_MAIL_OSASCRIPT || '/usr/bin/osascript';
 const pollIntervalMs = integerEnv('MACOS_MAIL_POLL_INTERVAL_MS', 120_000, 0, 86_400_000);
+const pollFreshForMs = pollIntervalMs > 0
+  ? Math.min(7 * 86_400_000, Math.max(1_000, pollIntervalMs * 3))
+  : undefined;
 const maxUnread = integerEnv('MACOS_MAIL_MAX_UNREAD', 20, 1, 100);
 const bodyChars = integerEnv('MACOS_MAIL_BODY_CHARS', 4_000, 0, 50_000);
 const account = process.env.MACOS_MAIL_ACCOUNT || '*';
@@ -33,6 +36,16 @@ const ACTIONS = new Set([
   'delete_message',
   'create_draft',
 ]);
+
+function writeReadiness(inbound, outbound) {
+  write({
+    type: 'status',
+    inbound,
+    outbound,
+    deliveryConfirmed: false,
+    ...(pollFreshForMs ? { freshForMs: pollFreshForMs } : {}),
+  });
+}
 
 const MAIL_SCRIPT = String.raw`
 function json(value) { return JSON.stringify(value); }
@@ -605,8 +618,10 @@ async function poll() {
         },
       });
     }
+    writeReadiness('ready', 'ready');
   } catch (error) {
     process.stderr.write(`[macos-mail] poll failed: ${errorText(error)}\n`);
+    writeReadiness('unavailable', 'unavailable');
   } finally {
     polling = false;
   }
@@ -646,6 +661,8 @@ if (pollIntervalMs > 0) {
   void poll();
   timer = setInterval(() => void poll(), pollIntervalMs);
   timer.unref();
+} else {
+  writeReadiness('unavailable', 'ready');
 }
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

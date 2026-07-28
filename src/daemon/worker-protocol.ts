@@ -19,6 +19,12 @@ const providerCredentialSchema = z.discriminatedUnion('provider', [
   }).strict(),
 ]);
 
+const backupProviderSchema = z.object({
+  id: z.string().min(1).max(300),
+  provider: z.enum(['openai', 'deepseek']),
+  model: z.string().min(1).max(200).optional(),
+}).strict();
+
 export type TaskProviderCredential = z.infer<typeof providerCredentialSchema>;
 export type TaskEmbeddingCredential = z.infer<typeof openAiProviderCredentialSchema>;
 
@@ -96,6 +102,8 @@ export const taskWorkerInitSchema = z.object({
   workspaceAccess: z.enum(['read', 'write']),
   enableMcp: z.boolean(),
   providerCredential: providerCredentialSchema.optional(),
+  backupProvider: backupProviderSchema.optional(),
+  backupProviderCredential: providerCredentialSchema.optional(),
   embeddingCredential: openAiProviderCredentialSchema.optional(),
   mcpEnvironment: taskMcpEnvironmentSchema,
   config: appConfigSchema,
@@ -114,6 +122,28 @@ export const taskWorkerInitSchema = z.object({
       path: ['providerCredential', 'provider'],
     });
   }
+  if (Boolean(init.backupProvider) !== Boolean(init.backupProviderCredential)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Backup Provider route 与 credential 必须同时提供',
+      path: ['backupProvider'],
+    });
+  }
+  if (init.backupProvider
+    && init.backupProviderCredential?.provider !== init.backupProvider.provider) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Backup Provider credential 与 route 不匹配',
+      path: ['backupProviderCredential'],
+    });
+  }
+  if (init.backupProvider?.provider === init.config.provider) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Backup Provider 必须不同于 Primary Provider',
+      path: ['backupProvider', 'provider'],
+    });
+  }
   if (init.embeddingCredential && init.config.provider !== 'deepseek') {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -128,7 +158,13 @@ export const taskWorkerInitSchema = z.object({
       path: ['enableMcp'],
     });
   }
-  if (init.executor === 'codex' && (init.providerCredential || init.embeddingCredential || init.enableMcp)) {
+  if (init.executor === 'codex' && (
+    init.providerCredential
+    || init.backupProvider
+    || init.backupProviderCredential
+    || init.embeddingCredential
+    || init.enableMcp
+  )) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'Codex Task worker 不接收 Mimi provider/MCP credential',

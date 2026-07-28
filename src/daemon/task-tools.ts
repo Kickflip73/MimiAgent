@@ -7,6 +7,10 @@ import type {
   WorkUnitResult,
   WorkUnitStatus,
 } from '../core/work-unit.js';
+import {
+  sanitizeSensitiveData,
+  sanitizeSensitiveText,
+} from '../core/data-sanitizer.js';
 import type { EventCancelResult } from './dispatcher.js';
 import type { ImmutableEvent, ReplyRoute, TaskRecord } from './types.js';
 import { MimiStore } from './store.js';
@@ -161,7 +165,7 @@ export function backgroundTaskWorkUnit(task: TaskRecord): {
     kind: task.executor === 'codex' ? 'codex' : 'background',
     parentRunId: task.parentTaskId ? `task:${task.parentTaskId}` : `event:${task.authorityEventId}`,
     ...(task.parentTaskId ? { parentWorkUnitId: task.parentTaskId } : {}),
-    objective: objective.slice(0, 8_000),
+    objective: sanitizeSensitiveText(objective)?.slice(0, 8_000) ?? '',
     dependencies: [],
     capabilities: task.workspaceAccess === 'write'
       ? ['read', 'write', 'execute', 'state-read', 'state-write']
@@ -174,15 +178,17 @@ export function backgroundTaskWorkUnit(task: TaskRecord): {
     result: {
       id: task.id,
       status,
-      summary: (resultText || task.error || `${status}: ${objective}`).slice(0, 12_000),
-      artifacts: workUnitArtifacts(task.result),
+      summary: sanitizeSensitiveText(resultText || task.error || `${status}: ${objective}`)?.slice(0, 12_000) ?? '',
+      artifacts: sanitizeSensitiveData(workUnitArtifacts(task.result)),
       evidence: [
         { type: 'task', ref: `task:${task.id}` },
         ...(task.executor === 'codex' && typeof payload.codex === 'object'
           ? [{ type: 'codex-checkpoint', ref: `task:${task.id}:codex` }]
           : []),
       ],
-      ...(status === 'failed' && task.error ? { error: task.error.slice(0, 2_000) } : {}),
+      ...(status === 'failed' && task.error
+        ? { error: sanitizeSensitiveText(task.error)?.slice(0, 2_000) }
+        : {}),
       startedAt: task.createdAt,
       ...(status === 'completed' || status === 'failed' || status === 'cancelled'
         ? { completedAt: task.updatedAt }
@@ -199,7 +205,9 @@ export function backgroundTaskSummary(task: TaskRecord): BackgroundTaskSummary {
   return {
     taskId: task.id,
     status: task.status,
-    objective: typeof payload.objective === 'string' ? payload.objective.slice(0, 500) : undefined,
+    objective: typeof payload.objective === 'string'
+      ? sanitizeSensitiveText(payload.objective)?.slice(0, 500)
+      : undefined,
     strategy: typeof payload.strategy === 'string' ? payload.strategy : undefined,
     executor: task.executor === 'codex' ? 'codex' : 'mimi',
     workspaceAccess: task.workspaceAccess === 'read' ? 'read' : 'write',
@@ -210,9 +218,9 @@ export function backgroundTaskSummary(task: TaskRecord): BackgroundTaskSummary {
     attempts: task.attemptCount,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
-    result: task.result,
-    error: retrying ? undefined : task.error,
-    previousAttemptError: retrying ? task.error : undefined,
+    result: sanitizeSensitiveData(task.result),
+    error: retrying ? undefined : sanitizeSensitiveText(task.error),
+    previousAttemptError: retrying ? sanitizeSensitiveText(task.error) : undefined,
     workUnit: backgroundTaskWorkUnit(task),
     execution: {
       leaseActive: task.status === 'running'

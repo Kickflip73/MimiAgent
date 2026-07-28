@@ -1,11 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import {
+  sanitizeSensitiveData,
+  sanitizeSensitiveText,
+} from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
 import { EventStore } from './event-store.js';
 import { EventRouter } from './event-router.js';
-import { boundedMemoryEvidenceSnapshot } from './persistence/memory-evidence.js';
+import { sanitizedMemoryEvidenceSnapshot } from './memory-evidence.js';
 import { createFreshV12Schema } from './persistence/schema/current.js';
 import {
   ensureMemoryLintSchemaV13,
@@ -25,6 +29,14 @@ import {
   hasLegacyEventTaskSchema,
 } from './persistence/schema/migrations/v12-event-task-cutover.js';
 import { TaskStore } from './task-store.js';
+import {
+  buildDailyResourceTrends,
+  type DailyUsageSample,
+} from './resource-slo.js';
+import {
+  aggregateDeadLetters,
+  classifyDigestAges,
+} from './operational-classification.js';
 import type {
   EventEnvelope,
   EventRouteReceipt,
@@ -95,6 +107,10 @@ function json(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
 
+function sanitizedJson(value: unknown): string {
+  return JSON.stringify(sanitizeSensitiveData(value ?? null));
+}
+
 function digestJson(value: unknown): string {
   return createHash('sha256').update(json(value)).digest('hex');
 }
@@ -124,7 +140,7 @@ function profileBoundSessionKey(profileId: string, sessionKey: string | undefine
 }
 
 function errorSummary(error: unknown, limit = 500): string {
-  return (error instanceof Error ? error.message : String(error))
+  return (sanitizeSensitiveText(error instanceof Error ? error.message : String(error)) ?? '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, limit) || '未知错误';
@@ -185,7 +201,7 @@ function outboxFromRow(row: Row): OutboxMessage {
 }
 
 function scheduleFromRow(row: Row): ScheduleRecord {
-  return {
+  return sanitizeSensitiveData({
     id: String(row.id),
     name: String(row.name),
     type: String(row.schedule_type) as ScheduleRecord['type'],
@@ -201,11 +217,11 @@ function scheduleFromRow(row: Row): ScheduleRecord {
     lastRunAt: optional(row.last_run_at),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
-  };
+  });
 }
 
 function runFromRow(row: Row): HostRunRecord {
-  return {
+  return sanitizeSensitiveData({
     id: String(row.id),
     taskId: String(row.task_id),
     attemptNo: Number(row.attempt_no),
@@ -216,7 +232,7 @@ function runFromRow(row: Row): HostRunRecord {
     completedAt: optional(row.completed_at),
     answer: parseJson(row.answer_json),
     error: optional(row.error),
-  };
+  });
 }
 
 function digestFromRow(row: Row): DigestItem {
@@ -773,7 +789,7 @@ export class MimiStore {
         UPDATE tasks SET status = 'queued', objective_json = ?, not_before = ?, control_intent = NULL,
           control_reason = NULL, result_json = NULL, error = NULL, updated_at = ?
         WHERE id = ? AND status IN ('paused', 'blocked')
-      `).run(json(objective), timestamp, timestamp, taskId);
+      `).run(sanitizedJson(objective), timestamp, timestamp, taskId);
       if (Number(updated.changes) !== 1) throw new Error(`Task ${taskId} 状态已变化`);
       const resumed = this.taskStore.get(taskId)!;
       this.appendTaskLifecycleEvent(resumed, 'task.resumed', timestamp, {
@@ -907,7 +923,7 @@ export class MimiStore {
           lease_until = NULL, control_intent = NULL, control_reason = NULL, updated_at = ?
         WHERE id = ? AND status = 'running' AND lease_owner = ?
           AND lease_until > ? AND control_intent IS NULL
-      `).run(json(result), errorSummary(reason, 4_000), timestamp, taskId, owner, timestamp);
+      `).run(sanitizedJson(result), errorSummary(reason, 4_000), timestamp, taskId, owner, timestamp);
       if (Number(updated.changes) !== 1) throw new Error(`Task ${taskId} 租约已失效`);
       if (!this.taskStore.finishAttempt(
         attemptId,
@@ -1608,7 +1624,7 @@ export class MimiStore {
       ORDER BY r.started_at DESC, r.id DESC
       LIMIT ?
     `).all(sessionKey, boundedLimit) as Row[]).map((row) => {
-      const rawAnswer = parseJson(row.answer_json);
+      const rawAnswer = sanitizeSensitiveData(parseJson(row.answer_json));
       const answer = rawAnswer === undefined
         ? undefined
         : (typeof rawAnswer === 'string' ? rawAnswer : JSON.stringify(rawAnswer)).slice(0, 2_000);
@@ -1623,7 +1639,7 @@ export class MimiStore {
         startedAt: String(row.started_at),
         completedAt: optional(row.completed_at),
         answer,
-        error: optional(row.error)?.slice(0, 1_000),
+        error: sanitizeSensitiveText(optional(row.error))?.slice(0, 1_000),
       };
     });
   }
@@ -1667,10 +1683,10 @@ export class MimiStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
     `).run(
       id,
-      input.name,
+      sanitizeSensitiveText(input.name) ?? '',
       input.type,
       input.value,
-      input.prompt,
+      sanitizeSensitiveText(input.prompt) ?? '',
       input.profileId,
       sessionKey ?? null,
       authorityEventId,
@@ -1699,7 +1715,7 @@ export class MimiStore {
       const promptLength = Number(row.prompt_length);
       return {
         id: String(row.id),
-        name: String(row.name).slice(0, 200),
+        name: sanitizeSensitiveText(String(row.name))?.slice(0, 200) ?? '',
         type: String(row.schedule_type) as ScheduleRecord['type'],
         value: String(row.schedule_value).slice(0, 200),
         profileId: String(row.profile_id).slice(0, 100),
@@ -1708,7 +1724,7 @@ export class MimiStore {
         enabled: Number(row.enabled) === 1,
         nextRunAt: String(row.next_run_at),
         lastRunAt: optional(row.last_run_at),
-        promptPreview: String(row.prompt_preview),
+        promptPreview: sanitizeSensitiveText(String(row.prompt_preview)) ?? '',
         promptLength,
         promptTruncated: promptLength > 500,
         updatedAt: String(row.updated_at),
@@ -1957,6 +1973,37 @@ export class MimiStore {
       entityId: String(row.entity_id),
       createdAt: String(row.created_at),
     }));
+    const usageSamples = (this.database.prepare(`
+      SELECT substr(updated_at, 1, 10) AS day,
+        COUNT(*) AS runs,
+        COALESCE(SUM(CAST(json_extract(result_json, '$.usage.runInputTokens') AS INTEGER)), 0) AS input_tokens,
+        COALESCE(SUM(CAST(json_extract(result_json, '$.usage.runOutputTokens') AS INTEGER)), 0) AS output_tokens,
+        SUM(CAST(json_extract(result_json, '$.usage.costUsd') AS REAL)) AS cost_usd,
+        COUNT(json_extract(result_json, '$.usage.costUsd')) AS cost_samples
+      FROM tasks
+      WHERE status = 'completed' AND result_json IS NOT NULL
+      GROUP BY substr(updated_at, 1, 10)
+      ORDER BY day DESC LIMIT 31
+    `).all() as Row[]).map((row): DailyUsageSample => ({
+      at: `${String(row.day)}T12:00:00.000Z`,
+      runs: Number(row.runs),
+      inputTokens: Number(row.input_tokens),
+      outputTokens: Number(row.output_tokens),
+      costUsd: Number(row.cost_samples) === Number(row.runs) ? Number(row.cost_usd) : null,
+      cpuSeconds: null,
+      memoryBytes: null,
+      diskBytes: null,
+    }));
+    const deadLetters = aggregateDeadLetters((this.database.prepare(`
+      SELECT error, COUNT(*) AS count FROM tasks
+      WHERE status = 'dead_letter' GROUP BY error
+    `).all() as Row[]).map((row) => ({
+      error: optional(row.error),
+      count: Number(row.count),
+    })));
+    const digest = classifyDigestAges((this.database.prepare(`
+      SELECT occurred_at FROM digest_items WHERE digested_at IS NULL
+    `).all() as Row[]).map((row) => String(row.occurred_at)));
     return {
       generatedAt: nowIso(),
       needsAttention: counts.tasks.blocked > 0 || counts.tasks.dead_letter > 0 || counts.outbox.dead_letter > 0,
@@ -1973,6 +2020,14 @@ export class MimiStore {
       recentRuns,
       recentDeliveries,
       recentTransitions,
+      resourceTrends: buildDailyResourceTrends(usageSamples),
+      failureClassification: {
+        deadLetters,
+        digest,
+        unclassifiedDeadLetters: deadLetters
+          .filter((item) => item.category === 'unknown')
+          .reduce((total, item) => total + item.count, 0),
+      },
     };
   }
 
@@ -2101,8 +2156,8 @@ export class MimiStore {
     `).run(
       status,
       timestamp,
-      answer === undefined ? null : json(answer),
-      error === undefined ? null : (error instanceof Error ? error.message : String(error)).slice(0, 4_000),
+      answer === undefined ? null : sanitizedJson(answer),
+      error === undefined ? null : errorSummary(error, 4_000),
       id,
     );
   }
@@ -2366,7 +2421,7 @@ export class MimiStore {
     const event = this.eventStore.get(eventId) ?? this.eventStore.get(task.authorityEventId);
     if (!event) throw new Error(`Memory observation 缺少来源 Event：${eventId}`);
     const digest = digestJson(content);
-    const evidenceSnapshot = boundedMemoryEvidenceSnapshot(task.objective, content, task.error);
+    const evidenceSnapshot = sanitizedMemoryEvidenceSnapshot(task.objective, content, task.error);
     const sourceKey = `${event.id}:${task.id}:${String(run.id)}:${MEMORY_COMPILER_VERSION}`;
     this.database.prepare(`
       INSERT OR IGNORE INTO memory_observations (
@@ -2405,7 +2460,7 @@ export class MimiStore {
         throw new Error('MimiAgent 数据库标记为 v14，但缺少最终 Event/Task 或 Memory observation schema');
       }
       ensureMemoryLintSchemaV13(this.database);
-      upgradeMemoryEvidenceSnapshotV15(this.database);
+      upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
       return;
     }
     if (version === 13) {
@@ -2414,14 +2469,14 @@ export class MimiStore {
       }
       ensureMemoryLintSchemaV13(this.database);
       repairDigestedTaskRoutesV14(this.database);
-      upgradeMemoryEvidenceSnapshotV15(this.database);
+      upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
       return;
     }
     if (version === 12) {
       if (hasFinalEventTaskV12Schema(this.database)) {
         upgradeMemoryObservationsV13(this.database);
         repairDigestedTaskRoutesV14(this.database);
-        upgradeMemoryEvidenceSnapshotV15(this.database);
+        upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
         return;
       }
       if (!hasLegacyEventTaskSchema(this.database)) {
@@ -2434,14 +2489,14 @@ export class MimiStore {
       });
       upgradeMemoryObservationsV13(this.database);
       repairDigestedTaskRoutesV14(this.database);
-      upgradeMemoryEvidenceSnapshotV15(this.database);
+      upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
       return;
     }
     if (version === 0) {
       createFreshV12Schema(this.database);
       upgradeMemoryObservationsV13(this.database);
       repairDigestedTaskRoutesV14(this.database);
-      upgradeMemoryEvidenceSnapshotV15(this.database);
+      upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
       return;
     }
     prepareLegacyEventSchemaForV12(this.database, version);
@@ -2450,7 +2505,7 @@ export class MimiStore {
     });
     upgradeMemoryObservationsV13(this.database);
     repairDigestedTaskRoutesV14(this.database);
-    upgradeMemoryEvidenceSnapshotV15(this.database);
+    upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
   }
 
   private backupBeforeMemoryEvidenceV15(): void {

@@ -1,6 +1,16 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { AtomicJsonStore } from './state-file.js';
+import { AtomicJsonStore, UnsupportedStateVersionError } from './state-file.js';
+import {
+  actionIntentSchema,
+  evaluateActionAuthorization,
+  ActionFailedSafeError,
+  ActionIntentUncertainError,
+  type ActionIntent,
+  type ActionIntentReceipt,
+  type GuardedActionContext,
+  type OneTimeActionAuthorization,
+} from './action-intent.js';
 
 export const DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES = 64_000;
 
@@ -37,9 +47,24 @@ interface ExecutionEntry extends ExecutionCall {
   updatedAt: string;
 }
 
+interface ActionIntentEntry {
+  sessionId: string;
+  runId: string;
+  intent: ActionIntent;
+  status: 'started' | 'confirmed' | 'failed_safe' | 'uncertain';
+  attempts: number;
+  authorizationIds: string[];
+  authorizationSource: 'guarded-owner-fast-path' | 'one-time-authorization';
+  resultJson?: string;
+  error?: string;
+  startedAt: string;
+  updatedAt: string;
+}
+
 interface LedgerFile {
-  version: 1;
+  version: 2;
   entries: Record<string, ExecutionEntry>;
+  actionIntents: Record<string, ActionIntentEntry>;
 }
 
 const entrySchema = z.object({
@@ -58,7 +83,25 @@ const entrySchema = z.object({
   startedAt: z.string(),
   updatedAt: z.string(),
 });
-const ledgerSchema = z.object({ version: z.literal(1), entries: z.record(z.string(), entrySchema) });
+const actionIntentEntrySchema = z.object({
+  sessionId: z.string(),
+  runId: z.string(),
+  intent: actionIntentSchema,
+  status: z.enum(['started', 'confirmed', 'failed_safe', 'uncertain']),
+  attempts: z.number().int().positive(),
+  authorizationIds: z.array(z.string()),
+  authorizationSource: z.enum(['guarded-owner-fast-path', 'one-time-authorization']),
+  resultJson: z.string().optional(),
+  error: z.string().optional(),
+  startedAt: z.string(),
+  updatedAt: z.string(),
+});
+const ledgerV1Schema = z.object({ version: z.literal(1), entries: z.record(z.string(), entrySchema) });
+const ledgerSchema = z.object({
+  version: z.literal(2),
+  entries: z.record(z.string(), entrySchema),
+  actionIntents: z.record(z.string(), actionIntentEntrySchema),
+});
 
 function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -78,11 +121,34 @@ function receiptCall(sessionId: string, runId: string): ExecutionCall {
   };
 }
 
-function serializeOutput(value: unknown, maxBytes: number): string {
+interface SerializedOutput<T> {
+  json: string;
+  value: T;
+}
+
+interface TruncatedExecutionOutput {
+  mimiStatus: 'output_truncated';
+  message: string;
+  originalBytes: number;
+  sha256: string;
+}
+
+function serializeOutput<T>(value: T, maxBytes: number): SerializedOutput<T> {
   const output = JSON.stringify([value]);
   if (output === undefined) throw new Error('工具输出无法序列化，不能提交执行账本');
-  if (Buffer.byteLength(output, 'utf8') > maxBytes) throw new Error(`工具输出超过执行账本 ${maxBytes} 字节限制`);
-  return output;
+  const originalBytes = Buffer.byteLength(output, 'utf8');
+  if (originalBytes <= maxBytes) return { json: output, value };
+  const receipt: TruncatedExecutionOutput = {
+    mimiStatus: 'output_truncated',
+    message: '工具已成功执行，但输出超过执行账本限制；完整输出未持久化，本回执可安全重放。',
+    originalBytes,
+    sha256: digest(output),
+  };
+  const bounded = JSON.stringify([receipt]);
+  if (Buffer.byteLength(bounded, 'utf8') > maxBytes) {
+    throw new Error(`工具输出超过执行账本 ${maxBytes} 字节限制，且无法保存有界成功回执`);
+  }
+  return { json: bounded, value: receipt as T };
 }
 
 function deserializeOutput<T>(value: string): T {
@@ -97,6 +163,7 @@ export class ExecutionLedger {
   private readonly maxEntries: number;
   private readonly maxOutputBytes: number;
   private readonly retentionMs: number;
+  private migrationPending = false;
 
   constructor(file: string, options: ExecutionLedgerOptions = {}) {
     this.maxEntries = positiveLimit(options.maxEntries, 2_000, 'maxEntries');
@@ -107,15 +174,202 @@ export class ExecutionLedger {
     );
     this.retentionMs = positiveLimit(options.retentionMs, 30 * 24 * 60 * 60_000, 'retentionMs');
     this.state = new AtomicJsonStore(file, {
-      defaultValue: () => ({ version: 1, entries: Object.create(null) as Record<string, ExecutionEntry> }),
+      defaultValue: () => ({
+        version: 2,
+        entries: Object.create(null) as Record<string, ExecutionEntry>,
+        actionIntents: Object.create(null) as Record<string, ActionIntentEntry>,
+      }),
       decode: (value) => {
+        const version = value && typeof value === 'object'
+          ? (value as { version?: unknown }).version
+          : undefined;
+        if (typeof version === 'number' && Number.isSafeInteger(version) && version > 2) {
+          throw new UnsupportedStateVersionError('ExecutionLedger', version, 2);
+        }
+        const legacy = ledgerV1Schema.safeParse(value);
+        if (legacy.success) {
+          this.migrationPending = true;
+          return {
+            version: 2,
+            entries: Object.assign(Object.create(null), legacy.data.entries) as Record<string, ExecutionEntry>,
+            actionIntents: Object.create(null) as Record<string, ActionIntentEntry>,
+          };
+        }
         const parsed = ledgerSchema.parse(value);
-        return { version: 1, entries: Object.assign(Object.create(null), parsed.entries) as Record<string, ExecutionEntry> };
+        return {
+          version: 2,
+          entries: Object.assign(Object.create(null), parsed.entries) as Record<string, ExecutionEntry>,
+          actionIntents: Object.assign(
+            Object.create(null),
+            parsed.actionIntents,
+          ) as Record<string, ActionIntentEntry>,
+        };
       },
       pretty: false,
       // Losing this ledger could replay a side effect whose outcome is unknown.
       // Quarantine the file, but fail closed until the user inspects it.
       recoverCorrupt: false,
+    });
+  }
+
+  async initialize(): Promise<void> {
+    await this.state.updateWhen(() => ({
+      result: undefined,
+      changed: this.migrationPending,
+    }));
+    this.migrationPending = false;
+  }
+
+  async executeActionIntent<T>(
+    sessionId: string,
+    runId: string,
+    intentInput: ActionIntent,
+    context: GuardedActionContext,
+    authorization: OneTimeActionAuthorization | undefined,
+    operation: () => Promise<T>,
+  ): Promise<ActionIntentReceipt<T>> {
+    const intent = actionIntentSchema.parse(intentInput);
+    if (intent.status !== 'not_started' && intent.status !== 'failed_safe') {
+      throw new Error(`ActionIntent 输入状态 ${intent.status} 不允许开始执行`);
+    }
+    const authorizationDecision = evaluateActionAuthorization(intent, context, authorization);
+    if (!authorizationDecision.allowed) throw new Error(authorizationDecision.reason);
+    const decision = await this.state.updateWhen<{ replay?: ActionIntentReceipt<T> }>((ledger) => {
+      const existing = ledger.actionIntents[intent.executionKey];
+      if (authorizationDecision.authorizationId) {
+        const consumedBy = Object.entries(ledger.actionIntents).find(([, entry]) =>
+          entry.authorizationIds.includes(authorizationDecision.authorizationId!));
+        if (consumedBy && consumedBy[0] !== intent.executionKey) {
+          throw new Error('一次性授权已由其他 ActionIntent 消费');
+        }
+      }
+      if (existing) {
+        if (existing.sessionId !== sessionId) {
+          throw new Error('ActionIntent executionKey 已属于其他 Session');
+        }
+        const sameAction = existing.intent.actionFamily === intent.actionFamily
+          && existing.intent.targetRef === intent.targetRef
+          && existing.intent.payloadDigest === intent.payloadDigest
+          && existing.intent.policyRevision === intent.policyRevision
+          && (!('businessActionRef' in existing.intent) || !('businessActionRef' in intent)
+            || existing.intent.businessActionRef === intent.businessActionRef);
+        if (!sameAction) throw new Error(`ActionIntent executionKey 冲突：${intent.executionKey}`);
+        if (existing.status === 'confirmed') {
+          if (!existing.resultJson) throw new Error('ActionIntent confirmed 回执缺少结果');
+          return {
+            result: {
+              replay: deserializeOutput<ActionIntentReceipt<T>>(existing.resultJson),
+            },
+            changed: false,
+          };
+        }
+        if (existing.status === 'started' || existing.status === 'uncertain') {
+          throw new Error(`ActionIntent 之前处于 ${existing.status} 状态，禁止换路或自动重放`);
+        }
+        if (existing.intent.selectedRoute === intent.selectedRoute) {
+          throw new Error('ActionIntent failed_safe 后必须选择不同执行路径');
+        }
+        if (authorizationDecision.authorizationId
+          && existing.authorizationIds.includes(authorizationDecision.authorizationId)) {
+          throw new Error('一次性授权已消费，不能用于 ActionIntent 换路');
+        }
+        existing.intent = { ...intent, status: 'started' };
+        existing.status = 'started';
+        existing.attempts += 1;
+        existing.authorizationSource = authorizationDecision.source;
+        if (authorizationDecision.authorizationId) {
+          existing.authorizationIds.push(authorizationDecision.authorizationId);
+        }
+        existing.updatedAt = new Date().toISOString();
+        delete existing.resultJson;
+        delete existing.error;
+        return { result: {}, changed: true };
+      }
+      const timestamp = new Date().toISOString();
+      ledger.actionIntents[intent.executionKey] = {
+        sessionId,
+        runId,
+        intent: { ...intent, status: 'started' },
+        status: 'started',
+        attempts: 1,
+        authorizationIds: authorizationDecision.authorizationId
+          ? [authorizationDecision.authorizationId]
+          : [],
+        authorizationSource: authorizationDecision.source,
+        startedAt: timestamp,
+        updatedAt: timestamp,
+      };
+      return { result: {}, changed: true };
+    });
+    if (decision.replay) return decision.replay;
+
+    try {
+      const result = await operation();
+      return await this.commitActionIntent(intent.executionKey, 'confirmed', result);
+    } catch (error) {
+      if (error instanceof ActionFailedSafeError) {
+        return this.commitActionIntent(intent.executionKey, 'failed_safe', {
+          error: error.message.slice(0, 2_000),
+        }) as Promise<ActionIntentReceipt<T>>;
+      }
+      const receipt = await this.commitActionIntent(intent.executionKey, 'uncertain', {
+        error: error instanceof Error ? error.message.slice(0, 2_000) : String(error).slice(0, 2_000),
+      });
+      throw new ActionIntentUncertainError(
+        `ActionIntent ${intent.intentId} 结果不确定，禁止自动重放`,
+        { cause: receipt },
+      );
+    }
+  }
+
+  async getActionIntent(executionKeyValue: string): Promise<ActionIntentReceipt | undefined> {
+    const entry = (await this.state.read()).actionIntents[executionKeyValue];
+    if (!entry) return undefined;
+    if (entry.resultJson) return deserializeOutput<ActionIntentReceipt>(entry.resultJson);
+    return {
+      intent: { ...entry.intent, status: entry.status },
+      outcome: entry.status === 'started' ? 'uncertain' : entry.status,
+      authorizationSource: entry.authorizationSource,
+      attempts: entry.attempts,
+      updatedAt: entry.updatedAt,
+    };
+  }
+
+  private async commitActionIntent<T>(
+    executionKeyValue: string,
+    status: 'confirmed' | 'failed_safe' | 'uncertain',
+    result: T,
+  ): Promise<ActionIntentReceipt<T>> {
+    return this.state.update((ledger) => {
+      const entry = ledger.actionIntents[executionKeyValue];
+      if (!entry || entry.status !== 'started') {
+        throw new Error(`ActionIntent ${executionKeyValue} 的执行状态已失效`);
+      }
+      const updatedAt = new Date().toISOString();
+      const receipt: ActionIntentReceipt<T> = {
+        intent: { ...entry.intent, status },
+        outcome: status,
+        result,
+        authorizationSource: entry.authorizationSource,
+        attempts: entry.attempts,
+        updatedAt,
+      };
+      let serialized = serializeOutput(receipt, this.maxOutputBytes);
+      if (serialized.value !== receipt) {
+        const boundedReceipt: ActionIntentReceipt<T> = {
+          ...receipt,
+          result: serialized.value as T,
+        };
+        serialized = serializeOutput(boundedReceipt, this.maxOutputBytes);
+        if (serialized.value !== boundedReceipt) {
+          throw new Error(`ActionIntent ${executionKeyValue} 回执超过执行账本限制`);
+        }
+      }
+      entry.intent = serialized.value.intent;
+      entry.status = status;
+      entry.resultJson = serialized.json;
+      entry.updatedAt = updatedAt;
+      return serialized.value;
     });
   }
 
@@ -172,6 +426,12 @@ export class ExecutionLedger {
           changed = true;
         }
       }
+      for (const [key, entry] of Object.entries(ledger.actionIntents)) {
+        if (entry.sessionId === sessionId) {
+          delete ledger.actionIntents[key];
+          changed = true;
+        }
+      }
       return { result: undefined, changed };
     });
   }
@@ -224,6 +484,13 @@ export class ExecutionLedger {
           changed = true;
         }
       }
+      for (const [key, entry] of Object.entries(ledger.actionIntents)) {
+        const retained = entry.runId === retainedRunId || entry.runId.startsWith(`${retainedRunId}:`);
+        if (entry.sessionId === sessionId && !retained) {
+          delete ledger.actionIntents[key];
+          changed = true;
+        }
+      }
       return { result: undefined, changed };
     });
   }
@@ -234,6 +501,13 @@ export class ExecutionLedger {
       for (const [key, entry] of Object.entries(ledger.entries)) {
         if (entry.sessionId === sessionId && (entry.runId === runId || entry.runId.startsWith(`${runId}:`))) {
           delete ledger.entries[key];
+          changed = true;
+        }
+      }
+      for (const [key, entry] of Object.entries(ledger.actionIntents)) {
+        if (entry.sessionId === sessionId
+          && (entry.runId === runId || entry.runId.startsWith(`${runId}:`))) {
+          delete ledger.actionIntents[key];
           changed = true;
         }
       }
@@ -280,17 +554,17 @@ export class ExecutionLedger {
 
     try {
       const output = await operation();
-      const outputJson = serializeOutput(output, this.maxOutputBytes);
+      const serialized = serializeOutput(output, this.maxOutputBytes);
       await this.state.update((ledger) => {
         const entry = ledger.entries[key];
         if (!entry || entry.status !== 'started' || entry.argumentsHash !== argumentsHash) {
           throw new Error(`工具调用 ${call.callId} 的执行账本状态已失效`);
         }
         entry.status = 'succeeded';
-        entry.outputJson = outputJson;
+        entry.outputJson = serialized.json;
         entry.updatedAt = new Date().toISOString();
       });
-      return output;
+      return serialized.value;
     } catch (error) {
       await this.state.update((ledger) => {
         const entry = ledger.entries[key];

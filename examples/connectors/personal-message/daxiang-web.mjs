@@ -393,6 +393,36 @@ export class DaxiangWebAdapter {
       };
     } catch (error) {
       const now = new Date().toISOString();
+      const category = errorCategory(error);
+      if (!probe && category === 'dedicated_tab_unavailable') {
+        await this.#recordDiagnostics({
+          checkedAt: now,
+          coverage: 'unavailable',
+          accountVerified: false,
+          backgroundSafe: false,
+          errorCategory: category,
+          recoveryAttempted: true,
+          recovered: false,
+        });
+        const recovered = await this.health({ probe: true });
+        const recoverySucceeded = recovered.accountVerified === true
+          && recovered.inbound === 'ready';
+        this.lastHealth = {
+          ...recovered,
+          recoveryAttempted: true,
+          recovered: recoverySucceeded,
+        };
+        await this.#recordDiagnostics({
+          checkedAt: new Date().toISOString(),
+          coverage: this.lastHealth.coverage,
+          accountVerified: this.lastHealth.accountVerified,
+          backgroundSafe: this.lastHealth.backgroundSafe,
+          ...(this.lastHealth.errorCategory ? { errorCategory: this.lastHealth.errorCategory } : {}),
+          recoveryAttempted: true,
+          recovered: recoverySucceeded,
+        });
+        return this.lastHealth;
+      }
       this.lastHealth = {
         available: false,
         accountVerified: false,
@@ -406,7 +436,7 @@ export class DaxiangWebAdapter {
         stableConversationId: false,
         stableMessageId: false,
         probedAt: now,
-        errorCategory: errorCategory(error),
+        errorCategory: category,
       };
       await this.#recordDiagnostics({
         checkedAt: now,

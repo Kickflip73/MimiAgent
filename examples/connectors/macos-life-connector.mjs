@@ -26,6 +26,9 @@ const eventKitHelper = absolutePath(
   'MACOS_LIFE_EVENTKIT_HELPER',
 );
 const pollIntervalMs = numberEnv('MACOS_POLL_INTERVAL_MS', 300_000, 0, 86_400_000);
+const pollFreshForMs = pollIntervalMs > 0
+  ? Math.min(7 * 86_400_000, Math.max(1_000, pollIntervalMs * 3))
+  : undefined;
 const lookaheadMinutes = numberEnv('MACOS_LOOKAHEAD_MINUTES', 30, 1, 10_080);
 const maxPollItems = numberEnv('MACOS_LIFE_MAX_ITEMS', 200, 1, 200);
 const pollCalendar = process.env.MACOS_CALENDAR || '*';
@@ -39,6 +42,16 @@ function defaultDaemonStateFile(name) {
   const configured = process.env.MIMI_DAEMON_DATA_DIR;
   if (configured) return path.join(expandHome(configured), name);
   return path.join(os.homedir(), '.mimi-agent', 'daemon', name);
+}
+
+function writeReadiness(inbound, outbound) {
+  write({
+    type: 'status',
+    inbound,
+    outbound,
+    deliveryConfirmed: false,
+    ...(pollFreshForMs ? { freshForMs: pollFreshForMs } : {}),
+  });
 }
 
 function expandHome(value) {
@@ -744,8 +757,10 @@ async function poll() {
     const nextState = { version: 1, calendar, reminders };
     if (!pollState || JSON.stringify(pollState) !== JSON.stringify(nextState)) await persistState(nextState);
     pollState = nextState;
+    writeReadiness('ready', 'ready');
   } catch (error) {
     process.stderr.write(`[macos-life] poll failed: ${errorText(error)}\n`);
+    writeReadiness('unavailable', 'unavailable');
   } finally {
     polling = false;
   }
@@ -785,6 +800,8 @@ if (pollIntervalMs > 0) {
   void poll();
   pollTimer = setInterval(() => void poll(), pollIntervalMs);
   pollTimer.unref();
+} else {
+  writeReadiness('unavailable', 'ready');
 }
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

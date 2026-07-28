@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -174,7 +174,7 @@ test('parses valid runtime limits once at startup', () => {
   }
 });
 
-test('keeps Computer Use disabled by default and validates explicit opt-in', () => {
+test('enables Computer Use by default for full-owner when CUA is installed and supports opt-out', async () => {
   const keys = [
     'MIMI_COMPUTER_BACKEND', 'MIMI_CUA_DRIVER_COMMAND', 'MIMI_COMPUTER_ACTION_TIMEOUT_MS',
     'MIMI_COMPUTER_MAX_ACTIONS_PER_RUN', 'MIMI_COMPUTER_MAX_SCREENSHOTS_PER_RUN',
@@ -183,12 +183,24 @@ test('keeps Computer Use disabled by default and validates explicit opt-in', () 
     'MIMI_SECURITY_PROFILE',
   ] as const;
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-default-'));
+  const driver = path.join(home, '.local', 'bin', 'cua-driver');
+  await mkdir(path.dirname(driver), { recursive: true });
+  await writeFile(driver, '#!/bin/sh\nexit 0\n');
+  await chmod(driver, 0o755);
   try {
     for (const key of keys) delete process.env[key];
-    assert.equal(loadConfig(ISOLATED_HOME).computer, undefined);
+    assert.equal(loadConfig(home).computer, undefined);
     process.env.MIMI_SECURITY_PROFILE = 'full-owner';
+    assert.deepEqual(loadConfig(home).computer, {
+      backend: 'cua', driverCommand: driver, actionTimeoutMs: 15_000,
+      maxActionsPerRun: 50, maxScreenshotsPerRun: 12, pauseWhenTargetFrontmost: true,
+      defaultAccess: 'background', foregroundLeaseSeconds: 30,
+      artifactMaxBytes: 1024 * 1024 * 1024,
+    });
+    process.env.MIMI_COMPUTER_BACKEND = 'off';
+    assert.equal(loadConfig(home).computer, undefined);
     process.env.MIMI_COMPUTER_BACKEND = 'cua';
-    assert.throws(() => loadConfig(ISOLATED_HOME), /MIMI_CUA_DRIVER_COMMAND/);
     process.env.MIMI_CUA_DRIVER_COMMAND = '/bin/echo';
     process.env.MIMI_COMPUTER_ACTION_TIMEOUT_MS = '12000';
     process.env.MIMI_COMPUTER_MAX_ACTIONS_PER_RUN = '25';
@@ -196,13 +208,13 @@ test('keeps Computer Use disabled by default and validates explicit opt-in', () 
     process.env.MIMI_COMPUTER_PAUSE_WHEN_TARGET_FRONTMOST = 'false';
     process.env.MIMI_COMPUTER_DEFAULT_ACCESS = 'observe';
     process.env.MIMI_COMPUTER_FOREGROUND_LEASE_SECONDS = '15';
-    assert.deepEqual(loadConfig(ISOLATED_HOME).computer, {
+    assert.deepEqual(loadConfig(home).computer, {
       backend: 'cua', driverCommand: '/bin/echo', actionTimeoutMs: 12_000,
       maxActionsPerRun: 25, maxScreenshotsPerRun: 6, pauseWhenTargetFrontmost: false,
       defaultAccess: 'observe', foregroundLeaseSeconds: 15, artifactMaxBytes: 1024 * 1024 * 1024,
     });
     process.env.MIMI_COMPUTER_PAUSE_WHEN_TARGET_FRONTMOST = 'yes';
-    assert.throws(() => loadConfig(ISOLATED_HOME), /只能是 true 或 false/);
+    assert.throws(() => loadConfig(home), /只能是 true 或 false/);
   } finally {
     for (const key of keys) {
       const value = previous[key];

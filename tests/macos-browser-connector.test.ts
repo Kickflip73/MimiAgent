@@ -12,6 +12,9 @@ interface Message {
   ok?: boolean;
   result?: Record<string, unknown>;
   error?: string;
+  inbound?: string;
+  outbound?: string;
+  deliveryConfirmed?: boolean;
 }
 
 async function waitFor(messages: Message[], id: string): Promise<Message> {
@@ -89,6 +92,16 @@ writeFileSync(${JSON.stringify(openLog)}, JSON.stringify(process.argv.slice(2)))
   };
 
   try {
+    const readinessDeadline = Date.now() + 2_000;
+    while (!messages.some((message) => message.type === 'status') && Date.now() < readinessDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.deepEqual(messages.find((message) => message.type === 'status'), {
+      type: 'status',
+      inbound: 'unavailable',
+      outbound: 'ready',
+      deliveryConfirmed: false,
+    });
     const listed = await call('list', 'list_tabs', 'all', { limit: 5 });
     assert.equal(listed.ok, true, listed.error);
     assert.equal(listed.result?.untrusted, true);

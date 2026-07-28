@@ -15,6 +15,8 @@ interface ProtocolMessage {
   error?: string;
   priority?: number;
   payload?: Record<string, unknown>;
+  inbound?: string;
+  outbound?: string;
 }
 
 async function waitFor(
@@ -95,6 +97,10 @@ if (args[0] === 'poll') {
   });
   child.stderr.on('data', (chunk: string) => { stderr += chunk; });
   try {
+    const readiness = await waitFor(messages, (message) => (
+      message.type === 'status' && message.inbound === 'ready'
+    ));
+    assert.equal(readiness.outbound, 'ready');
     const calendarEvent = await waitFor(messages, (message) => message.payload?.type === 'calendar_upcoming');
     const reminderEvent = await waitFor(messages, (message) => (
       message.payload?.type === 'reminder_due' || message.payload?.type === 'reminder_overdue'

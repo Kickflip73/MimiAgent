@@ -26,6 +26,20 @@ export class StateFileCorruptError extends Error {
   }
 }
 
+export class UnsupportedStateVersionError extends Error {
+  constructor(
+    readonly fileKind: string,
+    readonly foundVersion: number,
+    readonly supportedVersion: number,
+  ) {
+    super(
+      `${fileKind} 状态版本 ${foundVersion} 高于当前支持的 ${supportedVersion}；`
+      + '这是由更新版 MimiAgent 写入的有效状态，为避免误隔离或副作用重放，拒绝版本回退。',
+    );
+    this.name = 'UnsupportedStateVersionError';
+  }
+}
+
 export interface AtomicJsonStoreOptions<T> {
   defaultValue: () => T;
   decode?: (value: unknown) => T;
@@ -295,6 +309,7 @@ export class AtomicJsonStore<T> {
     try {
       return this.decode(JSON.parse(source));
     } catch (error) {
+      if (error instanceof UnsupportedStateVersionError) throw error;
       throw new InvalidStateFileError(error);
     }
   }

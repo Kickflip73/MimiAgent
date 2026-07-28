@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { TOOL_ACTION_INTENT } from '../src/core/tool-metadata.js';
 import { PersonalMessageHub, type PersonalMessageScope } from '../src/runtime/personal-message-hub.js';
 
 const accountFingerprint = `sha256:${'a'.repeat(64)}`;
@@ -61,6 +62,10 @@ test('context tokens bind run and target and are consumed once', async () => {
   } }), 'run-1') as Array<{ name: string; invoke: Function }>;
   const contextTool = tools.find((tool) => tool.name === 'get_personal_message_context')!;
   const sendTool = tools.find((tool) => tool.name === 'send_personal_message')!;
+  const contextIntent = (contextTool as unknown as Record<symbol, unknown>)[TOOL_ACTION_INTENT];
+  const sendIntent = (sendTool as unknown as Record<symbol, unknown>)[TOOL_ACTION_INTENT];
+  assert.equal(contextIntent, undefined);
+  assert.equal(typeof sendIntent, 'function');
   const context = await call(contextTool, { limit: 30 }) as Record<string, unknown>;
   assert.equal(typeof context.contextToken, 'string');
   const sent = await call(sendTool, { contextToken: context.contextToken, text: '收到，谢谢' }) as Record<string, unknown>;

@@ -5,6 +5,12 @@ import type { MemoryHit, SourceRef } from '../core/memory.js';
 import type { PlanStep } from '../core/plan.js';
 import type { RunCheckpoint } from '../core/session.js';
 import type { MimiContextStatus } from '../core/context.js';
+import type { DailyResourceTrend } from './resource-slo.js';
+import type {
+  DeadLetterClassification,
+  DigestClassification,
+  ReadinessUnknownClassification,
+} from './operational-classification.js';
 
 export type EventTrust = 'owner' | 'trusted' | 'external' | 'public' | 'system';
 export type EventKind = 'command' | 'alert' | 'ambient' | 'schedule' | 'webhook';
@@ -322,6 +328,21 @@ export interface DaemonTaskWorkerStatus {
   heartbeatAt?: string;
 }
 
+export interface DaemonTaskWorkerRuntime {
+  ready: boolean;
+  reason?: string;
+}
+
+export interface DaemonProviderHealth {
+  provider: string;
+  state: 'closed' | 'open' | 'half_open';
+  failures: number;
+  openedAt?: string;
+  retryAt?: string;
+  lastFailure?: 'rate_limit' | 'insufficient_balance' | 'network' | 'server' | 'other';
+  lastSuccessAt?: string;
+}
+
 export interface DaemonStatus {
   protocolVersion: number;
   buildVersion?: string;
@@ -336,6 +357,7 @@ export interface DaemonStatus {
   activeEventCount?: number;
   activeTaskCount?: number;
   taskWorkers?: DaemonTaskWorkerStatus[];
+  taskWorkerRuntime?: DaemonTaskWorkerRuntime;
   activeHostMutations: number;
   webhookAddress?: string;
   runtimeHttpAddress?: string;
@@ -346,6 +368,13 @@ export interface DaemonStatus {
   outbox: Record<OutboxStatus, number>;
   enabledSchedules: number;
   health?: DaemonHealthSnapshot;
+  effectiveCapability?: {
+    schemaVersion: number;
+    snapshotDigest: string;
+    observedAt: string;
+  };
+  providerHealth?: DaemonProviderHealth;
+  providerHealthRoutes?: DaemonProviderHealth[];
 }
 
 export type DaemonWorkerStatus = Omit<
@@ -417,6 +446,13 @@ export interface MimiActivitySnapshot {
   recentRuns: MimiActivityRun[];
   recentDeliveries: MimiActivityDelivery[];
   recentTransitions: MimiActivityTransition[];
+  resourceTrends: DailyResourceTrend[];
+  failureClassification: {
+    deadLetters: DeadLetterClassification[];
+    digest: DigestClassification[];
+    readinessUnknown?: ReadinessUnknownClassification[];
+    unclassifiedDeadLetters: number;
+  };
 }
 
 export interface MimiSessionActivity {

@@ -96,6 +96,15 @@ test('diagnostic bundle exposes bounded health and capacity metadata without pri
         },
         outbox: { pending: 1, sending: 0, sent: 4, dead_letter: 0, archived: 0 },
         enabledSchedules: 0,
+        providerHealth: { provider: 'openai', state: 'closed', failures: 0 },
+        providerHealthRoutes: [
+          { provider: 'openai', state: 'closed', failures: 0 },
+          { provider: 'deepseek:backup', state: 'open', failures: 1, lastFailure: 'rate_limit' },
+        ],
+        taskWorkerRuntime: {
+          ready: false,
+          reason: 'Task worker runtime dependency unavailable',
+        },
         health,
       },
       health,
@@ -116,6 +125,14 @@ test('diagnostic bundle exposes bounded health and capacity metadata without pri
   assert.doesNotMatch(serialized, new RegExp(secret));
   assert.equal(bundle.daemon.health?.connectors.offline, 1);
   assert.equal(bundle.daemon.health?.backlog.digest, 3);
+  assert.deepEqual(bundle.daemon.providerHealthRoutes?.map((route) => route.provider), [
+    'openai',
+    'deepseek:backup',
+  ]);
+  assert.deepEqual(bundle.daemon.taskWorkerRuntime, {
+    ready: false,
+    reason: 'Task worker runtime dependency unavailable',
+  });
   assert.equal(bundle.storage.database.bytes, Buffer.byteLength('database-bytes'));
   assert.equal(bundle.storage.memory.files, 1);
   assert.equal(bundle.storage.memory.bytes, Buffer.byteLength(secret));

@@ -183,6 +183,12 @@ sync_now/get_context`。`list_targets` 只返回配置允许访问的 self/watch
 未运行、专用标签处于活动状态或 Apple Events JavaScript 未获准时，Connector
 保持 `unavailable`，不会打开或激活浏览器。
 
+健康检查发现绑定标签丢失时，Adapter 会自动执行一次后台安全恢复：仅当当前恰好存在
+一个已登录、非活动的 `x.sankuai.com` 标签页时，重新写入本地 `window.name`
+标记并复核账号和页面指纹。它不会启动或激活 Chrome，不会接管活动标签，不会在匹配
+歧义、权限不足或账号/页面指纹不一致时继续，也不会在恢复过程中读取凭证或发送消息。
+诊断记录只保留故障类别以及 `recoveryAttempted/recovered` 状态。
+
 大象 Event 固定使用 `source=personal-message:daxiang`，不设置 `replyTarget`。
 `send_message` 虽在 Connector action 目录登记，但通用 `connector_action` 会拒绝
 个人消息写 action；只有当前 Run 的 `PersonalMessageHub` 绑定 callback 可以调用。
@@ -534,3 +540,37 @@ Actions：
 只有 `owner/system` 事件可在当前部署权限内直接工作。其余 provenance（包括 `trusted/external/public`）默认只开放当前 attempt 内的静默投递控制，不提供通用网络读取，避免来源内容借 `http_get` 探测 localhost、内网或云 metadata；它们也不可读取 Session 历史/归档/恢复点、Memory、本地文件或持久状态，不可使用 Shell、MCP、状态写入或外部事务。精确匹配 owner source policy 后，默认 `access=reply` 只开放当前人物 Session 的有界上下文和自动回复；只有显式 `access=work` 才开放静态工作工具。来源正文始终作为不可信 user input，不能提升档位或扩大工具范围；常驻执行契约仍由 Host 单独提供。
 
 Connector 仍是首层信任边界：只接入你愿意处理的来源，限制 IM 白名单，且只在 `envAllowlist` 中提供必要凭证。需要代 owner 执行本地或外部事务的控制入口必须在 Host 侧完成认证并明确配置为 `owner`；`trusted` 只记录 provenance，不会提权，事件正文也不能自行改变该标签。
+
+## Capability owner 与跨路径防重
+
+每个本机 GUI/自动化入口只有一个 capability owner：
+
+| 路径 | 唯一 owner | 允许的用途 |
+| --- | --- | --- |
+| CuaDriver Computer actions | `extensions/computer` | 带 observation 的显式 UI 写动作 |
+| Connector 内 AppleScript/JXA | 对应 `macos-*` Connector | 目录中声明的有界 action |
+| `/usr/bin/shortcuts` | `macos-shortcuts` Connector | 列表和显式运行 Shortcut |
+| `/usr/bin/open` / 应用启动 | `macos-desktop` Connector | 目录声明的后台应用动作 |
+| 系统通知 `osascript` | `daemon/notifier` | 仅消费 durable Outbox 的本机通知 |
+| QQ 确定性 UI 脚本 | `qq-messenger-skill` | 该 Skill 的单一路径和可见结果验证 |
+
+Host Tool、通用 Shell、Browser 或 Computer 不得因为精确 Connector ID 未命中、offline、
+timeout 或 unknown 就自动接管同一业务动作。个人消息和 Computer 写动作先生成同一个
+schema v1 `ActionIntent`；其 action family、目标和 payload 摘要跨 Tool/Provider/route
+保持稳定。`confirmed` 最多执行一次，`uncertain` 禁止自动重试或换路，只有
+`failed_safe` 才能选择新 route。一次性授权精确绑定 Intent 和 route，不能在 fallback
+时复用。
+已认证 owner 的 Computer `launch_app` 仅在 bundleId 精确且不带 URL 时使用 guarded
+快速通道；URL scheme、外部来源和其他 Computer 动作不能继承该判定。
+
+运行时会把普通 GUI 业务请求硬绑定到正式能力面，并从该轮最终 Tool 集移除
+`run_shell`；因此 Shell 不能直接调用 `osascript`、`shortcuts`、`open` 或其他 GUI
+自动化来绕过 Connector/Browser/Computer。代码开发、测试和 Connector 实现任务不按
+GUI 业务请求处理，仍可保留 Shell 进行工程验证；即使分类未命中，`run_shell` 的
+调用时授权边界也会拒绝 GUI 系统命令、Apple Events/Accessibility API 和直接运行
+内置 `macos-*` Connector。
+
+Connector readiness 使用固定词义：`online` 只代表进程存活；`readiness` 表示渠道能否
+收/发；`freshness` 表示状态是否仍在有效期；`coverage` 说明完整、bounded、
+notification-only 或 metadata-only。旧 Connector 缺字段时显示 unknown，并由 Doctor
+分类为 startup grace 或 connector fix required，绝不默认 ready。

@@ -9,6 +9,7 @@ import type {
   WorkUnitObservation,
   WorkUnitResult,
 } from '../core/work-unit.js';
+import { sanitizeSensitiveText } from '../core/data-sanitizer.js';
 import type { AgentModel } from './model-port.js';
 
 const ROLE_INSTRUCTIONS: Record<TeamRole, string> = {
@@ -47,7 +48,7 @@ export function teamWorkerDescriptor(task: TeamTask, parentRunId: string): WorkU
     id: task.id,
     kind: 'team-worker',
     parentRunId,
-    objective: task.description,
+    objective: sanitizeSensitiveText(task.description) ?? '',
     role: task.role,
     dependencies: [...task.dependencies],
     capabilities: writable ? ['read', 'write', 'execute'] : ['read'],
@@ -66,8 +67,8 @@ function teamWorkerResult(
     taskId: task.id,
     role: task.role,
     status,
-    summary: output,
-    output,
+    summary: sanitizeSensitiveText(output) ?? '',
+    output: sanitizeSensitiveText(output) ?? '',
     artifacts: task.role === 'builder' ? task.paths.map((artifactPath) => ({ path: artifactPath })) : [],
     evidence: [
       {
@@ -78,7 +79,7 @@ function teamWorkerResult(
         ? [{ type: 'test', ref: `team:${task.id}:result` }]
         : task.role === 'reviewer' ? [{ type: 'review', ref: `team:${task.id}:result` }] : []),
     ],
-    ...(status === 'failed' ? { error: output } : {}),
+    ...(status === 'failed' ? { error: sanitizeSensitiveText(output) } : {}),
     startedAt: task.claimedAt ?? task.updatedAt,
     completedAt: task.updatedAt,
   };

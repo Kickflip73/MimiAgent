@@ -125,6 +125,8 @@ export async function createRuntimeComponents(
   const packagedSoulFile = fileURLToPath(new URL('../../MIMI.md', import.meta.url));
   const soul = new SoulLoader(path.join(config.dataRoot, 'MIMI.md'), packagedSoulFile);
   const state = createFileRuntimeStatePorts(config, sessionId);
+  // Migrate side-effect state before MCP or any runtime executor can start.
+  await state.executionLedger.store.initialize();
   const memory = createRoutedMemoryHub({
     workspaceRoot: config.workspaceRoot,
     dataRoot: config.dataRoot,

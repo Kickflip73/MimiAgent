@@ -14,6 +14,22 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+test('host exposes the exact primary and backup Provider health routes', () => {
+  const agent = {
+    currentSessionId: 'session-a',
+  } as unknown as MimiAgent;
+  const primary = { provider: 'openai', state: 'closed' as const, failures: 0 };
+  const backup = { provider: 'deepseek:backup', state: 'open' as const, failures: 1 };
+  const host = new MimiHost(agent, {
+    execute: async () => ({ answer: 'unused', effects: [] }),
+    providerHealth: () => primary,
+    providerHealthRoutes: () => [primary, backup],
+  });
+
+  assert.deepEqual(host.providerHealth(), primary);
+  assert.deepEqual(host.providerHealthRoutes(), [primary, backup]);
+});
+
 test('serializes Session mutations behind the active Agent run', async () => {
   const release = deferred();
   const started = deferred();

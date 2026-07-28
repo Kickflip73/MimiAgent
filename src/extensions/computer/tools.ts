@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import { tool, type Tool, type ToolOutputImage, type ToolOutputText } from '@openai/agents';
 import { z } from 'zod';
-import { TOOL_LEDGER_ARGUMENTS } from '../../core/tool-metadata.js';
+import {
+  TOOL_ACTION_INTENT,
+  TOOL_LEDGER_ARGUMENTS,
+} from '../../core/tool-metadata.js';
 import { ComputerManager, type ComputerRunAuthority } from './manager.js';
 import { computerActionSchema, computerActInputSchema, computerObserveInputSchema } from './types.js';
 
@@ -23,6 +26,7 @@ const observeToolParameters = z.object({
 
 const actToolParameters = z.object({
   observationId: z.string().optional(),
+  authorizationId: z.string().optional(),
   action: computerActionSchema,
 });
 
@@ -44,6 +48,10 @@ export function computerLedgerArguments(rawInput: string): string {
   try {
     const value = JSON.parse(rawInput) as Record<string, unknown>;
     const action = value.action as Record<string, unknown> | undefined;
+    if (typeof value.authorizationId === 'string') {
+      value.authorizationIdSha256 = createHash('sha256').update(value.authorizationId).digest('hex');
+      delete value.authorizationId;
+    }
     if (action?.type === 'type_text' && typeof action.text === 'string') {
       action.textSha256 = createHash('sha256').update(action.text).digest('hex');
       action.textLength = action.text.length;
@@ -88,8 +96,66 @@ export function createComputerTools(
     description: '执行一个受策略约束的原子电脑动作。默认后台；目标 UI 动作必须引用新鲜 observationId，动作后必须再次调用 computer_observe 验证。用户明确要求在当前桌面查看、接管或游玩应用时，使用 handoff_to_user 持久交付前台；bring_to_front 仅用于会自动恢复的短暂 lease。结果不确定时禁止重试。',
     parameters: nonStrictToolSchema(actToolParameters),
     strict: false,
-    execute: (input, _context, details) => manager.act(authority(), computerActInputSchema.parse(input), details?.signal),
-  }) as Tool & { [TOOL_LEDGER_ARGUMENTS]?: (rawInput: string) => string };
+    execute: (input, _context, details) => {
+      const { authorizationId: _, ...managerInput } = input as Record<string, unknown>;
+      return manager.act(authority(), computerActInputSchema.parse(managerInput), details?.signal);
+    },
+  }) as Tool & {
+    [TOOL_LEDGER_ARGUMENTS]?: (rawInput: string) => string;
+    [TOOL_ACTION_INTENT]?: (rawInput: string) => {
+      actionFamily: string;
+      targetRef: string;
+      payload: unknown;
+      selectedRoute: string;
+      guarded?: {
+        exactTarget: boolean;
+        lowRisk: boolean;
+        reversible: boolean;
+      };
+      authorizationId?: string;
+      targetEvidenceRef?: string;
+      requestedAuthorizationId?: string;
+      outcome: (result: unknown) => 'confirmed' | 'failed_safe' | 'uncertain';
+    };
+  };
   act[TOOL_LEDGER_ARGUMENTS] = computerLedgerArguments;
+  act[TOOL_ACTION_INTENT] = (rawInput) => {
+    const input = JSON.parse(rawInput) as Record<string, unknown>;
+    const action = input.action && typeof input.action === 'object' && !Array.isArray(input.action)
+      ? input.action as Record<string, unknown>
+      : {};
+    const observationId = typeof input.observationId === 'string' ? input.observationId : undefined;
+    const authorizationId = typeof input.authorizationId === 'string' ? input.authorizationId : undefined;
+    const actionType = typeof action.type === 'string' ? action.type : 'unknown';
+    const bundleId = actionType === 'launch_app' && typeof action.bundleId === 'string'
+      ? action.bundleId
+      : undefined;
+    const urls = Array.isArray(action.urls) ? action.urls : [];
+    const target = action.target && typeof action.target === 'object'
+      ? JSON.stringify(action.target)
+      : observationId ?? (bundleId ? `bundle:${bundleId}` : actionType);
+    return {
+      actionFamily: `computer.${actionType}`,
+      targetRef: target,
+      payload: computerLedgerArguments(rawInput),
+      selectedRoute: 'computer-manager',
+      ...(observationId ? { targetEvidenceRef: observationId } : {}),
+      ...(bundleId && urls.length === 0 ? {
+        guarded: {
+          exactTarget: true,
+          lowRisk: true,
+          reversible: true,
+        },
+      } : {}),
+      ...(authorizationId ? { requestedAuthorizationId: authorizationId } : {}),
+      outcome: (result) => {
+        if (!result || typeof result !== 'object') return 'confirmed';
+        const status = (result as Record<string, unknown>).status;
+        if (status === 'uncertain') return 'uncertain';
+        if (status === 'background_unsupported') return 'failed_safe';
+        return 'confirmed';
+      },
+    };
+  };
   return [observe, act];
 }

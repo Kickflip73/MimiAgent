@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { boundedMemoryEvidenceSnapshot } from '../../memory-evidence.js';
+import type { BoundedMemoryEvidenceSnapshot } from '../../memory-evidence.js';
 
 type Row = Record<string, string | number | null | undefined>;
 
@@ -8,7 +8,14 @@ export function hasMemoryEvidenceSnapshot(database: DatabaseSync): boolean {
     .some((row) => String(row.name) === 'evidence_snapshot_json');
 }
 
-export function upgradeMemoryEvidenceSnapshotV15(database: DatabaseSync): void {
+export function upgradeMemoryEvidenceSnapshotV15(
+  database: DatabaseSync,
+  buildSnapshot: (
+    objective: unknown,
+    result: unknown,
+    error?: string,
+  ) => BoundedMemoryEvidenceSnapshot,
+): void {
   database.exec('BEGIN IMMEDIATE');
   try {
     if (!hasMemoryEvidenceSnapshot(database)) {
@@ -32,7 +39,7 @@ export function upgradeMemoryEvidenceSnapshotV15(database: DatabaseSync): void {
         : undefined;
       const error = typeof row.error === 'string' ? row.error : undefined;
       update.run(
-        JSON.stringify(boundedMemoryEvidenceSnapshot(objective, result, error)),
+        JSON.stringify(buildSnapshot(objective, result, error)),
         String(row.source_key),
       );
     }

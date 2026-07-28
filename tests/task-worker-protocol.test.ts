@@ -46,4 +46,40 @@ test('Task worker configuration excludes Computer Use capability', () => {
     mcpEnvironment: {},
     config: workerConfig,
   }));
+  assert.doesNotThrow(() => taskWorkerInitSchema.parse({
+    type: 'init',
+    executor: 'mimi',
+    taskId: 'd4d0011b-d947-5963-b2ef-7982b303f612',
+    database: '/daemon/mimi.db',
+    assistantConfig: '/daemon/assistant.json',
+    socket: '/daemon/mimi.sock',
+    workerToken: 'a'.repeat(43),
+    workspaceAccess: 'write',
+    enableMcp: false,
+    providerCredential: { provider: 'deepseek', apiKey: 'primary-key' },
+    backupProvider: {
+      id: 'openai:gpt-5.4-mini',
+      provider: 'openai',
+      model: 'gpt-5.4-mini',
+    },
+    backupProviderCredential: { provider: 'openai', apiKey: 'backup-key' },
+    mcpEnvironment: {},
+    config: workerConfig,
+  }));
+  assert.throws(() => taskWorkerInitSchema.parse({
+    type: 'init',
+    executor: 'mimi',
+    taskId: 'd4d0011b-d947-5963-b2ef-7982b303f612',
+    database: '/daemon/mimi.db',
+    assistantConfig: '/daemon/assistant.json',
+    socket: '/daemon/mimi.sock',
+    workerToken: 'a'.repeat(43),
+    workspaceAccess: 'write',
+    enableMcp: false,
+    providerCredential: { provider: 'deepseek', apiKey: 'primary-key' },
+    backupProvider: { id: 'openai:default', provider: 'openai' },
+    backupProviderCredential: { provider: 'deepseek', apiKey: 'wrong-key' },
+    mcpEnvironment: {},
+    config: workerConfig,
+  }), /Backup Provider credential/);
 });

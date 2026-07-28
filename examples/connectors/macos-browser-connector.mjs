@@ -336,4 +336,11 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
+write({
+  type: 'status',
+  inbound: 'unavailable',
+  outbound: 'ready',
+  deliveryConfirmed: false,
+});
+
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => process.exit(0));

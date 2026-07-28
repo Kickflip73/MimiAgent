@@ -1,6 +1,7 @@
 import { tool, type Tool } from '@openai/agents';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import type { EffectiveCapabilityItem } from '../runtime/pipeline/capability-resolver.js';
 import type { ConnectorActionRequest, ConnectorManager } from './connectors.js';
 
 const identifier = z.string().regex(/^[a-zA-Z0-9._-]+$/);
@@ -47,6 +48,35 @@ export interface ConnectorCapabilitySnapshot {
 export interface ConnectorCapabilityFilter {
   connector?: string;
   query?: string;
+}
+
+export function connectorEffectiveCapabilityItems(
+  connectors: ConnectorManager,
+): EffectiveCapabilityItem[] {
+  return connectors.listCapabilities().map((connector) => {
+    const readiness = connector.readiness;
+    const stale = readiness.stale === true;
+    const anyReady = readiness.inbound === 'ready' || readiness.outbound === 'ready';
+    const bothUnavailable = readiness.inbound === 'unavailable' && readiness.outbound === 'unavailable';
+    const ready = connector.enabled && connector.online && !stale && anyReady;
+    return {
+      id: connector.id,
+      kind: 'connector' as const,
+      availability: ready
+        ? 'available' as const
+        : connector.enabled && connector.online ? 'degraded' as const : 'unavailable' as const,
+      readiness: ready
+        ? 'ready' as const
+        : !connector.enabled || !connector.online || bothUnavailable
+          ? 'unavailable' as const
+          : 'unknown' as const,
+      freshness: stale ? 'stale' as const : readiness.reportedAt ? 'fresh' as const : 'unknown' as const,
+      coverage: readiness.coverage ?? (bothUnavailable ? 'unavailable' as const : 'unknown' as const),
+      permissionSource: connector.enabled ? 'connector-manager:enabled' : 'connector-manager:disabled',
+      selectedRoute: connector.id,
+      safeFallback: 'none' as const,
+    };
+  });
 }
 
 /** Minimum Connector control-plane surface available inside a Task worker. */

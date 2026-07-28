@@ -270,18 +270,51 @@ function booleanEnvironment(name: string, fallback: boolean): boolean {
   throw new Error(`${name} 只能是 true 或 false`);
 }
 
-function computerConfig(homeDirectory: string): ComputerConfig | undefined {
-  const backend = process.env.MIMI_COMPUTER_BACKEND;
-  if (backend === undefined || backend === '') return undefined;
-  if (backend !== 'cua') throw new Error('MIMI_COMPUTER_BACKEND 第一阶段只能是 cua');
+function executableFile(file: string): boolean {
+  try {
+    const info = statSync(file);
+    return info.isFile() && (info.mode & 0o111) !== 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function discoverCuaDriver(homeDirectory: string): string | undefined {
+  const candidates = [
+    path.join(homeDirectory, '.local', 'bin', 'cua-driver'),
+    ...(process.env.PATH ?? '').split(path.delimiter)
+      .filter(Boolean)
+      .map((directory) => path.join(directory, 'cua-driver')),
+  ];
+  return [...new Set(candidates.map((candidate) => path.resolve(candidate)))]
+    .find((candidate) => executableFile(candidate));
+}
+
+function computerConfig(
+  homeDirectory: string,
+  enabledByDefault: boolean,
+): ComputerConfig | undefined {
+  const configuredBackend = process.env.MIMI_COMPUTER_BACKEND;
+  if (configuredBackend === 'off') return undefined;
+  const explicit = configuredBackend !== undefined && configuredBackend !== '';
+  if (explicit && configuredBackend !== 'cua') {
+    throw new Error('MIMI_COMPUTER_BACKEND 只能是 cua 或 off');
+  }
+  if (!explicit && !enabledByDefault) return undefined;
+  const backend = 'cua';
   const selectedCommand = process.env.MIMI_CUA_DRIVER_COMMAND;
-  if (!selectedCommand) throw new Error('启用 Computer Use 时必须设置 MIMI_CUA_DRIVER_COMMAND');
-  if (!selectedCommand.startsWith('~') && !path.isAbsolute(selectedCommand)) {
+  if (selectedCommand && !selectedCommand.startsWith('~') && !path.isAbsolute(selectedCommand)) {
     throw new Error('MIMI_CUA_DRIVER_COMMAND 必须是可执行文件的绝对路径');
   }
-  const driverCommand = expandHome(selectedCommand, homeDirectory);
-  const info = statSync(driverCommand);
-  if (!info.isFile() || (info.mode & 0o111) === 0) throw new Error('MIMI_CUA_DRIVER_COMMAND 必须指向可执行普通文件');
+  const driverCommand = selectedCommand
+    ? expandHome(selectedCommand, homeDirectory)
+    : discoverCuaDriver(homeDirectory);
+  if (!driverCommand) {
+    if (explicit) throw new Error('启用 Computer Use 时必须安装 cua-driver 或设置 MIMI_CUA_DRIVER_COMMAND');
+    return undefined;
+  }
+  if (!executableFile(driverCommand)) throw new Error('MIMI_CUA_DRIVER_COMMAND 必须指向可执行普通文件');
   const defaultAccess = process.env.MIMI_COMPUTER_DEFAULT_ACCESS ?? 'background';
   if (!['none', 'observe', 'background', 'foreground', 'admin'].includes(defaultAccess)) {
     throw new Error('MIMI_COMPUTER_DEFAULT_ACCESS 必须是 none、observe、background、foreground 或 admin');
@@ -434,7 +467,7 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
     ['MIMI_TRUST_WORKSPACE_MCP', 'TRUST_WORKSPACE_MCP'],
     homeDirectory,
   );
-  const computer = computerConfig(homeDirectory);
+  const computer = computerConfig(homeDirectory, selectedSecurityProfile === 'full-owner');
   if (selectedSecurityProfile !== 'full-owner' && computer) {
     throw new Error(`MIMI_SECURITY_PROFILE=${selectedSecurityProfile} 不允许启用 Computer Use`);
   }

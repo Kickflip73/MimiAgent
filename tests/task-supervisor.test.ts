@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TaskProcessSupervisor } from '../src/daemon/task-supervisor.js';
+import {
+  TaskProcessSupervisor,
+  defaultTaskWorkerEntry,
+  taskWorkerEnvironment,
+  taskWorkerExecArgv,
+  taskWorkerRuntimeReadiness,
+} from '../src/daemon/task-supervisor.js';
 import type { TaskRecord } from '../src/daemon/types.js';
 
 function task(id: string, executor: TaskRecord['executor']): TaskRecord {
@@ -76,4 +82,110 @@ test('detached Codex write task keeps the workspace reservation', async () => {
   await internal.pump();
 
   assert.deepEqual(launched, []);
+});
+
+test('task worker boundary strips dotenv preloads and redacted connector credentials', () => {
+  assert.deepEqual(taskWorkerExecArgv([
+    '--trace-warnings',
+    '--env-file', '/private/.env',
+    '--env-file-if-exists=/private/optional.env',
+    '--require', 'dotenv/config',
+    '--import=dotenv/config.js',
+    '--import', 'tsx',
+    '-r/custom/preload.js',
+  ]), [
+    '--trace-warnings',
+    '--import', 'tsx',
+    '-r/custom/preload.js',
+  ]);
+  const environment = taskWorkerEnvironment({
+    PATH: '/usr/bin',
+    HOME: '/fixture/home',
+    OPENAI_API_KEY: 'fixture-secret',
+    DEEPSEEK_API_KEY: 'fixture-backup-secret',
+    MIMI_BACKUP_PROVIDER: 'deepseek',
+    TASK_WORKER_MODE: 'isolated',
+    CONNECTOR_TOKEN: 'connector-secret',
+    RANDOM_VALUE: 'discarded',
+  }, ['CONNECTOR_TOKEN']);
+  assert.equal(environment.PATH, '/usr/bin');
+  assert.equal(environment.HOME, '/fixture/home');
+  assert.equal(environment.TASK_WORKER_MODE, 'isolated');
+  assert.equal(environment.CONNECTOR_TOKEN, undefined);
+  assert.equal(environment.RANDOM_VALUE, undefined);
+  assert.equal(environment.OPENAI_API_KEY, undefined);
+  assert.equal(environment.DEEPSEEK_API_KEY, undefined);
+  assert.equal(environment.MIMI_BACKUP_PROVIDER, undefined);
+  assert.match(defaultTaskWorkerEntry('file:///tmp/daemon/task-supervisor.ts'), /task-worker-entry\.ts$/);
+  assert.match(defaultTaskWorkerEntry('file:///tmp/daemon/task-supervisor.js'), /task-worker-entry\.js$/);
+});
+
+test('task worker dependency preflight fails before a queued task can consume an attempt', async () => {
+  assert.deepEqual(
+    taskWorkerRuntimeReadiness('/tmp/mimi-missing-runtime/task-worker-entry.js'),
+    {
+      ready: false,
+      reason: 'Task worker runtime 缺少 @openai/agents',
+    },
+  );
+  let storeTouched = false;
+  const supervisor = new TaskProcessSupervisor(
+    {
+      getTask: () => {
+        storeTouched = true;
+        throw new Error('missing runtime must fail before reading or claiming the task');
+      },
+    } as never,
+    {} as never,
+    { database: '/tmp/mimi.db', assistantConfig: '/tmp/assistant.json', socket: '/tmp/mimi.sock' },
+    { workerEntry: '/tmp/mimi-missing-runtime/task-worker-entry.js' },
+  );
+  const internal = supervisor as unknown as {
+    lastWorkerRuntimeErrorLogAt: number;
+    launch(taskId: string, workspaceAccess: 'read' | 'write'): Promise<void>;
+  };
+  internal.lastWorkerRuntimeErrorLogAt = Date.now();
+  await internal.launch('queued-task', 'write');
+  assert.equal(storeTouched, false);
+  assert.deepEqual(supervisor.runtimeStatus(), {
+    ready: false,
+    reason: 'Task worker runtime 缺少 @openai/agents',
+  });
+});
+
+test('supervisor status includes detached Codex runtime evidence and rejects unknown workers', async () => {
+  const runningCodex = {
+    ...task('running-codex', 'codex'),
+    status: 'running' as const,
+    workspaceAccess: 'read' as const,
+    objective: {
+      codex: {
+        runnerPid: 123,
+        codexPid: 456,
+        startedAt: '2026-07-27T00:00:00.000Z',
+      },
+    },
+  };
+  const store = {
+    runningTasks: () => [runningCodex],
+    getTask: () => undefined,
+  };
+  const supervisor = new TaskProcessSupervisor(
+    store as never,
+    {} as never,
+    { database: '/tmp/mimi.db', assistantConfig: '/tmp/assistant.json', socket: '/tmp/mimi.sock' },
+  );
+  assert.deepEqual(supervisor.status(), [{
+    taskId: 'running-codex',
+    pid: 123,
+    codexPid: 456,
+    spawnedAt: '2026-07-27T00:00:00.000Z',
+    heartbeatAt: runningCodex.updatedAt,
+    workspaceAccess: 'read',
+    executor: 'codex',
+  }]);
+  assert.equal(supervisor.authorizeWorker('missing', 'x'.repeat(43)), false);
+  assert.equal(supervisor.authorizeWorkerAction('missing', 'x'.repeat(43)), false);
+  await supervisor.stop();
+  await supervisor.stop();
 });

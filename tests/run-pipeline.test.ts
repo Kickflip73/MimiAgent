@@ -9,8 +9,11 @@ import { AgentRequestFactory } from '../src/runtime/pipeline/request-factory.js'
 import { captureRunScope } from '../src/runtime/pipeline/run-scope.js';
 import { RunStateLoader } from '../src/runtime/pipeline/state-loader.js';
 import {
+  assertShellCommandDoesNotBypassManagedGui,
+  requiresManagedGuiBoundary,
   requiresPersonalConnectorOnly,
   ToolSetBuilder,
+  withoutUnmanagedGuiShell,
   withoutPersonalMessageDesktopFallback,
   withoutPersonalMessageFallbackHistory,
 } from '../src/runtime/pipeline/tool-set-builder.js';
@@ -132,6 +135,48 @@ test('tool set builder keeps mode and run-policy filtering in one stage', () => 
     },
   );
   assert.deepEqual(prepared.map((item) => item.name), ['read_file', 'delegate_research']);
+  const snapshot = builder.snapshot({
+    runId: 'run-1',
+    policyRevision: 'guarded:v1',
+    tools: prepared,
+    skills: ['reviewer', 'researcher', 'reviewer'],
+    observedAt: '2026-07-27T00:00:00.000Z',
+  });
+  assert.deepEqual(snapshot.tools, ['delegate_research', 'read_file']);
+  assert.deepEqual(snapshot.skills, ['researcher', 'reviewer']);
+  assert.match(snapshot.toolSetDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.match(snapshot.snapshotDigest, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(snapshot.items.find((item) => item.id === 'read_file')?.availability, 'available');
+  assert.ok(Object.isFrozen(snapshot));
+  assert.ok(Object.isFrozen(snapshot.items));
+});
+
+test('capability snapshot is deterministic and distinguishes readiness terminology', () => {
+  const builder = new ToolSetBuilder();
+  const tool = (name: string) => ({ name }) as Tool;
+  const input = {
+    runId: 'run-fixed',
+    policyRevision: 'guarded:v1',
+    tools: [tool('b'), tool('a'), tool('a')],
+    skills: ['skill-b', 'skill-a'],
+    observedAt: '2026-07-27T00:00:00.000Z',
+    items: [{
+      id: 'personal-qq',
+      kind: 'connector' as const,
+      availability: 'unavailable' as const,
+      readiness: 'unavailable' as const,
+      freshness: 'unknown' as const,
+      coverage: 'bounded' as const,
+      permissionSource: 'connector-manager',
+      safeFallback: 'none' as const,
+    }],
+  };
+  const first = builder.snapshot(input);
+  const second = builder.snapshot({ ...input, tools: [...input.tools].reverse() });
+  assert.equal(first.snapshotDigest, second.snapshotDigest);
+  assert.equal(first.toolSetDigest, second.toolSetDigest);
+  assert.deepEqual(first.tools, ['a', 'b']);
+  assert.equal(first.items.find((item) => item.kind === 'connector')?.freshness, 'unknown');
 });
 
 test('personal message queries expose Connector tools without desktop fallback tools', () => {
@@ -153,6 +198,39 @@ test('personal message queries expose Connector tools without desktop fallback t
     'inspect_mimi_capabilities',
     'connector_action',
   ]);
+});
+
+test('GUI business requests cannot bypass managed capabilities through run_shell', () => {
+  const tool = (name: string) => ({ name }) as Tool;
+  assert.equal(requiresManagedGuiBoundary('在桌面打开日历并新建一个日程'), true);
+  assert.equal(requiresManagedGuiBoundary('打开 QQ 并发送消息'), true);
+  assert.equal(requiresManagedGuiBoundary('用 GUI 修复这个前端窗口组件'), false);
+  assert.equal(requiresManagedGuiBoundary('运行单元测试'), false);
+  assert.deepEqual(
+    withoutUnmanagedGuiShell([tool('run_shell'), tool('connector_action'), tool('computer_act')])
+      .map((item) => item.name),
+    ['connector_action', 'computer_act'],
+  );
+});
+
+test('run_shell rejects direct GUI automation even when the request classifier misses it', () => {
+  for (const command of [
+    '/usr/bin/osascript -e \'tell application "System Events" to keystroke "x"\'',
+    '/usr/bin/shortcuts run "Daily Briefing"',
+    'open -a Calendar',
+    'python -c "import pyautogui; pyautogui.click()"',
+    'swift -e "import AppKit; NSWorkspace.shared.open(URL(string: \\"https://example.com\\")!)"',
+    'node examples/connectors/macos-desktop-connector.mjs',
+  ]) {
+    assert.throws(
+      () => assertShellCommandDoesNotBypassManagedGui(JSON.stringify({ command })),
+      /正式 Connector、Browser 或 Computer/,
+      command,
+    );
+  }
+  assert.doesNotThrow(() => assertShellCommandDoesNotBypassManagedGui(JSON.stringify({
+    command: 'npm test -- --test-name-pattern open',
+  })));
 });
 
 test('personal message history excludes completed desktop fallback turns', () => {

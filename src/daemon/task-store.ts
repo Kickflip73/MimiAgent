@@ -1,5 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
+import {
+  sanitizeSensitiveData,
+  sanitizeSensitiveText,
+} from '../core/data-sanitizer.js';
 import type {
   TaskAttemptRecord,
   TaskInput,
@@ -11,16 +15,16 @@ import type {
 type Row = Record<string, string | number | null | undefined>;
 
 function json(value: unknown): string {
-  return JSON.stringify(value ?? null);
+  return JSON.stringify(sanitizeSensitiveData(value ?? null));
 }
 
 function parseJson<T>(value: string | number | null | undefined): T | undefined {
   if (typeof value !== 'string') return undefined;
-  return JSON.parse(value) as T;
+  return sanitizeSensitiveData(JSON.parse(value)) as T;
 }
 
 function optional(value: string | number | null | undefined): string | undefined {
-  return typeof value === 'string' && value ? value : undefined;
+  return typeof value === 'string' && value ? sanitizeSensitiveText(value) : undefined;
 }
 
 function taskFromRow(row: Row): TaskRecord {
@@ -75,7 +79,7 @@ function sameTask(stored: TaskRecord, input: TaskInput): boolean {
     && stored.parentTaskId === input.parentTaskId
     && stored.profileId === input.profileId
     && stored.sessionKey === input.sessionKey
-    && isDeepStrictEqual(stored.objective, input.objective)
+    && isDeepStrictEqual(stored.objective, sanitizeSensitiveData(input.objective))
     && stored.executor === input.executor
     && stored.workspaceAccess === input.workspaceAccess
     && stored.priority === input.priority
@@ -223,7 +227,7 @@ export class TaskStore {
         lease_until = NULL, control_intent = NULL, control_reason = NULL, updated_at = ?
       WHERE id = ? AND status = 'running' AND lease_owner = ? AND control_intent IS NULL
         AND lease_until > ?
-    `).run(status, json(result), error ?? null, timestamp, id, owner, timestamp);
+    `).run(status, json(result), sanitizeSensitiveText(error) ?? null, timestamp, id, owner, timestamp);
     return Number(updated.changes) === 1;
   }
 
@@ -233,7 +237,7 @@ export class TaskStore {
         lease_until = NULL, updated_at = ?
       WHERE id = ? AND status = 'running' AND lease_owner = ? AND control_intent IS NULL
         AND lease_until > ?
-    `).run(error, notBefore, timestamp, id, owner, timestamp);
+    `).run(sanitizeSensitiveText(error) ?? '', notBefore, timestamp, id, owner, timestamp);
     return Number(updated.changes) === 1;
   }
 
@@ -250,7 +254,15 @@ export class TaskStore {
         lease_until = NULL, updated_at = ?
       WHERE id = ? AND status = 'running' AND lease_owner = ? AND control_intent IS NULL
         AND lease_until <= ?
-    `).run(terminal ? 'dead_letter' : 'queued', error, notBefore, timestamp, id, owner, timestamp);
+    `).run(
+      terminal ? 'dead_letter' : 'queued',
+      sanitizeSensitiveText(error) ?? '',
+      notBefore,
+      timestamp,
+      id,
+      owner,
+      timestamp,
+    );
     return Number(updated.changes) === 1;
   }
 
@@ -288,7 +300,15 @@ export class TaskStore {
     const updated = this.database.prepare(`
       UPDATE runs SET status = ?, completed_at = ?, answer_json = ?, error = ?
       WHERE task_id = ? AND attempt_no = ? AND status = 'running'${idClause}
-    `).run(status, timestamp, json(answer), error ?? null, taskId, attemptNo, ...(id ? [id] : []));
+    `).run(
+      status,
+      timestamp,
+      json(answer),
+      sanitizeSensitiveText(error) ?? null,
+      taskId,
+      attemptNo,
+      ...(id ? [id] : []),
+    );
     return Number(updated.changes) === 1;
   }
 }

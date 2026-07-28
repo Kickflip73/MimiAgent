@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { MimiAgent } from '../src/runtime/mimi-agent.js';
 import { isTerminalRunInterruption, TerminalRunInterruptedError } from '../src/runtime/run-outcome.js';
-import { AgentRunService } from '../src/runtime/run-service.js';
+import {
+  AgentRunService,
+  providerBackupRouteFromEnvironment,
+} from '../src/runtime/run-service.js';
+import { ProviderCircuitBreaker } from '../src/runtime/provider-reliability.js';
 
 test('shared run service owns completion, usage and observer isolation', async () => {
   let completedAnswer = '';
@@ -38,6 +42,60 @@ test('shared run service owns completion, usage and observer isolation', async (
   assert.equal(stopped, true);
 });
 
+test('shared run service streams visible deltas and records bounded progress events', async () => {
+  const events = [
+    { type: 'agent_updated_stream_event', agent: { name: 'Mimi' } },
+    {
+      type: 'run_item_stream_event',
+      name: 'tool_called',
+      item: { rawItem: { name: 'read_file', arguments: '{"path":"README.md"}' } },
+    },
+    {
+      type: 'run_item_stream_event',
+      name: 'tool_output',
+      item: { rawItem: { name: 'read_file' } },
+    },
+    { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: 'done' } },
+  ];
+  const progress: unknown[] = [];
+  const observed: unknown[] = [];
+  const stream = {
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: undefined,
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) yield event;
+    },
+  };
+  const agent = {
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => stream,
+    recordEvent: async (_type: string, event: unknown) => { progress.push(event); },
+    completeRun: async () => [],
+    failRun: async () => assert.fail('visible stream must complete'),
+  } as unknown as MimiAgent;
+
+  const result = await new AgentRunService(agent).execute({ input: 'work' }, {
+    onStreamEvent: (event) => { observed.push(event); },
+  });
+  assert.equal(result.answer, 'done');
+  assert.equal(observed.length, 4);
+  assert.deepEqual(progress, [
+    { kind: 'status', tone: 'agent', title: 'Mimi', next: 'Agent 工作中' },
+    {
+      kind: 'status',
+      tone: 'tool',
+      title: 'read_file',
+      detail: '{"path":"README.md"}',
+      next: '正在执行 read_file',
+    },
+    { kind: 'status', tone: 'success', title: 'read_file', next: '模型继续思考' },
+  ]);
+});
+
 test('shared run service records one failed terminal outcome', async () => {
   const failure = new Error('provider unavailable');
   let failed: unknown;
@@ -48,6 +106,182 @@ test('shared run service records one failed terminal outcome', async () => {
   } as unknown as MimiAgent;
   await assert.rejects(new AgentRunService(agent).execute({ input: 'work' }), /provider unavailable/);
   assert.equal(failed, failure);
+});
+
+test('shared run service opens Provider circuit on 429 and blocks retry storms', async () => {
+  const breaker = new ProviderCircuitBreaker({ failureThreshold: 1, openMs: 60_000 });
+  let attempts = 0;
+  const agent = {
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => {
+      attempts += 1;
+      throw Object.assign(new Error('rate limited'), { status: 429 });
+    },
+    failRun: async () => [],
+  } as never;
+  const service = new AgentRunService(agent, {
+    providerId: 'fixture-provider',
+    providerReliability: breaker,
+  });
+  await assert.rejects(service.execute({ input: 'work' }), /rate limited/);
+  await assert.rejects(service.execute({ input: 'work' }), /熔断中/);
+  assert.equal(attempts, 1);
+  assert.equal(service.providerHealth().state, 'open');
+});
+
+test('shared run service uses one configured backup only before a stream starts', async () => {
+  const attempts: string[] = [];
+  let failed = false;
+  const completed: string[] = [];
+  const backupStream = {
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: 'backup answer',
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() { /* no events */ },
+  };
+  const agent = {
+    onRuntimeEvent: () => () => undefined,
+    stream: async (_input: unknown, _signal: unknown, options: {
+      providerRoute?: { provider: string };
+    } | undefined) => {
+      const provider = options?.providerRoute?.provider ?? 'openai';
+      attempts.push(provider);
+      if (provider === 'openai') {
+        throw Object.assign(new Error('primary rate limited'), { status: 429 });
+      }
+      return backupStream;
+    },
+    recordEvent: async () => undefined,
+    completeRun: async (answer: string) => {
+      completed.push(answer);
+      return [];
+    },
+    failRun: async () => { failed = true; },
+  } as unknown as MimiAgent;
+  const service = new AgentRunService(agent, {
+    providerId: 'openai',
+    backupProvider: { id: 'deepseek:backup', provider: 'deepseek' },
+  });
+  const result = await service.execute({ input: 'work' });
+  assert.equal(result.answer, 'backup answer');
+  assert.deepEqual(attempts, ['openai', 'deepseek']);
+  assert.deepEqual(completed, ['backup answer']);
+  assert.equal(failed, false);
+  assert.equal(service.providerHealth().state, 'open');
+  assert.deepEqual(
+    service.providerHealthRoutes().map((health) => [health.provider, health.state]),
+    [['openai', 'open'], ['deepseek:backup', 'closed']],
+  );
+});
+
+test('shared run service never switches Provider after the stream handle exists', async () => {
+  let attempts = 0;
+  let failures = 0;
+  const stream = {
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: undefined,
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() {
+      throw Object.assign(new Error('network after streaming began'), { code: 'ECONNRESET' });
+    },
+  };
+  const agent = {
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => {
+      attempts += 1;
+      return stream;
+    },
+    failRun: async () => { failures += 1; },
+  } as unknown as MimiAgent;
+  await assert.rejects(new AgentRunService(agent, {
+    providerId: 'openai',
+    backupProvider: { id: 'deepseek:backup', provider: 'deepseek' },
+  }).execute({ input: 'work' }), /network after streaming began/);
+  assert.equal(attempts, 1);
+  assert.equal(failures, 1);
+});
+
+test('Provider success is recorded only after the acquired stream finishes normally', async () => {
+  const breaker = new ProviderCircuitBreaker({ failureThreshold: 2, openMs: 60_000 });
+  breaker.acquire('openai');
+  breaker.failure('openai', Object.assign(new Error('first server failure'), { status: 503 }));
+  const stream = {
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: undefined,
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() {
+      throw Object.assign(new Error('second server failure after handle'), { status: 503 });
+    },
+  };
+  const agent = {
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => stream,
+    failRun: async () => undefined,
+  } as unknown as MimiAgent;
+  const service = new AgentRunService(agent, {
+    providerId: 'openai',
+    providerReliability: breaker,
+  });
+
+  await assert.rejects(service.execute({ input: 'work' }), /second server failure/);
+  assert.equal(service.providerHealth().state, 'open');
+  assert.equal(service.providerHealth().failures, 2);
+});
+
+test('production backup route configuration is exact and requires its own credential', () => {
+  assert.equal(providerBackupRouteFromEnvironment('openai', {}), undefined);
+  assert.deepEqual(providerBackupRouteFromEnvironment('openai', {
+    MIMI_BACKUP_PROVIDER: 'deepseek',
+    MIMI_BACKUP_MODEL: 'deepseek-v4-flash',
+    DEEPSEEK_API_KEY: 'fixture-backup-key',
+  }), {
+    id: 'deepseek:deepseek-v4-flash',
+    provider: 'deepseek',
+    model: 'deepseek-v4-flash',
+  });
+  assert.throws(
+    () => providerBackupRouteFromEnvironment('openai', {
+      MIMI_BACKUP_PROVIDER: 'openai',
+      OPENAI_API_KEY: 'fixture-key',
+    }),
+    /必须不同/,
+  );
+  assert.throws(
+    () => providerBackupRouteFromEnvironment('openai', {
+      MIMI_BACKUP_PROVIDER: 'deepseek',
+    }),
+    /DEEPSEEK_API_KEY/,
+  );
+  assert.throws(
+    () => providerBackupRouteFromEnvironment('openai', {
+      MIMI_BACKUP_PROVIDER: 'other',
+    }),
+    /只能是 openai 或 deepseek/,
+  );
+  assert.throws(
+    () => providerBackupRouteFromEnvironment('openai', {
+      MIMI_BACKUP_PROVIDER: 'deepseek',
+      DEEPSEEK_API_KEY: 'fixture-backup-key',
+      MIMI_BACKUP_MODEL: 'invalid model name',
+    }),
+    /MIMI_BACKUP_MODEL 格式无效/,
+  );
+  assert.deepEqual(providerBackupRouteFromEnvironment('deepseek', {
+    MIMI_BACKUP_PROVIDER: 'openai',
+    OPENAI_API_KEY: 'fixture-openai-key',
+  }), {
+    id: 'openai:default',
+    provider: 'openai',
+  });
 });
 
 test('shared run service preserves a terminal signal when the SDK throws a generic abort error', async () => {

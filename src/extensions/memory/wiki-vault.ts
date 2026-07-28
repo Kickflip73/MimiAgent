@@ -5,6 +5,10 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import type { MemoryDocument, MemoryPage, MemoryPageMetadata, MemoryRef, MemoryScope, WikiLintIssue } from '../../core/memory.js';
 import { contentDigest } from '../../core/memory.js';
 import { withExclusiveFileLock } from '../../core/state-file.js';
+import {
+  sanitizeSensitiveData,
+  sanitizeSensitiveText,
+} from '../../core/data-sanitizer.js';
 import { DEFAULT_WIKI_SCHEMA, memoryPageMetadataSchema } from './wiki-schema.js';
 import type { PersistedLintIssue } from './sqlite-catalog.js';
 
@@ -99,11 +103,15 @@ export class WikiVault {
   }
 
   async write(metadata: MemoryPageMetadata, body: string, expectedDigest?: string): Promise<MemoryPage> {
-    const parsedMetadata = memoryPageMetadataSchema.parse(metadata);
+    const sanitization = {
+      preserveContacts: this.scope === 'private' && this.profileId === 'owner',
+    };
+    const parsedMetadata = memoryPageMetadataSchema.parse(sanitizeSensitiveData(metadata, sanitization));
+    const sanitizedBody = sanitizeSensitiveText(body, sanitization)?.trim() ?? '';
     const page: MemoryPage = {
       ref: { scope: parsedMetadata.scope, id: parsedMetadata.id, ...(parsedMetadata.profileId ? { profileId: parsedMetadata.profileId } : {}) },
       metadata: parsedMetadata,
-      body: body.trim(),
+      body: sanitizedBody,
       digest: '',
     };
     this.assertPage(page);

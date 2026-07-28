@@ -9,6 +9,7 @@ export interface DaemonHealthRisk {
     | 'task_dead_letters'
     | 'outbox_dead_letters'
     | 'task_backlog'
+    | 'task_worker_runtime_unavailable'
     | 'outbox_backlog'
     | 'digest_backlog'
     | 'connector_offline'
@@ -48,6 +49,7 @@ export interface DaemonHealthInput {
   pendingDigest?: number;
   connectors?: readonly ConnectorCapability[];
   checkedAt?: string;
+  taskWorkerRuntime?: { ready: boolean; reason?: string };
 }
 
 function connectorIds(
@@ -78,6 +80,14 @@ export function buildDaemonHealth(input: DaemonHealthInput): DaemonHealthSnapsho
   const outboxBacklog = (input.outbox.pending ?? 0) + (input.outbox.sending ?? 0);
   const digestBacklog = input.pendingDigest ?? 0;
   const risks: DaemonHealthRisk[] = [];
+  if (input.taskWorkerRuntime?.ready === false) {
+    risks.push({
+      code: 'task_worker_runtime_unavailable',
+      severity: 'error',
+      message: input.taskWorkerRuntime.reason ?? 'Task worker runtime 不可用',
+      nextAction: '修复 Task worker 依赖或 LaunchAgent 运行路径后重启 MimiAgent',
+    });
+  }
   if (taskDeadLetters > 0) {
     risks.push({
       code: 'task_dead_letters',

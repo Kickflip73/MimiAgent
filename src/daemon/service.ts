@@ -17,9 +17,14 @@ import {
   type AppConfig,
 } from '../config.js';
 import { MimiAgent } from '../agent.js';
+import { sanitizeSensitiveData } from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
 import { configureAgentRuntime, requireProviderApiKey } from '../runtime/bootstrap.js';
 import { MimiHost } from '../runtime/mimi-host.js';
+import {
+  AgentRunService,
+  providerBackupRouteFromEnvironment,
+} from '../runtime/run-service.js';
 import { resolveTaskWorkspace } from '../runtime/workspace-resolution.js';
 import { stageAttachments, type LocalAttachmentRequest } from '../runtime/attachments.js';
 import { MimiDispatcher } from './dispatcher.js';
@@ -55,6 +60,7 @@ import {
   type DiagnosticStorageSnapshot,
 } from './diagnostics.js';
 import { rotateDaemonLogs } from './log-maintenance.js';
+import { classifyReadinessUnknown } from './operational-classification.js';
 import {
   BACKGROUND_DEFAULTS_VERSION,
   defaultConnectorEnabled,
@@ -416,6 +422,8 @@ export interface MimiDoctorReport {
       workPending: number;
       taskDeadLetters: number;
       outboxDeadLetters: number;
+      resourceTrends: MimiActivitySnapshot['resourceTrends'];
+      failureClassification: MimiActivitySnapshot['failureClassification'];
     };
   };
   launchAgent: { installed: boolean; file: string };
@@ -857,6 +865,11 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
   const paths = mimiPaths(config);
   const platform = process.platform;
   const issues: string[] = [];
+  try {
+    providerBackupRouteFromEnvironment(config.provider);
+  } catch (error) {
+    issues.push(`Provider 主备配置无效：${error instanceof Error ? error.message : String(error)}`);
+  }
   let connectorConfig: ConnectorFileConfig | undefined;
   if (await exists(paths.connectorsConfig)) {
     try {
@@ -972,6 +985,7 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
         pendingDigest: activity?.pendingDigest,
         connectors: runtimeConnectors,
         checkedAt: activity?.generatedAt,
+        taskWorkerRuntime: daemonStatus.taskWorkerRuntime,
       })
     : undefined;
   if (health) issues.push(...health.risks.map((risk) => risk.message));
@@ -1050,6 +1064,18 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
           workPending: activity.workPending,
           taskDeadLetters,
           outboxDeadLetters,
+          resourceTrends: activity.resourceTrends ?? [],
+          failureClassification: {
+            ...(activity.failureClassification ?? {
+              deadLetters: [],
+              digest: [],
+              unclassifiedDeadLetters: taskDeadLetters,
+            }),
+            readinessUnknown: classifyReadinessUnknown(
+              runtimeConnectors ?? [],
+              daemonStatus?.startedAt ?? new Date().toISOString(),
+            ),
+          },
         },
       } : {}),
     },
@@ -1213,13 +1239,19 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
     const runtimeConfig = (workspaceRoot?: string): AppConfig => workspaceRoot
       ? adoptRuntimeWorkspaceConfig(config, workspaceRoot)
       : config;
+    const backupProvider = providerBackupRouteFromEnvironment(config.provider);
+    const runService = (runtime: MimiAgent) => new AgentRunService(runtime, {
+      providerId: config.provider,
+      ...(backupProvider ? { backupProvider } : {}),
+    });
     const agent = await MimiAgent.create(config);
-    host = new MimiHost(agent, undefined, {
+    host = new MimiHost(agent, runService(agent), {
       maxConcurrentSessions: config.sessionMaxConcurrency ?? 4,
       primaryWorkspaceRoot: config.workspaceRoot,
-      createSessionRuntime: async (sessionId, workspaceRoot) => ({
-        agent: await MimiAgent.create(runtimeConfig(workspaceRoot), sessionId),
-      }),
+      createSessionRuntime: async (sessionId, workspaceRoot) => {
+        const sessionAgent = await MimiAgent.create(runtimeConfig(workspaceRoot), sessionId);
+        return { agent: sessionAgent, runs: runService(sessionAgent) };
+      },
     });
     const notifier = new NotifierRegistry();
     connectors = await ConnectorManager.load(paths.connectorsConfig, store, notifier);
@@ -1284,21 +1316,36 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
     const activeAttention = attention;
     const activeStatus = () => {
       const taskWorkers = activeTaskSupervisor.status();
+      const taskWorkerRuntime = activeTaskSupervisor.runtimeStatus();
       const status = {
         ...activeDispatcher.status(),
         activeTaskCount: taskWorkers.length,
         taskWorkers,
+        taskWorkerRuntime,
         activeHostMutations: mutationGate.active,
       };
       const activity = store.activitySnapshot(1);
+      const effectiveCapability = host?.currentCapabilitySnapshot();
+      const providerHealth = host?.providerHealth();
+      const providerHealthRoutes = host?.providerHealthRoutes();
       return {
         ...status,
+        ...(providerHealth ? { providerHealth } : {}),
+        ...(providerHealthRoutes?.length ? { providerHealthRoutes } : {}),
+        ...(effectiveCapability ? {
+          effectiveCapability: {
+            schemaVersion: effectiveCapability.schemaVersion,
+            snapshotDigest: effectiveCapability.snapshotDigest,
+            observedAt: effectiveCapability.observedAt,
+          },
+        } : {}),
         health: buildDaemonHealth({
           tasks: status.tasks,
           outbox: status.outbox,
           pendingDigest: activity.pendingDigest,
           connectors: activeConnectors.listCapabilities(),
           checkedAt: activity.generatedAt,
+          taskWorkerRuntime,
         }),
       };
     };
@@ -1402,7 +1449,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         attention: activeAttention.status(), workspaceRoot: config.workspaceRoot,
       };
       if (stopping.signal.aborted) throw new Error('MimiAgent 正在关闭，不再接受新事务');
-      if (method === 'activity.get') return store.activitySnapshot(limit(object(rawParams).limit, 10));
+      if (method === 'activity.get') {
+        return sanitizeSensitiveData(store.activitySnapshot(limit(object(rawParams).limit, 10)));
+      }
       if (method === 'chat.bootstrap') {
         const params = object(rawParams);
         const draftSessionId = assertSessionId(requiredString(params.draftSessionId, 'draftSessionId'));
@@ -1410,7 +1459,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const snapshot = await createMimiChatSnapshot(
           host!, host!.currentSessionId, config.workspaceRoot, 1,
         );
-        return {
+        return sanitizeSensitiveData({
           ...snapshot,
           sessionId: draftSessionId,
           workspaceRoot: requestedWorkspaceRoot ?? snapshot.workspaceRoot,
@@ -1424,35 +1473,37 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           items: [],
           plan: [],
           recovery: undefined,
-        } satisfies MimiChatSnapshot;
+        } satisfies MimiChatSnapshot);
       }
       if (method === 'chat.sessions') {
-        return (await host!.listSessionSummaries())
-          .filter((summary) => summary.turns > 0 || summary.recoverable);
+        return sanitizeSensitiveData(
+          (await host!.listSessionSummaries())
+            .filter((summary) => summary.turns > 0 || summary.recoverable),
+        );
       }
       if (method === 'chat.snapshot') {
         const params = object(rawParams);
         const sessionId = chatSessionId(params);
-        return createMimiChatSnapshot(
+        return sanitizeSensitiveData(await createMimiChatSnapshot(
           host!,
           sessionId,
           host!.workspaceRootFor(sessionId) ?? config.workspaceRoot,
           limit(params.limit, 30),
-        );
+        ));
       }
       if (method === 'chat.history') {
         const params = object(rawParams);
         const sessionId = chatSessionId(params);
         const offset = params.offset === undefined ? 0 : Number(params.offset);
         const revision = typeof params.revision === 'string' ? params.revision : undefined;
-        return createMimiHistoryChunk(host!, sessionId, offset, revision);
+        return sanitizeSensitiveData(await createMimiHistoryChunk(host!, sessionId, offset, revision));
       }
       if (method === 'chat.invoke') {
         const params = object(rawParams);
         const operation = requiredString(params.operation, 'operation');
-        if (operation === 'sessions') return host!.listSessionSummaries();
+        if (operation === 'sessions') return sanitizeSensitiveData(await host!.listSessionSummaries());
         const sessionId = chatSessionId(params);
-        return mutationGate.run(() => host!.mutate(sessionId, async (agent) => {
+        return sanitizeSensitiveData(await mutationGate.run(() => host!.mutate(sessionId, async (agent) => {
             if (operation === 'runtime') return agent.runtimeInfo();
             if (operation === 'models') return agent.availableModels();
             if (operation === 'model.set') {
@@ -1538,7 +1589,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             if (operation === 'undo.preview') return agent.previewUndo(requiredString(params.value, 'value'));
             if (operation === 'undo.apply') return agent.undoRun(requiredString(params.value, 'value'));
             throw new Error(`未知 MimiAgent Chat 操作：${operation}`);
-          }, signal));
+          }, signal)));
       }
       if (method === 'submit') {
         const params = object(rawParams) as SubmitParams;
@@ -1583,17 +1634,21 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           ? activeTaskSupervisor.cancel(id, reason)
           : activeDispatcher.cancel(id, reason);
       }
-      if (method === 'event.get') return store.getImmutableEvent(requiredString(object(rawParams).id, 'id'));
-      if (method === 'event.route') return store.getEventRouteReceipt(requiredString(object(rawParams).id, 'id'));
+      if (method === 'event.get') {
+        return sanitizeSensitiveData(store.getImmutableEvent(requiredString(object(rawParams).id, 'id')));
+      }
+      if (method === 'event.route') {
+        return sanitizeSensitiveData(store.getEventRouteReceipt(requiredString(object(rawParams).id, 'id')));
+      }
       if (method === 'event.stream') {
         const params = object(rawParams);
         const id = requiredString(params.id, 'id');
         const after = Number(params.after ?? 0);
         const page = liveEvents.page(id, Number.isSafeInteger(after) && after >= 0 ? after : 0);
-        return {
+        return sanitizeSensitiveData({
           ...page,
           task: mimiStreamTaskState(store.getTask(id)),
-        };
+        });
       }
       if (method === 'events.list') return store.listEventSummaries(limit(object(rawParams).limit));
       if (method === 'tasks.list') {
@@ -1630,16 +1685,32 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return { state: 'resumed' };
       }
       if (method === 'task.retry') return store.retryDeadLetterTask(requiredString(object(rawParams).id, 'id'));
-      if (method === 'run.get') return store.getRun(requiredString(object(rawParams).id, 'id'));
-      if (method === 'runs.list') return store.listRunSummaries(limit(object(rawParams).limit));
-      if (method === 'outbox.get') return store.getOutbox(requiredString(object(rawParams).id, 'id'));
-      if (method === 'outbox.list') return store.listOutboxSummaries(limit(object(rawParams).limit));
-      if (method === 'outbox.retry') return {
-        outbox: store.retryDeadLetterOutbox(requiredString(object(rawParams).id, 'id')),
-        warning: '该投递采用 at-least-once 重试；若远端已接收但确认丢失，可能产生重复消息。',
-      };
-      if (method === 'outbox.archive') return store.archiveDeadLetterOutbox(requiredString(object(rawParams).id, 'id'));
-      if (method === 'digest.list') return store.listPendingDigest(limit(object(rawParams).limit, 100));
+      if (method === 'run.get') {
+        return sanitizeSensitiveData(store.getRun(requiredString(object(rawParams).id, 'id')));
+      }
+      if (method === 'runs.list') {
+        return sanitizeSensitiveData(store.listRunSummaries(limit(object(rawParams).limit)));
+      }
+      if (method === 'outbox.get') {
+        return sanitizeSensitiveData(store.getOutbox(requiredString(object(rawParams).id, 'id')));
+      }
+      if (method === 'outbox.list') {
+        return sanitizeSensitiveData(store.listOutboxSummaries(limit(object(rawParams).limit)));
+      }
+      if (method === 'outbox.retry') {
+        return sanitizeSensitiveData({
+          outbox: store.retryDeadLetterOutbox(requiredString(object(rawParams).id, 'id')),
+          warning: '该投递采用 at-least-once 重试；若远端已接收但确认丢失，可能产生重复消息。',
+        });
+      }
+      if (method === 'outbox.archive') {
+        return sanitizeSensitiveData(
+          store.archiveDeadLetterOutbox(requiredString(object(rawParams).id, 'id')),
+        );
+      }
+      if (method === 'digest.list') {
+        return sanitizeSensitiveData(store.listPendingDigest(limit(object(rawParams).limit, 100)));
+      }
       if (method === 'attention.status') return activeAttention.status();
       if (method === 'attention.reload') return mutationGate.run(() => activeAttention.reload());
       if (method === 'attention.brief') return activeAttention.forceBriefing();
@@ -1656,7 +1727,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           };
         });
       }
-      if (method === 'schedule.get') return store.getSchedule(requiredString(object(rawParams).id, 'id'));
+      if (method === 'schedule.get') {
+        return sanitizeSensitiveData(store.getSchedule(requiredString(object(rawParams).id, 'id')));
+      }
       if (method === 'schedules.page') {
         const params = object(rawParams);
         const offset = params.offset === undefined ? 0 : Number(params.offset);
@@ -1672,21 +1745,21 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           throw new Error('计划任务在读取期间发生变化，请重试 mimi daemon schedule list');
         }
         const nextOffset = offset + items.length;
-        return {
+        return sanitizeSensitiveData({
           items,
           nextOffset: nextOffset < total ? nextOffset : undefined,
           revision,
           total,
-        } satisfies MimiSchedulePage;
+        } satisfies MimiSchedulePage);
       }
-      if (method === 'schedules.list') return store.listScheduleSummaries();
+      if (method === 'schedules.list') return sanitizeSensitiveData(store.listScheduleSummaries());
       if (method === 'schedules.add') {
         const params = object(rawParams);
         const type = requiredString(params.type, 'type');
         if (type !== 'at' && type !== 'interval') throw new Error('type 必须是 at 或 interval');
         const nextRunAt = requiredString(params.nextRunAt, 'nextRunAt');
         if (!Number.isFinite(Date.parse(nextRunAt))) throw new Error('nextRunAt 不是有效时间');
-        return store.addSchedule({
+        return sanitizeSensitiveData(store.addSchedule({
           name: requiredString(params.name, 'name'), type, value: requiredString(params.value, 'value'),
           prompt: requiredString(params.prompt, 'prompt'),
           profileId: typeof params.profileId === 'string' ? params.profileId : 'owner',
@@ -1695,7 +1768,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             : assertSessionId(requiredString(params.sessionKey, 'sessionKey')),
           replyRoute: (params.replyRoute as ReplyRoute | undefined) ?? activeAttention.replyRouteFor(),
           trust: params.trust === 'owner' ? 'owner' : 'system', nextRunAt: new Date(nextRunAt).toISOString(),
-        });
+        }));
       }
       if (method === 'schedules.remove') return store.removeSchedule(requiredString(object(rawParams).id, 'id'));
       if (method === 'shutdown') {

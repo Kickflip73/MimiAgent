@@ -18,6 +18,8 @@ interface Message {
   conversation?: Record<string, unknown>;
   result?: Record<string, unknown>;
   error?: string;
+  inbound?: string;
+  outbound?: string;
 }
 
 async function waitFor(messages: Message[], predicate: (message: Message) => boolean, timeoutMs = 15_000): Promise<Message> {
@@ -102,6 +104,10 @@ if (args[0] === '__poll__') {
   };
 
   try {
+    const readiness = await waitFor(messages, (message) => (
+      message.type === 'status' && message.inbound === 'ready'
+    ));
+    assert.equal(readiness.outbound, 'ready');
     const historicalSource = { account: 'Work', path: ['Archive', '2026'] };
     const outgoingAttachment = path.join(root, 'report.pdf');
     await writeFile(outgoingAttachment, 'report bytes');

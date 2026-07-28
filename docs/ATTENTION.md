@@ -228,6 +228,25 @@ Routine prompt 不应复制外部消息正文；让 Agent 在运行时按需调�
 
 owner 也可在对话中使用 `list_mimi_people`、`upsert_mimi_person`、`remove_mimi_person` 完整管理人物；写入复用同一套最新文件读取、完整校验、串行原子替换和 execution ledger，成功后立即影响后续身份解析，不删除既有 Session、Memory 或历史事件。
 
+## M0 运行质量分类
+
+Attention 的积压不再只显示一个总数。`activity.get` 和 Doctor 使用同一组只读投影：
+
+- dead letter 按 provider、configuration、dependency、authorization、
+  external unavailable、uncertain side effect、cancelled/superseded 和 unknown 分类；
+  每类附带处置状态，不复制 error 原文。
+- pending Digest 按 `<24h`、`1～7d`、`≥7d` 分为 fresh、aging、stale；分类不删除或
+  伪造已消费记录。
+- Connector readiness unknown 区分 startup grace、旧协议未报告和 stale status；
+  只有 startup grace 可暂时 observe，其余要求 Connector 修复。
+- Task worker runtime 从实际 worker entry 检查必需依赖；不可用时 status/Doctor/health
+  明确报 unhealthy，queued Task 保持原状态且不消耗 attempt。
+- 每日资源趋势报告 Run/Token；费用缺样本时明确为 `unknown`，CPU/内存/磁盘没有持久样本时明确为 `not_sampled`，不会用 0 或进程瞬时值伪造趋势。只有已知指标越过预算才附带 alert。
+
+这些投影只解释现有 Event/Task/Outbox/Attention 状态。Doctor 仍会对真实 dead letter、
+offline/unavailable/stale/unknown Connector 和资源风险 fail closed；不能通过禁用
+Connector、清空历史或把 unknown 改名为 ready 达标。
+
 ## Standing Orders 替身决策
 
 `decisionPolicy.standingOrders` 是全局替身指导，但不会单独给外部来源授权。`sourcePolicies` 按数组顺序检查，所有匹配项都会合并，而不是只取第一条；对外部事件而言，至少命中一条 source policy 才表示 owner 已授权 MimiAgent 在该可信策略的明确范围内代办：

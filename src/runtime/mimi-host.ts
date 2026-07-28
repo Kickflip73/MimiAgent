@@ -8,6 +8,7 @@ import {
   type AgentRunRequest,
   type AgentRunResult,
 } from './run-service.js';
+import type { ProviderHealthSnapshot } from './provider-reliability.js';
 
 export interface HostedAgentRunRequest extends AgentRunRequest {
   sessionId: string;
@@ -21,6 +22,8 @@ export type HostCancelResult =
 
 export interface HostedRunExecutor {
   execute(request: AgentRunRequest, observer?: AgentRunObserver): Promise<AgentRunResult>;
+  providerHealth?(): ProviderHealthSnapshot;
+  providerHealthRoutes?(): ProviderHealthSnapshot[];
 }
 
 interface PendingExecution {
@@ -143,6 +146,24 @@ export class MimiHost {
 
   get currentSessionId(): string {
     return this.agent.currentSessionId;
+  }
+
+  currentCapabilitySnapshot() {
+    return [...this.resolvedActors.values()]
+      .flatMap((actor) => {
+        const snapshot = actor.agent.currentCapabilitySnapshot();
+        return snapshot ? [snapshot] : [];
+      })
+      .sort((left, right) => right.observedAt.localeCompare(left.observedAt))[0];
+  }
+
+  providerHealth(): ProviderHealthSnapshot | undefined {
+    return this.primary.runs.providerHealth?.();
+  }
+
+  providerHealthRoutes(): ProviderHealthSnapshot[] {
+    return this.primary.runs.providerHealthRoutes?.()
+      ?? (this.primary.runs.providerHealth ? [this.primary.runs.providerHealth()] : []);
   }
 
   execute(

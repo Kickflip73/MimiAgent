@@ -6,6 +6,7 @@ import type {
   WorkUnitObservation,
   WorkUnitResult,
 } from '../core/work-unit.js';
+import { sanitizeSensitiveText } from '../core/data-sanitizer.js';
 import type { AgentModel } from './model-port.js';
 
 function selectTools(tools: Tool[], names: readonly string[]): Tool[] {
@@ -67,14 +68,14 @@ function observedSubAgentTool(
         id,
         kind: 'subagent',
         parentRunId: options.parentRunId ?? 'unbound-run',
-        objective: objective.slice(0, 8_000),
+        objective: sanitizeSensitiveText(objective)?.slice(0, 8_000) ?? '',
         role,
         dependencies: [],
         capabilities: role === 'researcher' ? ['read', 'network-read', 'memory-read'] : ['read', 'memory-read'],
         workspaceAccess: 'read',
         paths: [],
       };
-      const summary = String(output.finalOutput ?? 'SubAgent 未返回摘要');
+      const summary = sanitizeSensitiveText(String(output.finalOutput ?? 'SubAgent 未返回摘要')) ?? '';
       const completedAt = new Date().toISOString();
       const result: WorkUnitResult = {
         id,

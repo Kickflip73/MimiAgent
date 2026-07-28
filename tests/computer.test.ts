@@ -183,22 +183,133 @@ test('computer tools respect mode and deployment permission boundaries', async (
 });
 
 test('redacts type_text plaintext from semantic and persisted ledger arguments', async () => {
-  const raw = JSON.stringify({ observationId: 'b9c5b354-88d8-4bee-9135-9e550dfca2ab', action: { type: 'type_text', text: 'private value' } });
+  const raw = JSON.stringify({
+    observationId: 'b9c5b354-88d8-4bee-9135-9e550dfca2ab',
+    authorizationId: 'authorization-type-text',
+    action: { type: 'type_text', text: 'private value' },
+  });
   const redacted = computerLedgerArguments(raw);
   assert.doesNotMatch(redacted, /private value/);
+  assert.doesNotMatch(redacted, /authorization-type-text/);
   assert.match(redacted, /textSha256/);
   assert.match(redacted, /textLength/);
 
   const { manager, authority } = await fixture();
+  const observed = await observeWindow(manager, authority);
+  const executionRaw = JSON.stringify({
+    observationId: observed.observationId,
+    authorizationId: 'authorization-type-text',
+    action: { type: 'type_text', elementIndex: 1, text: 'private value', dispatch: 'background' },
+  });
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-ledger-'));
   const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
   const act = createComputerTools(manager, () => authority).find((item) => item.name === 'computer_act')!;
-  const [wrapped] = withExecutionLedger([act], ledger, () => ({ sessionId: 's', runId: 'r' }));
+  const [wrapped] = withExecutionLedger([act], ledger, () => ({
+    sessionId: 's',
+    runId: 'r',
+    resolveActionAuthorization: async (intent, authorizationId) => ({
+      schemaVersion: 1,
+      authorizationId,
+      intentId: intent.intentId,
+      targetRef: intent.targetRef,
+      payloadDigest: intent.payloadDigest,
+      policyRevision: intent.policyRevision,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      maxUses: 1,
+    }),
+  }));
   assert.ok(wrapped && 'invoke' in wrapped);
-  await wrapped.invoke(new RunContext({}), raw, { toolCall: { callId: 'c' } } as never);
+  await wrapped.invoke(new RunContext({}), executionRaw, { toolCall: { callId: 'c' } } as never);
   const calls = await ledger.listCalls('s', 'r');
   assert.equal(calls.length, 1);
   assert.doesNotMatch(calls[0]!.argumentsJson, /private value/);
+});
+
+test('production ledger wiring keeps exact low-risk owner launch on the guarded fast path', async () => {
+  const { backend, manager, authority } = await fixture({
+    allowedApps: [target.bundleId],
+  });
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-owner-fast-path-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const act = createComputerTools(manager, () => authority).find((item) => item.name === 'computer_act')!;
+  const run = {
+    sessionId: 'owner',
+    runId: 'owner-run',
+    guardedActionContext: {
+      ownerAuthenticated: true,
+      exactTarget: true,
+      lowRisk: true,
+      reversible: false,
+    },
+  };
+  const [wrapped] = withExecutionLedger([act], ledger, () => run);
+  assert.ok(wrapped && 'invoke' in wrapped);
+  const input = JSON.stringify({
+    action: { type: 'launch_app', bundleId: target.bundleId, urls: [], newInstance: false },
+  });
+  const first = await wrapped.invoke(new RunContext({}), input, { toolCall: { callId: 'launch-1' } } as never);
+  const replay = await wrapped.invoke(new RunContext({}), input, { toolCall: { callId: 'launch-1' } } as never);
+  assert.equal((first as Record<string, unknown>).status, 'applied');
+  assert.equal(JSON.stringify(replay), JSON.stringify(first));
+  assert.equal(backend.actions.length, 1);
+
+  const untrustedLedger = new ExecutionLedger(path.join(root, 'untrusted-ledger.json'));
+  const [untrusted] = withExecutionLedger([act], untrustedLedger, () => ({
+    ...run,
+    runId: 'external-run',
+    guardedActionContext: { ...run.guardedActionContext, ownerAuthenticated: false },
+  }));
+  assert.ok(untrusted && 'invoke' in untrusted);
+  await assert.rejects(
+    untrusted.invoke(new RunContext({}), input, { toolCall: { callId: 'launch-external' } } as never),
+    /缺少一次性授权/,
+  );
+  const [urlLaunch] = withExecutionLedger(
+    [act],
+    new ExecutionLedger(path.join(root, 'url-ledger.json')),
+    () => run,
+  );
+  assert.ok(urlLaunch && 'invoke' in urlLaunch);
+  await assert.rejects(
+    urlLaunch.invoke(new RunContext({}), JSON.stringify({
+      action: {
+        type: 'launch_app',
+        bundleId: target.bundleId,
+        urls: ['https://example.invalid/action'],
+        newInstance: false,
+      },
+    }), { toolCall: { callId: 'launch-url' } } as never),
+    /缺少一次性授权/,
+  );
+  assert.equal(backend.actions.length, 1);
+});
+
+test('a fresh Computer observation is target evidence, not high-risk authorization', async () => {
+  const { backend, manager, authority } = await fixture();
+  const observed = await observeWindow(manager, authority);
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-evidence-only-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const act = createComputerTools(manager, () => authority).find((item) => item.name === 'computer_act')!;
+  const [wrapped] = withExecutionLedger([act], ledger, () => ({
+    sessionId: 'owner',
+    runId: 'high-risk-run',
+    guardedActionContext: {
+      ownerAuthenticated: true,
+      exactTarget: true,
+      lowRisk: false,
+      reversible: false,
+    },
+  }));
+  assert.ok(wrapped && 'invoke' in wrapped);
+
+  await assert.rejects(
+    wrapped.invoke(new RunContext({}), JSON.stringify({
+      observationId: observed.observationId,
+      action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
+    }), { toolCall: { callId: 'high-risk-click' } } as never),
+    /缺少一次性授权/,
+  );
+  assert.equal(backend.actions.length, 0);
 });
 
 test('removes completed Computer screenshots from later model history without splitting tool pairs', () => {

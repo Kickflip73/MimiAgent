@@ -13,6 +13,7 @@ import type { MimiDeliveryControl } from './delivery-tools.js';
 import { OutboxDeliveryCoordinator } from './dispatcher-delivery.js';
 import { AttentionEngine } from './attention.js';
 import { createMimiHostTools } from './host-tools.js';
+import { connectorEffectiveCapabilityItems } from './connector-action-tool.js';
 import type { MemoryMaintenanceRuntime } from './memory-maintenance-tools.js';
 import { MimiStore } from './store.js';
 import { eventFailureAttemptLimit } from './dispatcher-retry-policy.js';
@@ -450,6 +451,9 @@ export class MimiDispatcher {
         signal: runSignal,
         options: {
           ...decision.options,
+          capabilityItems: this.connectors
+            ? connectorEffectiveCapabilityItems(this.connectors)
+            : [],
           ...(personalMessage ? { personalMessage } : {}),
           executionKey,
           retainExecutionLedger: true,

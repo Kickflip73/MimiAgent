@@ -605,6 +605,11 @@ interface LedgerAwareTool {
 
 Backend 响应也必须经过固定结果映射；即使驱动回显输入参数，`computer_act` 输出也不能包含输入明文。
 
+`observationId` 只作为 `targetEvidenceRef`：它证明目标窗口和元素仍新鲜，不提供执行授权。
+高风险动作若携带 `authorizationId`，Host 必须把它解析成与当前 ActionIntent 精确绑定、
+未过期且未消费的一次性授权；无法解析时在 Backend 调用前失败关闭。精确 bundleId、
+不携带 URL 的低风险 `launch_app` 仍保留已认证 owner 的 guarded 快速通道。
+
 ### 12.3 Computer artifact
 
 录制和轨迹不能保存在 Session、Trace、Memory 或 workspace 中。`ComputerArtifactStore` 使用 `dataRoot/computer-artifacts/<artifactId>/`，目录权限 `0700`、普通文件 `0600`；Tool 只返回 opaque `artifactId/trajectoryId`，不返回绝对路径。
@@ -700,7 +705,11 @@ MIMI_COMPUTER_ARTIFACT_MAX_MIB=1024
 
 规则：
 
-- 未配置 `MIMI_COMPUTER_BACKEND` 时完全不创建 Computer Extension。
+- `full-owner` 下若未配置 `MIMI_COMPUTER_BACKEND`，且能从
+  `~/.local/bin/cua-driver` 或 `PATH` 找到可执行驱动，则默认创建 Computer
+  Extension；默认仍为 `background`、避让用户正在使用的目标窗口。
+- 设置 `MIMI_COMPUTER_BACKEND=off` 可明确关闭。Safe/Workstation profile
+  不会因为发现驱动而自动获得 Computer 权限。
 - command 必须解析为显式可执行文件；不允许通过 shell alias、命令替换或 workspace 相对脚本解析。
 - 版本必须通过最低兼容版本和已测试版本范围校验；不自动更新。
 - Cua telemetry 在部署说明中要求关闭；MimiAgent 不把截图或 AX 内容发送给 Cua 服务。按当前模型配置，它们仍可能作为本次推理输入发送给所选模型 Provider，产品设置和隐私说明必须明确这一点。
@@ -961,7 +970,8 @@ npm run test:package
 
 ## 19. 回滚与兼容
 
-- 默认 `MIMI_COMPUTER_BACKEND` 未配置，旧安装行为完全不变。
+- `full-owner` 默认使用本机已安装的 CUA 驱动；没有驱动时保持未配置，显式
+  `MIMI_COMPUTER_BACKEND=cua` 但找不到驱动时启动失败并给出配置错误。
 - 关闭配置后不注册工具、不创建 Manager、不连接 Driver。
 - Observation 是内存状态；已封存 Computer artifact 保留到既定保留期，关闭或回滚 Extension 不自动删除用户录制。
 - Source policy 新字段默认 `none`，旧配置不会意外获得桌面权限。

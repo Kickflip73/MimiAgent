@@ -1,5 +1,6 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import process from 'node:process';
@@ -8,6 +9,10 @@ import {
   collectTrustedMcpEnvironment,
   isMcpConfigurationTrusted,
 } from '../extensions/mcp.js';
+import {
+  providerBackupRouteFromEnvironment,
+  type ProviderBackupRoute,
+} from '../runtime/run-service.js';
 import type { PendingMimiStreamEvent } from './live-events.js';
 import { MimiStore } from './store.js';
 import type { EventCancelResult } from './dispatcher.js';
@@ -81,8 +86,10 @@ export function taskWorkerEnvironment(
     .filter(([name]) => !redacted.has(name.toUpperCase())));
 }
 
-function taskProviderCredential(config: AppConfig, source = process.env): TaskProviderCredential {
-  const provider = config.provider;
+function taskProviderCredential(
+  provider: AppConfig['provider'],
+  source = process.env,
+): TaskProviderCredential {
   const name = taskProviderEnvironmentName(provider);
   const apiKey = source[name]?.trim();
   if (!apiKey) throw new Error(`Task worker 缺少 ${name}`);
@@ -123,6 +130,20 @@ function equalWorkerToken(left: string, right: string): boolean {
 export function defaultTaskWorkerEntry(moduleUrl = import.meta.url): string {
   const extension = moduleUrl.endsWith('.ts') ? '.ts' : '.js';
   return fileURLToPath(new URL(`./task-worker-entry${extension}`, moduleUrl));
+}
+
+export function taskWorkerRuntimeReadiness(
+  entry: string,
+): { ready: true } | { ready: false; reason: string } {
+  try {
+    createRequire(entry).resolve('@openai/agents');
+    return { ready: true };
+  } catch {
+    return {
+      ready: false,
+      reason: 'Task worker runtime 缺少 @openai/agents',
+    };
+  }
 }
 
 function loadsDotenv(value: string): boolean {
@@ -169,6 +190,7 @@ export class TaskProcessSupervisor {
   private stopping = false;
   private pumpFaulted = false;
   private lastPumpErrorLogAt = 0;
+  private lastWorkerRuntimeErrorLogAt = 0;
   private ordinaryCompletionsSinceMaintenance = 0;
 
   constructor(
@@ -240,6 +262,10 @@ export class TaskProcessSupervisor {
         };
       });
     return [...attached, ...detached];
+  }
+
+  runtimeStatus(): { ready: boolean; reason?: string } {
+    return taskWorkerRuntimeReadiness(this.options.workerEntry ?? defaultTaskWorkerEntry());
   }
 
   authorizeWorker(taskId: string, workerToken: string): boolean {
@@ -369,11 +395,22 @@ export class TaskProcessSupervisor {
 
   private async launch(taskId: string, workspaceAccess: 'read' | 'write'): Promise<void> {
     const entry = this.options.workerEntry ?? defaultTaskWorkerEntry();
+    const runtime = taskWorkerRuntimeReadiness(entry);
+    if (!runtime.ready) {
+      const now = Date.now();
+      if (now - this.lastWorkerRuntimeErrorLogAt >= 60_000) {
+        process.stderr.write(`[MimiAgent] ${runtime.reason}；任务保持 queued，未消耗 attempt\n`);
+        this.lastWorkerRuntimeErrorLogAt = now;
+      }
+      return;
+    }
     const redactEnvironmentKeys = typeof this.options.redactEnvironmentKeys === 'function'
       ? this.options.redactEnvironmentKeys()
       : this.options.redactEnvironmentKeys;
     let child: ChildProcess;
     let providerCredential: TaskProviderCredential | undefined;
+    let backupProvider: ProviderBackupRoute | undefined;
+    let backupProviderCredential: TaskProviderCredential | undefined;
     let embeddingCredential: TaskEmbeddingCredential | undefined;
     let mcpEnvironment: Record<string, string>;
     let enableMcp: boolean;
@@ -384,7 +421,15 @@ export class TaskProcessSupervisor {
     try {
       const runtimeConfig = taskRuntimeConfig(this.config, task?.objective);
       workerConfig = taskWorkerConfig(runtimeConfig);
-      providerCredential = executor === 'mimi' ? taskProviderCredential(runtimeConfig) : undefined;
+      providerCredential = executor === 'mimi'
+        ? taskProviderCredential(runtimeConfig.provider)
+        : undefined;
+      backupProvider = executor === 'mimi'
+        ? providerBackupRouteFromEnvironment(runtimeConfig.provider)
+        : undefined;
+      backupProviderCredential = backupProvider
+        ? taskProviderCredential(backupProvider.provider)
+        : undefined;
       embeddingCredential = executor === 'mimi' ? taskEmbeddingCredential(runtimeConfig) : undefined;
       const mcpConfigurationTrusted = await isMcpConfigurationTrusted(
         runtimeConfig.mcpConfig,
@@ -405,6 +450,9 @@ export class TaskProcessSupervisor {
         && hasOwnerConversationRoot(this.store, taskId);
       mcpEnvironment = enableMcp ? declaredMcpEnvironment : {};
       if (providerCredential) delete mcpEnvironment[taskProviderEnvironmentName(providerCredential.provider)];
+      if (backupProviderCredential) {
+        delete mcpEnvironment[taskProviderEnvironmentName(backupProviderCredential.provider)];
+      }
       if (embeddingCredential) delete mcpEnvironment.OPENAI_API_KEY;
       if (this.stopping || this.store.getTask(taskId)?.status !== 'queued') return;
       child = fork(entry, [], {
@@ -436,6 +484,7 @@ export class TaskProcessSupervisor {
     this.workers.set(taskId, record);
     const secretValues = [
       providerCredential?.apiKey,
+      backupProviderCredential?.apiKey,
       embeddingCredential?.apiKey,
       ...Object.values(mcpEnvironment),
     ].filter((value): value is string => Boolean(value));
@@ -499,6 +548,8 @@ export class TaskProcessSupervisor {
       workspaceAccess,
       enableMcp,
       providerCredential,
+      backupProvider,
+      backupProviderCredential,
       embeddingCredential,
       mcpEnvironment,
       config: workerConfig,

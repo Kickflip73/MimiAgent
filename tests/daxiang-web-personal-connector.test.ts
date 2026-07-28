@@ -56,7 +56,7 @@ class FakeDriver {
     receipt: null,
   }];
 
-  async locate(): Promise<Record<string, unknown>> {
+  async locate(_marker?: string, _allowBind = false): Promise<Record<string, unknown>> {
     return { tab: { active: false } };
   }
 
@@ -172,6 +172,37 @@ test('Daxiang adapter baselines history, emits new bounded events, and advances 
   assert.equal(afterAck.events.length, 0);
   assert.equal((await stat(stateFile)).mode & 0o777, 0o600);
   assert.doesNotMatch(await readFile(stateFile, 'utf8'), /hello|new message|Owner Self/);
+});
+
+test('Daxiang health automatically rebinds one safe background tab without foreground activation', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'daxiang-recovery-'));
+  const diagnosticsFile = path.join(root, 'diagnostics.json');
+  class RecoverableDriver extends FakeDriver {
+    locateModes: boolean[] = [];
+
+    override async locate(_marker?: string, allowBind = false): Promise<Record<string, unknown>> {
+      this.locateModes.push(allowBind);
+      if (!allowBind) throw new Error('Daxiang bound tab is missing or ambiguous');
+      return { tab: { active: false } };
+    }
+  }
+  const driver = new RecoverableDriver();
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(root, 'cursor.json'),
+    diagnosticsFile,
+  });
+
+  const health = await adapter.health();
+  assert.equal(health.accountVerified, true);
+  assert.equal(health.recoveryAttempted, true);
+  assert.equal(health.recovered, true);
+  assert.deepEqual(driver.locateModes, [false, true]);
+  const diagnostics = JSON.parse(await readFile(diagnosticsFile, 'utf8')) as Record<string, unknown>;
+  assert.equal(diagnostics.recoveryAttempted, true);
+  assert.equal(diagnostics.recovered, true);
 });
 
 test('Daxiang send clicks once and reports observed rather than confirmed', async () => {

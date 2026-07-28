@@ -9,6 +9,7 @@ import {
 import { mimiPaths } from './client-runtime.js';
 import type { DaemonHealthSnapshot } from './health-model.js';
 import type { MimiDoctorReport } from './service.js';
+import { resourceHostSummary } from './resource-slo.js';
 
 export const DIAGNOSTIC_BUNDLE_SCHEMA_VERSION = 1;
 
@@ -69,6 +70,14 @@ export interface RedactedDiagnosticBundle {
     protocolVersion?: number;
     buildVersion?: string;
     startedAt?: string;
+    effectiveCapability?: {
+      schemaVersion: number;
+      snapshotDigest: string;
+      observedAt: string;
+    };
+    providerHealth?: NonNullable<MimiDoctorReport['daemon']['status']>['providerHealth'];
+    providerHealthRoutes?: NonNullable<MimiDoctorReport['daemon']['status']>['providerHealthRoutes'];
+    taskWorkerRuntime?: NonNullable<MimiDoctorReport['daemon']['status']>['taskWorkerRuntime'];
     health?: {
       state: 'ready' | 'degraded' | 'unhealthy';
       checkedAt: string;
@@ -104,6 +113,11 @@ export interface RedactedDiagnosticBundle {
     computer: { configured: boolean; ready?: boolean };
   };
   storage: DiagnosticStorageSnapshot;
+  resources: {
+    host: ReturnType<typeof resourceHostSummary>;
+    daily: NonNullable<MimiDoctorReport['daemon']['activity']>['resourceTrends'];
+  };
+  failureClassification: NonNullable<MimiDoctorReport['daemon']['activity']>['failureClassification'];
 }
 
 async function fileMetric(file: string): Promise<DiagnosticFileMetric> {
@@ -205,6 +219,18 @@ export async function buildRedactedDiagnosticBundle(
         protocolVersion: doctor.daemon.status.protocolVersion,
         ...(doctor.daemon.status.buildVersion ? { buildVersion: doctor.daemon.status.buildVersion } : {}),
         startedAt: doctor.daemon.status.startedAt,
+        ...(doctor.daemon.status.effectiveCapability
+          ? { effectiveCapability: doctor.daemon.status.effectiveCapability }
+          : {}),
+        ...(doctor.daemon.status.providerHealth
+          ? { providerHealth: doctor.daemon.status.providerHealth }
+          : {}),
+        ...(doctor.daemon.status.providerHealthRoutes
+          ? { providerHealthRoutes: doctor.daemon.status.providerHealthRoutes }
+          : {}),
+        ...(doctor.daemon.status.taskWorkerRuntime
+          ? { taskWorkerRuntime: doctor.daemon.status.taskWorkerRuntime }
+          : {}),
       } : {}),
       ...(health ? {
         health: {
@@ -251,6 +277,16 @@ export async function buildRedactedDiagnosticBundle(
       },
     },
     storage,
+    resources: {
+      host: resourceHostSummary(),
+      daily: doctor.daemon.activity?.resourceTrends ?? [],
+    },
+    failureClassification: doctor.daemon.activity?.failureClassification ?? {
+      deadLetters: [],
+      digest: [],
+      readinessUnknown: [],
+      unclassifiedDeadLetters: doctor.daemon.health?.backlog.taskDeadLetters ?? 0,
+    },
   };
 }
 

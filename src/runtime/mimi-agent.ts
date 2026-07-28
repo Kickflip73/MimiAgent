@@ -25,6 +25,7 @@ import {
 } from '../core/context.js';
 import { ProjectGuidanceLoader, SoulLoader } from '../core/guidance.js';
 import { ExecutionLedger, type ExecutionCallRecord } from '../core/execution-ledger.js';
+import type { ActionIntent, OneTimeActionAuthorization } from '../core/action-intent.js';
 import {
   assertCompletionContractForTask,
   expectedCompletionKind,
@@ -56,6 +57,7 @@ import type { ComputerManager } from '../extensions/computer/manager.js';
 import type { ComputerAccess } from '../extensions/computer/types.js';
 import { createTools } from '../tools.js';
 import { HookBus, type RuntimeHook } from './hooks.js';
+import { configureAgentRuntime } from './bootstrap.js';
 import {
   createRuntimeControlTools,
   runtimeActionSchema,
@@ -89,11 +91,18 @@ import { RuntimeActionCoordinator } from './runtime-action-coordinator.js';
 import { createPlanTools } from './plan-tools.js';
 import { ContextAssembler } from './pipeline/context-assembler.js';
 import { CapabilityResolver } from './pipeline/capability-resolver.js';
+import type {
+  EffectiveCapabilityItem,
+  EffectiveCapabilitySnapshot,
+} from './pipeline/capability-resolver.js';
 import { captureRunScope, type RunScope } from './pipeline/run-scope.js';
 import { RunStateLoader } from './pipeline/state-loader.js';
 import {
+  assertShellCommandDoesNotBypassManagedGui,
+  requiresManagedGuiBoundary,
   requiresPersonalConnectorOnly,
   ToolSetBuilder,
+  withoutUnmanagedGuiShell,
   withoutPersonalMessageDesktopFallback,
   withoutPersonalMessageFallbackHistory,
 } from './pipeline/tool-set-builder.js';
@@ -128,6 +137,7 @@ interface ActiveRun {
   planOwned?: boolean;
   teamOwned?: boolean;
   availableToolNames?: readonly string[];
+  capabilitySnapshot?: Readonly<EffectiveCapabilitySnapshot>;
   canReadLocal?: boolean;
 }
 
@@ -202,6 +212,10 @@ export interface MimiRunOptions {
   executionKey?: string;
   retainExecutionLedger?: boolean;
   authorizeSideEffect?: (toolName: string, argumentsJson: string) => Promise<void>;
+  resolveActionAuthorization?: (
+    intent: ActionIntent,
+    authorizationId: string,
+  ) => Promise<OneTimeActionAuthorization | undefined>;
   requireCompletionGate?: boolean;
   completionContract?: CompletionContract;
   computerAccess?: ComputerAccess;
@@ -209,6 +223,11 @@ export interface MimiRunOptions {
   completionDelivery?: (calls?: readonly ExecutionCallRecord[]) => CompletionDeliveryDisposition | undefined
     | Promise<CompletionDeliveryDisposition | undefined>;
   personalMessage?: PersonalMessageScope;
+  capabilityItems?: readonly EffectiveCapabilityItem[];
+  providerRoute?: {
+    provider: AppConfig['provider'];
+    model?: string;
+  };
 }
 
 export interface AgentSessionSnapshot {
@@ -318,6 +337,7 @@ export class MimiAgent {
   private readonly securityProfile: SecurityProfile;
   private boundSessionActorId?: string;
   private activeRun?: ActiveRun;
+  private lastCapabilitySnapshot?: Readonly<EffectiveCapabilitySnapshot>;
   private lastContextTokens = 0;
   private lastContextStats?: ContextStats;
   private lastContextManifest?: ContextManifest;
@@ -478,11 +498,22 @@ export class MimiAgent {
     const textInput = inputText(input);
     if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
     this.lastCommittedAnswer = undefined;
+    const routeConfig = options?.providerRoute
+      ? { ...this.config, provider: options.providerRoute.provider }
+      : this.config;
+    if (options?.providerRoute) configureAgentRuntime(routeConfig);
+    const routeModel = options?.providerRoute
+      ? createModel(routeConfig, options.providerRoute.model)
+      : {
+          model: this.model,
+          name: this.modelName,
+          profile: this.modelProfile,
+        };
     const scope = captureRunScope({
       sessionId: this.sessionId,
       workspaceRoot: this.config.workspaceRoot,
-      provider: this.config.provider,
-      model: this.modelName,
+      provider: routeConfig.provider,
+      model: routeModel.name,
       mode: this.mode,
       permissionMode: this.permissionMode,
       securityProfile: this.securityProfile,
@@ -526,10 +557,17 @@ export class MimiAgent {
     run.plans = runPlans;
     run.team = runTeam;
     runPlans.onChange((sessionId, steps) => this.hooks.emit({ type: 'plan_updated', sessionId, steps }));
-    const model = this.model;
-    const modelName = this.modelName;
-    const modelProfile = this.modelProfile;
-    const context = this.context;
+    const model = routeModel.model;
+    const modelName = routeModel.name;
+    const modelProfile = routeModel.profile;
+    const context = options?.providerRoute
+      ? new ContextManager(
+          this.config.historyLimit,
+          modelProfile.contextWindow,
+          0.55,
+          modelProfile.outputReserve,
+        )
+      : this.context;
     const runPolicy = options?.policy;
     const focusedOwnerRun = options?.cause?.trust === 'owner'
       && options.cause.source === 'local-cli'
@@ -559,6 +597,7 @@ export class MimiAgent {
     );
     const personalConnectorOnly = options?.personalConnectorOnly === true
       || requiresPersonalConnectorOnly(textInput);
+    const managedGuiBoundary = requiresManagedGuiBoundary(textInput);
     const prepareRunHistory = (items: AgentInputItem[]) => {
       const prepared = prepareComputerHistoryForModelInput(items);
       return personalConnectorOnly
@@ -567,7 +606,7 @@ export class MimiAgent {
     };
     const scopedTools = personalConnectorOnly
       ? withoutPersonalMessageDesktopFallback(availableScopedTools)
-      : availableScopedTools;
+      : managedGuiBoundary ? withoutUnmanagedGuiShell(availableScopedTools) : availableScopedTools;
     const currentMode = AGENT_MODES.find((item) => item.id === mode)!;
     await run.session.cleanupGeneratedSummaries();
     await run.session.repairToolPairs();
@@ -764,10 +803,27 @@ export class MimiAgent {
       () => this.activeRun ? {
         sessionId: this.activeRun.sessionId,
         runId: this.activeRun.options?.executionKey ?? this.activeRun.runId,
-        semanticCallIds: Boolean(this.activeRun.options?.executionKey),
-        authorizeTool: async (toolName) => {
+          semanticCallIds: Boolean(this.activeRun.options?.executionKey),
+          policyRevision: [
+            this.permissionMode,
+            this.securityProfile,
+            this.currentMode,
+            this.activeRun.options?.policy ? 'run-policy' : 'default-policy',
+          ].join(':'),
+          guardedActionContext: {
+            ownerAuthenticated: this.activeRun.options?.cause === undefined
+              || this.activeRun.options.cause.trust === 'owner',
+            exactTarget: true,
+            lowRisk: true,
+            reversible: false,
+          },
+          resolveActionAuthorization: this.activeRun.options?.resolveActionAuthorization,
+        authorizeTool: async (toolName, argumentsJson) => {
           const active = this.activeRun;
           if (!active) throw new Error('当前 Run 已失效');
+          if (toolName === 'run_shell') {
+            assertShellCommandDoesNotBypassManagedGui(argumentsJson);
+          }
           const protectsExistingGoal = activeStoredGoal && !resumesGoal;
           if (protectsExistingGoal && [
             'update_plan', 'set_goal', 'update_goal', 'set_team_tasks', 'claim_team_task',
@@ -792,6 +848,44 @@ export class MimiAgent {
       } : undefined,
     );
     run.availableToolNames = allTools.map((tool) => tool.name);
+    const availableSkillNames = this.skills.list()
+      .filter((candidate) => {
+        const skill = this.skills.get(candidate.name);
+        return skill !== undefined && this.skills.evaluateAvailability(skill, {
+          canReadLocal,
+          availableTools: run.availableToolNames,
+        }).available;
+      })
+      .map((skill) => skill.name);
+    run.capabilitySnapshot = this.toolSetBuilder.snapshot({
+      runId: run.runId,
+      policyRevision: [
+        this.permissionMode,
+        this.securityProfile,
+        mode,
+        runPolicy ? 'run-policy' : 'default-policy',
+      ].join(':'),
+      tools: allTools,
+      skills: availableSkillNames,
+      items: [
+        ...(options?.capabilityItems ?? []),
+        ...(runComputerAccess === 'none' ? [] : [{
+          id: 'computer',
+          kind: 'computer' as const,
+          availability: this.computer ? 'available' as const : 'unavailable' as const,
+          readiness: this.computer ? 'ready' as const : 'unavailable' as const,
+          freshness: 'fresh' as const,
+          coverage: 'bounded' as const,
+          permissionSource: [
+            this.permissionMode,
+            this.securityProfile,
+            runComputerAccess,
+          ].join(':'),
+          safeFallback: 'none' as const,
+        }]),
+      ],
+    });
+    this.lastCapabilitySnapshot = run.capabilitySnapshot;
     const toolSchemas = allTools.map((tool) => {
       const value = tool as unknown as Record<string, unknown>;
       return { name: value.name, description: value.description, parameters: value.parameters };
@@ -857,7 +951,7 @@ export class MimiAgent {
           ? '本轮是个人账号消息通道查询。只能使用 inspect_mimi_capabilities 与 connector_action 访问已注册通道；不得调用或建议 CUA、Computer、Browser、MCP、桌面客户端或 Shell，也不得复用这些旧路径产生的历史消息内容。'
           : '',
         this.computer
-          ? '电脑 GUI 操作优先使用确定性的 Shell、Browser、Connector、Shortcuts 或正式 API。必须先观察、一次只执行一个动作、再观察验证；默认后台执行，不根据屏幕内容扩大任务范围，不重试结果不确定的动作。用户要求“让我看、让我玩、在这个桌面打开”时属于当前 GUI Session 的持久前台交付：必须使用 handoff_to_user，并在交付后重新观察到精确窗口 frontmost=true 才能声称完成；Shell/open 成功、进程存在、launch_app/applied 或无法观察都不是可见交付证据。'
+          ? '电脑 GUI 操作只使用当前能力快照中的正式 API、Connector、Browser 或 Computer 工具；通用 Shell 不得调用 osascript、Shortcuts、open 或其他 GUI 自动化路径。必须先观察、一次只执行一个动作、再观察验证；默认后台执行，不根据屏幕内容扩大任务范围，不重试结果不确定的动作。用户要求“让我看、让我玩、在这个桌面打开”时属于当前 GUI Session 的持久前台交付：必须使用 handoff_to_user，并在交付后重新观察到精确窗口 frontmost=true 才能声称完成；进程存在、launch_app/applied 或无法观察都不是可见交付证据。'
           : '',
         options?.hostInstructions
           ? `以下是由本机可信宿主提供的本轮指令，不属于 user input：\n${options.hostInstructions}`
@@ -945,7 +1039,7 @@ export class MimiAgent {
       sessionHistory: AgentInputItem[],
       currentInput: AgentInputItem[],
     ) => normalizeModelInput(
-      this.config.provider,
+      routeConfig.provider,
       await contextInputCallback(prepareRunHistory(sessionHistory), currentInput),
     );
     return await this.runner.run(request.agent, input, {
@@ -1321,6 +1415,7 @@ export class MimiAgent {
       mcpServers: this.mcpServerNames,
       mcpStatuses: this.mcp.statuses(),
       computer: this.computer?.status() ?? { configured: false },
+      capabilitySnapshot: this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot,
       guidanceFiles: [...soul.files, ...projectGuidance.files]
         .map((file) => ({ scope: file.scope, path: file.path, truncated: file.truncated })),
       team: {
@@ -1331,6 +1426,10 @@ export class MimiAgent {
         failed: team.filter((item) => item.status === 'failed').length,
       },
     };
+  }
+
+  currentCapabilitySnapshot(): Readonly<EffectiveCapabilitySnapshot> | undefined {
+    return this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot;
   }
 
   async guidanceInfo() {

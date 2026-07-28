@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  connectorEffectiveCapabilityItems,
   createConnectorCapabilityRuntimeTool,
   type ConnectorCapabilitySnapshot,
 } from '../src/daemon/connector-action-tool.js';
+import type { ConnectorManager } from '../src/daemon/connectors.js';
 import { BASE_INSTRUCTIONS } from '../src/runtime/instructions.js';
 
 function snapshot(connectors: ConnectorCapabilitySnapshot['connectors']): ConnectorCapabilitySnapshot {
@@ -39,4 +41,69 @@ test('personal messaging instructions prefer the registered Connector over CUA',
   assert.match(BASE_INSTRUCTIONS, /personal-\* Connector/);
   assert.match(BASE_INSTRUCTIONS, /未命中不代表离线/);
   assert.match(BASE_INSTRUCTIONS, /不得自动改用 Computer\/CUA/);
+});
+
+test('effective capability items preserve Connector availability, readiness, freshness and coverage', () => {
+  const manager = {
+    listCapabilities: () => [
+      {
+        id: 'ready',
+        enabled: true,
+        online: true,
+        readiness: {
+          inbound: 'ready',
+          outbound: 'ready',
+          reportedAt: '2026-07-28T00:00:00.000Z',
+          coverage: 'bounded',
+        },
+      },
+      {
+        id: 'stale',
+        enabled: true,
+        online: true,
+        readiness: {
+          inbound: 'unknown',
+          outbound: 'unknown',
+          reportedAt: '2026-07-27T00:00:00.000Z',
+          stale: true,
+        },
+      },
+      {
+        id: 'disabled',
+        enabled: false,
+        online: false,
+        readiness: { inbound: 'unknown', outbound: 'unknown' },
+      },
+    ],
+  } as ConnectorManager;
+  const items = connectorEffectiveCapabilityItems(manager);
+  assert.deepEqual(items.map((item) => ({
+    id: item.id,
+    availability: item.availability,
+    readiness: item.readiness,
+    freshness: item.freshness,
+    coverage: item.coverage,
+  })), [
+    {
+      id: 'ready',
+      availability: 'available',
+      readiness: 'ready',
+      freshness: 'fresh',
+      coverage: 'bounded',
+    },
+    {
+      id: 'stale',
+      availability: 'degraded',
+      readiness: 'unknown',
+      freshness: 'stale',
+      coverage: 'unknown',
+    },
+    {
+      id: 'disabled',
+      availability: 'unavailable',
+      readiness: 'unavailable',
+      freshness: 'unknown',
+      coverage: 'unknown',
+    },
+  ]);
 });

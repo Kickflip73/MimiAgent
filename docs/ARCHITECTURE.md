@@ -55,7 +55,7 @@ src/daemon/
 Connector、不保存正文；Connector cursor 仍由隔离进程维护，Event、Task 和副作用
 回执继续由现有 Store 与 ExecutionLedger 持有。
 
-可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 `computer_observe` 与 `computer_act` 两个 Function Tool。它按 Run 管理不可复用的 Observation、动作/截图预算、Cua session、前台 lease 和受保护录制 artifact；GUI 写动作继续经过统一 Tool policy、ExecutionLedger 与跨进程动作锁。默认配置不创建该 Extension。
+可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 `computer_observe` 与 `computer_act` 两个 Function Tool。它按 Run 管理不可复用的 Observation、动作/截图预算、Cua session、前台 lease 和受保护录制 artifact；GUI 写动作继续经过统一 Tool policy、ExecutionLedger 与跨进程动作锁。普通 GUI 业务意图在最终 Tool 选择阶段移除 `run_shell`，只能使用 Effective Capability Snapshot 中的 Connector、Browser 或 Computer 正式路径；开发和测试任务仍保留 Shell，但调用时授权会拒绝 GUI 系统命令、Apple Events/Accessibility API 和直接运行内置 macOS Connector。`full-owner` 可自动发现已安装的 Cua Driver 并默认启用后台访问；Safe/Workstation 不会因此扩大权限，显式 `MIMI_COMPUTER_BACKEND=off` 始终关闭。
 
 `src/agent.ts` 导出 `MimiAgent`；实现位于 `runtime/mimi-agent.ts`。
 
@@ -137,6 +137,13 @@ Session 是完整运行状态边界。启动指定 Session、从历史列表切�
 
 `AtomicJsonStore` 是 Plan、Team、ExecutionLedger 和 Session 的统一 JSON 状态层：按绝对路径共享进程内队列，使用跨进程锁在锁内重读，写入 PID+UUID 临时文件后原子 rename，并通过 Zod 校验和损坏文件隔离处理异常。MemoryHub 的语义正文使用原子 Markdown 页面，派生索引与控制账本使用 SQLite WAL；控制表损坏时写入失败关闭，不能从空状态继续。
 
+状态版本高于当前二进制支持上限时属于部署版本回退，不属于物理损坏。Store 必须保留原文件、
+不得创建 `.corrupt-*` 备份或 blocking marker，并以明确的版本不兼容错误停止启动。当前
+`ExecutionLedger` 只允许 v1 单向迁移到 v2；Runtime 在连接 MCP 或开放任何执行器前完成
+原子迁移，不能把迁移拖到下一次副作用写入；v2 原样读取，未来版本由旧二进制失败关闭。
+安装或重启后的 Daemon build identity 还必须与当前 CLI 产物一致，禁止旧全局包继续处理
+已经由新版本写入的账本。
+
 本地 Function Tool 的副作用以 `sessionId + runId + toolName + logicalCallId` 记入执行账本。Daemon 的 logicalCallId 由规范化参数和同参数调用序号组成：同一 attempt 内的合法重复调用分别执行，跨 attempt 的对应序号才回放；`started` 或 `failed` 状态不会自动重试。原生 MCP transport 也使用同一 executionKey；Hosted Tools 仍不在本地账本控制内。
 
 模型可调用的 Shell 默认只获得 PATH、HOME、locale、终端和临时目录等显式白名单环境；Provider、数据库、遥测、Connector 和 Mimi 控制面变量都不进入 Shell。Shell 的正常退出、超时和取消都会回收完整 POSIX 进程组，文本后台语法检查只是早期提示。HTTP Tool 只允许公网 HTTP(S)，在初始 URL、实际 socket DNS lookup 和每次重定向处拒绝 loopback、私网、link-local、metadata、multicast、IPv4-mapped IPv6 与混合解析；禁止 HTTPS 降级，跨源只跟随无正文的 GET/HEAD 并仅保留安全读取头。
@@ -164,6 +171,12 @@ Connector / CLI / Schedule
 ```
 
 `MimiHost` 是 Session actor registry，而不是全局单工 lane。每个 actor 是其可变 Agent 的唯一所有者，Session 选择、模型/模式变更、清理和 Run 在该 Session 的 FIFO lane 内执行；Host 的 semaphore 只限制同时活跃的不同 Session 数。只读 `sessionSnapshot(id)` 直接读取指定 FileSession，不切换当前 Session。Dispatcher 可同时持有多个不同 Session 的 Task lease，但不会并发写同一个 transcript；isolated worker 只领取 supervisor 指定的 Task。`codex` Task 不创建 Mimi Run/Plan：Supervisor 只启动 detached runner，runner 启动 Codex CLI 后与 Kernel 生命周期解耦，自行续租，并把 runner PID、Codex PID、thread、JSONL 输出和 summary 文件写入 Task；Codex 退出后直接提交 Task 终态与 Outbox。Mimi 不验收、不接管、不回退执行，Codex 启动或运行失败也作为该 Task 的真实终态失败；为避免不确定副作用被重放，Codex Task 默认只允许一次 Attempt。Agent Run 期间查询 ready Task：达到 Attention `urgentPriority` 的高优先级候选可在没有 Tool 在途时 abort 当前模型思考；Tool 在途时等待结果落账。Task 的过期租约会回到待处理状态并依靠执行账本恢复；Outbox 的过期 `sending` 租约代表远端结果不确定，会直接进入 dead letter。明确可重试的普通失败才指数退避并在达到上限后 dead-letter。
+
+Supervisor 在 fork 和 claim 之前从实际 worker entry 检查必需运行依赖。依赖缺失时 Task 保持
+queued 且不消耗 attempt，诊断日志按分钟限频；不能把安装或工作树损坏变成数秒内耗尽
+3/5 次机会的 dead-letter 风暴。结构化 `taskWorkerRuntime` 同时进入 status、Doctor、
+health 和脱敏 diagnostics，缺失依赖是 unhealthy 风险而不是空闲假象；恢复依赖后
+同一个持久 Task 可由正常 pump 继续领取。
 
 SDK Session 完成早于 SQLite Event/Outbox 事务时，执行账本会保留 `sessionId + executionKey` 的完成回执。回执同时保存由成功控制工具恢复并严格校验的 RuntimeAction；模型/模式/输出/Session 切换、清空、MCP 重载和退出效果通过独立 action ledger 至多执行一次。`clear_session` 会保留当前 execution root 及子账本，直到 Event 事务确认后统一清理，因此崩溃恢复不会把清空动作重放到后来数据。若进程在任一边界崩溃，重试读取回执、修复 checkpoint、复用原答案和 RuntimeEffect，不再次调用模型；SQLite 提交成功后才清理回执。该机制与 Tool at-most-once ledger 一起缩小跨存储崩溃窗口，但不把两种存储宣称为分布式 exactly-once 事务。
 
@@ -469,3 +482,90 @@ HookBus 当前暴露 `run_start`、`run_end`、`run_error`、`subagent_event`、
 - 需要长期监听和主动通知：Daemon Event + Schedule + Outbox。
 
 不要在运行内核加入渠道 SDK、分布式队列、通用工作流 DSL、任意深度 Agent 树或企业向量数据库；这些应作为 Connector 或外围集成存在。
+
+## M0 可信地基
+
+M0 在既有状态所有者上补齐四个横切契约，不建立第二套队列、授权或监控系统。
+
+### 敏感数据治理
+
+`core/data-sanitizer.ts` 是写入前和展示前的统一净化边界。Task objective/result/error、
+WorkUnit objective/summary/artifact/error、Trace data、Memory evidence/Wiki，以及 Daemon
+management summary、Run 和 Schedule prompt 都在各自权威 Store 或投影边界调用同一实现。扫描结果只保留类别、
+SHA-256 指纹和逻辑 surface，不返回命中原文。
+凭证、授权头和私钥在所有 surface 始终净化；只有 `private/owner` Memory Wiki 可保留
+owner 明确要求记住的必要邮箱或电话。Task、WorkUnit、Trace、management、Memory evidence
+及非 owner Wiki 仍会净化联系方式，历史扫描与迁移使用同一 surface 规则。
+
+历史处置由 `daemon/data-governance.ts` 完成：
+
+```text
+dry-run（只读、无原值）
+→ verifyMimiBackup（清单摘要 + SQLite integrity）
+→ 确认 Daemon socket 不存在
+→ SQLite BEGIN IMMEDIATE + 原子文件替换
+→ 全目标面复扫为 0
+```
+
+备份保留原始数据并提供既有 restore 通道；apply 不删除备份、不修复无关损坏，也不读取
+Connector 凭证配置。retention/export/delete 继续由原有 History prune、backup/diagnostic
+export 和 owner 管理入口承担，所有展示仍经过净化边界。
+
+### Effective Capability
+
+`EffectiveCapabilitySnapshot` schema v1 由最终 `ToolSetBuilder` 生成，记录本轮实际 Tool、
+通过共同 availability evaluator 的 Skill、Run 开始时 Connector/Computer 的实际投影、
+permission source，以及统一的
+`availability/readiness/freshness/coverage` 术语。`toolSetDigest` 和
+`snapshotDigest` 对排序后的实际集合计算；Run runtime info、Daemon status 和 Doctor/
+diagnostic bundle 传递同一个最后实跑摘要。旧 Daemon status 没有该可选字段时按 unknown
+兼容，不把“未报告”解释为 ready。
+
+### ActionIntent 与副作用
+
+`ExecutionLedger` v2 在同一个原子 Store 中增加 ActionIntent schema v2，不另建授权账本。
+Host 以 durable Event/run 和语义调用序号创建跨重试稳定的 `businessActionRef`；execution key
+由该引用、action family、target、payload digest 和 policy revision 构成。同一业务引用跨
+Tool/Provider/route 只执行一次，不同 Event 即使目标和载荷相同也分别执行。一次性授权绑定
+同一 Intent、目标、正文、策略和过期时间，授权 ID 在整个账本中最多消费一次。
+
+- `confirmed` 跨 Tool、Provider、Connector/Computer route 只返回既有回执。
+- `started/uncertain` 永久禁止自动换路重放。
+- 只有 `failed_safe` 可以在新 route 重新尝试。
+- 已认证 owner 的精确、低风险、可逆动作在 `guarded` 下保留快速通道。
+- guarded 属性由具体 Tool 的 Intent 元数据声明，不能由 Run 全局猜测；Computer 目前
+  只对精确 bundleId 且不携带 URL 的 `launch_app` 开放该通道。外部来源、URL scheme、
+  kill/handoff/权限和其他高风险动作仍要求有效一次性授权或失败关闭。Computer 的
+  `targetEvidenceRef` 只证明 Observation 对目标仍新鲜，与 `authorizationId` 分字段保存；
+  Observation 本身永远不是授权。
+- personal message 的 `contextToken` 只授权实际 send Tool，读取上下文不误占 Intent；
+  它与 Computer 写动作都在原 Tool ledger 外层进入同一 Intent fence；传统
+  call receipt 仍保留为 Completion evidence。
+
+Tool 或 ActionIntent 已成功执行但结果超过账本上限时，`ExecutionLedger` 不再把动作误记
+为失败。它丢弃超限正文并原子提交一个包含 `output_truncated`、原始字节数和 SHA-256 的
+有界成功回执；首次返回与崩溃后重放完全一致，且不保存原文。若配置的上限连该安全回执
+都容纳不了，则仍失败关闭并永久保留 started/failed fence，不会重放副作用。
+
+### Provider 与资源 SLO
+
+Provider 429、余额、网络和 5xx 使用确定性分类和每 Provider 熔断状态。429/余额立即
+open；普通瞬时失败达到阈值后 open；恢复只允许一个 half-open probe。主备协调器最多
+接受一个 primary 和一个 backup，每个 route 一轮最多尝试一次。`AgentRunService` 只在
+SDK streaming handle 尚未形成时允许走 backup；handle 一旦形成，即使尚未看到 Tool
+事件也不再切换；只有 stream 正常迭代结束、`completed` 完成且终态校验通过后才记录
+Provider success。handle 后的 429、余额、网络或 5xx 会记录该 route failure，并且不切备，
+因此任何副作用开始后更不可能重放整轮。当前 AppConfig 未增加新的
+公开配置字段；可选 `MIMI_BACKUP_PROVIDER=openai|deepseek` 与
+`MIMI_BACKUP_MODEL` 由 runtime 组合根解析，backup 必须不同于 primary 且具备自己的
+Provider Key。主 Daemon、每个 Session actor 和 isolated worker 都显式构造同一主备
+RunService；worker route/credential 经过严格 IPC schema，credential 不进入基础环境、
+Shell 或 MCP。status、Doctor 和 diagnostic bundle 同时报告两条 route health。
+
+Daemon activity 复用 SQLite Task/Run 数据，按日聚合 Run 与 Token。费用只有 Provider
+实际返回样本时才显示数值，否则为 `null` 且 sampling=`unknown`，不会伪装为 0。
+CPU/内存/磁盘尚无持久样本时同样返回 `null` 和 host sampling=`not_sampled`；实时 Host
+摘要不冒充跨重启趋势。只对已知/已采样指标产生预算告警；Provider health、资源趋势、
+dead letter/Digest/readiness 分类进入
+status、Doctor 和脱敏 diagnostic bundle。历史 dead letter 保留原记录，只增加
+`retry_after_fix/archive_safe/external_blocked/manual_verify/investigate` 处置投影。

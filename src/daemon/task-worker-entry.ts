@@ -4,6 +4,7 @@ import path from 'node:path';
 import { MimiAgent } from '../runtime/mimi-agent.js';
 import { configureAgentRuntime } from '../runtime/bootstrap.js';
 import { MimiHost } from '../runtime/mimi-host.js';
+import { AgentRunService } from '../runtime/run-service.js';
 import { AttentionEngine } from './attention.js';
 import { KernelConnectorRuntime } from './connector-worker-rpc.js';
 import { MimiDispatcher } from './dispatcher.js';
@@ -46,6 +47,7 @@ async function run(raw: unknown): Promise<void> {
   const init = taskWorkerInitSchema.parse(raw);
   const secretValues = [
     init.providerCredential?.apiKey,
+    init.backupProviderCredential?.apiKey,
     init.embeddingCredential?.apiKey,
     ...Object.values(init.mcpEnvironment),
   ].filter((value): value is string => Boolean(value));
@@ -108,7 +110,10 @@ async function run(raw: unknown): Promise<void> {
       ? task.objective as Record<string, unknown>
       : {};
     if (payload.strategy === 'team') await agent.switchMode('ultra');
-    host = new MimiHost(agent, undefined, { maxConcurrentSessions: 1 });
+    host = new MimiHost(agent, new AgentRunService(agent, {
+      providerId: init.config.provider,
+      ...(init.backupProvider ? { backupProvider: init.backupProvider } : {}),
+    }), { maxConcurrentSessions: 1 });
     dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {
       maxConcurrentTasks: 1,
       claimTaskTypes: ['background', 'scheduled', 'briefing', 'memory_maintenance'],
@@ -139,7 +144,10 @@ async function run(raw: unknown): Promise<void> {
       workerId: dispatcher.workerId,
       pid: process.pid,
     });
-    const processed = await dispatcher.processTaskById(init.taskId);
+    const processTask = () => dispatcher!.processTaskById(init.taskId);
+    const processed = init.backupProviderCredential
+      ? await withTaskProviderCredential(init.backupProviderCredential, processTask)
+      : await processTask();
     await send({
       type: 'done',
       taskId: init.taskId,
@@ -171,6 +179,7 @@ async function run(raw: unknown): Promise<void> {
     process.exitCode = 1;
   } finally {
     if (init.providerCredential) init.providerCredential.apiKey = '';
+    if (init.backupProviderCredential) init.backupProviderCredential.apiKey = '';
     if (init.embeddingCredential) init.embeddingCredential.apiKey = '';
     for (const name of Object.keys(init.mcpEnvironment)) init.mcpEnvironment[name] = '';
     clearInterval(heartbeat);

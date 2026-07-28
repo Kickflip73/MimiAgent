@@ -1,11 +1,21 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { RunContext, tool, type MCPServer } from '@openai/agents';
 import { z } from 'zod';
 import { ExecutionLedger } from '../src/core/execution-ledger.js';
+import {
+  ACTION_INTENT_SCHEMA_VERSION,
+  actionExecutionKey,
+  actionPayloadDigest,
+  ActionFailedSafeError,
+  ActionIntentUncertainError,
+  evaluateActionAuthorization,
+  type ActionIntent,
+  type ActionIntentV2,
+} from '../src/core/action-intent.js';
 import { withExecutionLedger } from '../src/runtime/tool-ledger.js';
 import { withMcpExecutionLedger } from '../src/runtime/mcp-ledger.js';
 
@@ -16,6 +26,37 @@ function call(runId = 'run-a', argumentsJson = '{"path":"a.txt"}') {
     toolName: 'write_file',
     callId: 'call-1',
     argumentsJson,
+  };
+}
+
+function actionIntent(
+  route: string,
+  overrides: Partial<ActionIntentV2> = {},
+): ActionIntentV2 {
+  const payloadDigest = actionPayloadDigest({ text: 'bounded fixture' });
+  const policyRevision = 'guarded:v1';
+  const base = {
+    schemaVersion: ACTION_INTENT_SCHEMA_VERSION,
+    intentId: `intent-${route}`,
+    businessActionRef: 'event:fixture:send:1',
+    actionFamily: 'personal-message.send',
+    targetRef: 'daxiang:account:conversation',
+    payloadDigest,
+    selectedRoute: route,
+    executionKey: '',
+    policyRevision,
+    status: 'not_started',
+    ...overrides,
+  } as ActionIntentV2;
+  return {
+    ...base,
+    executionKey: overrides.executionKey ?? actionExecutionKey(
+      base.actionFamily,
+      base.targetRef,
+      base.payloadDigest,
+      base.policyRevision,
+      base.businessActionRef,
+    ),
   };
 }
 
@@ -35,6 +76,224 @@ test('replays a successful local side effect instead of executing it twice', asy
   assert.deepEqual(replay, first);
   assert.deepEqual(laterReplay, first);
   assert.equal(executions, 1);
+});
+
+test('ActionIntent fences the same business action across Tool, Provider and route', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-action-intent-'));
+  const file = path.join(root, 'ledger.json');
+  const firstLedger = new ExecutionLedger(file);
+  let executions = 0;
+  const context = {
+    ownerAuthenticated: true,
+    exactTarget: true,
+    lowRisk: true,
+    reversible: true,
+  };
+  const first = await firstLedger.executeActionIntent(
+    'owner',
+    'event:action',
+    actionIntent('connector'),
+    context,
+    undefined,
+    async () => ({ executions: ++executions, provider: 'openai' }),
+  );
+  const replay = await new ExecutionLedger(file).executeActionIntent(
+    'owner',
+    'event:action:provider-fallback',
+    actionIntent('computer', { intentId: 'fallback-intent' }),
+    context,
+    undefined,
+    async () => ({ executions: ++executions, provider: 'deepseek' }),
+  );
+  assert.equal(first.outcome, 'confirmed');
+  assert.deepEqual(replay, first);
+  assert.equal(executions, 1);
+});
+
+test('different business action references execute identical payloads independently', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-action-business-ref-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const context = {
+    ownerAuthenticated: true,
+    exactTarget: true,
+    lowRisk: true,
+    reversible: true,
+  };
+  let executions = 0;
+  const first = {
+    ...actionIntent('connector'),
+    businessActionRef: 'event:first:send:1',
+  };
+  first.executionKey = actionExecutionKey(
+    first.actionFamily, first.targetRef, first.payloadDigest, first.policyRevision, first.businessActionRef,
+  );
+  const second = {
+    ...actionIntent('connector', { intentId: 'intent-second-event' }),
+    businessActionRef: 'event:second:send:1',
+  };
+  second.executionKey = actionExecutionKey(
+    second.actionFamily, second.targetRef, second.payloadDigest, second.policyRevision, second.businessActionRef,
+  );
+
+  await ledger.executeActionIntent(
+    'owner', 'event:first', first, context, undefined, async () => ++executions,
+  );
+  await ledger.executeActionIntent(
+    'owner', 'event:second', second, context, undefined, async () => ++executions,
+  );
+
+  assert.equal(executions, 2);
+});
+
+test('ActionIntent permits route change only after failed_safe and fences uncertain', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-action-intent-state-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const context = {
+    ownerAuthenticated: true,
+    exactTarget: true,
+    lowRisk: true,
+    reversible: true,
+  };
+  let executions = 0;
+  const safeFailure = await ledger.executeActionIntent(
+    'owner',
+    'event:safe',
+    actionIntent('connector'),
+    context,
+    undefined,
+    async () => {
+      executions += 1;
+      throw new ActionFailedSafeError('request was rejected before dispatch');
+    },
+  );
+  assert.equal(safeFailure.outcome, 'failed_safe');
+  await assert.rejects(
+    ledger.executeActionIntent(
+      'owner',
+      'event:safe',
+      actionIntent('connector'),
+      context,
+      undefined,
+      async () => ++executions,
+    ),
+    /必须选择不同执行路径/,
+  );
+  const recovered = await ledger.executeActionIntent(
+    'owner',
+    'event:safe',
+    actionIntent('computer', { intentId: 'intent-recovery' }),
+    context,
+    undefined,
+    async () => ({ executions: ++executions }),
+  );
+  assert.equal(recovered.outcome, 'confirmed');
+  assert.equal(recovered.attempts, 2);
+
+  const uncertainIntent = actionIntent('connector', {
+    intentId: 'uncertain',
+    targetRef: 'qq:account:other',
+  });
+  uncertainIntent.executionKey = actionExecutionKey(
+    uncertainIntent.actionFamily,
+    uncertainIntent.targetRef,
+    uncertainIntent.payloadDigest,
+    uncertainIntent.policyRevision,
+    uncertainIntent.businessActionRef,
+  );
+  await assert.rejects(
+    ledger.executeActionIntent(
+      'owner',
+      'event:uncertain',
+      uncertainIntent,
+      context,
+      undefined,
+      async () => { executions += 1; throw new Error('connection ended after dispatch'); },
+    ),
+    ActionIntentUncertainError,
+  );
+  await assert.rejects(
+    ledger.executeActionIntent(
+      'owner',
+      'event:uncertain',
+      { ...uncertainIntent, selectedRoute: 'computer', intentId: 'uncertain-fallback' },
+      context,
+      undefined,
+      async () => ++executions,
+    ),
+    /禁止换路或自动重放/,
+  );
+  assert.equal(executions, 3);
+});
+
+test('guarded owner fast path and one-time authorization stay exact and single-use', async () => {
+  const intent = actionIntent('computer');
+  assert.deepEqual(evaluateActionAuthorization(intent, {
+    ownerAuthenticated: true,
+    exactTarget: true,
+    lowRisk: true,
+    reversible: true,
+  }), { allowed: true, source: 'guarded-owner-fast-path' });
+  assert.equal(evaluateActionAuthorization(intent, {
+    ownerAuthenticated: true,
+    exactTarget: true,
+    lowRisk: true,
+    reversible: false,
+  }).allowed, false);
+
+  const authorization = {
+    schemaVersion: 1 as const,
+    authorizationId: 'authorization-1',
+    intentId: intent.intentId,
+    targetRef: intent.targetRef,
+    payloadDigest: intent.payloadDigest,
+    policyRevision: intent.policyRevision,
+    expiresAt: '2026-07-28T00:00:00.000Z',
+    maxUses: 1 as const,
+  };
+  assert.equal(evaluateActionAuthorization(intent, {
+    ownerAuthenticated: false,
+    exactTarget: false,
+    lowRisk: false,
+    reversible: false,
+  }, authorization, new Date('2026-07-27T00:00:00.000Z')).allowed, true);
+  assert.equal(evaluateActionAuthorization(intent, {
+    ownerAuthenticated: false,
+    exactTarget: false,
+    lowRisk: false,
+    reversible: false,
+  }, authorization, new Date('2026-07-29T00:00:00.000Z')).allowed, false);
+
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-one-time-authorization-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const authorizationContext = {
+    ownerAuthenticated: false,
+    exactTarget: false,
+    lowRisk: false,
+    reversible: false,
+  };
+  await ledger.executeActionIntent(
+    'owner', 'event:authorization:first', intent, authorizationContext, {
+      ...authorization,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }, async () => 'first',
+  );
+  const secondIntent = actionIntent('computer', {
+    intentId: 'intent-second-authorization',
+    businessActionRef: 'event:authorization:second',
+  });
+  await assert.rejects(
+    ledger.executeActionIntent(
+      'owner', 'event:authorization:second', secondIntent, authorizationContext, {
+        ...authorization,
+        intentId: secondIntent.intentId,
+        targetRef: secondIntent.targetRef,
+        payloadDigest: secondIntent.payloadDigest,
+        policyRevision: secondIntent.policyRevision,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }, async () => 'second',
+    ),
+    /一次性授权已由其他 ActionIntent 消费/,
+  );
 });
 
 test('blocks ambiguous or conflicting side-effect retries', async () => {
@@ -371,6 +630,95 @@ test('fails closed when the execution ledger is corrupt', async () => {
   assert.ok((await readdir(root)).some((name) => name.startsWith('ledger.json.corrupt-')));
 });
 
+test('migrates a v1 execution ledger to v2 without losing existing entries', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-v1-migration-'));
+  const file = path.join(root, 'ledger.json');
+  await new ExecutionLedger(file).executeOnce(call('legacy-run'), async () => 'legacy-result');
+  const current = JSON.parse(await readFile(file, 'utf8')) as {
+    entries: Record<string, unknown>;
+  };
+  const originalKeys = Object.keys(current.entries);
+  await writeFile(file, JSON.stringify({ version: 1, entries: current.entries }));
+
+  const migrated = new ExecutionLedger(file);
+  await migrated.initialize();
+  const initialized = JSON.parse(await readFile(file, 'utf8')) as {
+    version: number;
+    entries: Record<string, unknown>;
+    actionIntents?: Record<string, unknown>;
+  };
+  assert.equal(initialized.version, 2);
+  assert.ok(originalKeys.every((key) => Object.hasOwn(initialized.entries, key)));
+  assert.deepEqual(initialized.actionIntents, {});
+
+  assert.equal(await migrated.executeOnce(call('legacy-run'), async () => 'must-not-run'), 'legacy-result');
+  await migrated.executeOnce(call('new-run'), async () => 'new-result');
+
+  const stored = JSON.parse(await readFile(file, 'utf8')) as {
+    version: number;
+    entries: Record<string, unknown>;
+    actionIntents?: Record<string, unknown>;
+  };
+  assert.equal(stored.version, 2);
+  assert.equal(Object.keys(stored.entries).length, originalKeys.length + 1);
+});
+
+test('initializing an existing v2 execution ledger is idempotent', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-v2-initialize-'));
+  const file = path.join(root, 'ledger.json');
+  await new ExecutionLedger(file).executeOnce(call(), async () => 'fixture');
+  const before = await readFile(file, 'utf8');
+
+  await new ExecutionLedger(file).initialize();
+
+  assert.equal(await readFile(file, 'utf8'), before);
+});
+
+test('refuses a newer execution ledger as a deployment rollback without quarantining valid state', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-newer-version-'));
+  const file = path.join(root, 'ledger.json');
+  await new ExecutionLedger(file).executeOnce(call(), async () => 'fixture');
+  const current = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
+  await writeFile(file, JSON.stringify({ ...current, version: 3 }));
+
+  await assert.rejects(
+    new ExecutionLedger(file).executeOnce(call('new-run'), async () => 'must-not-run'),
+    /状态版本 3 高于当前支持的 2.*拒绝版本回退/u,
+  );
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 3);
+  assert.deepEqual((await readdir(root)).sort(), ['ledger.json']);
+});
+
+test('reports a persisted started ActionIntent as uncertain while the operation is in flight', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-intent-started-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const intent = actionIntent('connector');
+  let signalStarted!: () => void;
+  let finishOperation!: (value: string) => void;
+  const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+  const operation = new Promise<string>((resolve) => { finishOperation = resolve; });
+  const pending = ledger.executeActionIntent(
+    'owner',
+    'event:started',
+    intent,
+    { ownerAuthenticated: true, exactTarget: true, lowRisk: true, reversible: true },
+    undefined,
+    async () => {
+      signalStarted();
+      return operation;
+    },
+  );
+  await started;
+
+  const persisted = await ledger.getActionIntent(intent.executionKey);
+  assert.equal(persisted?.outcome, 'uncertain');
+  assert.equal(persisted?.attempts, 1);
+  assert.equal(persisted?.authorizationSource, 'guarded-owner-fast-path');
+
+  finishOperation('done');
+  assert.equal((await pending).outcome, 'confirmed');
+});
+
 test('bounds ledger outputs and entry growth without replaying side effects', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-ledger-limits-'));
   const outputLedger = new ExecutionLedger(path.join(root, 'outputs.json'), { maxOutputBytes: 16 });
@@ -391,6 +739,66 @@ test('bounds ledger outputs and entry growth without replaying side effects', as
     entryLedger.executeOnce(call('run-b'), async () => 'second'),
     /达到 1 条上限/,
   );
+});
+
+test('commits an oversized successful output as one bounded replay-safe receipt', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-bounded-receipt-'));
+  const file = path.join(root, 'ledger.json');
+  const ledger = new ExecutionLedger(file, { maxOutputBytes: 512 });
+  let executions = 0;
+  const first = await ledger.executeOnce(call(), async () => ({
+    value: 'sensitive-fixture-'.repeat(1_000),
+    executions: ++executions,
+  })) as unknown as Record<string, unknown>;
+  const replay = await new ExecutionLedger(file, { maxOutputBytes: 512 })
+    .executeOnce(call(), async () => {
+      executions += 1;
+      throw new Error('oversized successful output must not execute twice');
+    });
+
+  assert.equal(first.mimiStatus, 'output_truncated');
+  assert.equal(first.originalBytes, 18_029);
+  assert.match(String(first.sha256), /^[a-f0-9]{64}$/);
+  assert.doesNotMatch(JSON.stringify(first), /sensitive-fixture/);
+  assert.deepEqual(replay, first);
+  assert.equal(executions, 1);
+});
+
+test('keeps an oversized ActionIntent result confirmed and replayable without the original payload', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-intent-bounded-receipt-'));
+  const file = path.join(root, 'ledger.json');
+  const context = {
+    ownerAuthenticated: true,
+    exactTarget: true,
+    lowRisk: true,
+    reversible: true,
+  };
+  let executions = 0;
+  const first = await new ExecutionLedger(file, { maxOutputBytes: 1_024 }).executeActionIntent(
+    'owner',
+    'event:oversized-intent',
+    actionIntent('connector'),
+    context,
+    undefined,
+    async () => ({ value: 'private-result-'.repeat(2_000), executions: ++executions }),
+  );
+  const replay = await new ExecutionLedger(file, { maxOutputBytes: 1_024 }).executeActionIntent(
+    'owner',
+    'event:oversized-intent:retry',
+    actionIntent('computer', { intentId: 'oversized-retry' }),
+    context,
+    undefined,
+    async () => {
+      executions += 1;
+      throw new Error('confirmed ActionIntent must not execute twice');
+    },
+  );
+
+  assert.equal(first.outcome, 'confirmed');
+  assert.equal((first.result as unknown as Record<string, unknown>).mimiStatus, 'output_truncated');
+  assert.doesNotMatch(JSON.stringify(first), /private-result/);
+  assert.deepEqual(replay, first);
+  assert.equal(executions, 1);
 });
 
 test('rejects conflicting arguments while the same call id is still in flight', async () => {
