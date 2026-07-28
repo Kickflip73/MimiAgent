@@ -4,7 +4,7 @@
 
 MimiAgent 使用 OpenAI Agents SDK 作为运行内核。CLI 对话与长期运行服务是同一个系统的两种入口，共享模型、Session、MemoryHub、Skills、MCP、任务恢复和运行控制。唯一常驻 Kernel 负责可靠 Event/Task、Attention、Schedule、Connector broker 和主动通知；Conversation 层按 Session actor 并行；无需当前窗口等待的长任务先持久化，再由独立 OS 子进程执行。编排层仍提供受控 SubAgent 与有限并发 Team，同时保持 TypeScript 内核轻量、直接可读。
 
-> 本机 owner 默认拥有完整执行能力，Shell、文件、网络、Connector 和已信任 MCP 无需逐任务审批。Plan 模式保持只读；外部事件正文始终是不可信数据，默认使用最小事件策略，只有命中 owner 明确配置的 source policy 才获得该策略范围内的代办能力。只有在运行陌生工作区或主动收紧部署时，才需要显式选择 `workspace` 或 `read-only`。
+> 本机 owner 只需选择 Safe、Workstation、Full Owner 三档 Security。Full Owner 默认拥有完整执行能力且不叠加逐动作审批；Workstation 允许工作区写入和沙箱 Shell，但不允许 Connector 外部事务、Computer Use 或受信 MCP；Safe 只读。Plan 模式固定只读；外部事件正文始终是不可信数据。
 
 ## 为什么是 MimiAgent
 
@@ -22,7 +22,7 @@ MimiAgent 不是一次性工具调用样例，也不想变成重量级工作流�
 - 可热重载 Standing Orders，按来源、人物和会话执行长期替身决策
 - owner-managed People aliases，把同一人物的邮件、IM 和群聊事件统一到连续 Session 与长期记忆
 - owner 对话内可创建一次性后续唤醒和周期巡检，支持查询、取消与崩溃重试去重
-- Connector Action Bridge，用一个通用工具主动执行 IM、邮件、日历等适配器事务
+- Effective Capability Snapshot + `invoke_capability`，按精确 capability/action 直达唯一已就绪 Connector
 - 信息雷达持续汇聚 RSS/Atom 与多地点天气风险，低价值信号自动进入简报
 - 文件活动雷达持续感知 Downloads、Desktop、共享落盘目录和自动化输出
 - Apple Mail 未读感知、搜索整理、附件收发与读取、发送、回复、旗标、移动、删除、草稿全链路 action
@@ -46,7 +46,7 @@ MimiAgent 不是一次性工具调用样例，也不想变成重量级工作流�
 - 所有执行型任务的 Completion Contract 与 Host 终态门控，按真实工具回执、产物、测试和 Plan 状态验收
 - 通用 / Plan / Ultra Team 三种有真实工具边界的运行模式
 - 单层 SubAgent 与持久 Team task list，支持依赖、原子领取和最多 4 路并行
-- owner 默认完整执行；可选 `workspace` / `read-only` 受限部署，Team builder 另受 `task.paths` 强约束
+- 三档 Security：Safe 只读、Workstation 本机工作、Full Owner 完整执行；Team builder 另受 `task.paths` 强约束
 - runId 所有权与副作用执行账本，阻止陈旧 Run 覆盖状态或自动重放本地写操作
 - 轻量运行时 Hooks
 - Spinner、分块事件、Reasoning Summary 和最终回答流式输出
@@ -177,6 +177,24 @@ OpenAI Responses API。兼容服务若只实现了部分 OpenAI 协议，Tool Ca
 profile；可通过 `MIMI_CONTEXT_WINDOW`、`MIMI_OUTPUT_TOKEN_RESERVE` 和
 `MIMI_MODEL_SUPPORTS_IMAGE_INPUT` 显式覆盖。
 
+也可以用一条命令原子保存 Provider 配置并重启 Daemon。当前 Owner Run 只有一个
+`MIMI_EPHEMERAL_SECRET_n` 时会自动使用该临时值，无需把 API Key 放进命令参数：
+
+```bash
+mimi provider set openai-compatible \
+  --base-url https://api.moonshot.cn/v1 \
+  --model kimi-k3 \
+  --context-window 1048576
+```
+
+命令只把凭证写入 `0600` 的统一私有环境文件，并同步更新 launchd；不会要求先手工编辑
+plist，也不会因为 Key 最初只存在于当前 Shell 而中断重启。存在多个临时敏感值时使用
+`--api-key-env MIMI_EPHEMERAL_SECRET_n` 精确选择。
+
+配置过的 Provider 会同时出现在 `runtime_status.configuredProviders`。在对话中要求
+“切换到 DeepSeek/Kimi”时，MimiAgent 使用 `switch_provider`，待当前回答完成后只执行
+一次原子切换与 Daemon 重启；`switch_model` 仅用于同一 Provider 内的模型切换。
+
 编辑 `~/.mimi-agent/.env` 填入所选 Provider 的配置，然后一键启动后台：
 
 ```bash
@@ -215,7 +233,7 @@ mimi daemon --help
 
 `mimi daemon status` 默认输出适合终端阅读的健康摘要；脚本、自动化和完整排障数据使用 `mimi daemon status --json`。
 
-首次 `mimi` 会执行幂等初始化：创建权限为 `0700` 的 MimiAgent 数据目录、`0600` 的策略/Connector 配置和本机数据库，并把发布包内的 Connector 目录物化为当前安装位置的绝对路径。macOS 默认只启用无界面的 System Connector；Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Desktop、Browser、Screen、Voice 和三个个人消息配置槽位都默认关闭，Daemon 启动不会把任何 GUI App 放进 Dock。旧版自动启用的 canonical 本机 Connector 会一次性切换到该无界面默认，后续用户显式启停仍会保留；个人消息槽位也只补一次，owner 删除后不会反复恢复。Calendar/Reminders 与 Mail 即使被启用，也不会为了后台轮询重新打开已关闭的 App。OpenClaw 微信、Radar 等额外数据源保持关闭。升级会删除旧大象 Bot/AppleScript、QQ OneBot/NapCat、通用 HTTP Action 及 QQ/微信 AppleScript Connector 配置，补齐缺失的默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充新 action。个人 QQ/微信 Adapter 尚未实现；现有 QQ CUA Skill 和 OpenClaw iLink Bot 都不是个人消息通道的自动降级路线。`mimi daemon doctor` 只读检查模型 Key、脚本、系统命令、后台、运行中 Connector、dead letter、容量阈值和 launchd 状态，不读取邮件、消息或屏幕，也不触发系统授权。
+首次 `mimi` 会执行幂等初始化：创建权限为 `0700` 的 MimiAgent 数据目录、`0600` 的策略/Connector 配置和本机数据库，并把发布包内的 Connector 目录物化为当前安装位置的绝对路径。macOS 默认启用无界面的 System Connector 和 action-only Desktop Connector；Desktop 默认不轮询、不打开 GUI，只有明确调用 action 才执行。Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Browser、Screen、Voice 和三个个人消息配置槽位默认关闭。旧版自动启用的 canonical 本机 Connector 会一次性切换到轻量默认，后续用户显式启停仍会保留；个人消息槽位也只补一次，owner 删除后不会反复恢复。Calendar/Reminders 与 Mail 即使被启用，也不会为了后台轮询重新打开已关闭的 App。OpenClaw 微信、Radar 等额外数据源保持关闭。升级会删除旧大象 Bot/AppleScript、QQ OneBot/NapCat、通用 HTTP Action 及 QQ/微信 AppleScript Connector 配置，补齐缺失的默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充新 action。个人 QQ/微信 Adapter 尚未实现；现有 QQ CUA Skill 和 OpenClaw iLink Bot 都不是个人消息通道的自动降级路线。`mimi daemon doctor` 只读检查模型 Key、脚本、系统命令、后台、运行中 Connector、dead letter、容量阈值和 launchd 状态，不读取邮件、消息或屏幕，也不触发系统授权。
 
 LaunchAgent 的 plist 不保存 API Key，而是读取持久环境文件；只在当前 Shell `export` 的临时 Key 不会被写入磁盘，此时 MimiAgent 仍可在当前登录会话内运行。首次访问邮件、消息、联系人、屏幕等能力时，macOS 可能向实际 Node/Terminal/LaunchAgent 进程请求系统权限；MimiAgent 不再叠加审批层。
 
@@ -265,7 +283,7 @@ owner 查询大象消息时通过 `query=大象` 发现完整 `personal-daxiang`
 
 `macos-shortcuts-connector.mjs` 直接调用系统 `shortcuts` CLI，让 MimiAgent 可以发现并运行用户已有的快捷指令。它支持文本、base64 和多个文件输入，可返回有界 text/base64 stdout 或写入显式绝对输出路径；不实现第二套自动化 DSL。
 
-`macos-desktop-connector.mjs` 通过 System Events 感知前台应用和窗口，并可激活应用、打开 URL/绝对路径、读写文本剪贴板、输入文本、发送 key code 和点击一级菜单项。它让 MimiAgent 能处理没有专用 Connector 的普通桌面应用；剪贴板感知默认关闭，可由 Agent 持久启停并跨重启恢复，启用后首次读取只建立基线，Connector 自己写入的内容不会反向触发新事件。
+`macos-desktop-connector.mjs` 通过 System Events 感知前台应用和窗口，并可激活应用、打开 URL/绝对路径、读写文本剪贴板、输入文本、发送 key code 和点击一级菜单项。`open_visible` 要求精确 bundle ID，并且只有观察到目标应用已置前且存在可见窗口才返回 `outcome=confirmed`；系统只接受打开请求但验证超时会返回 uncertain，禁止重放。剪贴板感知默认关闭，持久启停只由 operator 管理。
 
 `macos-browser-connector.mjs` 复用 Safari/Chrome 当前 profile 和已登录会话，提供标签页查询、打开、导航、激活、关闭、刷新、正文读取和 JavaScript DOM 执行。它无浏览器驱动、扩展和新增依赖，不轮询或保存浏览历史；页面正文与脚本结果始终标记为不可信外部数据。详细动作和系统设置见 [docs/CONNECTORS.md](docs/CONNECTORS.md#macos-browser-bridge)。
 
@@ -300,17 +318,17 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_MODEL_PROVIDER` | `openai` | 模型 Provider：`openai`、`deepseek` 或 `openai-compatible` |
 | `MIMI_PROVIDER_API_KEY` | 未设置 | `openai-compatible` Provider 的 API Key |
 | `MIMI_PROVIDER_BASE_URL` | 未设置 | `openai-compatible` Provider 的 OpenAI 兼容 API 根地址 |
-| `MIMI_MODEL` / `MIMI_MODELS` | 未设置 | 通用 Provider 的默认模型与 `/model` 候选列表 |
+| `MIMI_MODEL` / `MIMI_MODELS` | 未设置 | 通用 Provider 的默认模型与全局 `/model` 候选列表 |
 | `MIMI_MAX_TURNS` | 不限制 | 可选的单次 Agent 运行轮数上限；默认由 Goal/Plan 状态、取消、空闲超时与上下文预算控制 |
 | `MIMI_HISTORY_LIMIT` | `40` | Token Budget 之外的历史条目上限；从完整用户轮次开始截取 |
 | `MIMI_CONTEXT_WINDOW` | 按模型 Profile | 全局覆盖模型上下文窗口；通常无需设置 |
 | `MIMI_OUTPUT_TOKEN_RESERVE` | 按模型 Profile | 全局覆盖输出 Token 预留与请求 `maxTokens` |
 | `MIMI_OUTPUT_LEVEL` | `tools` | 启动时的事件展示等级：`answer`、`thinking`、`tools`、`trace` |
-| `OPENAI_MODELS` / `DEEPSEEK_MODELS` | 内置常用模型 | `/model` 选择器追加的逗号分隔模型列表 |
+| `OPENAI_MODELS` / `DEEPSEEK_MODELS` | 内置常用模型 | 全局 `/model` 选择器中各 Provider 追加的逗号分隔模型列表 |
 | `MIMI_SESSION` | 未设置 | 显式进入已有 Session；未设置时 CLI 使用首次发言才落盘的新对话草稿 |
 | `MIMI_MODE` | `general` | 启动模式：`general`、`plan`、`ultra` |
-| `MIMI_SECURITY_PROFILE` | `safe` | 新 Session 的默认安全档位：`safe`、`workstation`、`full-owner`；当前 Session 可用 `/security` 实时切换 |
-| `MIMI_PERMISSION_MODE` | 由默认安全档位决定 | 启动默认值兼容项：`safe=read-only`、`workstation=workspace`、`full-owner=trusted`；显式设置时必须与档位一致 |
+| `MIMI_SECURITY_PROFILE` | `full-owner` | 本机认证 Owner 的运行权限：默认直接使用当前 OS 用户权限；仅在需要整体收紧时设置 `safe` 或 `workstation` |
+| `MIMI_PERMISSION_MODE` | 由 Security 派生 | 仅用于读取旧配置；不再参与授权，冲突时以 `MIMI_SECURITY_PROFILE` 为准 |
 | `MIMI_COMPUTER_BACKEND` | 未启用 | 设置为 `cua` 后注册可选的 `computer_observe` / `computer_act`；第一阶段仅 macOS |
 | `MIMI_CUA_DRIVER_COMMAND` | 未设置 | Cua Driver `>=0.8.3 <=0.9.0` 可执行文件的绝对路径；启用 Computer Use 时必填 |
 | `MIMI_COMPUTER_DEFAULT_ACCESS` | `background` | 本机交互 Run 的默认档位：`none/observe/background/foreground/admin`；Daemon 事件仍需 source policy 显式授权 |
@@ -337,9 +355,11 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 
 通用 `AGENT_*`、模型与 MCP 变量仍按明确白名单作为后备别名。`MIMI_CONFIG_VERSION>=2` 用于区分显式 `workspace` 限制与早期模板默认值。
 
-新安装的新 Session 默认使用 **Safe**：本地文件只读、无 Shell、无 Computer Use、无外部写事务。**Workstation** 允许工作区内文件写入和已配置 Connector 事务，但仍无 Shell、Computer Use 或受信工作区 MCP。只有 **Full Owner** 才开放当前 OS 用户权限下的 Shell，并允许使用已显式配置的 Computer Use 与受信工作区 MCP。Full Owner 还表示认证 Owner 同意：自己在直接命令中本轮提交、且被敏感数据治理识别的值，可以只在当前 Run 发送给当前配置的模型 Provider（配置了兼容备选路由时也包括该路由）；Safe/Workstation 不会发送。这是 Session 级轻量授权，不增加逐次审批。`/status` 会同时显示当前 Session 的安全档位和当前模式下的实际执行能力；旧配置若已显式写入 `MIMI_PERMISSION_MODE`，仍会按对应档位解释为新 Session 默认值。
+本机认证 Owner 默认使用 **Full Owner**，直接获得当前 OS 用户权限下的 Shell、文件能力，以及已显式配置的 Computer Use 和受信工作区 MCP；不再要求每个 Session 单独选择安全档位。Owner 在直接命令中本轮提交、且被敏感数据治理识别的值，可以只在当前 Run 发送给当前配置的模型 Provider（配置了兼容备选路由时也包括该路由）。外部事件、后台 Task、SubAgent 和 Team worker 不继承这项 Owner 权限，仍按来源和任务策略隔离。
 
-交互式 CLI 的启动横幅始终显示当前 Session 的安全档位。输入 `/security` 会打开三档选择列表，用 `↑` / `↓` 移动、`Enter` 确认、`Esc` 取消；选择会持久化到当前 Session，并从下一轮实时生效，不修改环境文件，也不要求重启。环境变量只决定尚未设置偏好的新 Session 默认档位。未配置的 Computer Use 或未受信的工作区 MCP 不会因为切到 Full Owner 而凭空启用。
+临时敏感原值不会进入工具参数、进程命令行或执行账本。模型若误把原值拼进参数，工具会返回可重试拒绝，当前 Run 可立即改用 `MIMI_EPHEMERAL_SECRET_n` 环境变量继续，不再因此销毁整轮。Owner 本轮明确要求为指定本机 Provider 或集成持久配置 credential 时，主 Agent Shell 可通过该环境变量写入 owner-private 配置目标并保持 `0600`；其他文件、日志、Session、Memory、后台任务和委派仍不得继承原值。
+
+需要整体收紧某个运行环境时，可在启动前设置 **Safe**（只读，无 Shell、Computer Use 和外部事务）或 **Workstation**（工作区可写并提供结构化沙箱 Shell，但无 Connector 外部事务、Computer Use 或受信工作区 MCP）。旧 Session 保存的安全档位不再参与授权，避免切换对话时意外降权。交互式 CLI 输入 `/security` 会像 `/sessions` 一样打开 Safe、Workstation、Full Owner 三档列表，可用 `↑` / `↓` 选择、`Enter` 确认、`Esc` 取消；也可直接输入 `/security safe|workstation|full-owner`。切换从下一轮生效，作用于当前运行实例，重启后恢复环境配置。旧 `MIMI_PERMISSION_MODE` 只做读取兼容，不能覆盖当前 Security。
 
 Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Connector、Shortcuts 或正式 API；GUI 路径遵循“观察 → 单动作 → 再观察”，默认后台执行。`workspace/read-only`、SubAgent、Team worker 和独立后台 Task 不获得桌面能力；Daemon owner channel 还需在 `assistant.json` 的 source policy 中显式设置 `computerAccess`，并可用 `computerApps` 限制 bundle ID。完整设计与部署边界见 [docs/COMPUTER_USE.md](docs/COMPUTER_USE.md)。
 
@@ -353,7 +373,7 @@ Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Con
 
 | 命令 | 作用 |
 |---|---|
-| `/model [name]` | 查看或切换当前 Provider 下的模型；无参数时使用选择器 |
+| `/model [name]` | 查看或切换所有已配置 Provider 的模型；无参数时使用全局选择器 |
 | `/mode [name]` | 在 `general`、`plan`、`ultra` 之间切换 |
 | `/output [level]` | 切换终端执行事件的展示详细度 |
 | `/new [id]` | 准备一个首次发言才落盘的新对话草稿 |
@@ -399,7 +419,7 @@ Task 与 RuntimeAction 的完成过程写入只含摘要和 phase 的 Run Commit
 完成回执一旦落盘，后续崩溃恢复会复用它而不会再次调用模型。JSON 状态本轮
 保持单读单写，不与 SQLite 长期双写。
 
-默认 CLI 交互不会阻塞输入：MimiAgent 执行时仍可继续提交消息。当前窗口指向同一 Session 的消息进入 FIFO 队列并依次执行；另一个窗口选择不同 Session 后，可在 `MIMI_SESSION_MAX_CONCURRENCY` 限制内同时运行，不必等待前一个 Session 结束。输入框支持多行编辑：`Shift+Enter` 插入换行，`Command+←/→` 跳到当前行首/行尾，只有手动 `Enter` 才发送；终端 bracketed paste 中自带的换行只会进入编辑区，不会触发提交。长文本只渲染光标附近的有界视窗并标注隐藏行数，发送时仍提交完整内容，避免粘贴大段文本时反复刷新整个终端；Apple Terminal 上使用不会产生物理软换行的单行视窗，并将连续刷新移出输入法按键事件后合并执行，以规避 macOS 26 的原生 marked-text 崩溃。按 `Esc` 会请求后台在外部 Tool 的安全边界取消当前 Event，队列中的后续消息不受影响。长程或多阶段任务通过 `update_plan` 建立阶段任务，当前会话的完成数、当前步骤和最多 5 条附近任务会实时显示在输入框上方；长描述保持单行省略，全部完成后折叠为一行。输入 `/` 会展示命令面板，使用黑色活动光标配合 `↑` / `↓` 选择、`Tab` 补全。`/new`、`/clear` 会清理终端并保留项目顶部信息；会话切换则清理当前画面、恢复顶部信息、任务进度并回放目标会话的历史消息。
+默认 CLI 交互不会阻塞输入：MimiAgent 执行时仍可继续提交消息。当前窗口指向同一 Session 的普通 `Enter` 消息进入 FIFO 队列并依次执行；发现当前方向有误时可用 `Command+Enter` 立即发送新指引，后台会先持久化新 Event，再在外部 Tool 的安全边界结束旧 Run 并按新方向继续。另一个窗口选择不同 Session 后，可在 `MIMI_SESSION_MAX_CONCURRENCY` 限制内同时运行，不必等待前一个 Session 结束。输入框支持多行编辑：`Shift+Enter` 插入换行，`Command+←/→` 跳到当前行首/行尾；终端 bracketed paste 中自带的换行只会进入编辑区，不会触发提交。长文本只渲染光标附近的有界视窗并标注隐藏行数，发送时仍提交完整内容，避免粘贴大段文本时反复刷新整个终端；Apple Terminal 上使用不会产生物理软换行的单行视窗，并将连续刷新移出输入法按键事件后合并执行，以规避 macOS 26 的原生 marked-text 崩溃。按 `Esc` 会请求后台在外部 Tool 的安全边界取消当前 Event，队列中的后续消息不受影响。长程或多阶段任务通过 `update_plan` 建立阶段任务，当前会话的完成数、当前步骤和最多 5 条附近任务会实时显示在输入框上方；长描述保持单行省略，全部完成后折叠为一行。输入 `/` 会展示命令面板，使用黑色活动光标配合 `↑` / `↓` 选择、`Tab` 补全。`/new`、`/clear` 会清理终端并保留项目顶部信息；会话切换则清理当前画面、恢复顶部信息、任务进度并回放目标会话的历史消息。
 
 简单问答、短操作以及你明确要在当前窗口看到结果的任务，会留在 Conversation actor 中流式执行。长程、大型、多阶段、持续等待或你明确无需立即结果的任务，主 MimiAgent 会调用 `delegate_background_task`：任务写入 SQLite 后立即返回 `taskId`，当前对话恢复可用，`TaskProcessSupervisor` 再用独立 Node.js 子进程和独立 Task Session 执行；`executor: "codex"` 是例外，它由 detached runner 启动独立 Codex CLI，不创建 Mimi Plan，也不进入 Mimi 的工具调用、重试或验收流程。到期 Schedule 与 Daily Routine 也复用同一 Task lane，而不是占用来源 Conversation。默认 `workspaceAccess=write`，写任务独占工作区；明确声明 `read` 的分析任务使用确定性只读工具，可与其他只读后台任务并行。Task 一旦被接受就不会因 snooze、静默时段或 Attention 预算被转成 Digest；这些设置控制的是新事件是否值得接受，不会吞掉执行队列。Task 内不再递归创建 durable 子任务；大型可拆分任务在同一 worker 内用有界 Ultra Team 汇总。只有 owner conversation root 的 write Task 可执行 Connector action；外部 source-policy work Task 不会看到必然被 Broker 拒绝的 action 工具，但完成结果仍由 Outbox 原路返回。发起 CLI 即使已退出，任务仍继续；完成结果由 Outbox 主动发往原渠道或系统通知。若任务确实缺少必要输入，它会持久化为 `blocked` 并主动问你，补充上下文后从原 Task Session 继续。运行中执行 `/task pause` 会先返回“已请求暂停”，并在当前 Tool 完成后的安全点落成 `paused`；pause/cancel 控制会在回复 CLI 前先写入 SQLite，即使 Kernel 或 worker 随后崩溃，重启恢复也不会继续执行已取消任务，已暂停任务仍保持 `paused`。不要为了“并行”把普通短任务强制后台化；用 `/tasks`、`/task <id>`、`/task pause <id>`、`/task resume <id> [context]` 和 `/task cancel <id>` 管理真正的后台工作。
 
@@ -422,7 +442,11 @@ Ultra Team 由主 Agent 担任 lead，将工作拆成 2～6 个 `explorer / arch
 
 `trace` 适合学习和排查 Agent 执行过程，例如 `read_file` 会显示读取到的文件内容。为避免意外输出超大内容，单条详情最多展示 20000 个字符；此限制只作用于终端显示，不改变工具实际返回给模型的数据。
 
-`/model` 默认展示当前 Provider 的常用模型，也会合并 `OPENAI_MODELS` 或 `DEEPSEEK_MODELS` 中以逗号分隔的自定义模型名称。`/model <name>` 可以直接切换未列出的兼容模型；切换保存到当前 Session，关闭 CLI 后同一 Session 的后台与渠道任务继续使用它，但不会修改 `.env` 或其他 Session。
+`/model` 展示所有已配置 Provider 的模型，并标明模型所属 Provider；候选集合会合并
+`MIMI_MODELS`、`OPENAI_MODELS` 和 `DEEPSEEK_MODELS`。选择当前 Provider 的模型时只更新
+当前 Session；选择其他 Provider（例如从 DeepSeek 选择 `kimi-k3`）时，会复用已保存的
+Provider 凭证，原子更新默认模型并安全重启 Daemon。`/model <name>` 也按同一目录解析；
+未配置的模型会被拒绝，避免把模型名发送到错误的 Provider endpoint。
 
 ## 终端展示
 
@@ -485,7 +509,7 @@ CLI 斜杠命令和模型工具调用复用相同的 MimiAgent 运行时方法�
 
 模型、模式和安全档位切换从下一轮生效；Session、输出等级和退出在当前回答完整写入后生效，避免留下孤立 Tool Call。`/retry` 与 `/resume` 属于重新发起一轮对话的 CLI 入口，Agent 在当前轮中分别通过重试工具和 Goal 工具完成相同语义，不递归启动自身。
 
-`runtime_status` 同时返回当前工作区、运行时代码目录、安全档位和执行档位，CLI `/status` 会明确显示当前模式下 Shell 是否真的可用。新安装默认是 `safe/read-only`；只有显式选择 `full-owner/trusted` 才直接使用当前操作系统用户的 Shell。CLI 连接后台时采用后台的实际工作区，并同时核对协议和实际执行档位；旧 launchd 即使固化过 `workspace`，也只会在空闲时被安全替换，不会继续伪装成已升级实例或打断在途事务。
+`runtime_status` 同时返回当前工作区、运行时代码目录和三档 Security，CLI `/status` 会明确显示当前模式下 Shell 是否可用。新安装的认证本机 owner 默认 Full Owner；Workstation 使用结构化沙箱 Shell，Safe 和 Plan 不提供 Shell。旧执行档位仅为状态兼容，不参与授权。
 
 ## 统一 MemoryHub
 
@@ -641,7 +665,7 @@ Provider canary 对 OpenAI/DeepSeek 各执行一个固定、低成本、Safe 档
 
 MimiAgent 不追求复刻大型 Agent 平台的全部能力。当前不在运行内核中实现 Web UI、渠道 SDK、托管式消息网关、分布式任务、任意深度多 Agent 图、复杂工作流 DSL、企业向量数据库、完整 HITL 审批平台或容器集群；Task worker 只是同一台机器上的有界 OS 子进程，外部渠道通过隔离 Connector 接入，其余能力可由 MCP、Skill 或外围系统组合。
 
-本机 owner 默认使用当前操作系统用户权限，不增加逐任务审批。`workspace` 会关闭 Shell、通用网络写入和未登记工具，`read-only` 再关闭本地文件写入；这两个档位只在用户显式选择时生效。owner/system 可使用已配置的 Connector 和已明确信任的 MCP；external/public 默认由最小事件策略隔离，只有命中 owner source policy 才获得不含配置控制与未知 MCP 的有界代办工具，Plan 模式始终只读。
+本机 owner 只由三档 Security 授权，不增加逐任务审批。Safe 只读；Workstation 允许工作区写入、沙箱 Shell 和本机网络读取，但不允许 Connector 外部事务、Computer Use、受信 MCP 或通用网络写入；Full Owner 才可使用这些完整能力。旧 `workspace/read-only/trusted` 字段只保留读取兼容，不再形成第二套决策。external/public 仍由最小来源策略隔离，Plan 模式始终只读。
 
 在认证本机 Owner 的直接 CLI 或认证 localhost Runtime HTTP 命令中临时粘贴 credential、authorization 或 private key 时，MimiAgent 不再要求重复设置：`captureSensitiveText` 先生成脱敏输入和无原值指纹，Event、Task、正式 user input、Session、Trace、Memory、管理接口和 ExecutionLedger 始终只接触脱敏版本。原值只在 Daemon 内存 broker 中最多等待十五分钟，并以 Event + Session + provenance 绑定的一次性 lease 交给首次 Run。
 

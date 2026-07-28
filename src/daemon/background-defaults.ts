@@ -10,6 +10,7 @@ const LEGACY_VISIBLE_DEFAULTS_VERSION = 1;
 
 const DEFAULT_MACOS_CONNECTORS = new Set([
   'macos-system',
+  'macos-desktop',
 ]);
 
 export const LEGACY_VISIBLE_MACOS_CONNECTORS = [

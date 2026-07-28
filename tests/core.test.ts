@@ -105,7 +105,7 @@ test('persists sessions and returns the latest items', async () => {
   assert.deepEqual(await FileSession.list(root), ['demo']);
 });
 
-test('keeps runtime preferences isolated between sessions', async () => {
+test('keeps ordinary preferences per Session while Owner access applies to the runtime', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-preferences-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const previous = {
@@ -118,41 +118,49 @@ test('keeps runtime preferences isolated between sessions', async () => {
   process.env.AGENT_MODE = 'general';
   process.env.OUTPUT_LEVEL = 'tools';
   process.env.OPENAI_MODEL = 'gpt-5.4-mini';
+  const legacyFirst = new FileSession(path.join(dataRoot, 'sessions'), 'first');
+  await legacyFirst.ensure();
+  await legacyFirst.setPreferences({ securityProfile: 'workstation' });
   const agent = await MimiAgent.create({
     provider: 'openai', workspaceRoot: root, dataRoot,
     skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'),
     historyLimit: 40, contextWindow: 128_000, maxTurns: 20,
   });
   try {
+    let info = await agent.runtimeInfo();
+    assert.equal(info.securityProfile.id, 'full-owner');
+    assert.equal(info.permissionMode, 'trusted');
+
     await agent.switchMode('plan');
     await agent.switchModel('gpt-5-mini');
     await agent.setOutputLevel('trace');
     await agent.switchSecurityProfile('safe');
 
     await agent.switchSession('second');
-    let info = await agent.runtimeInfo();
+    info = await agent.runtimeInfo();
     assert.equal(info.mode.id, 'general');
     assert.equal(info.model, 'gpt-5.4-mini');
     assert.equal(info.outputLevel, 'tools');
-    assert.equal(info.securityProfile.id, 'full-owner');
-    assert.equal(info.permissionMode, 'trusted');
-    assert.ok(agent.toolNames.includes('run_shell'));
+    assert.equal(info.securityProfile.id, 'safe');
+    assert.equal(info.permissionMode, 'read-only');
+    assert.ok(!agent.toolNames.includes('write_file'));
 
     await agent.switchMode('ultra');
     await agent.switchModel('gpt-5.4');
     await agent.setOutputLevel('answer');
     await agent.switchSecurityProfile('workstation');
     assert.ok(agent.toolNames.includes('write_file'));
-    assert.ok(!agent.toolNames.includes('run_shell'));
+    assert.ok(agent.toolNames.includes('run_shell'));
 
     await agent.switchSession('first');
     info = await agent.runtimeInfo();
     assert.equal(info.mode.id, 'plan');
     assert.equal(info.model, 'gpt-5-mini');
     assert.equal(info.outputLevel, 'trace');
-    assert.equal(info.securityProfile.id, 'safe');
-    assert.equal(info.permissionMode, 'read-only');
+    assert.equal(info.securityProfile.id, 'workstation');
+    assert.equal(info.permissionMode, 'workspace');
     assert.ok(!agent.toolNames.includes('write_file'));
+    assert.ok(!agent.toolNames.includes('run_shell'));
 
     await agent.switchSession('second');
     info = await agent.runtimeInfo();
@@ -193,7 +201,7 @@ test('raises and lowers the live tool boundary without restarting the runtime', 
 
     await agent.switchSecurityProfile('workstation');
     assert.ok(agent.toolNames.includes('write_file'));
-    assert.ok(!agent.toolNames.includes('run_shell'));
+    assert.ok(agent.toolNames.includes('run_shell'));
 
     await agent.switchSecurityProfile('full-owner');
     assert.ok(agent.toolNames.includes('write_file'));
@@ -549,6 +557,11 @@ test('uses DeepSeek V4 Pro by default and lists both V4 models', async () => {
     assert.equal((await agent.contextInfo()).outputReserve, 16_384);
     await agent.switchModel('deepseek-v4-pro');
     assert.equal((await agent.contextInfo()).contextWindow, 1_048_576);
+    await assert.rejects(
+      agent.switchModel('kimi-k3'),
+      /模型不可用.*kimi-k3.*deepseek-v4-pro.*deepseek-v4-flash/,
+    );
+    assert.equal((await agent.runtimeInfo()).model, 'deepseek-v4-pro');
   } finally {
     await agent.close();
     if (previous.session === undefined) delete process.env.AGENT_SESSION;
@@ -560,7 +573,38 @@ test('uses DeepSeek V4 Pro by default and lists both V4 models', async () => {
   }
 });
 
-test('restores the complete session state after a process restart', async () => {
+test('ignores an incompatible model persisted by an older Session', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-incompatible-session-model-'));
+  const dataRoot = path.join(root, '.mimi-agent');
+  const previousSession = process.env.AGENT_SESSION;
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  process.env.AGENT_SESSION = 'poisoned-model';
+  process.env.DEEPSEEK_API_KEY = 'test-key';
+  const session = new FileSession(path.join(dataRoot, 'sessions'), 'poisoned-model');
+  await session.ensure();
+  await session.setPreferences({ provider: 'deepseek', model: 'kimi-k3' });
+  const agent = await MimiAgent.create({
+    provider: 'deepseek',
+    workspaceRoot: root,
+    dataRoot,
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: 20,
+  });
+  try {
+    assert.equal((await agent.runtimeInfo()).model, 'deepseek-v4-pro');
+    assert.equal((await agent.sessionSnapshot()).runtime.model, 'deepseek-v4-pro');
+  } finally {
+    await agent.close();
+    if (previousSession === undefined) delete process.env.AGENT_SESSION;
+    else process.env.AGENT_SESSION = previousSession;
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
+  }
+});
+
+test('restores durable Session state while runtime access returns to startup configuration', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-restart-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const sessions = path.join(dataRoot, 'sessions');
@@ -605,11 +649,11 @@ test('restores the complete session state after a process restart', async () => 
     assert.equal(info.mode.id, 'ultra');
     assert.equal(info.model, 'gpt-5.4');
     assert.equal(info.outputLevel, 'trace');
-    assert.equal(info.securityProfile.id, 'workstation');
-    assert.equal(info.permissionMode, 'workspace');
+    assert.equal(info.securityProfile.id, 'full-owner');
+    assert.equal(info.permissionMode, 'trusted');
     assert.ok(info.securityProfile.externalTransactions);
     assert.ok(reopened.toolNames.includes('write_file'));
-    assert.ok(!reopened.toolNames.includes('run_shell'));
+    assert.ok(reopened.toolNames.includes('run_shell'));
     assert.deepEqual((await reopened.currentPlan()).map((step) => step.status), ['completed', 'running']);
     assert.match(JSON.stringify(await reopened.history()), /继续完整状态恢复/);
     assert.equal((await reopened.recoveryInfo())?.status, 'interrupted');

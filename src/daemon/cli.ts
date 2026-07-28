@@ -33,7 +33,12 @@ export function daemonHelp(): string {
   mimi daemon schedule list                查看计划任务
   mimi daemon schedule at <ISO时间> "任务" 创建一次任务
   mimi daemon schedule every <10m|1h> "任务" 创建周期任务
-  mimi daemon schedule remove <id>         删除计划任务`;
+  mimi daemon schedule remove <id>         删除计划任务
+
+模型 Provider：
+  mimi provider set openai-compatible --base-url <URL> --model <ID>
+      [--api-key-env <NAME>] [--models <ID,...>] [--context-window <N>]
+      当前 Run 仅有一个 MIMI_EPHEMERAL_SECRET_n 时自动使用；默认保存后重启`;
 }
 
 function output(value: unknown): void {

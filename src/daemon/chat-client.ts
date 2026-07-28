@@ -639,6 +639,7 @@ export class RemoteCommandTarget implements CommandTarget {
 export interface RemoteRuntimeEffectHandlers {
   restoreSession: () => Promise<void>;
   resetSession: () => Promise<void>;
+  switchProvider: (provider: 'openai' | 'deepseek' | 'openai-compatible') => Promise<void>;
   close: () => void;
 }
 
@@ -648,10 +649,19 @@ export async function synchronizeRemoteRuntimeEffects(
   handlers: RemoteRuntimeEffectHandlers,
 ): Promise<void> {
   target.applyRuntimeEffects(effects);
+  const providerEffect = [...effects].reverse().find((effect) => (
+    effect.type === 'provider_change_requested'
+  ));
+  if (providerEffect?.type === 'provider_change_requested') {
+    await handlers.switchProvider(providerEffect.provider);
+  }
   const latestSessionEffect = [...effects].reverse().find((effect) => (
     effect.type === 'session_changed' || effect.type === 'session_cleared'
   ));
   if (latestSessionEffect?.type === 'session_changed') await handlers.restoreSession();
   if (latestSessionEffect?.type === 'session_cleared') await handlers.resetSession();
+  if (providerEffect?.type === 'provider_change_requested' && !latestSessionEffect) {
+    await handlers.restoreSession();
+  }
   if (effects.some((effect) => effect.type === 'exit_requested')) handlers.close();
 }

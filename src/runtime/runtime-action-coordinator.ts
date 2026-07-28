@@ -7,19 +7,20 @@ import {
 } from './control.js';
 
 const RUNTIME_ACTION_TOOLS = new Set([
-  'switch_model', 'switch_mode', 'set_output_level', 'switch_session',
+  'switch_model', 'switch_provider', 'switch_mode', 'set_output_level', 'switch_session',
   'new_session', 'clear_session', 'reload_mcp', 'request_exit',
 ]);
 
 const RUNTIME_ACTION_ORDER: Record<RuntimeAction['type'], number> = {
   clear_session: 0,
   switch_model: 1,
-  switch_mode: 2,
-  set_output_level: 3,
-  reload_mcp: 4,
-  switch_session: 5,
-  new_session: 5,
-  exit: 6,
+  switch_provider: 2,
+  switch_mode: 3,
+  set_output_level: 4,
+  reload_mcp: 5,
+  switch_session: 6,
+  new_session: 6,
+  exit: 7,
 };
 
 export interface CompletedRunActionSource {
@@ -47,8 +48,15 @@ export function actionFromSuccessfulTool(toolName: string, output: unknown): Run
   const expected = toolName === 'switch_model' || toolName === 'switch_mode'
     ? 'next_turn'
     : 'after_current_turn';
-  if (!value || value.effective !== expected) throw new Error(`Runtime 控制工具 ${toolName} 的账本输出无效`);
+  // SDK tool failures are returned to the model as text and may still be
+  // recorded as a succeeded ledger wrapper. They are not RuntimeActions and
+  // must not turn a deterministic user-facing rejection into a Task retry.
+  if (!value) return undefined;
+  if (value.effective !== expected) throw new Error(`Runtime 控制工具 ${toolName} 的账本输出无效`);
   if (toolName === 'switch_model') return runtimeActionSchema.parse({ type: 'switch_model', model: value.model });
+  if (toolName === 'switch_provider') {
+    return runtimeActionSchema.parse({ type: 'switch_provider', provider: value.provider });
+  }
   if (toolName === 'switch_mode') return runtimeActionSchema.parse({ type: 'switch_mode', mode: value.mode });
   if (toolName === 'set_output_level') {
     return runtimeActionSchema.parse({ type: 'set_output_level', level: value.level });
@@ -71,7 +79,7 @@ export function normalizedRuntimeActions(actions: readonly RuntimeAction[]): Run
     unique.set(JSON.stringify(action), action);
   }
   const selected = [...unique.values()];
-  for (const type of ['switch_model', 'switch_mode', 'set_output_level'] as const) {
+  for (const type of ['switch_model', 'switch_provider', 'switch_mode', 'set_output_level'] as const) {
     if (selected.filter((action) => action.type === type).length > 1) {
       throw new Error(`同一 Run 包含冲突的 ${type} RuntimeAction`);
     }

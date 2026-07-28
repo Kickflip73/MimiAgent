@@ -138,7 +138,7 @@ test('handles status and high-frequency inspection commands', async () => {
     assert.match(output.join('\n'), /本轮敏感值可发模型 Provider/);
     assert.match(output.join('\n'), /Computer  未配置/);
     assert.match(output.join('\n'), /Skills\s+2/);
-    assert.match(output.join('\n'), /交互 TUI.*↑↓/);
+    assert.match(output.join('\n'), /本机认证 Owner 默认直接工作/);
     assert.match(output.join('\n'), /Review code/);
     assert.match(output.join('\n'), /uses TS/);
     assert.match(output.join('\n'), /running/);
@@ -281,7 +281,11 @@ test('selects a model and exposes common runtime inspection commands', async () 
   agent.switchModel = async (name) => { switched.push(name); };
   const handler = new CommandHandler(agent, async () => undefined, {
     write: (text) => output.push(text),
-    selectModel: async () => 'deepseek-reasoner',
+    selectModel: async () => ({
+      provider: 'deepseek',
+      providerLabel: 'DeepSeek',
+      model: 'deepseek-reasoner',
+    }),
   });
 
   assert.equal(await handler.execute('/model'), 'handled');
@@ -294,6 +298,51 @@ test('selects a model and exposes common runtime inspection commands', async () 
   assert.match(output.join('\n'), /已归档 8 个历史条目/);
   assert.match(output.join('\n'), /run_shell/);
   assert.match(output.join('\n'), /MCP 未配置/);
+});
+
+test('lists models from every configured Provider and switches across Providers', async () => {
+  const agent = fakeAgent();
+  const baseRuntimeInfo = agent.runtimeInfo.bind(agent);
+  agent.runtimeInfo = async () => ({
+    ...await baseRuntimeInfo(),
+    configuredProviders: [
+      {
+        id: 'deepseek',
+        label: 'DeepSeek',
+        model: 'deepseek-v4-pro',
+        models: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+      },
+      {
+        id: 'openai-compatible',
+        label: 'OpenAI Compatible',
+        model: 'kimi-k3',
+        models: ['kimi-k3'],
+      },
+    ],
+  });
+  let choices: string[] = [];
+  const providerSwitches: Array<{ provider: string; model: string }> = [];
+  const localSwitches: string[] = [];
+  agent.switchModel = async (model) => { localSwitches.push(model); };
+  const handler = new CommandHandler(agent, async () => undefined, {
+    write: () => undefined,
+    selectModel: async (models) => {
+      choices = models.map((choice) => `${choice.provider}:${choice.model}`);
+      return models.find((choice) => choice.model === 'kimi-k3');
+    },
+    switchProvider: async (provider, model) => {
+      providerSwitches.push({ provider, model });
+    },
+  });
+
+  assert.equal(await handler.execute('/model'), 'handled');
+  assert.deepEqual(choices, [
+    'deepseek:deepseek-v4-pro',
+    'deepseek:deepseek-v4-flash',
+    'openai-compatible:kimi-k3',
+  ]);
+  assert.deepEqual(localSwitches, []);
+  assert.deepEqual(providerSwitches, [{ provider: 'openai-compatible', model: 'kimi-k3' }]);
 });
 
 test('allows runtime commands before the draft Session receives its first message', async () => {
@@ -322,7 +371,11 @@ test('allows runtime commands before the draft Session receives its first messag
   };
   const handler = new CommandHandler(agent, async () => undefined, {
     write: (text) => output.push(text),
-    selectModel: async () => 'gpt-5-mini',
+    selectModel: async () => ({
+      provider: 'deepseek',
+      providerLabel: 'DeepSeek',
+      model: 'gpt-5-mini',
+    }),
   });
 
   assert.equal(await handler.execute('/status'), 'handled');
@@ -351,7 +404,7 @@ test('selects a preset Agent mode', async () => {
   assert.deepEqual(switched, ['ultra']);
 });
 
-test('selects and applies a Session security profile', async () => {
+test('selects a runtime security profile with arrows or an explicit argument', async () => {
   const selectedProfiles: string[][] = [];
   let active: SecurityProfile = 'full-owner';
   const agent = fakeAgent();
@@ -382,8 +435,12 @@ test('selects and applies a Session security profile', async () => {
   assert.equal(await handler.execute('/security'), 'handled');
   assert.equal(active, 'workstation');
   assert.deepEqual(selectedProfiles, [['safe', 'workstation', 'full-owner']]);
-  assert.match(output.join('\n'), /Workstation \(workstation\/workspace\).*下一轮/);
+  assert.match(output.join('\n'), /Workstation \(workstation\/workspace\).*重启后恢复启动配置/);
   assert.match(output.join('\n'), /敏感值不会发送给模型 Provider/);
+
+  assert.equal(await handler.execute('/security full-owner'), 'handled');
+  assert.equal(active, 'full-owner');
+  assert.match(output.join('\n'), /Full Owner \(full-owner\/trusted\).*重启后恢复启动配置/);
   await assert.rejects(handler.execute('/security unsafe'), /未知安全档位/);
 });
 

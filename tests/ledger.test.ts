@@ -225,7 +225,7 @@ test('ActionIntent permits route change only after failed_safe and fences uncert
   assert.equal(executions, 3);
 });
 
-test('guarded owner fast path and one-time authorization stay exact and single-use', async () => {
+test('Security owner authorization requires an exact target and ignores legacy one-time grants', () => {
   const intent = actionIntent('computer');
   assert.deepEqual(evaluateActionAuthorization(intent, {
     ownerAuthenticated: true,
@@ -233,12 +233,12 @@ test('guarded owner fast path and one-time authorization stay exact and single-u
     lowRisk: true,
     reversible: true,
   }), { allowed: true, source: 'guarded-owner-fast-path' });
-  assert.equal(evaluateActionAuthorization(intent, {
+  assert.deepEqual(evaluateActionAuthorization(intent, {
     ownerAuthenticated: true,
     exactTarget: true,
     lowRisk: true,
     reversible: false,
-  }).allowed, false);
+  }), { allowed: true, source: 'guarded-owner-fast-path' });
   assert.deepEqual(evaluateActionAuthorization(intent, {
     ownerAuthenticated: true,
     exactTarget: true,
@@ -269,7 +269,7 @@ test('guarded owner fast path and one-time authorization stay exact and single-u
     exactTarget: false,
     lowRisk: false,
     reversible: false,
-  }, authorization, new Date('2026-07-27T00:00:00.000Z')).allowed, true);
+  }, authorization, new Date('2026-07-27T00:00:00.000Z')).allowed, false);
   assert.equal(evaluateActionAuthorization(intent, {
     ownerAuthenticated: false,
     exactTarget: false,
@@ -277,37 +277,6 @@ test('guarded owner fast path and one-time authorization stay exact and single-u
     reversible: false,
   }, authorization, new Date('2026-07-29T00:00:00.000Z')).allowed, false);
 
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-one-time-authorization-'));
-  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
-  const authorizationContext = {
-    ownerAuthenticated: false,
-    exactTarget: false,
-    lowRisk: false,
-    reversible: false,
-  };
-  await ledger.executeActionIntent(
-    'owner', 'event:authorization:first', intent, authorizationContext, {
-      ...authorization,
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    }, async () => 'first',
-  );
-  const secondIntent = actionIntent('computer', {
-    intentId: 'intent-second-authorization',
-    businessActionRef: 'event:authorization:second',
-  });
-  await assert.rejects(
-    ledger.executeActionIntent(
-      'owner', 'event:authorization:second', secondIntent, authorizationContext, {
-        ...authorization,
-        intentId: secondIntent.intentId,
-        targetRef: secondIntent.targetRef,
-        payloadDigest: secondIntent.payloadDigest,
-        policyRevision: secondIntent.policyRevision,
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      }, async () => 'second',
-    ),
-    /一次性授权已由其他 ActionIntent 消费/,
-  );
 });
 
 test('blocks ambiguous or conflicting side-effect retries', async () => {

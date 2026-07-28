@@ -4,7 +4,10 @@ import test from 'node:test';
 import type { AgentInputItem } from '@openai/agents';
 import type { Tool } from '@openai/agents';
 import { ContextManager } from '../src/core/context.js';
-import { CapabilityResolver } from '../src/runtime/pipeline/capability-resolver.js';
+import {
+  CapabilityResolver,
+  renderEffectiveCapabilitySnapshot,
+} from '../src/runtime/pipeline/capability-resolver.js';
 import { ContextAssembler } from '../src/runtime/pipeline/context-assembler.js';
 import { AgentRequestFactory } from '../src/runtime/pipeline/request-factory.js';
 import { captureRunScope } from '../src/runtime/pipeline/run-scope.js';
@@ -172,6 +175,11 @@ test('capability snapshot is deterministic and distinguishes readiness terminolo
       freshness: 'unknown' as const,
       coverage: 'bounded' as const,
       permissionSource: 'connector-manager',
+      operations: [{
+        capability: 'desktop.items.open-visible',
+        action: 'open_visible',
+        effect: 'write' as const,
+      }],
       safeFallback: 'none' as const,
     }],
   };
@@ -181,6 +189,10 @@ test('capability snapshot is deterministic and distinguishes readiness terminolo
   assert.equal(first.toolSetDigest, second.toolSetDigest);
   assert.deepEqual(first.tools, ['a', 'b']);
   assert.equal(first.items.find((item) => item.kind === 'connector')?.freshness, 'unknown');
+  const rendered = renderEffectiveCapabilitySnapshot(first);
+  assert.match(rendered, /desktop\.items\.open-visible/);
+  assert.match(rendered, /open_visible/);
+  assert.doesNotMatch(rendered, /"tools":/);
 });
 
 test('structured personal message scope excludes desktop fallback tools', () => {
@@ -201,7 +213,7 @@ test('structured personal message scope excludes desktop fallback tools', () => 
   ]);
 });
 
-test('general tool selection retains shell and managed GUI capabilities', () => {
+test('Workstation retains sandboxed shell and excludes external or GUI transactions', () => {
   const tool = (name: string) => ({ name }) as Tool;
   assert.deepEqual(
     new ToolSetBuilder().scoped(
@@ -212,7 +224,7 @@ test('general tool selection retains shell and managed GUI capabilities', () => 
       true,
     )
       .map((item) => item.name),
-    ['run_shell', 'connector_action', 'computer_act'],
+    ['run_shell'],
   );
 });
 
@@ -226,8 +238,8 @@ test('tool selection is independent from shell command strings', () => {
     undefined,
     true,
   ).map((item) => item.name);
-  assert.deepEqual(selected(), ['run_shell', 'connector_action']);
-  assert.deepEqual(selected(), ['run_shell', 'connector_action']);
+  assert.deepEqual(selected(), ['run_shell']);
+  assert.deepEqual(selected(), ['run_shell']);
 });
 
 test('personal message history excludes completed desktop fallback turns', () => {

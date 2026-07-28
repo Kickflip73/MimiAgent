@@ -8,6 +8,7 @@ type Writable = {
 };
 
 type StatusTone = 'agent' | 'thinking' | 'tool' | 'success' | 'failure';
+export type RunMotion = 'thinking' | 'running';
 
 export const OUTPUT_LEVELS = [
   { id: 'answer', label: '答案', description: '只显示最终答案', rank: 0 },
@@ -32,6 +33,7 @@ export type DisplayEvent =
       detail?: string;
       fullDetail?: string;
       next: string;
+      nextMotion?: RunMotion;
     };
 
 const ansi = {
@@ -52,6 +54,56 @@ const badges: Record<StatusTone | 'answer' | 'done', { icon: string; label: stri
   answer: { icon: '◆', label: '回答', color: '\x1b[95m' },
   done: { icon: '✓', label: '完成', color: '\x1b[92m' },
 };
+
+const MIMI_THINKING_FACES = [
+  '^._.^',
+  '^._?^',
+  '^-_-^',
+  '^?_.^',
+  '^-.-^',
+  '^._.^',
+] as const;
+const MIMI_RUNNING_FACES = [
+  '^._.^',
+  '^>_<^',
+  '^._.^',
+  '^=w=^',
+  '^>_<^',
+  '^-.-^',
+] as const;
+const MIMI_TAILS = ['~', '-', '\\', '|', '/', '-'] as const;
+export const MIMI_TAIL_INTERVAL_MS = 250;
+export const MIMI_THINKING_EXPRESSION_INTERVAL_MS = 10_000;
+export const MIMI_RUNNING_EXPRESSION_INTERVAL_MS = 8_000;
+const motionConfig: Record<RunMotion, { faces: readonly string[]; expressionIntervalMs: number }> = {
+  thinking: {
+    faces: MIMI_THINKING_FACES,
+    expressionIntervalMs: MIMI_THINKING_EXPRESSION_INTERVAL_MS,
+  },
+  running: {
+    faces: MIMI_RUNNING_FACES,
+    expressionIntervalMs: MIMI_RUNNING_EXPRESSION_INTERVAL_MS,
+  },
+};
+
+export function renderMimiFrame(motion: RunMotion, motionElapsedMs: number, tailFrame: number): string {
+  const config = motionConfig[motion];
+  const faceIndex = Math.floor(Math.max(0, motionElapsedMs) / config.expressionIntervalMs) % config.faces.length;
+  const face = config.faces[faceIndex] ?? config.faces[0];
+  const tail = MIMI_TAILS[tailFrame % MIMI_TAILS.length] ?? MIMI_TAILS[0];
+  return `${face}${tail}`;
+}
+
+export function formatRunDuration(durationMs: number): string {
+  const totalSeconds = Math.floor(Math.max(0, durationMs) / 1_000);
+  const seconds = totalSeconds % 60;
+  if (totalSeconds < 60) return `${totalSeconds}秒`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  if (totalMinutes < 60) return `${totalMinutes}分 ${String(seconds).padStart(2, '0')}秒`;
+  const hours = Math.floor(totalMinutes / 60);
+  return `${hours}小时 ${String(minutes).padStart(2, '0')}分 ${String(seconds).padStart(2, '0')}秒`;
+}
 
 export interface BannerInfo {
   version: string;
@@ -174,6 +226,7 @@ export function parseRunEvent(event: RunStreamEvent): DisplayEvent | undefined {
         detail: compact(raw?.arguments),
         fullDetail: detailed(raw?.arguments),
         next: `正在执行 ${name}`,
+        nextMotion: 'running',
       };
     }
     if (event.name === 'tool_output') {
@@ -575,6 +628,10 @@ function badge(tone: keyof typeof badges, tty: boolean): string {
 
 export class TerminalRenderer {
   private label = '';
+  private spinnerFrame = 0;
+  private spinnerTimer?: NodeJS.Timeout;
+  private motion: RunMotion = 'thinking';
+  private motionStartedAt = 0;
   private active?: 'answer' | 'reasoning';
   private markdown?: MarkdownStream;
   private hasBlock = false;
@@ -589,13 +646,16 @@ export class TerminalRenderer {
     this.levelRank = OUTPUT_LEVELS.find((item) => item.id === level)?.rank ?? 2;
   }
 
-  start(label = '模型思考中', input?: string): void {
+  start(label = '模型思考中', input?: string, motion: RunMotion = 'thinking'): void {
     this.stopSpinner();
     if (this.levelRank >= 3 && input) {
       this.beginBlock(this.status);
       this.status.write(`${badge('agent', Boolean(this.status.isTTY))}  任务\n  ${this.limitDetail(input)}\n`);
     }
     this.label = label;
+    this.motion = motion;
+    this.motionStartedAt = Date.now();
+    this.spinnerFrame = 0;
     if (!this.status.isTTY) {
       if (this.levelRank > 0) {
         this.status.write(`[运行] ${label}\n`);
@@ -604,6 +664,7 @@ export class TerminalRenderer {
       return;
     }
     this.draw();
+    this.scheduleSpinner();
   }
 
   handle(event: RunStreamEvent): void {
@@ -622,7 +683,14 @@ export class TerminalRenderer {
     }
 
     if (display.kind === 'status') {
-      this.renderStatus(display.tone, display.title, display.detail, display.fullDetail, display.next);
+      this.renderStatus(
+        display.tone,
+        display.title,
+        display.detail,
+        display.fullDetail,
+        display.next,
+        display.nextMotion,
+      );
       return;
     }
 
@@ -668,7 +736,14 @@ export class TerminalRenderer {
     if (event.type !== 'team_worker_event' || this.levelRank < 2) return;
     const name = `子代理 ${event.role} · ${event.taskId}`;
     if (event.eventType === 'start') {
-      this.renderStatus('agent', name, `分配任务：${compact(event.description, 160)}`, event.description, `${event.role} 子代理执行中`);
+      this.renderStatus(
+        'agent',
+        name,
+        `分配任务：${compact(event.description, 160)}`,
+        event.description,
+        `${event.role} 子代理执行中`,
+        'running',
+      );
       return;
     }
     const result = event.result || (event.eventType === 'error' ? '未返回错误信息' : '未返回结果摘要');
@@ -686,9 +761,8 @@ export class TerminalRenderer {
     this.stopSpinner();
     this.closeActive();
     if (this.levelRank > 0) {
-      const seconds = ((Date.now() - this.startedAt) / 1_000).toFixed(1);
       this.beginBlock(this.status);
-      this.status.write(`${badge('done', Boolean(this.status.isTTY))}  ${this.muted(`${seconds}s`, this.status)}\n`);
+      this.status.write(`${badge('done', Boolean(this.status.isTTY))}  ${this.muted(formatRunDuration(Date.now() - this.startedAt), this.status)}\n`);
     }
   }
 
@@ -702,7 +776,14 @@ export class TerminalRenderer {
     this.hasBlock = true;
   }
 
-  private renderStatus(tone: StatusTone, title: string, detail: string | undefined, fullDetail: string | undefined, next: string): void {
+  private renderStatus(
+    tone: StatusTone,
+    title: string,
+    detail: string | undefined,
+    fullDetail: string | undefined,
+    next: string,
+    nextMotion: RunMotion = 'thinking',
+  ): void {
     this.stopSpinner();
     this.closeActive();
     this.beginBlock(this.status);
@@ -711,7 +792,7 @@ export class TerminalRenderer {
       ? this.levelRank >= 3 ? `\n${this.renderDetail(value)}` : `  ${value}`
       : '';
     this.status.write(`${badge(tone, Boolean(this.status.isTTY))}  ${title}${renderedDetail}\n`);
-    this.start(next);
+    this.start(next, undefined, nextMotion);
   }
 
   private closeActive(): void {
@@ -739,10 +820,24 @@ export class TerminalRenderer {
   }
 
   private draw(): void {
-    this.status.write(`\r\x1b[2K${ansi.gray}● ${this.label}${ansi.reset}`);
+    const frame = renderMimiFrame(this.motion, Date.now() - this.motionStartedAt, this.spinnerFrame);
+    const elapsed = formatRunDuration(Date.now() - this.startedAt);
+    this.status.write(`\r\x1b[2K${ansi.gray}${frame} ${this.label} · ${elapsed}${ansi.reset}`);
+  }
+
+  private scheduleSpinner(): void {
+    this.spinnerTimer = setTimeout(() => {
+      if (!this.label) return;
+      this.spinnerFrame = (this.spinnerFrame + 1) % MIMI_TAILS.length;
+      this.draw();
+      this.scheduleSpinner();
+    }, MIMI_TAIL_INTERVAL_MS);
+    this.spinnerTimer.unref();
   }
 
   private stopSpinner(): void {
+    if (this.spinnerTimer) clearTimeout(this.spinnerTimer);
+    this.spinnerTimer = undefined;
     if (this.status.isTTY && this.label) this.status.write('\r\x1b[2K');
     this.label = '';
   }

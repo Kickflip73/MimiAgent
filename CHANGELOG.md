@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- make `/model` a global selector across every configured Provider and route
+  cross-Provider model choices through the existing atomic Provider restart
+  path while preserving current-Provider model allowlists
+- make Safe, Workstation, and Full Owner the only user-facing authorization
+  policies; let Workstation use the sandboxed Shell while excluding external
+  transactions, remove model-facing Connector enable/reload and per-action
+  approval, inject exact Connector capability operations into each Run, and add
+  a confirmed `open_visible` desktop action for local files and URLs
+- animate the TUI with distinct slow-thinking and fast-running Mimi expressions,
+  and show elapsed command time with automatic seconds, minutes, and hours formatting
+- add one-command atomic Provider configuration and Daemon restart through
+  `mimi provider set`; automatically persist an already-authorized current
+  Provider key into the owner-private environment instead of blocking launchd
+  startup or requiring the Owner to resubmit it
+- expose every configured Provider to `runtime_status` and add a deferred,
+  idempotent `switch_provider` control so Kimi and DeepSeek remain selectable;
+  ignore failed runtime-tool text in action recovery instead of misclassifying
+  it as a corrupt ledger and retrying the same Task
+- keep the configured CuaDriver daemon available from the Mimi background
+  service with background startup, health monitoring, bounded crash recovery,
+  read-only retry, and strict no-replay handling for uncertain GUI actions
+- default authenticated local Owner runs to Full Owner, stop applying legacy
+  per-Session security preferences, keep Safe/Workstation as explicit runtime-wide
+  restrictions, and preserve the interactive arrow-key `/security` selector while
+  external and background policies stay isolated
+- return a retryable tool result when a model accidentally embeds an active Owner
+  credential in tool arguments, so the same Run can retry through its ephemeral
+  Shell environment; permit explicit owner-private Provider configuration without
+  exposing the value to argv, ledgers, delegated work, or ordinary files
+- reject model switches outside the active Provider's declared model list before
+  scheduling or persisting the change, and ignore incompatible model preferences
+  left by older Sessions instead of sending them to the wrong Provider
 - add a generic `openai-compatible` model Provider with validated custom endpoint,
   API key and model configuration, including Session persistence, daemon Task
   credential isolation, model switching, offline contracts and setup guidance

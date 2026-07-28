@@ -1,7 +1,12 @@
 import readline from 'node:readline';
 import type { ReadStream, WriteStream } from 'node:tty';
 import type { PlanStep } from './core/plan.js';
-import { renderUserInput } from './terminal.js';
+import {
+  formatRunDuration,
+  MIMI_TAIL_INTERVAL_MS,
+  renderMimiFrame,
+  renderUserInput,
+} from './terminal.js';
 
 export interface CompletionItem {
   value: string;
@@ -23,9 +28,18 @@ export interface RuntimeStatus {
   compressedFrom?: number;
 }
 
+export type InputSubmitIntent = 'enqueue' | 'steer';
+
+export interface QueuedInput {
+  text: string;
+  intent?: InputSubmitIntent;
+}
+
 interface InteractiveTerminalOptions {
   inputRedrawDelayMs?: number;
   singleLineInputViewport?: boolean;
+  idleBlinkIntervalMs?: number;
+  idleBlinkDurationMs?: number;
 }
 
 type Key = { name?: string; ctrl?: boolean; shift?: boolean; meta?: boolean; sequence?: string };
@@ -34,6 +48,8 @@ const clearLine = '\r\x1b[2K';
 const selectionCursor = '\x1b[96m›\x1b[0m';
 const doubleEscapeWindowMs = 350;
 const maxVisibleInputRows = 10;
+export const MIMI_IDLE_BLINK_INTERVAL_MS = 6_000;
+export const MIMI_IDLE_BLINK_DURATION_MS = 1_000;
 
 function displayWidth(value: string): number {
   const plain = value.replace(/\x1b\[[0-9;]*m/g, '');
@@ -61,9 +77,15 @@ export class InteractiveTerminal {
   private historyIndex = 0;
   private completionIndex = 0;
   private busy = false;
+  private busyStartedAt = 0;
+  private busyFrame = 0;
+  private busyTimer?: NodeJS.Timeout;
+  private idleBlink = false;
+  private idleBlinkTimer?: NodeJS.Timeout;
+  private idleBlinkResetTimer?: NodeJS.Timeout;
   private transient = '';
   private runtime: RuntimeStatus = { mode: '标准', model: '未配置', contextUsed: 0, contextWindow: 0 };
-  private queued: string[] = [];
+  private queued: QueuedInput[] = [];
   private tasks: PlanStep[] = [];
   private outputOpen = false;
   private outputOpenWidth = 0;
@@ -79,6 +101,8 @@ export class InteractiveTerminal {
   private inputRedrawTimer?: NodeJS.Timeout;
   private readonly inputRedrawDelayMs: number;
   private readonly singleLineInputViewport: boolean;
+  private readonly idleBlinkIntervalMs: number;
+  private readonly idleBlinkDurationMs: number;
   private selectState?: {
     items: SelectItem[];
     index: number;
@@ -94,9 +118,16 @@ export class InteractiveTerminal {
   ) {
     this.inputRedrawDelayMs = options.inputRedrawDelayMs ?? (isAppleTerminal() ? 24 : 0);
     this.singleLineInputViewport = options.singleLineInputViewport ?? isAppleTerminal();
+    this.idleBlinkIntervalMs = options.idleBlinkIntervalMs ?? MIMI_IDLE_BLINK_INTERVAL_MS;
+    this.idleBlinkDurationMs = options.idleBlinkDurationMs ?? MIMI_IDLE_BLINK_DURATION_MS;
   }
 
-  start(handlers: { onLine: (line: string) => void; onEscape: () => void; onExit: () => void; onModeCycle?: () => void }): void {
+  start(handlers: {
+    onLine: (line: string, intent: InputSubmitIntent) => void;
+    onEscape: () => void;
+    onExit: () => void;
+    onModeCycle?: () => void;
+  }): void {
     this.started = true;
     this.pasteDataListener = (chunk) => this.handlePasteData(chunk);
     this.input.prependListener('data', this.pasteDataListener);
@@ -154,6 +185,11 @@ export class InteractiveTerminal {
         return;
       }
       if (key.name === 'return' || key.name === 'enter') {
+        const intent = key.meta
+          || key.sequence === '\x1b[13;9u'
+          || key.sequence === '\x1b[27;9;13~'
+          ? 'steer'
+          : 'enqueue';
         const line = (this.suggestions[this.completionIndex]?.value ?? this.buffer.join('')).trim();
         this.cancelInputRedraw();
         this.eraseUi();
@@ -167,7 +203,7 @@ export class InteractiveTerminal {
           this.historyIndex = this.history.length;
         }
         this.draw();
-        if (line) handlers.onLine(line);
+        if (line) handlers.onLine(line, intent);
         return;
       }
       if (key.name === 'tab' && this.suggestions.length) {
@@ -210,17 +246,18 @@ export class InteractiveTerminal {
       this.redrawAfterInput();
     });
     this.draw();
+    this.scheduleIdleBlink();
   }
 
   createWriter(stream: WriteStream): { isTTY: boolean; write: (chunk: string) => void } {
-    return { isTTY: Boolean(stream.isTTY), write: (chunk) => this.write(chunk, stream) };
+    return { isTTY: Boolean(this.output.isTTY), write: (chunk) => this.write(chunk, stream) };
   }
 
   write(chunk: string, stream: WriteStream = this.output): void {
     if (this.closed) return;
     if (chunk.startsWith(clearLine) && !chunk.includes('\n')) {
       const plain = chunk.slice(clearLine.length).replace(/\x1b\[[0-9;]*m/g, '').trim();
-      this.transient = chunk === clearLine ? '' : plain.replace(/^\S+\s*/, '');
+      this.transient = chunk === clearLine ? '' : plain;
       this.redraw();
       return;
     }
@@ -256,7 +293,17 @@ export class InteractiveTerminal {
   setBusy(value: boolean): void {
     if (this.busy === value) return;
     this.busy = value;
-    if (!value) this.transient = '';
+    if (value) {
+      this.stopIdleBlink();
+      this.busyStartedAt = Date.now();
+      this.busyFrame = 0;
+      this.scheduleBusyRedraw();
+    } else {
+      if (this.busyTimer) clearTimeout(this.busyTimer);
+      this.busyTimer = undefined;
+      this.transient = '';
+      this.scheduleIdleBlink();
+    }
     this.redraw();
   }
 
@@ -278,8 +325,8 @@ export class InteractiveTerminal {
     this.redraw();
   }
 
-  setQueue(items: string[]): void {
-    this.queued = [...items];
+  setQueue(items: QueuedInput[]): void {
+    this.queued = items.map((item) => ({ ...item }));
     this.redraw();
   }
 
@@ -316,6 +363,9 @@ export class InteractiveTerminal {
 
   close(): void {
     if (this.closed) return;
+    if (this.busyTimer) clearTimeout(this.busyTimer);
+    this.busyTimer = undefined;
+    this.stopIdleBlink();
     if (this.escapeTimer) clearTimeout(this.escapeTimer);
     this.escapeTimer = undefined;
     this.cancelInputRedraw();
@@ -501,7 +551,9 @@ export class InteractiveTerminal {
   private draw(): void {
     if (this.closed || !this.started) return;
     const rows: string[] = [];
-    rows.push(...this.queued.map((item) => `\x1b[2m↳ 排队  ${this.compactQueueItem(item)}\x1b[0m`));
+    rows.push(...this.queued.map((item) => item.intent === 'steer'
+      ? `\x1b[93m↯ 引导  ${this.compactQueueItem(item.text)}\x1b[0m`
+      : `\x1b[2m↳ 排队  ${this.compactQueueItem(item.text)}\x1b[0m`));
 
     if (this.selectState) {
       const state = this.selectState;
@@ -685,8 +737,12 @@ export class InteractiveTerminal {
   }
 
   private statusLine(): string {
-    const icon = this.busy ? '●' : '◇';
-    const state = this.busy ? (this.transient || '运行中') : '就绪';
+    const busyElapsed = Date.now() - this.busyStartedAt;
+    const fallbackFrame = renderMimiFrame('running', busyElapsed, this.busyFrame);
+    const fallbackElapsed = formatRunDuration(busyElapsed);
+    const state = this.busy
+      ? (this.transient || `${fallbackFrame} 运行中 · ${fallbackElapsed}`)
+      : this.idleBlink ? '^-.-^~' : '^._.^~';
     const model = this.truncateDisplay(this.runtime.model, 24);
     const contextLabel = this.runtime.contextSource === 'estimate'
       ? '上下文 ~'
@@ -699,8 +755,45 @@ export class InteractiveTerminal {
     const compression = this.runtime.compressedFrom
       ? ` · 已压缩 ${this.formatTokens(this.runtime.compressedFrom)}→${this.formatTokens(this.runtime.contextUsed)}`
       : '';
-    const text = `${icon} ${state} · 模式 ${this.runtime.mode} · 模型 ${model} · ${contextLabel}${this.formatTokens(this.runtime.contextUsed)}${sourceLabel}/${this.formatTokens(this.runtime.contextWindow)}${compression}`;
+    const text = `${state} · 模式 ${this.runtime.mode} · 模型 ${model} · ${contextLabel}${this.formatTokens(this.runtime.contextUsed)}${sourceLabel}/${this.formatTokens(this.runtime.contextWindow)}${compression}`;
     return `\x1b[90m${this.truncateDisplay(text, Math.max(24, (this.output.columns ?? 80) - 1))}\x1b[0m`;
+  }
+
+  private scheduleBusyRedraw(): void {
+    this.busyTimer = setTimeout(() => {
+      if (!this.busy) return;
+      this.busyFrame += 1;
+      if (!this.transient) this.redraw();
+      this.scheduleBusyRedraw();
+    }, MIMI_TAIL_INTERVAL_MS);
+    this.busyTimer.unref();
+  }
+
+  private scheduleIdleBlink(): void {
+    if (this.busy || this.closed || this.idleBlinkTimer) return;
+    this.idleBlinkTimer = setTimeout(() => {
+      this.idleBlinkTimer = undefined;
+      if (this.busy || this.closed) return;
+      this.idleBlink = true;
+      this.redraw();
+      this.idleBlinkResetTimer = setTimeout(() => {
+        this.idleBlinkResetTimer = undefined;
+        if (this.busy || this.closed) return;
+        this.idleBlink = false;
+        this.redraw();
+        this.scheduleIdleBlink();
+      }, this.idleBlinkDurationMs);
+      this.idleBlinkResetTimer.unref();
+    }, this.idleBlinkIntervalMs);
+    this.idleBlinkTimer.unref();
+  }
+
+  private stopIdleBlink(): void {
+    if (this.idleBlinkTimer) clearTimeout(this.idleBlinkTimer);
+    if (this.idleBlinkResetTimer) clearTimeout(this.idleBlinkResetTimer);
+    this.idleBlinkTimer = undefined;
+    this.idleBlinkResetTimer = undefined;
+    this.idleBlink = false;
   }
 
   private taskRows(): string[] {

@@ -55,7 +55,7 @@ src/daemon/
 Connector、不保存正文；Connector cursor 仍由隔离进程维护，Event、Task 和副作用
 回执继续由现有 Store 与 ExecutionLedger 持有。
 
-可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 `computer_observe` 与 `computer_act` 两个 Function Tool。它按 Run 管理不可复用的 Observation、动作/截图预算、Cua session、前台 lease 和受保护录制 artifact；GUI 写动作继续经过统一 Tool policy、ExecutionLedger 与跨进程动作锁。owner 自由文本不参与 Tool 裁剪或授权。Darwin 上的通用 `run_shell` 无条件进入进程沙箱，沙箱拒绝 Apple Events、LaunchServices、Accessibility，以及正式执行面登记的 Unix socket/本地控制端口；未登记的本地开发服务保持可用。macOS 的 `ps`/`top` 带特权位，不能从该沙箱可靠启动，因此只读 CPU/内存诊断使用 argv 固定、无审批的 `inspect_processes` Host Tool；它只返回有界 PID、资源数值和 executable，不返回命令行参数，也不具备 signal、kill、注入或应用控制能力。Shell pipeline 默认启用 `pipefail`，中间命令被沙箱拒绝时不能再以空输出和 exit 0 冒充成功。正式 Connector、Browser 与 Computer Tool 在 Shell 之外按各自结构化授权运行。Terminal、Codex、IDE 等控制面应用，以及启用 Connector 通过 `claimedComputerApps` 声明的应用，不能成为 Computer 观察/写入目标。`full-owner` 可自动发现已安装的 Cua Driver 并默认启用后台访问；Safe/Workstation 不会因此扩大权限，显式 `MIMI_COMPUTER_BACKEND=off` 始终关闭。
+可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 `computer_observe` 与 `computer_act`。它按 Run 管理不可复用的 Observation、动作/截图预算、前台 lease 和受保护 artifact；GUI 写动作经过统一 Security、ExecutionLedger 与跨进程动作锁。Darwin 的通用 `run_shell` 无条件进入进程沙箱，拒绝 Apple Events、LaunchServices、Accessibility 和正式控制端口；Workstation 也使用这条沙箱 Shell。正式 Connector、Browser 与 Computer Tool 使用结构化 capability 和精确 target。Terminal、Codex、IDE 等控制面应用不能成为 Computer 目标；旧 `claimedComputerApps` 只做兼容诊断，不再封锁整个 Chrome 等应用。`full-owner` 可自动发现已安装的 Cua Driver；Safe/Workstation 不会因此扩大权限。
 
 `src/agent.ts` 导出 `MimiAgent`；实现位于 `runtime/mimi-agent.ts`。
 
@@ -148,7 +148,7 @@ Session 是完整运行状态边界。启动指定 Session、从历史列表切�
 
 模型可调用的 Shell 默认只获得 PATH、HOME、locale、终端和临时目录等显式白名单环境；Provider、数据库、遥测、Connector 和 Mimi 控制面变量都不进入 Shell。已认证本机 Owner 在直接 CLI 或认证 localhost Runtime HTTP 命令中粘贴的 credential/authorization/private key 例外地进入 Kernel 内存态临时 broker：持久 user input 只保留指纹引用，原值最多等待十五分钟，只可由匹配 Event + Session + owner provenance 的首次 Conversation Run 取出。RunScope 冻结为 `full-owner/trusted` 时，Session 级安全档位同时构成 Owner 对当前配置模型 Provider（含已配置兼容备选路由）的临时披露授权；原值通过非持久宿主上下文发送给 Provider，并作为 `MIMI_EPHEMERAL_SECRET_n` 只注入主 Agent 的 Shell。Safe/Workstation、外部事件、后台 Task、其他 Session、SubAgent/Team、MCP、Connector 和普通环境不能取得或继承该 lease。
 
-临时能力不依赖自然语言或命令字符串分类。所有工具调用先按当前 Run 的精确值集合检查参数，命中即在 ExecutionLedger 之前拒绝；Shell 使用变量，输出再次精确脱敏。敏感 Run 使用只代理当前 FileSession 的净化 Session port，模型生成的 assistant/function_call/function_result item 在写入前精确脱敏；工具结果和异常在返回模型与进入账本前脱敏，Runtime Event/Trace 同样净化。为了覆盖跨 chunk 泄漏，敏感 Run 不转发模型文本 delta，只在完成后交付脱敏答案。Run 完成、取消、Provider 最终失败、首次领取、超时或 Daemon 重启后能力消失；失败任务终止而不携带原值自动重试。Shell 的正常退出、超时和取消都会回收完整 POSIX 进程组，文本后台语法检查只是早期提示。HTTP Tool 只允许公网 HTTP(S)，在初始 URL、实际 socket DNS lookup 和每次重定向处拒绝 loopback、私网、link-local、metadata、multicast、IPv4-mapped IPv6 与混合解析；禁止 HTTPS 降级，跨源只跟随无正文的 GET/HEAD 并仅保留安全读取头。
+临时能力不依赖自然语言或命令字符串分类。所有工具调用先按当前 Run 的精确值集合检查参数；命中时不 dispatch、不进入 ExecutionLedger，而是向模型返回 `retryable` 工具拒绝，让同一 Run 改用 `MIMI_EPHEMERAL_SECRET_n` 环境变量继续。Shell 输出再次精确脱敏。默认禁止把原值写入文件；只有 Owner 本轮明确要求为指定本机 Provider 或集成持久配置 credential 时，主 Agent Shell 才可通过环境变量写入 owner-private 配置目标并保持 `0600`，不得写入工作区、源码、文档或调试产物。敏感 Run 使用只代理当前 FileSession 的净化 Session port，模型生成的 assistant/function_call/function_result item 在写入前精确脱敏；工具结果和异常在返回模型与进入账本前脱敏，Runtime Event/Trace 同样净化。为了覆盖跨 chunk 泄漏，敏感 Run 不转发模型文本 delta，只在完成后交付脱敏答案。Run 完成、取消、Provider 最终失败、首次领取、超时或 Daemon 重启后能力消失；失败任务终止而不携带原值自动重试。Shell 的正常退出、超时和取消都会回收完整 POSIX 进程组，文本后台语法检查只是早期提示。HTTP Tool 只允许公网 HTTP(S)，在初始 URL、实际 socket DNS lookup 和每次重定向处拒绝 loopback、私网、link-local、metadata、multicast、IPv4-mapped IPv6 与混合解析；禁止 HTTPS 降级，跨源只跟随无正文的 GET/HEAD 并仅保留安全读取头。
 
 Session 模型偏好同时记录 provider；切换 Provider 或读取没有 provider 标记的旧偏好时回退当前 Provider 默认模型，不把一个 Provider 的模型名发送给另一个端点。
 
@@ -192,7 +192,7 @@ Schema v7 在 v6 历史保留索引之上增加旧 Event 执行字段；v8 增�
 
 MimiAgent Event 获得一个只读运行自省 Host Tool 与四个 Schedule Host Tool。`inspect_mimi_activity` 直接从 Store 生成有界快照，包括 counts、积压、dead letter、Digest/Schedule 数量及近期 Event/Run/Outbox/Audit 元数据，不返回其他事务正文、答案、投递内容或 target。Schedule Tools 用于创建一次性 follow-up、周期 routine、查询和取消计划；新计划保留发起事件的 origin Session、profile、trust provenance、reply route 和不可变 Conversation authority root。到期 occurrence 总是进入独立 `mimi-task-*` Session 与 Task lane，由 OS worker 执行，不占用来源 Conversation actor；Task 每次从 durable root 与当前 source policy 重新计算权限。owner/system 的本机 CLI 计划使用可审计的合成 root；外部来源缺根、根被删除或 provenance 不匹配时失败关闭且不发出新 Task。撤销外部 work policy 后，一次性 follow-up 只能受限收尾，interval/watch 只获得绑定当前 authentic occurrence 的 `complete_current_mimi_schedule` 以停止轮询，伪造 occurrence 不获得该工具。非 command Event 额外获得 `finish_mimi_silently`：它只修改当前 attempt 的内存 DeliveryControl，成功提交时把 suppression reason 放入 Event result 并省略 Outbox；直接 command 没有该工具，失败/重试也不继承状态。所有能力继续位于同一个事务语境，不引入 RPC 回环或工作流引擎；创建/取消工具进入事件级语义账本，重试不会重复建立计划，静默控制不是外部副作用且不进入 ledger。
 
-最终工具集取 `mode capability ∩ Session security profile ∩ event policy`。新安装的新 Session 默认使用 `safe/read-only`；`workstation/workspace` 允许工作区写入和显式 Connector 事务但不开放 Shell、Computer Use、受信工作区 MCP 或临时敏感值的模型披露，只有 `full-owner/trusted` 直接使用当前 OS 用户权限并授权认证直接 Owner 当前 Run 的临时敏感值发送给配置模型 Provider。交互式启动横幅始终显示当前 Session 的有效安全档位；`/security` 用同一权威 profile catalog 打开 TUI 选择器，`↑` / `↓` 移动、`Enter` 确认后原子写入 Session preferences，并在下一轮重新构造本地工具集和权限交集。该持久 Session 选择代替逐值审批，但不会让外部或后台来源借用 Owner 能力。环境配置只提供未设置 Session 偏好时的默认档位；切换不修改环境文件、不重启 Daemon，也不能启用尚未配置的 Computer Use 或尚未受信的工作区 MCP。RunScope 在开始时冻结 profile 和 permissionMode，运行中不能切换，避免同一轮授权漂移。已认证本机 owner 的自由文本 Conversation 不按自然语言关键词或正则表达式选择工具流程，而是在当前模式、安全档位和来源策略允许的范围内获得统一工具面；模型结合完整 Session 上下文选择是否以及如何调用工具。`/status`、`/sessions` 等显式斜杠命令由 `CommandHandler` 作为结构化控制协议直接处理，不依赖语义猜测。Skills 仍由独立的 Catalog/激活协议渐进披露，这只控制 Skill 指令加载，不裁剪 owner 的基础工具面。已配置的 Connector Host Tools 继续经过 profile/mode/event policy；受信工作区 MCP 只允许 Full Owner 显式配置。外部事件默认禁用 Session/Memory、本地文件、Shell、MCP、未知工具和外部写事务。命中 owner source policy 后使用固定 `reply | work` 档位，旧配置默认 `reply`，多个匹配取最高档：`reply` 只有时间、计算、当前 Session 有界活动与投递控制，不能调用 Shell、文件写、任意写网络、Connector action、后台委派或 Team；`work` 才获得原静态工作 allowlist，但仍不能读写 Runtime/Attention/People/Standing Order/Connector 配置、写 Memory、管理任意既有后台任务或调用未知 MCP。Task 的 `workspaceAccess=read` 再与来源权限相交，形成固定只读研究/checkpoint 工具集。
+最终工具集取 `mode capability ∩ Owner runtime profile ∩ event policy`。本机认证 Owner 默认使用 `full-owner/trusted`，直接使用当前 OS 用户权限，并授权当前 Run 将 Owner 本轮临时敏感值发送给配置模型 Provider；不再把 Session preference 作为授权层，旧 Session 保存的 Safe/Workstation 值会被忽略，避免切换对话时意外降权。`safe/read-only` 与 `workstation/workspace` 只作为启动级或显式临时收紧：前者只读，后者允许工作区写入和显式 Connector 事务，两者都不开放 Shell、Computer Use、受信工作区 MCP 或临时敏感值的模型披露。交互式 `/security` 使用权威 profile catalog 打开与 `/sessions` 一致的 TUI 选择器，支持 `↑` / `↓`、`Enter` 和 `Esc`；显式参数仍可直接选择。切换作用于当前运行实例并从下一轮生效，重启后恢复环境配置。RunScope 在开始时冻结 profile 和 permissionMode，运行中不能切换，避免同一轮授权漂移。已认证本机 owner 的自由文本 Conversation 不按自然语言关键词或正则表达式选择工具流程，而是在当前模式、运行权限和来源策略允许的范围内获得统一工具面；模型结合完整 Session 上下文选择是否以及如何调用工具。`/status`、`/sessions` 等显式斜杠命令由 `CommandHandler` 作为结构化控制协议直接处理，不依赖语义猜测。Skills 仍由独立的 Catalog/激活协议渐进披露，这只控制 Skill 指令加载，不裁剪 owner 的基础工具面。已配置的 Connector Host Tools 继续经过 profile/mode/event policy；受信工作区 MCP 只允许 Full Owner 显式配置。外部事件默认禁用 Session/Memory、本地文件、Shell、MCP、未知工具和外部写事务。命中 owner source policy 后使用固定 `reply | work` 档位，旧配置默认 `reply`，多个匹配取最高档：`reply` 只有时间、计算、当前 Session 有界活动与投递控制，不能调用 Shell、文件写、任意写网络、Connector action、后台委派或 Team；`work` 才获得原静态工作 allowlist，但仍不能读写 Runtime/Attention/People/Standing Order/Connector 配置、写 Memory、管理任意既有后台任务或调用未知 MCP。Task 的 `workspaceAccess=read` 再与来源权限相交，形成固定只读研究/checkpoint 工具集。
 
 Computer Use 不随 `work` 隐式授予。source policy 还必须显式声明 `computerAccess: observe|background|foreground|admin`，可用 `computerApps` 形成 bundle ID allowlist；多个匹配 policy 的应用列表取交集。所有后台 Task、SubAgent、Team worker、`workspace/read-only` 部署和未授权 Event 固定没有电脑操作能力。
 
@@ -206,7 +206,7 @@ Attention Engine 是同步、确定性的 Host 层分类器，不是第二个模
 
 来源 `trust` 只作为 provenance 标签，授权由本机 event policy 决定；它绝不因消息自称 owner/trusted 而扩大部署权限。owner/system 在部署权限内工作；其他 provenance 默认受限，只有 Host 用 source/kind/actor/conversation 命中本机 owner source policy 时才获得固定 `reply | work` 档位。后台 Task 不把 provenance 改写成 owner，而是从被保留且确认为 conversation root 的来源 Event 与当前 source policy 重新计算授权；policy 被删除、root/parent 缺失或引用 Task 而非 conversation root 时失败关闭，即使 Task 自带 owner provenance 也不能绕过。外部正文始终只作为数据并记录 provenance。
 
-Connector Action Bridge 把外部凭证保留在 Kernel 监督的隔离 Connector 子进程中。一个 Daemon 数据根只有一个 Connector Manager/broker；Conversation actor 与后台 Task worker 都不能各自拉起同一渠道或复制凭证，而是通过这一个 broker 做能力发现和 action。每个 action 声明稳定 `capability`、`effect` 与 Connector `routeOwner`，资源声明与自然语言描述分离；未显式声明的新旧配置只回退到稳定的 `connector.<id>.<action>`，不从业务词推断。`inspect_mimi_capabilities` 的 `capability` 是权威过滤条件，`query` 零命中仍返回过滤前 `catalogTotal` 和 `availableCapabilities`。`claimedComputerApps` 还把应用级资源绑定到 Connector，Computer 不能跨路线接管。目录用于能力发现和 owner 归属，不代替 readiness 或审批；action 执行时仍由 Manager 做最终在线检查。超时或子进程退出时不自动重放。
+Connector Action Bridge 把外部凭证保留在 Kernel 监督的隔离 Connector 子进程中。一个 Daemon 数据根只有一个 Connector Manager/broker；Conversation actor 与后台 Task worker 都不能各自拉起同一渠道或复制凭证。每个 action 声明稳定 `capability` 与 `effect`；Run 开始时 Host 把精确 `capability/action`、readiness 和唯一 selected route 投影进 Effective Capability Snapshot，模型通过 `invoke_capability` 调用，不猜 Connector ID，也不能启停或重载 Connector。Manager 在 dispatch 前重新检查唯一就绪路线，零路线和多路线都失败关闭。旧 `claimedComputerApps` 只保留读取兼容，不再形成整应用授权边界；Computer 保留控制面保护和精确目标校验。超时或子进程退出时不自动重放。
 
 `personal-*` Connector 的写 action 是例外：通用 `connector_action` 确定性拒绝
 `send_message`。Dispatcher 只能从当前个人消息 Event、精确 Source Policy 和实时
@@ -458,7 +458,7 @@ Daemon 在 Task/Outbox 事务成功后确认 finalize。当前仍保留 FileSess
 stores，SQLite 收敛门槛及禁止双写决策见
 [STATE_STORAGE_DECISION.md](STATE_STORAGE_DECISION.md)。
 
-主 Agent 使用三档显式安全配置：`safe/read-only` 是新安装默认值，移除本地写入、Shell、Computer Use、受信工作区 MCP 和 Connector 外部事务；`workstation/workspace` 允许工作区写入和已配置 Connector 事务，但过滤 Shell、Computer Use、通用网络写入和未登记工具；`full-owner/trusted` 才允许认证本机 owner 的 General/Ultra 任务直接使用当前操作系统用户权限。所有档位仍继续经过 mode/event policy，source-policy 替身 Run 的静态 allowlist不包含未知 MCP。
+主 Agent 的认证本机 Owner 只由三档 Security 授权：`safe` 只读并移除 Shell、Computer Use、受信 MCP 和外部事务；`workstation` 允许工作区写入、结构化沙箱 Shell 和本机网络读取，但不允许 Connector 外部事务、Computer Use、受信 MCP 或通用网络写入；`full-owner` 使用当前 OS 用户的完整已配置能力且不叠加逐动作审批。旧 `read-only/workspace/trusted` 只做配置读取兼容，冲突时由 Security 覆盖。Plan 仍把最终工具面降为只读；Mode、来源和 Run scope 只能缩小 Security，不能扩大。
 
 ## MemoryHub
 
@@ -468,7 +468,7 @@ Wiki 页面使用严格 YAML frontmatter、稳定 `pageId + canonicalKey`、Sour
 
 `WIKI.md` 的 YAML policy 控制 prefer-existing、SourceRef、canonicalKey、inferred-active、页面/来源上限和需要关系的页面类型；Markdown 正文给维护 Agent 定义 Ingest/Query/Lint 纪律，但不能扩大 scope、trust 或工具权限。确定性 Lint 可经 `lint-repair` Revision 修复 envelope、canonicalKey 和 inferred-active；语义维护使用有界 merge、supersede、link、move 与 refresh 工具形成 receipt 闭环。查询只读，不在热路径偷偷刷新 stale 来源；`/memory refresh` 显式重编译并保留旧 revision。查询优先返回 private/workspace Wiki，只有 Wiki 不足时才补充 Session episode/raw evidence；SQLite FTS5/BM25 为始终可用基线，可选 Embedding vector 以 RRF 合并，Provider 失败立即回退词法通道。
 
-自动探测的 `.mimi-agent`、旧 `.mimi-agent` 与默认 Daemon 数据根必须是实体目录，符号链接会在启动时失败关闭。文件、搜索和目录工具会拒绝这些根与显式运行数据目录，包括符号链接解析后的路径。默认 owner Shell 使用当前操作系统用户权限；处理陌生仓库时可显式选择 `workspace/read-only` 关闭 Shell。Plan 无论部署档位都没有 Shell；外部事件只有命中 owner source policy 且当前模式/部署权限允许时才可获得 Shell。
+自动探测的 `.mimi-agent`、旧 `.mimi-agent` 与默认 Daemon 数据根必须是实体目录，符号链接会在启动时失败关闭。文件、搜索和目录工具会拒绝这些根与显式运行数据目录，包括符号链接解析后的路径。Full Owner Shell 使用当前 OS 用户权限；Workstation Shell 固定进入结构化进程沙箱；Safe 和 Plan 没有 Shell。外部事件只能在来源 Scope 与当前 Security 都允许时获得 Shell。
 
 ## Hooks 与 Trace
 
@@ -542,25 +542,19 @@ permission source、稳定 capabilities、routeOwner，以及统一的
 diagnostic bundle 传递同一个最后实跑摘要。旧 Daemon status 没有该可选字段时按 unknown
 兼容，不把“未报告”解释为 ready。
 
-### ActionIntent 与副作用
+### Effect Ledger 与副作用
 
-`ExecutionLedger` v2 在同一个原子 Store 中增加 ActionIntent schema v2，不另建授权账本。
-Host 以 durable Event/run 和语义调用序号创建跨重试稳定的 `businessActionRef`；execution key
-由该引用、action family、target、payload digest 和 policy revision 构成。同一业务引用跨
-Tool/Provider/route 只执行一次，不同 Event 即使目标和载荷相同也分别执行。一次性授权绑定
-同一 Intent、目标、正文、策略和过期时间，授权 ID 在整个账本中最多消费一次。
+Security 在 dispatch 前完成唯一授权，Ledger 不再审批动作。`ExecutionLedger` 继续读取
+历史 ActionIntent schema v2，但新动作只用业务引用、action family、target、payload
+digest 和 policy revision 建立 at-most-once fence。同一业务引用跨 Tool/Provider/route
+只执行一次，不同 Event 即使目标和载荷相同也分别执行。
 
 - `confirmed` 跨 Tool、Provider、Connector/Computer route 只返回既有回执。
 - `started/uncertain` 永久禁止自动换路重放。
 - 只有 `failed_safe` 可以在新 route 重新尝试。
-- 已认证 owner 的精确、低风险、可逆动作在 `guarded` 下保留快速通道。
-- guarded 属性由具体 Tool 的 Intent 元数据声明，不能由 Run 全局猜测。Computer 的
-  普通后台 UI 动作只要求已认证 owner、当前 Run 已有 `background` 或更高能力、动作声明
-  background；三者交集以 `boundedLocal` 进入快速通道，不读取按钮标题、应用文案或用户
-  关键词。Observation 新鲜度、窗口漂移、应用 route/allowlist 和前台保护仍由
-  ComputerManager 在真正执行前自动校验，不作为第二套授权。精确 bundleId 且不携带 URL
-  的 `launch_app` 继续走低风险可逆通道。外部来源、URL scheme、foreground/admin、
-  kill/handoff/权限和其他高风险动作仍要求有效一次性授权或失败关闭。
+- Full Owner 的精确目标动作不再要求第二次一次性审批；Observation 新鲜度、窗口漂移、
+  控制面保护、应用 allowlist、动作预算和前后台状态仍由 ComputerManager 在真正执行前
+  自动校验，这些是机械安全约束，不能扩大 Security。
 - personal message 的 `contextToken` 只授权实际 send Tool，读取上下文不误占 Intent；
   它与 Computer 写动作都在原 Tool ledger 外层进入同一 Intent fence；传统
   call receipt 仍保留为 Completion evidence。

@@ -56,7 +56,7 @@ test('preserves mode and permission tool policy semantics', () => {
   );
   assert.deepEqual(
     toolsForPermission('workspace', tools).map((tool) => tool.name),
-    ['read_file', 'write_file', 'edit_file', 'move_file', 'http_get', 'update_plan'],
+    ['read_file', 'write_file', 'edit_file', 'move_file', 'run_shell', 'http_get', 'update_plan'],
   );
   assert.deepEqual(
     toolsForPermission('read-only', tools).map((tool) => tool.name),
@@ -83,14 +83,14 @@ test('scopes patch and change-inspection tools across modes and permissions', ()
   }).map((tool) => tool.name), ['inspect_changes']);
 });
 
-test('read-only local deployment still exposes configured connector transactions', () => {
+test('Safe profile never exposes configured connector transactions', () => {
   const tools = [
     'read_file', 'write_file', 'remember', 'update_plan', 'connector_action',
   ].map(fakeTool);
 
   assert.deepEqual(
     toolsForPermission('read-only', tools).map((tool) => tool.name),
-    ['read_file', 'connector_action'],
+    ['read_file'],
   );
 });
 
@@ -184,7 +184,7 @@ test('classifies the existing durable side-effect tools from one policy source',
     'snooze_mimi', 'clear_mimi_snooze',
     'cancel_interrupted_mimi_task',
     'set_team_tasks', 'claim_team_task', 'update_team_task', 'retry_team_task', 'run_team',
-    'switch_model', 'switch_mode', 'set_output_level', 'switch_session', 'new_session',
+    'switch_model', 'switch_provider', 'switch_mode', 'set_output_level', 'switch_session', 'new_session',
     'clear_session', 'reload_mcp', 'request_exit',
   ];
   for (const name of sideEffects) assert.equal(isSideEffectTool(name), true, name);
@@ -211,7 +211,7 @@ test('derives displayed orchestration tools from mode policy', () => {
   ]);
   assert.deepEqual(toolNamesForMode('ultra', base, 'workspace'), [
     'claim_team_task', 'delegate_architecture', 'delegate_background_task', 'delegate_research', 'delegate_review',
-    'read_file', 'retry_team_task', 'set_team_tasks', 'show_team_tasks',
+    'read_file', 'retry_team_task', 'run_team', 'set_team_tasks', 'show_team_tasks',
     'update_team_task', 'write_file',
   ]);
   assert.deepEqual(toolNamesForMode('ultra', base, 'read-only'), [
@@ -220,12 +220,12 @@ test('derives displayed orchestration tools from mode policy', () => {
   ]);
 });
 
-test('read-only deployment hides local durable writes but keeps connector transactions', () => {
+test('Safe deployment hides local durable writes and connector transactions', () => {
   const tools = [
     'read_file', 'write_file', 'remember', 'update_plan', 'connector_action',
     'show_plan', 'inspect_mimi_capabilities',
   ].map(fakeTool);
   assert.deepEqual(toolsForPermission('read-only', tools).map((tool) => tool.name), [
-    'read_file', 'connector_action', 'show_plan', 'inspect_mimi_capabilities',
+    'read_file', 'show_plan', 'inspect_mimi_capabilities',
   ]);
 });

@@ -93,31 +93,14 @@ export function actionExecutionKey(
 export function evaluateActionAuthorization(
   intentInput: ActionIntent,
   context: GuardedActionContext,
-  authorizationInput?: OneTimeActionAuthorization,
-  now = new Date(),
+  _authorizationInput?: OneTimeActionAuthorization,
+  _now = new Date(),
 ): ActionAuthorizationDecision {
-  const intent = actionIntentSchema.parse(intentInput);
-  const guardedReversible = context.lowRisk && context.reversible;
-  if (context.ownerAuthenticated && context.exactTarget
-    && (guardedReversible || context.boundedLocal === true)) {
+  actionIntentSchema.parse(intentInput);
+  if (context.ownerAuthenticated && context.exactTarget) {
     return { allowed: true, source: 'guarded-owner-fast-path' };
   }
-  if (!authorizationInput) return { allowed: false, reason: '动作不满足 guarded owner 快速通道且缺少一次性授权' };
-  const authorization = oneTimeActionAuthorizationSchema.parse(authorizationInput);
-  if (authorization.intentId !== intent.intentId
-    || authorization.targetRef !== intent.targetRef
-    || authorization.payloadDigest !== intent.payloadDigest
-    || authorization.policyRevision !== intent.policyRevision) {
-    return { allowed: false, reason: '一次性授权与 ActionIntent 的目标、正文或策略版本不一致' };
-  }
-  if (Date.parse(authorization.expiresAt) <= now.getTime()) {
-    return { allowed: false, reason: '一次性授权已过期' };
-  }
-  return {
-    allowed: true,
-    source: 'one-time-authorization',
-    authorizationId: authorization.authorizationId,
-  };
+  return { allowed: false, reason: '当前 Security 或精确目标校验未授权该动作' };
 }
 
 export interface ActionIntentReceipt<T = unknown> {

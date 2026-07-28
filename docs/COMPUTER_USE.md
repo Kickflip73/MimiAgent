@@ -725,8 +725,19 @@ MIMI_COMPUTER_ARTIFACT_MAX_MIB=1024
 - `ComputerManager` 为每个 Run 调用 `start_session({capture_scope:'auto'})`，并使用不可猜测、不可从 Tool 输出获得的 session id。`auto` 从 window scope 开始，只有授权后的 `escalate_session` 才进入 desktop phase。
 - background Run 默认关闭可见 agent cursor overlay；进入 foreground lease 时可以按设置显示，lease 结束后恢复原 cursor 状态。
 - Run 结束、取消和失败清理都调用 `end_session`；它同时清理 agent cursor、该 Session 拥有的录制和 Session 配置。清理失败由 TTL 兜底并进入诊断事件。
-- `MimiAgent.close()` 同时关闭 `ComputerManager` 的 Run sessions 和 interruption leases，但不强杀共享的 CuaDriver.app daemon。
-- Backend 不可用不能阻止 MimiAgent 其他能力启动；工具调用返回 `backend_unavailable`，status/Doctor 给出修复信息。
+- Mimi Daemon 启动时创建进程级 `CuaDriverLifecycle`：先执行只读
+  `health_report`，daemon 缺失时通过 LaunchServices 在后台启动
+  `CuaDriver.app`，随后每十秒检查一次健康状态。进程退出或 socket 丢失时自动执行
+  有界恢复；连续失败使用退避并在 Daemon status/health 中报告
+  `starting | ready | recovering | unavailable`、恢复次数和下一次检查时间。
+- Computer 只读调用若先于周期检查发现 daemon/socket 丢失，会等待同一个共享恢复操作，
+  恢复后最多重试该只读调用一次。GUI 写动作的结果通道失败仍固定为 `uncertain`：
+  lifecycle 只恢复后续通道，绝不自动重放当前动作。
+- `MimiAgent.close()` 同时关闭 `ComputerManager` 的 Run sessions 和 interruption leases；
+  Mimi Daemon 停止时只停止健康检查，不强杀共享的 CuaDriver.app daemon，避免打断其他
+  本机客户端。
+- Backend 不可用不能阻止 MimiAgent 其他能力启动；Daemon health 明确报告当前
+  Computer Use 故障，status/Doctor 给出修复信息。
 
 部署时生成与已锁定 Driver 版本对应的 Cua policy。它允许 MimiAgent adapter 已分类的能力全集，包括桌面观察、前台升级、真实指针、强杀、Session、录制、回放、配置和健康检查；动态的 Run 档位仍由 MimiAgent 校验。Cua policy 是静态最后防线，因为 Driver 在进程启动时加载 policy，不能表达 MimiAgent 每个 Run 的临时 approval grant。
 

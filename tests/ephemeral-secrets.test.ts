@@ -238,19 +238,33 @@ test('runtime sends the value only in Full Owner host context and fences tools, 
     );
     assert.doesNotMatch(JSON.stringify(shellResult), new RegExp(fixtureSecret));
     assert.match(JSON.stringify(shellResult), /REDACTED:ephemeral-secret/);
-    await assert.rejects(
-      shell.invoke(
-        new RunContext({}),
-        JSON.stringify({ command: `printf %s ${fixtureSecret}`, timeoutSeconds: 5 }),
-      ),
-      /不得进入工具参数或执行账本/,
+    const rejectedShell = await shell.invoke(
+      new RunContext({}),
+      JSON.stringify({ command: `printf %s ${fixtureSecret}`, timeoutSeconds: 5 }),
     );
+    assert.deepEqual(rejectedShell, {
+      mimiStatus: 'tool_input_rejected',
+      retryable: true,
+      code: 'ephemeral_secret_in_tool_arguments',
+      message: '工具未执行，临时敏感原值也未进入命令行或执行账本。请在当前 Run 直接重试，并在 Shell 命令中只引用 $MIMI_EPHEMERAL_SECRET_1；不要再次拼接原值。Owner 明确要求持久配置时，可由 Shell 使用该环境变量写入目标私有配置并保持 0600 权限。',
+    });
+    const retriedShell = await shell.invoke(
+      new RunContext({}),
+      JSON.stringify({
+        command: 'printf %s "$MIMI_EPHEMERAL_SECRET_1"',
+        timeoutSeconds: 5,
+      }),
+    );
+    assert.doesNotMatch(JSON.stringify(retriedShell), new RegExp(fixtureSecret));
+    assert.match(JSON.stringify(retriedShell), /REDACTED:ephemeral-secret/);
     const delegate = runtimeAgent.tools.find((tool) => tool.name === 'delegate_research');
     if (delegate?.invoke) {
-      await assert.rejects(
-        delegate.invoke(new RunContext({}), JSON.stringify({ input: fixtureSecret })),
-        /不得进入工具参数或执行账本/,
+      const rejectedDelegate = await delegate.invoke(
+        new RunContext({}),
+        JSON.stringify({ input: fixtureSecret }),
       );
+      assert.match(JSON.stringify(rejectedDelegate), /tool_input_rejected/);
+      assert.match(JSON.stringify(rejectedDelegate), /只能由主 Agent Shell/);
     }
 
     await agent.completeRun(`已校验 ${fixtureSecret}`);
@@ -357,6 +371,26 @@ test('Safe, Workstation, external sources, and another Session cannot elevate a 
     ephemeralSensitiveModelAccess: false,
   }), undefined);
 
+  const externalRunCaptured = broker.capture(provenance('external-run'), fixtureSecret);
+  const externalRunLease = broker.take(
+    'external-run',
+    fixtureSession,
+    externalRunCaptured.references,
+  );
+  assert.ok(externalRunLease);
+  assert.throws(
+    () => activateEphemeralOwnerInput(externalRunLease, {
+      ...fullOwnerScope('external-run'),
+      cause: {
+        eventId: 'external-run',
+        profileId: 'owner',
+        source: 'webhook',
+        trust: 'external',
+      },
+    }),
+    /provenance/,
+  );
+
   const otherCaptured = broker.capture(provenance('other-session'), fixtureSecret);
   const otherLease = broker.take('other-session', fixtureSession, otherCaptured.references);
   assert.ok(otherLease);
@@ -364,6 +398,27 @@ test('Safe, Workstation, external sources, and another Session cannot elevate a 
     () => activateEphemeralOwnerInput(otherLease, fullOwnerScope('other-session', 'different-session')),
     /provenance/,
   );
+});
+
+test('direct Owner route normalization does not invalidate a consumed same-Session lease', () => {
+  const broker = new EphemeralSecretBroker();
+  const captured = broker.capture(provenance('normalized-route'), fixtureSecret);
+  const lease = broker.take('normalized-route', fixtureSession, captured.references);
+  assert.ok(lease);
+
+  const access = activateEphemeralOwnerInput(lease, {
+    ...fullOwnerScope('runtime-event'),
+    profileId: 'normalized-owner-profile',
+    cause: {
+      eventId: 'runtime-event',
+      profileId: 'normalized-owner-profile',
+      source: 'runtime-http',
+      trust: 'owner',
+    },
+  });
+  assert.ok(access);
+  assert.equal(access.sessionId, fixtureSession);
+  assert.equal(access.values[0], fixtureSecret);
 });
 
 test('fingerprints and labeled values stay generic and concurrent Events remain isolated', () => {

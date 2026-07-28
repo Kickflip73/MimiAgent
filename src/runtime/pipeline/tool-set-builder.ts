@@ -3,8 +3,8 @@ import type { AgentPermissionMode, SecurityProfile } from '../../config.js';
 import type { AgentMode } from '../instructions.js';
 import {
   toolsForMode,
-  toolsForPermission,
   toolsForRunPolicy,
+  toolsForSecurity,
   type RunToolPolicy,
 } from '../tool-policy.js';
 import {
@@ -74,7 +74,7 @@ export class ToolSetBuilder {
     computerEnabled: boolean,
   ): Tool[] {
     return toolsForRunPolicy(
-      toolsForPermission(permissionMode, tools, {}, securityProfile),
+      toolsForSecurity(securityProfile, tools),
       policy,
     ).filter((tool) => computerEnabled
       || (tool.name !== 'computer_observe' && tool.name !== 'computer_act'));
@@ -90,16 +90,14 @@ export class ToolSetBuilder {
     policy?: RunToolPolicy,
   ): Tool[] {
     const modeTools = toolsForRunPolicy(
-      toolsForPermission(
-        permissionMode,
-        toolsForMode(mode, baseTools, teamTools),
-        {},
+      toolsForSecurity(
         securityProfile,
+        toolsForMode(mode, baseTools, teamTools),
       ),
       policy,
     );
     const delegated = toolsForRunPolicy(
-      toolsForPermission(permissionMode, subAgentTools, {}, securityProfile),
+      toolsForSecurity(securityProfile, subAgentTools),
       policy,
     );
     return [...modeTools, ...delegated];

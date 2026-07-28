@@ -231,7 +231,7 @@ test('attention resolves people and source policies when deciding a v12 Task', a
     assert.deepEqual(decision.options?.computerApps, ['com.example.Editor']);
     assert.match(decision.options?.hostInstructions ?? '', /Use concise replies|Alice owns APAC/);
     assert.ok(decision.options?.policy?.allowedTools?.includes('run_shell'));
-    assert.ok(decision.options?.policy?.allowedTools?.includes('connector_action'));
+    assert.ok(decision.options?.policy?.allowedTools?.includes('invoke_capability'));
 
     const durableBackground = store.enqueueTask({
       id: 'alice-background',

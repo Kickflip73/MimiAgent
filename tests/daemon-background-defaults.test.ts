@@ -14,13 +14,16 @@ import {
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('fresh macOS background defaults enable only the non-UI system connector', () => {
+test('fresh macOS defaults enable the system connector and bounded desktop open route', () => {
   assert.equal(BACKGROUND_DEFAULTS_VERSION, 2);
   assert.equal(defaultConnectorEnabled('macos-system', 'darwin'), true);
+  assert.equal(defaultConnectorEnabled('macos-desktop', 'darwin'), true);
   for (const id of LEGACY_VISIBLE_MACOS_CONNECTORS) {
+    if (id === 'macos-desktop') continue;
     assert.equal(defaultConnectorEnabled(id, 'darwin'), false);
   }
   assert.equal(defaultConnectorEnabled('macos-system', 'linux'), false);
+  assert.equal(defaultConnectorEnabled('macos-desktop', 'linux'), false);
 });
 
 test('legacy canonical defaults are silenced once and later explicit opt-in is preserved', () => {

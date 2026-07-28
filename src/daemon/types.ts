@@ -1,5 +1,6 @@
 import type { AgentInputItem } from '@openai/agents';
 import type { AgentPermissionMode, SecurityProfileSummary } from '../config.js';
+import type { CuaDriverLifecycleStatus } from '../extensions/computer/cua-driver-lifecycle.js';
 import type { DaemonHealthSnapshot } from './health-model.js';
 import type { MemoryHit, SourceRef } from '../core/memory.js';
 import type { PlanStep } from '../core/plan.js';
@@ -375,6 +376,7 @@ export interface DaemonStatus {
   };
   providerHealth?: DaemonProviderHealth;
   providerHealthRoutes?: DaemonProviderHealth[];
+  computer?: CuaDriverLifecycleStatus;
 }
 
 export type DaemonWorkerStatus = Omit<

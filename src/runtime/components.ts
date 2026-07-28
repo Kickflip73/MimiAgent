@@ -12,6 +12,7 @@ import { SkillLoader, type SkillSource } from '../extensions/skills.js';
 import { SkillPreferenceStore } from '../extensions/skill-preferences.js';
 import { ComputerManager } from '../extensions/computer/manager.js';
 import { CuaDriverClient } from '../extensions/computer/cua-driver-client.js';
+import { sharedCuaDriverLifecycle } from '../extensions/computer/cua-driver-lifecycle.js';
 import { createModel, type ModelRuntime } from './model.js';
 import { createFileRuntimeStatePorts, type RuntimeStatePorts } from './state-ports.js';
 
@@ -159,7 +160,14 @@ export async function createRuntimeComponents(
     ...(config.computer ? {
       computer: new ComputerManager(
         config.computer,
-        new CuaDriverClient(config.computer.driverCommand, config.computer.actionTimeoutMs),
+        new CuaDriverClient(
+          config.computer.driverCommand,
+          config.computer.actionTimeoutMs,
+          sharedCuaDriverLifecycle(
+            config.computer.driverCommand,
+            config.computer.actionTimeoutMs,
+          ),
+        ),
         config.dataRoot,
       ),
     } : {}),

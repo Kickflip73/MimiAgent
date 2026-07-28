@@ -182,6 +182,13 @@ export interface ConnectorActionRequest {
   payload: unknown;
 }
 
+export interface ConnectorCapabilityRequest {
+  capability: string;
+  action: string;
+  target: string;
+  payload: unknown;
+}
+
 export interface ConnectorEnabledResult {
   connector: ConnectorCapability;
   changed: boolean;
@@ -878,6 +885,52 @@ export class ConnectorManager {
       );
     }
     return this.executeRegisteredAction(request);
+  }
+
+  async executeCapability(request: ConnectorCapabilityRequest): Promise<{
+    connector: string;
+    result: unknown;
+  }> {
+    const catalog = this.listCapabilities();
+    const declared = catalog.flatMap((connector) => connector.actions
+      .filter((action) => action.name === request.action && action.capability === request.capability)
+      .map((action) => ({ connector, action })));
+    if (declared.length === 0) {
+      throw new Error(
+        `capability_unavailable：没有 Connector 声明 ${request.capability}/${request.action}`,
+      );
+    }
+    const ready = declared.filter(({ connector }) => connector.enabled
+      && connector.online
+      && connector.readiness.stale !== true
+      && connector.readiness.outbound !== 'unavailable');
+    if (ready.length === 0) {
+      const reasons = declared.map(({ connector }) => (
+        `${connector.id}=${!connector.enabled ? 'disabled'
+          : !connector.online ? 'offline'
+            : connector.readiness.stale === true ? 'stale' : 'not_ready'}`
+      )).join(',');
+      throw new Error(`capability_unavailable：${request.capability}/${request.action} 当前不可执行（${reasons}）`);
+    }
+    if (ready.length > 1) {
+      throw new Error(
+        `capability_ambiguous：${request.capability}/${request.action} 同时由 ${ready
+          .map(({ connector }) => connector.id).join('、')} 提供`,
+      );
+    }
+    const selected = ready[0]!;
+    if (selected.connector.id.startsWith('personal-') && request.action === 'send_message') {
+      throw new Error(
+        `Connector ${selected.connector.id} 的 send_message 只能由 PersonalMessageHub 的绑定回调调用`,
+      );
+    }
+    const result = await this.executeRegisteredAction({
+      connector: selected.connector.id,
+      action: request.action,
+      target: request.target,
+      payload: request.payload,
+    });
+    return { connector: selected.connector.id, result };
   }
 
   async executeReadProbe(request: ConnectorReadProbeRequest): Promise<ConnectorReadProbeReceipt> {

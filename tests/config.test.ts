@@ -219,14 +219,14 @@ test('enables Computer Use by default for full-owner when CUA is installed and s
   await chmod(driver, 0o755);
   try {
     for (const key of keys) delete process.env[key];
-    assert.equal(loadConfig(home).computer, undefined);
-    process.env.MIMI_SECURITY_PROFILE = 'full-owner';
     assert.deepEqual(loadConfig(home).computer, {
       backend: 'cua', driverCommand: driver, actionTimeoutMs: 15_000,
       maxActionsPerRun: 50, maxScreenshotsPerRun: 12, pauseWhenTargetFrontmost: true,
       defaultAccess: 'background', foregroundLeaseSeconds: 30,
       artifactMaxBytes: 1024 * 1024 * 1024,
     });
+    process.env.MIMI_SECURITY_PROFILE = 'full-owner';
+    assert.equal(loadConfig(home).securityProfile, 'full-owner');
     process.env.MIMI_COMPUTER_BACKEND = 'off';
     assert.equal(loadConfig(home).computer, undefined);
     process.env.MIMI_COMPUTER_BACKEND = 'cua';
@@ -253,7 +253,7 @@ test('enables Computer Use by default for full-owner when CUA is installed and s
   }
 });
 
-test('starts a fresh local owner in the Safe profile by default', () => {
+test('starts a fresh authenticated local owner in Full Owner by default', () => {
   const previousModern = process.env.MIMI_PERMISSION_MODE;
   const previousLegacy = process.env.AGENT_PERMISSION_MODE;
   const previousProfile = process.env.MIMI_SECURITY_PROFILE;
@@ -262,8 +262,8 @@ test('starts a fresh local owner in the Safe profile by default', () => {
   delete process.env.MIMI_SECURITY_PROFILE;
   try {
     const config = loadConfig(ISOLATED_HOME);
-    assert.equal(config.permissionMode, 'read-only');
-    assert.equal(config.securityProfile, 'safe');
+    assert.equal(config.permissionMode, 'trusted');
+    assert.equal(config.securityProfile, 'full-owner');
   } finally {
     if (previousModern === undefined) delete process.env.MIMI_PERMISSION_MODE;
     else process.env.MIMI_PERMISSION_MODE = previousModern;
@@ -291,7 +291,9 @@ test('maps explicit security profiles to non-ambiguous permission modes', () => 
     }
     process.env.MIMI_SECURITY_PROFILE = 'safe';
     process.env.MIMI_PERMISSION_MODE = 'trusted';
-    assert.throws(() => loadConfig(ISOLATED_HOME), /要求 MIMI_PERMISSION_MODE=read-only/);
+    const safe = loadConfig(ISOLATED_HOME);
+    assert.equal(safe.securityProfile, 'safe');
+    assert.equal(safe.permissionMode, 'read-only');
     process.env.MIMI_SECURITY_PROFILE = 'invalid';
     delete process.env.MIMI_PERMISSION_MODE;
     assert.throws(() => loadConfig(ISOLATED_HOME), /只能是 safe、workstation 或 full-owner/);

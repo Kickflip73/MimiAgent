@@ -34,6 +34,7 @@ async function createAgent(root: string, sessionId: string): Promise<MimiAgent> 
   try {
     return await MimiAgent.create({
       provider: 'openai', workspaceRoot: root, dataRoot: path.join(root, '.mimi-agent'),
+      availableModels: ['runtime-action-test-model'],
       permissionMode: 'trusted', skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'),
       historyLimit: 40, contextWindow: 128_000, maxTurns: 20,
     });

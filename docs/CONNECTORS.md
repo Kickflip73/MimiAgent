@@ -4,18 +4,17 @@ Connector 把个人大象、微信 Bot、邮件、Messages、新闻、天气、�
 
 ## 配置
 
-首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认只启用不启动 GUI App 的 System Connector；Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Desktop、Browser、Screen、Voice 和三个个人消息配置槽位均需用户显式启用。旧版自动启用的 canonical 本机 Connector 会一次性迁移到这个无界面默认，之后用户的显式启停选择继续保留；三个个人消息槽位也只补一次，owner 在迁移后删除时不会反复恢复。Calendar/Reminders 启用后通过 EventKit 静默访问系统数据；Mail 的主动轮询只在 Mail 已经运行时读取，绝不为了后台轮询重新打开 App。OpenClaw 微信、Radar 和 File Radar 默认关闭。初始化会移除旧大象 Bot/AppleScript、QQ OneBot/NapCat、通用 HTTP Action 及 QQ/微信 AppleScript Connector 配置，防止旧安装继续启动这些实现。后续初始化会补齐缺失的 enabled 默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充发布包新增的 action。已有其他 owner 路径、环境、来源和 action 描述保持不变。写入是原子的，无变更时不改文件。也可用 `MIMI_CONNECTORS_CONFIG` 指向其他绝对配置文件。
+首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认启用不启动 GUI App 的 System Connector 和 action-only Desktop Connector；Desktop 默认不轮询，只有调用明确 action 时才工作。Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Browser、Screen、Voice 和三个个人消息配置槽位均需用户显式启用。旧版自动启用的 canonical 本机 Connector 会一次性迁移到轻量默认，之后用户的显式启停选择继续保留；三个个人消息槽位也只补一次。Calendar/Reminders 启用后通过 EventKit 静默访问系统数据；Mail 的主动轮询只在 Mail 已经运行时读取，绝不为了后台轮询重新打开 App。OpenClaw 微信、Radar 和 File Radar 默认关闭。初始化会移除已退役 Connector，并为 canonical packaged Connector 补齐新 action。写入是原子的，无变更时不改文件。
 
 `~/.mimi-agent/daemon` 是唯一默认常驻状态目录。三个配置示例文件均使用统一的 MimiAgent 命名。
 
 `mimi daemon doctor` 复用与 Host 相同的 schema，只读检查配置、启用项、脚本路径、必要系统命令、Provider Key 是否存在以及本机 Socket/launchd 状态。它不启动 Connector、不读取邮件、消息、联系人、屏幕等私人数据，也不主动触发 macOS 权限提示。
 
-已有渠道可由 Agent 调用 `set_mimi_connector_enabled`，或由 operator 执行
-`mimi daemon connectors enable <id>` / `mimi daemon connectors disable <id>`
-原子启停。两条路径都只修改目标 Connector 的 `enabled`，不读取或改写凭证、命令、
-环境白名单和 action 目录。修改其他配置后运行 `mimi daemon connectors reload`
-或让 Agent 调用 `reload_mimi_connectors`，可在不重启 Daemon 的情况下换代 Connector
-子进程。`inspect_mimi_capabilities` 返回配置文件绝对路径和有界能力目录。Host 会
+已有渠道只由 operator 执行 `mimi daemon connectors enable <id>` /
+`mimi daemon connectors disable <id>` 原子启停。修改其他配置后运行
+`mimi daemon connectors reload` 换代 Connector 子进程。模型 Run 只获得能力发现和
+调用工具，不能启停、重载或修改 Connector 注册表。`inspect_mimi_capabilities`
+返回配置文件绝对路径和有界能力目录。Host 会
 完整解析新配置；JSON/schema 无效时旧集合保持在线。启停和重载都仅在没有进行中的
 delivery/action 时切换，避免中断结果不确定的真实事务；繁忙时配置不变并快速失败。
 切换会短暂停止旧渠道再启动新渠道，不运行双份 Connector，也不自动监视文件变化。
@@ -46,7 +45,7 @@ delivery/action 时切换，避免中断结果不确定的真实事务；繁忙�
 }
 ```
 
-Daemon 只向子进程传递 `PATH`、`HOME`、locale、临时目录和 `envAllowlist` 明确列出的变量，不会把整份模型密钥环境泄漏给 Connector。`actions` 是能力发现目录：每项除描述外可声明稳定 `capability` 与 `effect=read|write|unknown`；未声明 capability 的兼容配置使用 `connector.<id>.<action>`，不从描述或业务词推断。未声明的 action 不会发给子进程。`claimedComputerApps` 声明该 Connector 独占的 macOS bundle ID；启用后 Computer 不能接管这些应用。`syncTemplateActions` 默认开启，随升级补齐内置 action、缺失的稳定元数据和资源声明，不是审批模型。若 owner 需要完全维护自定义目录，应先将它设为 `false`。`trust` 是 Host 认定的 event provenance，不是来源自称即可获得的授权。
+Daemon 只向子进程传递 `PATH`、`HOME`、locale、临时目录和 `envAllowlist` 明确列出的变量，不会把整份模型密钥环境泄漏给 Connector。`actions` 是能力发现目录：每项除描述外可声明稳定 `capability` 与 `effect=read|write|unknown`；未声明 capability 的兼容配置使用 `connector.<id>.<action>`，不从描述或业务词推断。未声明的 action 不会发给子进程。旧 `claimedComputerApps` 只做配置读取与诊断兼容，不再粗粒度封锁整个应用；Computer 仍保护控制面并在每次动作前校验精确目标。`syncTemplateActions` 默认开启，随升级补齐内置 action 和稳定元数据。`trust` 是 Host 认定的 event provenance，不是来源自称即可获得的授权。
 
 `healthEvents` 默认开启。Connector 异常退出或启动失败时，Host 会把一条 `system:connector-health` 告警先写入 Inbox，再沿用 Attention、Agent 与 Outbox 处理；正常 daemon 停止和 disabled Connector 不产生告警。自动重启期间的连续失败属于同一个故障窗口，不重复告警；子进程连续存活 `healthStabilityMs`（默认 5 秒）后才生成一次恢复事件。MimiAgent 会先核对实时能力：自动重启中的故障只建立一个恢复 Watch，未启用自动重启的瞬时故障最多执行一次启停恢复，配置或命令缺失则给出精确修复信息；已恢复且没有遗留影响时静默结束。中断期间结果不确定的 delivery/action 永不自动重放。诊断 Event 只保存有界错误类别；完整子进程错误仍留在本机 daemon stderr。
 
@@ -153,7 +152,7 @@ Connector 完成远端发送后必须确认：
 
 ## 主动事务 Action Bridge
 
-Agent 需要主动执行 Connector 事务时，调用通用 `connector_action`。Daemon 先检查配置中的 `actions` 目录，再向子进程发送：
+Agent 需要主动执行 Connector 事务时，依据本轮 Effective Capability Snapshot 的精确 `capability/action` 调用 `invoke_capability`。Daemon 只在恰好一个已就绪 Connector 声明该组合时执行；零个返回 unavailable，多个返回 ambiguous，不要求模型猜 Connector ID。底层 Task/operator 兼容面仍可使用 `connector_action`，但不再暴露给普通模型 Run。
 
 每个 Daemon Agent Run 还会获得只读 `inspect_mimi_capabilities`，动态返回当前 Connector 的 enabled/online、inbound/outbound readiness、`capability/effect/routeOwner` 与 action 目录。能力选择优先使用 `capability` 精确过滤；`query` 只检索展示元数据，业务词零命中时 `total=0` 但 `catalogTotal/catalogActions` 和 `availableCapabilities` 仍明确保留，不能据此声称没有 Connector 或切换到更宽权限路线。精确 ID 未注册会明确报错。输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals、`filterMatched` 与 `truncated` 明示过滤和截断。状态仍可能随后变化，因此 Manager 在真正发送前再次校验。
 
@@ -506,6 +505,7 @@ Actions：
 - `list_windows`：`target=<app-name>|<bundle-id>|frontmost`，payload 支持 `limit`（默认 50，上限 100）。
 - `activate_app`：`target=<app-name-or-bundle-id>`，激活指定应用。
 - `open_item`：`target=<URL-or-absolute-path>`，支持 `~/` 展开；payload 可用不以 `-` 开头的 `application` 指定打开应用，避免 CLI option 注入。
+- `open_visible`：`target=<URL-or-absolute-path>`，payload 必须给出精确 `bundleId`，可选 `verificationTimeoutMs=250..10000`；只有目标应用已置前且存在可见窗口才返回 `outcome=confirmed`，验证超时返回 uncertain。
 - `clipboard_read`：`target=clipboard`，返回最多 `maxChars`（默认 40000，上限 100000）的文本、原始字符数和截断标记。
 - `clipboard_write`：`target=clipboard`，payload `text` 最多 100000 字符；空字符串表示清空文本剪贴板。
 - `clipboard_watch_status/start/stop`：读取、持久启用或停止剪贴板变化感知；`start` 可设置 `pollIntervalMs`（250ms～24h，省略时沿用有效的 `MACOS_DESKTOP_CLIPBOARD_POLL_MS`，否则为 2 秒）。选择原子保存到 `MACOS_DESKTOP_STATE_FILE`（默认 `~/.mimi-agent/daemon/desktop-clipboard.json`），跨 Connector/Daemon 重启恢复。
@@ -595,25 +595,22 @@ Connector 仍是首层信任边界：只接入你愿意处理的来源，限制 
 | 系统通知 `osascript` | `daemon/notifier` | 仅消费 durable Outbox 的本机通知 |
 | QQ 确定性 UI 脚本 | `qq-messenger-skill` | 该 Skill 的单一路径和可见结果验证 |
 
-Host Tool、通用 Shell、Browser 或 Computer 不得因为精确 Connector ID 未命中、offline、
-timeout 或 unknown 就自动接管同一业务动作。个人消息和 Computer 写动作先生成同一个
-schema v1 `ActionIntent`；其 action family、目标和 payload 摘要跨 Tool/Provider/route
-保持稳定。`confirmed` 最多执行一次，`uncertain` 禁止自动重试或换路，只有
-`failed_safe` 才能选择新 route。一次性授权精确绑定 Intent 和 route，不能在 fallback
-时复用。
-已认证 owner 的 Computer `launch_app` 仅在 bundleId 精确且不带 URL 时使用 guarded
-快速通道；URL scheme、外部来源和其他 Computer 动作不能继承该判定。
+Host Tool、通用 Shell、Browser 或 Computer 不得因为能力未命中、offline、timeout 或
+unknown 就自动接管同一业务动作。Security 在 dispatch 前一次完成授权，精确 target
+随后由执行面校验；Effect/Execution Ledger 只负责 confirmed 最多执行一次、uncertain
+禁止自动重试或换路、failed_safe 才能重新选择当前 Security 允许的路线。旧
+ActionIntent/一次性授权字段仅为账本读取兼容，不再参与新动作授权。
 
 owner 自由文本不参与 Tool 裁剪或授权。Darwin 上的 `run_shell` 无条件进入进程沙箱：
 拒绝 Apple Events、LaunchServices、Accessibility 相关服务，以及正式执行面登记的
 本机 Unix socket/loopback 控制端口，因此脚本语言或子进程也不能连接对应控制面；
 普通本地开发服务不会被一并裁掉。
 该限制由进程能力边界实施，不检查命令字符串。正式 Connector、Browser 与 Computer
-Tool 不经过此 Shell 沙箱，继续使用各自的结构化 capability、route owner、ActionIntent
-与授权边界。Terminal、Codex、VS Code、JetBrains 和其他声明为 Connector-owned 的应用
-也不能成为 Computer 写目标。
+Tool 不经过此 Shell 沙箱，继续使用结构化 capability、精确 target 和统一账本。
+Terminal、Codex、VS Code、JetBrains 等控制面应用仍不能成为 Computer 写目标；
+Connector 的旧应用声明不再粗粒度封锁 Chrome 等完整应用。
 
-`connector_action` 返回 `outcome=confirmed` 时，ExecutionLedger 会附加可验证的
+`invoke_capability` 返回 `outcome=confirmed` 时，ExecutionLedger 会附加可验证的
 `execution:*` 回执；PersonalMessage/Computer ActionIntent 返回 `action-intent:*` 回执。
 普通 Plan 的外部事务步骤只有引用这些已落账的 confirmed receipt 才能标记 completed。
 `accepted`、timeout、uncertain、Shell exit code 或自然语言“已完成”都不能充当外部事务

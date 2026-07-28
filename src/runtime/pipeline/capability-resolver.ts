@@ -51,6 +51,11 @@ export interface EffectiveCapabilityItem {
   selectedRoute?: string;
   routeOwner?: string;
   capabilities?: readonly string[];
+  operations?: readonly Readonly<{
+    capability: string;
+    action: string;
+    effect: 'read' | 'write' | 'unknown';
+  }>[];
   safeFallback?: 'not_started_or_failed_safe' | 'none';
 }
 
@@ -134,12 +139,40 @@ export function createEffectiveCapabilitySnapshot(
   return Object.freeze(snapshot);
 }
 
+export function renderEffectiveCapabilitySnapshot(
+  snapshot: Readonly<EffectiveCapabilitySnapshot>,
+): string {
+  const routedItems = snapshot.items
+    .filter((item) => item.kind === 'connector' || item.kind === 'computer')
+    .map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      availability: item.availability,
+      readiness: item.readiness,
+      coverage: item.coverage,
+      selectedRoute: item.selectedRoute,
+      capabilities: item.capabilities,
+      operations: item.operations,
+    }));
+  if (routedItems.length === 0) return '';
+  return [
+    '## Effective Capability Snapshot',
+    '这是本轮开始前由可信宿主生成的能力事实。优先按 operations 中的精确 capability/action 调用 invoke_capability；unavailable/unknown 不得尝试启用 Connector 或猜测替代路线。',
+    JSON.stringify({
+      schemaVersion: snapshot.schemaVersion,
+      policyRevision: snapshot.policyRevision,
+      snapshotDigest: snapshot.snapshotDigest,
+      routedItems,
+    }),
+  ].join('\n');
+}
+
 export class CapabilityResolver {
   resolve(input: CapabilityResolverInput): Readonly<ResolvedCapabilities> {
     const allowed = new Set(input.policy?.allowedCapabilities ?? []);
     const canReadLocal = !input.policy || allowed.has('read');
     const executableCompletion = input.scope.mode !== 'plan'
-      && !(input.scope.permissionMode === 'read-only' && input.expectedArtifactCompletion);
+      && !(input.scope.securityProfile === 'safe' && input.expectedArtifactCompletion);
     const completionToolsAllowed = executableCompletion
       && (!input.policy || allowed.has('state-read'))
       && (!input.policy?.allowedTools
@@ -152,13 +185,14 @@ export class CapabilityResolver {
       canReadSessionContext: input.policy?.allowSessionContext !== false,
       canInitializeProjectGuidance: canReadLocal
         && input.scope.mode !== 'plan'
-        && input.scope.permissionMode !== 'read-only'
+        && input.scope.securityProfile !== 'safe'
         && (!input.policy || allowed.has('write'))
         && input.developmentTask,
       completionToolsAllowed,
-      computerAccess: input.requestedComputerAccess
-        ?? input.policy?.computerAccess
-        ?? (input.scope.cause ? 'none' : input.defaultComputerAccess ?? 'none'),
+      computerAccess: input.scope.securityProfile === 'full-owner'
+        && (!input.scope.cause || input.scope.cause.trust === 'owner')
+        ? input.requestedComputerAccess ?? 'admin'
+        : 'none',
     });
   }
 }

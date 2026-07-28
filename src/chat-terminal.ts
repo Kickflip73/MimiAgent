@@ -1,5 +1,5 @@
 import process from 'node:process';
-import { preferredEnvironmentValue, type AppConfig } from './config.js';
+import { loadConfig, preferredEnvironmentValue, type AppConfig } from './config.js';
 import {
   COMMANDS,
   CommandHandler,
@@ -14,7 +14,15 @@ import {
   type DaemonReconciler,
 } from './daemon/chat-client.js';
 import type { MimiChatSnapshot } from './daemon/types.js';
-import { InteractiveTerminal, type CompletionItem } from './interactive.js';
+import {
+  configuredProviderRequest,
+  persistProviderConfiguration,
+} from './provider-config.js';
+import {
+  InteractiveTerminal,
+  type CompletionItem,
+  type QueuedInput,
+} from './interactive.js';
 import {
   normalizeOutputLevel,
   OUTPUT_LEVELS,
@@ -24,6 +32,12 @@ import {
 } from './terminal.js';
 
 const CHAT_COMMANDS: CompletionItem[] = [...COMMANDS];
+
+interface PendingChatInput extends QueuedInput {
+  acceptedEventId?: string;
+}
+
+class SteeringInputAcceptedError extends Error {}
 
 export const CHAT_HELP = `${commandHelp()}
 
@@ -47,7 +61,7 @@ function renderBanner(version: string, snapshot: MimiChatSnapshot): string {
     `模型    ${snapshot.provider} · ${snapshot.model}`,
     `对话    ${snapshot.draft ? '新对话（发送消息后创建）' : snapshot.sessionId}`,
     `工作区  ${snapshot.workspaceRoot}`,
-    `安全    ${snapshot.securityProfile.label} · /security 切换当前对话档位`,
+    `权限    ${snapshot.securityProfile.label} · /security 上下选择`,
   ].join('\n');
 }
 
@@ -61,6 +75,24 @@ export async function runMimiCli(
     ? new MimiChatClient(config, reconcileDaemon)
     : new MimiChatClient(config);
   await client.connect();
+  const switchProvider = async (
+    provider: 'openai' | 'deepseek' | 'openai-compatible',
+    model?: string,
+  ) => {
+    const current = await client.status();
+    if (current.providerHealth?.provider === provider && !model) return;
+    const configured = configuredProviderRequest(provider);
+    const request = model
+      ? {
+          ...configured,
+          model,
+          models: [...new Set([model, ...(configured.models ?? [])])],
+        }
+      : configured;
+    await persistProviderConfiguration(request);
+    const { restartMimiDaemon } = await import('./daemon/service.js');
+    await restartMimiDaemon(loadConfig());
+  };
   const configuredSession = preferredEnvironmentValue('MIMI_SESSION', 'AGENT_SESSION');
   const oneShotInput = args.join(' ').trim();
   if (oneShotInput) {
@@ -77,6 +109,9 @@ export async function runMimiCli(
         if (streamed.kind === 'answer') streamedAnswer += streamed.text;
         renderer.handleDisplay(streamed);
       });
+      const providerEffect = [...eventEffects(event)].reverse().find((effect) => (
+        effect.type === 'provider_change_requested'
+      ));
       const answer = eventAnswer(event);
       if (!streamedAnswer) renderer.handleDisplay({ kind: 'answer', text: answer });
       else if (answer.startsWith(streamedAnswer)) {
@@ -84,6 +119,9 @@ export async function runMimiCli(
         if (tail) renderer.handleDisplay({ kind: 'answer', text: tail });
       }
       renderer.finish();
+      if (providerEffect?.type === 'provider_change_requested') {
+        await switchProvider(providerEffect.provider);
+      }
     } catch (error) {
       renderer.stop();
       throw error;
@@ -96,13 +134,16 @@ export async function runMimiCli(
     : await client.bootstrap();
   const target = new RemoteCommandTarget(client, snapshot.sessionId, !snapshot.draft);
   const terminal = new InteractiveTerminal(CHAT_COMMANDS);
-  const queue: string[] = [];
+  const queue: PendingChatInput[] = [];
+  const steeringQueue: PendingChatInput[] = [];
   let activeAbort: AbortController | undefined;
+  let activeSubmission: Promise<void> | undefined;
   let activeEventId: string | undefined;
   let activeCancelRequested = false;
   let activeCancelSent = false;
   let cyclingMode = false;
   let draining = false;
+  let steeringSubmissions = Promise.resolve();
   let closed = false;
   let resolveClosed!: () => void;
   const closedPromise = new Promise<void>((resolve) => { resolveClosed = resolve; });
@@ -127,8 +168,9 @@ export async function runMimiCli(
     if (closed) return;
     closed = true;
     queue.length = 0;
+    steeringQueue.length = 0;
     activeAbort?.abort(new Error('终端已退出；MimiAgent 任务继续在后台执行'));
-    terminal.setQueue(queue);
+    terminal.setQueue([]);
     terminal.close();
     resolveClosed();
   };
@@ -142,7 +184,11 @@ export async function runMimiCli(
       terminal.notify(`取消任务失败：${error instanceof Error ? error.message : String(error)}`);
     });
   };
-  const submitAndDisplay = async (input: string, signal = activeAbort?.signal) => {
+  const submitAndDisplay = async (
+    input: string,
+    signal = activeAbort?.signal,
+    acceptedEventId?: string,
+  ) => {
     const renderer = new TerminalRenderer(
       terminal.createWriter(process.stderr),
       terminal.createWriter(process.stdout),
@@ -151,7 +197,19 @@ export async function runMimiCli(
     renderer.start(runLabel(input), input);
     let streamedAnswer = '';
     try {
-      const accepted = await client.submit(input, target.currentSessionId);
+      let accepted = acceptedEventId
+        ? { eventId: acceptedEventId, inserted: true }
+        : undefined;
+      if (!accepted) {
+        const submission = client.submit(input, target.currentSessionId);
+        const settled = submission.then(() => undefined, () => undefined);
+        activeSubmission = settled;
+        try {
+          accepted = await submission;
+        } finally {
+          if (activeSubmission === settled) activeSubmission = undefined;
+        }
+      }
       target.markSessionReady();
       snapshot.draft = false;
       activeEventId = accepted.eventId;
@@ -172,7 +230,12 @@ export async function runMimiCli(
         if (tail) renderer.handleDisplay({ kind: 'answer', text: tail });
       }
       renderer.finish();
-      await synchronizeRemoteRuntimeEffects(target, effects, { restoreSession, resetSession, close });
+      await synchronizeRemoteRuntimeEffects(target, effects, {
+        restoreSession,
+        resetSession,
+        switchProvider,
+        close,
+      });
     } catch (error) {
       renderer.stop();
       throw error;
@@ -198,10 +261,18 @@ export async function runMimiCli(
       label: `${session.id === target.currentSessionId ? '● ' : ''}${session.title}`,
       detail: `${session.recoverable ? '↻ 可恢复 · ' : ''}${session.turns} 轮 · ${session.preview}`,
     })), '选择 MimiAgent 对话', target.currentSessionId),
-    selectModel: async (models, current) => terminal.select(models.map((model) => ({
-      value: model,
-      label: `${model === current ? '● ' : ''}${model}`,
-    })), '选择模型', current),
+    selectModel: async (models, current) => {
+      const currentIndex = models.findIndex((choice) => (
+        choice.provider === current.provider && choice.model === current.model
+      ));
+      const selected = await terminal.select(models.map((choice, index) => ({
+        value: String(index),
+        label: `${index === currentIndex ? '● ' : ''}${choice.model}`,
+        detail: choice.providerLabel,
+      })), '选择模型', currentIndex >= 0 ? String(currentIndex) : undefined);
+      return selected === undefined ? undefined : models[Number(selected)];
+    },
+    switchProvider,
     selectMode: async (modes, current) => terminal.select(modes.map((mode) => ({
       value: mode.id,
       label: `${mode.id === current ? '● ' : ''}${mode.label}`,
@@ -235,31 +306,38 @@ export async function runMimiCli(
       detail: level.description,
     })), '选择输出等级', current),
   });
+  const visibleQueue = (): QueuedInput[] => [
+    ...steeringQueue.map(({ text, intent }) => ({ text, intent })),
+    ...queue.map(({ text, intent }) => ({ text, intent })),
+  ];
+  const refreshQueue = () => terminal.setQueue(visibleQueue());
   const drain = async () => {
     if (draining) return;
     draining = true;
     try {
-      while (queue.length && !closed) {
-        const input = queue.shift()!;
-        terminal.setQueue(queue);
-        terminal.recordInput(input);
+      while ((steeringQueue.length || queue.length) && !closed) {
+        const pending = steeringQueue.shift() ?? queue.shift()!;
+        refreshQueue();
+        terminal.recordInput(pending.text);
         activeAbort = new AbortController();
         activeEventId = undefined;
         activeCancelRequested = false;
         activeCancelSent = false;
         try {
           terminal.setBusy(true);
-          const result = await commands.execute(input, activeAbort.signal);
+          const result = await commands.execute(pending.text, activeAbort.signal);
           if (result === 'exit') {
             close();
             break;
           }
           if (result === 'handled') continue;
-          commands.remember(input);
-          await submitAndDisplay(input);
+          commands.remember(pending.text);
+          await submitAndDisplay(pending.text, activeAbort.signal, pending.acceptedEventId);
         } catch (error) {
           const message = activeCancelRequested
             ? '已请求取消当前任务。'
+            : error instanceof SteeringInputAcceptedError
+              ? '已接收新指引，正在切换方向。'
             : activeAbort.signal.aborted
               ? '已停止等待；任务仍由 MimiAgent 在后台可靠执行，可稍后用 /history 查看结果。'
               : `运行失败：${error instanceof Error ? error.message : String(error)}`;
@@ -275,7 +353,26 @@ export async function runMimiCli(
       }
     } finally {
       draining = false;
-      if (queue.length && !closed) void drain();
+      if ((steeringQueue.length || queue.length) && !closed) void drain();
+    }
+  };
+  const submitSteeringInput = async (input: string) => {
+    try {
+      // Preserve event order if Command+Enter arrives while the active input is
+      // still crossing the durable submit boundary.
+      await activeSubmission;
+      const accepted = await client.submit(input, target.currentSessionId);
+      target.markSessionReady();
+      snapshot.draft = false;
+      if (closed) return;
+      steeringQueue.push({ text: input, intent: 'steer', acceptedEventId: accepted.eventId });
+      refreshQueue();
+      activeAbort?.abort(new SteeringInputAcceptedError('新指引已由 MimiAgent 接收'));
+      void drain();
+    } catch (error) {
+      if (!closed) {
+        terminal.notify(`立即引导发送失败，当前任务继续执行：${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   };
 
@@ -284,13 +381,17 @@ export async function runMimiCli(
   const history = renderChatHistory(snapshot, tty);
   if (history) process.stdout.write(`\n${history}\n`);
   terminal.start({
-    onLine: (input) => {
+    onLine: (input, intent) => {
       if (input.trim() === '/exit') {
         close();
         return;
       }
-      queue.push(input);
-      terminal.setQueue(queue);
+      if (intent === 'steer' && !input.trim().startsWith('/')) {
+        steeringSubmissions = steeringSubmissions.then(() => submitSteeringInput(input));
+        return;
+      }
+      queue.push({ text: input, intent: 'enqueue' });
+      refreshQueue();
       void drain();
     },
     onEscape: () => {

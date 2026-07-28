@@ -34,6 +34,7 @@ const ACTIONS = new Set([
   'list_windows',
   'activate_app',
   'open_item',
+  'open_visible',
   'clipboard_read',
   'clipboard_write',
   'clipboard_watch_status',
@@ -208,6 +209,11 @@ function payloadObject(value) {
   return value;
 }
 
+function onlyKeys(value, allowed, label = 'payload') {
+  const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+  if (unknown.length) throw new Error(`${label} contains unsupported fields: ${unknown.join(', ')}`);
+}
+
 function boundedString(value, label, maximum, required = false) {
   if (typeof value !== 'string' || (required && !value.trim()) || value.length > maximum) {
     throw new Error(`${label} must be ${required ? 'a non-empty ' : 'a '}string with at most ${maximum} characters`);
@@ -244,10 +250,10 @@ function absolutePath(value, label) {
   return path.normalize(expanded);
 }
 
-function openTarget(value) {
+function openTarget(value, action = 'open_item') {
   const target = expandHome(boundedString(value, 'target', 4_000, true));
   if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(target)) return target;
-  if (!path.isAbsolute(target)) throw new Error('open_item target must be an absolute path or URL');
+  if (!path.isAbsolute(target)) throw new Error(`${action} target must be an absolute path or URL`);
   return path.normalize(target);
 }
 
@@ -274,6 +280,7 @@ function validate(action, target, rawPayload) {
   if (action === 'list_windows') return { limit: integer(payload.limit, 'payload.limit', 1, 100, 50) };
   if (action === 'activate_app') return {};
   if (action === 'open_item') {
+    onlyKeys(payload, ['application']);
     const application = payload.application === undefined
       ? undefined
       : boundedString(payload.application, 'payload.application', 500, true);
@@ -281,6 +288,24 @@ function validate(action, target, rawPayload) {
     return {
       item: openTarget(target),
       application,
+    };
+  }
+  if (action === 'open_visible') {
+    onlyKeys(payload, ['bundleId', 'verificationTimeoutMs']);
+    const bundleId = boundedString(payload.bundleId, 'payload.bundleId', 500, true);
+    if (bundleId.startsWith('-') || !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(bundleId)) {
+      throw new Error('payload.bundleId must be an exact macOS bundle ID');
+    }
+    return {
+      item: openTarget(target, action),
+      bundleId,
+      verificationTimeoutMs: integer(
+        payload.verificationTimeoutMs,
+        'payload.verificationTimeoutMs',
+        250,
+        10_000,
+        5_000,
+      ),
     };
   }
   if (action === 'clipboard_read') {
@@ -364,9 +389,9 @@ async function runJxa(action, target, payload) {
   });
 }
 
-async function runOpen(item, application) {
+async function runOpen(item, application, bundleId) {
   return new Promise((resolve, reject) => {
-    const args = application ? ['-a', application, item] : [item];
+    const args = bundleId ? ['-b', bundleId, item] : application ? ['-a', application, item] : [item];
     const child = spawn(openCommand, args, {
       env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: process.env.LANG },
       stdio: ['ignore', 'ignore', 'pipe'],
@@ -387,9 +412,65 @@ async function runOpen(item, application) {
       clearTimeout(timer);
       if (timedOut) return reject(new Error(`open timed out after ${commandTimeoutMs}ms`));
       if (code !== 0) return reject(new Error((stderr || `open exited code=${code} signal=${signal || 'none'}`).trim()));
-      resolve({ opened: true, item, application });
+      resolve({ opened: true, item, ...(bundleId ? { bundleId } : { application }) });
     });
   });
+}
+
+class UncertainActionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'UncertainActionError';
+    this.uncertain = true;
+  }
+}
+
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function openVisible(item, bundleId, verificationTimeoutMs) {
+  await runOpen(item, undefined, bundleId);
+  await runJxa('activate_app', bundleId, {});
+  const deadline = Date.now() + verificationTimeoutMs;
+  let lastFrontmost;
+  let lastWindows;
+  while (Date.now() <= deadline) {
+    try {
+      [lastFrontmost, lastWindows] = await Promise.all([
+        runJxa('frontmost_app', 'all', {}),
+        runJxa('list_windows', bundleId, { limit: 50 }),
+      ]);
+      const visibleWindow = Array.isArray(lastWindows?.windows)
+        ? lastWindows.windows.find((window) => window?.visible !== false)
+        : undefined;
+      if (lastFrontmost?.bundleIdentifier === bundleId
+        && lastFrontmost?.frontmost === true
+        && lastWindows?.app?.bundleIdentifier === bundleId
+        && visibleWindow) {
+        return {
+          outcome: 'confirmed',
+          opened: true,
+          visible: true,
+          frontmost: true,
+          item,
+          bundleId,
+          pid: Number(lastFrontmost.pid || lastWindows.app.pid || 0),
+          windowIndex: Number(visibleWindow.index),
+          title: String(visibleWindow.title || ''),
+        };
+      }
+    } catch {
+      // The application may still be launching. Keep the final bounded observation as evidence.
+    }
+    await wait(100);
+  }
+  throw new UncertainActionError(
+    `open request was accepted but visible confirmation timed out for ${bundleId}: ${JSON.stringify({
+      frontmost: lastFrontmost,
+      windows: lastWindows,
+    }).slice(0, 2_000)}`,
+  );
 }
 
 function clipboardHash(text) {
@@ -487,6 +568,10 @@ async function execute(message) {
     const result = await runOpen(payload.item, payload.application);
     return { type: 'action_result', id: message.id, ok: true, result };
   }
+  if (message.action === 'open_visible') {
+    const result = await openVisible(payload.item, payload.bundleId, payload.verificationTimeoutMs);
+    return { type: 'action_result', id: message.id, ok: true, result };
+  }
   // A poll already reading the pre-write clipboard must not publish its late
   // result after MimiAgent starts a self-write.
   if (message.action === 'clipboard_write') clipboardWatchGeneration += 1;
@@ -540,6 +625,17 @@ async function pollClipboard() {
 const clipboardInitialization = (async () => {
   configureClipboardWatch(await readClipboardPollMs() ?? clipboardPollDefaultMs);
 })();
+void clipboardInitialization.then(() => {
+  write({
+    type: 'status',
+    inbound: 'ready',
+    outbound: 'ready',
+    coverage: 'bounded',
+    eventAcknowledgement: false,
+  });
+}).catch((error) => {
+  process.stderr.write(`[macos-desktop] initialization failed: ${errorText(error)}\n`);
+});
 
 process.stdin.setEncoding('utf8');
 let input = '';
@@ -561,7 +657,13 @@ process.stdin.on('data', (chunk) => {
         message = JSON.parse(line);
         write(await execute(message));
       } catch (error) {
-        write({ type: 'action_result', id: message?.id ?? 'invalid', ok: false, error: errorText(error) });
+        write({
+          type: 'action_result',
+          id: message?.id ?? 'invalid',
+          ok: false,
+          ...(error?.uncertain === true ? { uncertain: true } : {}),
+          error: errorText(error),
+        });
       }
     })();
   }

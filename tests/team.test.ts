@@ -380,7 +380,7 @@ test('applies local permission profiles before mode-specific tools', () => {
   assert.deepEqual(toolsForPermission('trusted', tools).map((item) => item.name), tools.map((item) => item.name));
   assert.deepEqual(
     toolsForPermission('workspace', tools).map((item) => item.name),
-    ['read_file', 'write_file', 'http_get'],
+    ['read_file', 'write_file', 'run_shell', 'http_get'],
   );
   assert.deepEqual(
     toolsForPermission('read-only', tools).map((item) => item.name),

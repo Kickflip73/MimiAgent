@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { InteractiveTerminal } from '../src/interactive.js';
+import {
+  InteractiveTerminal,
+  MIMI_IDLE_BLINK_DURATION_MS,
+  MIMI_IDLE_BLINK_INTERVAL_MS,
+} from '../src/interactive.js';
 
 class FakeInput extends PassThrough {
   isTTY = true;
@@ -32,6 +36,8 @@ test('shows slash commands, navigates them and completes with tab', () => {
   const initial = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
   assert.match(initial, /┊>/);
   assert.doesNotMatch(initial, /你>/);
+  assert.match(initial, /\^\._\.\^~/);
+  assert.doesNotMatch(initial, /◇ 就绪/);
 
   input.emit('keypress', '/', { sequence: '/' });
   assert.match(output.value, /\/status/);
@@ -42,6 +48,26 @@ test('shows slash commands, navigates them and completes with tab', () => {
   input.emit('keypress', '\r', { name: 'return' });
 
   assert.deepEqual(lines, ['/new']);
+  terminal.close();
+});
+
+test('blinks the idle Mimi every configured interval and restores its open eyes', async () => {
+  assert.equal(MIMI_IDLE_BLINK_INTERVAL_MS, 6_000);
+  assert.equal(MIMI_IDLE_BLINK_DURATION_MS, 1_000);
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const terminal = new InteractiveTerminal([], input as never, output as never, {
+    idleBlinkIntervalMs: 30,
+    idleBlinkDurationMs: 20,
+  });
+  terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
+  output.value = '';
+
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.match(output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, ''), /\^-\.-\^~/);
+  output.value = '';
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.match(output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, ''), /\^\._\.\^~/);
   terminal.close();
 });
 
@@ -120,6 +146,47 @@ test('supports shift-enter newlines and command-arrow line jumps', () => {
   input.emit('keypress', '\r', { name: 'return' });
 
   assert.deepEqual(lines, ['abc\n>xyz<']);
+  terminal.close();
+});
+
+test('distinguishes queued enter from command-enter steering', () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const submissions: Array<{ line: string; intent: string }> = [];
+  const terminal = new InteractiveTerminal([], input as never, output as never);
+  terminal.start({
+    onLine: (line, intent) => submissions.push({ line, intent }),
+    onEscape: () => undefined,
+    onExit: () => undefined,
+  });
+
+  input.emit('keypress', '普通排队', { sequence: '普通排队' });
+  input.emit('keypress', '\r', { name: 'return' });
+  input.emit('keypress', '立即引导', { sequence: '立即引导' });
+  input.emit('keypress', '\r', { name: 'return', meta: true, sequence: '\x1b[13;9u' });
+
+  assert.deepEqual(submissions, [
+    { line: '普通排队', intent: 'enqueue' },
+    { line: '立即引导', intent: 'steer' },
+  ]);
+  terminal.close();
+});
+
+test('recognizes the command-enter modifier sequence when meta is unavailable', () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const intents: string[] = [];
+  const terminal = new InteractiveTerminal([], input as never, output as never);
+  terminal.start({
+    onLine: (_line, intent) => intents.push(intent),
+    onEscape: () => undefined,
+    onExit: () => undefined,
+  });
+
+  input.emit('keypress', '调整方向', { sequence: '调整方向' });
+  input.emit('keypress', '\r', { name: 'return', sequence: '\x1b[27;9;13~' });
+
+  assert.deepEqual(intents, ['steer']);
   terminal.close();
 });
 
@@ -211,7 +278,7 @@ test('continues browsing history when a recalled entry matches slash command sug
   terminal.close();
 });
 
-test('keeps queue and static runtime status above the bottom input box', async () => {
+test('keeps queue and a self-updating runtime status above the bottom input box', async () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   output.columns = 100;
@@ -223,15 +290,46 @@ test('keeps queue and static runtime status above the bottom input box', async (
   terminal.setBusy(true);
   output.value = '';
   terminal.setQueue([
-    '排队中的第一条对话内容',
-    '这是一条非常长的排队消息，需要在终端宽度之外使用省略号隐藏多出的内容以保持单行展示，而且无论继续补充多少文字都不能换行破坏底部区域',
+    { text: '立即调整当前执行方向', intent: 'steer' },
+    { text: '排队中的第一条对话内容' },
+    { text: '这是一条非常长的排队消息，需要在终端宽度之外使用省略号隐藏多出的内容以保持单行展示，而且无论继续补充多少文字都不能换行破坏底部区域' },
   ]);
 
   const plain = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-  assert.match(plain, /↳ 排队  排队中的第一条对话内容\n↳ 排队.*\.\.\.\n● 运行中 · 模式 编码 · 模型 deepseek-chat · 上下文 1\.2k\/128k\n┊>/);
+  assert.match(plain, /↯ 引导  立即调整当前执行方向\n↳ 排队  排队中的第一条对话内容\n↳ 排队.*\.\.\.\n\^\._\.\^~ 运行中 · 0秒 · 模式 编码 · 模型 deepseek-chat · 上下文 1\.2k\/128k\n┊>/);
   output.value = '';
-  await new Promise((resolve) => setTimeout(resolve, 90));
-  assert.equal(output.value, '');
+  await new Promise((resolve) => setTimeout(resolve, 420));
+  const animated = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+  assert.match(animated, /\^\._\.\^- 运行中 · 0秒/);
+  terminal.close();
+});
+
+test('uses the interactive TTY for renderer animation when stderr is redirected', () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const redirected = new FakeOutput();
+  redirected.isTTY = false;
+  const terminal = new InteractiveTerminal([], input as never, output as never);
+  terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
+
+  assert.equal(terminal.createWriter(redirected as never).isTTY, true);
+  terminal.close();
+});
+
+test('preserves the renderer spinner frame and elapsed time in interactive status', () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  output.columns = 100;
+  const terminal = new InteractiveTerminal([], input as never, output as never);
+  terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
+  terminal.setBusy(true);
+  output.value = '';
+
+  const writer = terminal.createWriter(output as never);
+  writer.write('\r\x1b[2K\x1b[90m^._?^- 模型思考中 · 1分 05秒\x1b[0m');
+
+  const plain = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+  assert.match(plain, /\^\._\?\^- 模型思考中 · 1分 05秒 · 模式 标准/);
   terminal.close();
 });
 
@@ -457,8 +555,8 @@ test('shows the current plan above the input and collapses it after completion',
   assert.match(plain, /✓ 检查现有任务规划和终端渲染机制/);
   assert.match(plain, /● 实现一个非常长的任务进度展示区域.*\.\.\./);
   assert.match(plain, /○ 运行完整测试/);
-  assert.ok(plain.indexOf('○ 运行完整测试') < plain.indexOf('◇ 就绪'));
-  assert.ok(plain.indexOf('◇ 就绪') < plain.indexOf('┊>'));
+  assert.ok(plain.indexOf('○ 运行完整测试') < plain.indexOf('^._.^~'));
+  assert.ok(plain.indexOf('^._.^~') < plain.indexOf('┊>'));
 
   output.value = '';
   terminal.setTasks([
@@ -550,7 +648,7 @@ test('records submitted user input as a permanent conversation line', () => {
   const plain = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
   assert.match(output.value, /\x1b\[96m▸\x1b\[0m\x1b\[100;97m 帮我检查 当前项目 \x1b\[0m/);
   assert.match(plain, /▸ 帮我检查 当前项目 \n/);
-  assert.match(plain, /◇ 就绪.*\n┊>/);
+  assert.match(plain, /\^\._\.\^~.*\n┊>/);
   terminal.close();
 });
 

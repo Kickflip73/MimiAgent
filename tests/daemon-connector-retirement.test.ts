@@ -44,6 +44,7 @@ test('initialization removes retired IM and HTTP connectors from existing config
 
     assert.equal(result.connectors.removedRetired, 4);
     assert.deepEqual(Object.keys(persisted.connectors).sort(), [
+      'macos-desktop',
       'macos-system',
       'openclaw-weixin',
       'personal-daxiang',

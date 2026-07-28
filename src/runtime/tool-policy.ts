@@ -55,6 +55,7 @@ const TOOL_DESCRIPTOR_DEFINITIONS = {
   set_mimi_connector_enabled: { capabilities: ['state-write'], sideEffect: true },
   reload_mimi_connectors: { capabilities: ['state-write'], sideEffect: true },
   connector_action: { capabilities: ['state-write'], sideEffect: true },
+  invoke_capability: { capabilities: ['state-write'], sideEffect: true },
   get_personal_message_context: { capabilities: ['state-read'], modes: ALL_MODES },
   send_personal_message: { capabilities: ['state-write'], sideEffect: true },
   memory_search: { capabilities: ['memory-read'], modes: ALL_MODES },
@@ -131,6 +132,7 @@ const TOOL_DESCRIPTOR_DEFINITIONS = {
   list_models: { capabilities: ['control'], modes: ALL_MODES },
   list_modes: { capabilities: ['control'], modes: ALL_MODES },
   switch_model: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
+  switch_provider: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
   switch_mode: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
   set_output_level: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
   list_sessions: { capabilities: ['control'], modes: ALL_MODES },
@@ -190,41 +192,57 @@ export function toolsForMode(mode: AgentMode, baseTools: Tool[], teamTools: Tool
   return tools.filter((tool) => availableInMode(tool.name, mode));
 }
 
+const SAFE_CAPABILITIES = new Set<ToolCapability>([
+  'read',
+  'network-read',
+  'memory-read',
+  'state-read',
+  'delivery-control',
+  'control',
+]);
+
+const WORKSTATION_CAPABILITIES = new Set<ToolCapability>([
+  ...SAFE_CAPABILITIES,
+  'write',
+  'execute',
+  'memory-write',
+  'state-write',
+]);
+
+const FULL_OWNER_ONLY_TOOLS = new Set([
+  'connector_action',
+  'invoke_capability',
+  'send_personal_message',
+  'set_mimi_connector_enabled',
+  'reload_mimi_connectors',
+]);
+
+export function toolsForSecurity(
+  profile: SecurityProfile,
+  tools: Tool[],
+  customCapabilities: Readonly<Record<string, readonly ToolCapability[]>> = {},
+): Tool[] {
+  if (profile === 'full-owner') return tools;
+  const allowed = profile === 'safe' ? SAFE_CAPABILITIES : WORKSTATION_CAPABILITIES;
+  return tools.filter((tool) => {
+    if (profile === 'workstation' && FULL_OWNER_ONLY_TOOLS.has(tool.name)) return false;
+    const descriptor = toolDescriptor(tool.name);
+    const capabilities = descriptor?.capabilities ?? customCapabilities[tool.name];
+    if (!descriptor && !capabilities) return false;
+    return (capabilities ?? []).every((capability) => allowed.has(capability));
+  });
+}
+
+/** @deprecated SecurityProfile is the only runtime authorization source. */
 export function toolsForPermission(
   mode: AgentPermissionMode,
   tools: Tool[],
   customCapabilities: Readonly<Record<string, readonly ToolCapability[]>> = {},
   securityProfile?: SecurityProfile,
 ): Tool[] {
-  const permitted = mode === 'trusted' ? tools : tools.filter((tool) => {
-    const policy = toolDescriptor(tool.name);
-    const declared = customCapabilities[tool.name];
-    if (!policy && !declared) return false;
-    const capabilities = policy?.capabilities ?? declared ?? [];
-    if (capabilities.some((capability) => capability === 'computer-read' || capability === 'computer-write')) return false;
-    if (capabilities.includes('execute') || capabilities.includes('network-write')) return false;
-    // Deployment read-only limits MimiAgent's local durable state. Connector
-    // transactions are separately authorized by owner/system provenance and
-    // the per-run event policy, so reusing the file permission switch here
-    // would make configured messaging channels mysteriously unavailable.
-    return mode !== 'read-only' || tool.name === 'connector_action' || !capabilities.some((capability) => (
-      capability === 'write' || capability === 'memory-write' || capability === 'state-write'
-    ));
-  });
-  if (securityProfile !== 'safe') return permitted;
-  return permitted.filter((tool) => {
-    const capabilities = toolDescriptor(tool.name)?.capabilities;
-    if (!capabilities) return false;
-    return !capabilities.some((capability) => (
-      capability === 'write'
-      || capability === 'execute'
-      || capability === 'network-write'
-      || capability === 'memory-write'
-      || capability === 'state-write'
-      || capability === 'computer-read'
-      || capability === 'computer-write'
-    ));
-  });
+  const profile = securityProfile
+    ?? (mode === 'read-only' ? 'safe' : mode === 'workspace' ? 'workstation' : 'full-owner');
+  return toolsForSecurity(profile, tools, customCapabilities);
 }
 
 export interface RunToolPolicy {
@@ -258,19 +276,20 @@ export function toolNamesForMode(
   permissionMode: AgentPermissionMode = 'trusted',
   securityProfile?: SecurityProfile,
 ): string[] {
+  const profile = securityProfile
+    ?? (permissionMode === 'read-only' ? 'safe'
+      : permissionMode === 'workspace' ? 'workstation' : 'full-owner');
   const names = toolsForMode(
     mode,
-    toolsForPermission(permissionMode, baseTools, {}, securityProfile),
+    toolsForSecurity(profile, baseTools),
   ).map((tool) => tool.name);
   names.push(...TOOL_DESCRIPTORS
     .filter((descriptor) => descriptor.displayedOrchestrationTool
       && availableInMode(descriptor.name, mode))
     .filter((descriptor) =>
-      toolsForPermission(
-        permissionMode,
+      toolsForSecurity(
+        profile,
         [{ name: descriptor.name } as Tool],
-        {},
-        securityProfile,
       ).length === 1)
     .map((descriptor) => descriptor.name));
   return [...new Set(names)].sort();

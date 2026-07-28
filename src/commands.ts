@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { MimiAgent } from './agent.js';
 import { SECURITY_PROFILES } from './config.js';
-import type { SecurityProfile, SecurityProfileSummary } from './config.js';
+import type { ModelProvider, SecurityProfile, SecurityProfileSummary } from './config.js';
 import type { MemoryRef, MemoryScope } from './core/memory.js';
 import type { SessionSummary } from './core/session.js';
+import type { ConfiguredProvider } from './provider-config.js';
 import { OUTPUT_LEVELS, type OutputLevel } from './terminal.js';
 
 export type CommandResult = 'handled' | 'exit' | 'pass';
@@ -96,6 +97,12 @@ export type BackgroundTaskResumeResult =
   | { state: 'not_resumable' }
   | { state: 'not_found' };
 
+export interface ModelChoice {
+  provider: ModelProvider;
+  providerLabel: string;
+  model: string;
+}
+
 export interface CommandTarget {
   readonly currentSessionId: string;
   readonly sessionReady?: boolean;
@@ -151,7 +158,7 @@ export interface CommandTarget {
 
 export const COMMANDS = [
   { value: '/status', description: '查看运行状态' },
-  { value: '/security', description: '选择当前对话的安全档位' },
+  { value: '/security', description: '查看或临时调整当前运行权限' },
   { value: '/model', description: '查看或切换模型' },
   { value: '/mode', description: '查看或切换运行模式' },
   { value: '/output', description: '调整执行过程展示等级' },
@@ -181,7 +188,7 @@ export const COMMANDS = [
 
 const HELP = `内置命令：
   /status             查看模型、会话和扩展状态
-  /security [profile] 选择当前对话的 Safe / Workstation / Full Owner 档位
+  /security [profile] 查看或临时调整当前运行权限
   /model [name]       查看或切换当前模型
   /mode [name]        查看或切换运行模式
   /output [level]     调整答案、思考、工具或详细事件展示
@@ -222,7 +229,11 @@ export interface CommandUI {
   resetScreen?: () => void | Promise<void>;
   restoreSession?: () => void | Promise<void>;
   selectSession?: (sessions: SessionSummary[]) => Promise<string | undefined>;
-  selectModel?: (models: string[], current: string) => Promise<string | undefined>;
+  selectModel?: (
+    models: ModelChoice[],
+    current: Pick<ModelChoice, 'provider' | 'model'>,
+  ) => Promise<ModelChoice | undefined>;
+  switchProvider?: (provider: ModelProvider, model: string) => void | Promise<void>;
   selectMode?: (modes: ReturnType<MimiAgent['availableModes']>, current: string) => Promise<string | undefined>;
   selectSecurityProfile?: (
     profiles: SecurityProfileSummary[],
@@ -244,6 +255,42 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   dead_letter: '失败',
   archived: '已归档',
 };
+
+function globalModelChoices(
+  providers: readonly ConfiguredProvider[] | undefined,
+  currentProvider: ModelProvider,
+  currentModels: readonly string[],
+): ModelChoice[] {
+  const configured = providers?.length
+    ? providers
+    : [{
+        id: currentProvider,
+        label: currentProvider,
+        model: currentModels[0] ?? '',
+        models: [...currentModels],
+      }];
+  return configured.flatMap((provider) => provider.models.map((model) => ({
+    provider: provider.id,
+    providerLabel: provider.label,
+    model,
+  })));
+}
+
+function resolveModelChoice(
+  model: string,
+  choices: readonly ModelChoice[],
+  currentProvider: ModelProvider,
+): ModelChoice {
+  const matches = choices.filter((choice) => choice.model === model);
+  const selected = matches.find((choice) => choice.provider === currentProvider) ?? matches[0];
+  if (!selected) {
+    throw new Error(`模型不可用：${model}；当前已配置模型：${choices.map((choice) => choice.model).join('、')}`);
+  }
+  if (matches.length > 1 && !matches.some((choice) => choice.provider === currentProvider)) {
+    throw new Error(`模型名称 ${model} 同时属于多个 Provider，请通过 /model 选择器切换`);
+  }
+  return selected;
+}
 
 function taskStatus(status: string): string {
   return TASK_STATUS_LABELS[status] ?? status;
@@ -382,16 +429,6 @@ export class CommandHandler {
           : info.permissionMode === 'workspace' ? 'workstation' : 'safe'
       );
       const profiles = Object.values(SECURITY_PROFILES);
-      const capabilities = (profile: keyof typeof SECURITY_PROFILES): string => {
-        const value = SECURITY_PROFILES[profile];
-        return [
-          value.shell ? 'Shell' : '无 Shell',
-          value.externalTransactions ? '外部写事务' : '无外部写事务',
-          value.computerUse ? '可配置 Computer Use' : '无 Computer Use',
-          value.trustedWorkspaceMcp ? '受信工作区 MCP' : '无受信工作区 MCP',
-          value.ephemeralSensitiveModelAccess ? '本轮敏感值可发模型 Provider' : '敏感值不发模型',
-        ].join(' · ');
-      };
       const selected = argument || await this.ui.selectSecurityProfile?.(profiles, active);
       if (selected) {
         await this.agent.switchSecurityProfile(selected);
@@ -402,32 +439,41 @@ export class CommandHandler {
             : updated.permissionMode === 'workspace' ? 'workstation' : 'safe'
         ];
         return this.handled(
-          `已将当前对话切换为 ${profile.label} (${profile.id}/${profile.permissionMode})；`
+          `已临时调整当前运行权限为 ${profile.label} (${profile.id}/${profile.permissionMode})；`
           + `${profile.ephemeralSensitiveModelAccess
             ? '认证直接 Owner 本轮提交的敏感值可临时发送给配置模型 Provider；'
-            : '敏感值不会发送给模型 Provider；'}从下一轮开始生效。`,
+            : '敏感值不会发送给模型 Provider；'}从下一轮开始生效，重启后恢复启动配置。`,
         );
       }
       if (this.ui.selectSecurityProfile) return 'handled';
       const effective = info.securityProfile;
       return this.handled([
-        `当前档位  ${SECURITY_PROFILES[active].label} (${active}/${info.permissionMode ?? SECURITY_PROFILES[active].permissionMode})`,
+        `当前权限  ${SECURITY_PROFILES[active].label} (${active}/${info.permissionMode ?? SECURITY_PROFILES[active].permissionMode})`,
         `当前能力  ${effective?.shell ? 'Shell' : '无 Shell'} · ${effective?.externalTransactions ? '外部写事务' : '无外部写事务'} · ${effective?.computerUse ? 'Computer Use 已配置' : 'Computer Use 未配置'} · ${effective?.trustedWorkspaceMcp ? '受信工作区 MCP 已配置' : '受信工作区 MCP 未配置'} · ${effective?.ephemeralSensitiveModelAccess ? '本轮敏感值可发模型 Provider' : '敏感值不发模型'}`,
-        `${active === 'safe' ? '●' : '○'} Safe        只读工作区 · ${capabilities('safe')}`,
-        `${active === 'workstation' ? '●' : '○'} Workstation 工作区可写 · ${capabilities('workstation')}`,
-        `${active === 'full-owner' ? '●' : '○'} Full Owner  当前 OS 用户权限 · ${capabilities('full-owner')}`,
         '',
-        '切换方式：在交互 TUI 中输入 /security 后用 ↑↓ 选择并按 Enter；',
-        '非交互调用可使用 /security safe|workstation|full-owner。',
+        '本机认证 Owner 默认直接工作；外部事件和后台任务仍按来源策略隔离。',
+        '如需临时收紧，可使用 /security safe 或 /security workstation；恢复使用 /security full-owner。',
       ].join('\n'));
     }
     if (command === '/model') {
-      const current = (await this.agent.runtimeInfo()).model;
-      const models = await this.agent.availableModels();
-      const selected = argument || await this.ui.selectModel?.(models, current);
-      if (!selected) return this.ui.selectModel ? 'handled' : this.handled(`当前模型：${current}`);
-      await this.agent.switchModel(selected);
-      return this.handled(`已切换模型：${selected}`);
+      const [info, currentModels] = await Promise.all([
+        this.agent.runtimeInfo(),
+        this.agent.availableModels(),
+      ]);
+      const choices = globalModelChoices(info.configuredProviders, info.provider, currentModels);
+      const selected = argument
+        ? resolveModelChoice(argument, choices, info.provider)
+        : await this.ui.selectModel?.(choices, { provider: info.provider, model: info.model });
+      if (!selected) return this.ui.selectModel ? 'handled' : this.handled(`当前模型：${info.model}`);
+      if (selected.provider === info.provider) {
+        await this.agent.switchModel(selected.model);
+        return this.handled(`已切换模型：${selected.model}`);
+      }
+      if (!this.ui.switchProvider) {
+        throw new Error(`模型 ${selected.model} 属于 ${selected.provider} Provider，当前界面不支持跨 Provider 切换`);
+      }
+      await this.ui.switchProvider(selected.provider, selected.model);
+      return this.handled(`已切换模型：${selected.model}（${selected.provider}）`);
     }
     if (command === '/mode') {
       const current = (await this.agent.runtimeInfo()).mode;

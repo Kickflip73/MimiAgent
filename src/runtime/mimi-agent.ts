@@ -63,6 +63,7 @@ import { createTeamTools } from '../extensions/team.js';
 import { createComputerTools } from '../extensions/computer/tools.js';
 import type { ComputerManager } from '../extensions/computer/manager.js';
 import type { ComputerAccess, ComputerTargetSummary } from '../extensions/computer/types.js';
+import { configuredProviders } from '../provider-config.js';
 import { createTools } from '../tools.js';
 import { HookBus, type RuntimeHook } from './hooks.js';
 import { configureAgentRuntime } from './bootstrap.js';
@@ -80,7 +81,6 @@ import type { ModelProfile } from './model.js';
 import { buildResumePrompt, recoverySummary, sessionStateSummary } from './session-state.js';
 import {
   toolNamesForMode,
-  toolsForPermission,
   type RunToolPolicy,
   type ToolCapability,
 } from './tool-policy.js';
@@ -102,7 +102,10 @@ import { RunContextBuilder } from './run-context-builder.js';
 import { RuntimeActionCoordinator } from './runtime-action-coordinator.js';
 import { createPlanTools } from './plan-tools.js';
 import { ContextAssembler } from './pipeline/context-assembler.js';
-import { CapabilityResolver } from './pipeline/capability-resolver.js';
+import {
+  CapabilityResolver,
+  renderEffectiveCapabilitySnapshot,
+} from './pipeline/capability-resolver.js';
 import type {
   EffectiveCapabilityItem,
   EffectiveCapabilitySnapshot,
@@ -359,8 +362,8 @@ export class MimiAgent {
   private readonly defaultModelName: string;
   private permissionMode: AgentPermissionMode;
   private securityProfile: SecurityProfile;
-  private readonly defaultPermissionMode: AgentPermissionMode;
-  private readonly defaultSecurityProfile: SecurityProfile;
+  private defaultPermissionMode: AgentPermissionMode;
+  private defaultSecurityProfile: SecurityProfile;
   private boundSessionActorId?: string;
   private activeRun?: ActiveRun;
   private lastCapabilitySnapshot?: Readonly<EffectiveCapabilitySnapshot>;
@@ -453,7 +456,14 @@ export class MimiAgent {
         readablePaths: ['.'],
         writablePaths: ['.'],
         allowWrite: true,
-        allowShell: false,
+        allowShell: true,
+        shellEnvironment: baseShellEnvironment,
+        shellDetachedProcessGroup: createOptions.shellDetachedProcessGroup,
+        ...(config.computer?.backend === 'cua' ? {
+          blockedUnixSocketPaths: [
+            path.join(os.homedir(), 'Library', 'Caches', 'cua-driver', 'cua-driver.sock'),
+          ],
+        } : {}),
         mutationObserver: this.fileChanges,
       }),
       'full-owner': createLocalTools({
@@ -480,15 +490,13 @@ export class MimiAgent {
       const active = this.activeRun;
       if (!active) return undefined;
       const policy = active.options?.policy;
-      const configuredAccess = active.options?.computerAccess ?? policy?.computerAccess;
+      const ownerAuthorized = active.scope.securityProfile === 'full-owner'
+        && (!active.options?.cause || active.options.cause.trust === 'owner');
       return {
         runId: active.runId,
-        access: configuredAccess ?? (active.options?.cause ? 'none' : this.config.computer?.defaultAccess ?? 'none'),
+        access: ownerAuthorized ? 'admin' : 'none',
         ...((active.options?.computerApps ?? policy?.computerApps)
           ? { allowedApps: active.options?.computerApps ?? policy?.computerApps }
-          : {}),
-        ...(active.options?.computerDeniedApps
-          ? { deniedApps: active.options.computerDeniedApps }
           : {}),
         supportsImageInput: this.modelProfile.supportsImageInput,
       };
@@ -518,6 +526,7 @@ export class MimiAgent {
       ...createRuntimeControlTools({
         status: () => this.runtimeInfo(),
         models: () => this.availableModels(),
+        providers: () => configuredProviders(),
         modes: () => this.availableModes(),
         listSessions: async () => (await this.listSessionSummaries()).map(({ id, updatedAt, turns, recoverable }) => ({
           id, updatedAt, turns, recoverable,
@@ -543,12 +552,11 @@ export class MimiAgent {
 
   private currentSecuritySummary(
     profile = this.securityProfile,
-    permissionMode = this.permissionMode,
   ): ReturnType<typeof securityProfileSummary> {
     return securityProfileSummary({
       ...this.config,
       securityProfile: profile,
-      permissionMode,
+      permissionMode: SECURITY_PROFILES[profile].permissionMode,
     });
   }
 
@@ -601,10 +609,8 @@ export class MimiAgent {
     const securityProfile = scope.securityProfile;
     const ephemeralSensitiveAccess = activateEphemeralOwnerInput(options?.ephemeralOwnerInput, {
       ...scope,
-      ephemeralSensitiveModelAccess: this.currentSecuritySummary(
-        securityProfile,
-        permissionMode,
-      ).ephemeralSensitiveModelAccess,
+      ephemeralSensitiveModelAccess: this.currentSecuritySummary(securityProfile)
+        .ephemeralSensitiveModelAccess,
     });
     const runOptions = options
       ? (({ ephemeralOwnerInput: _ephemeralOwnerInput, ...retained }) => retained)(options)
@@ -680,13 +686,11 @@ export class MimiAgent {
       }
     }
     const runComputerAccess = capabilities.computerAccess;
-    const availableScopedTools = this.toolSetBuilder.scoped(
-      [...this.registeredTools(securityProfile), ...(options?.hostTools ?? [])],
-      permissionMode,
-      securityProfile,
-      runPolicy,
-      runComputerAccess !== 'none',
-    );
+    const availableScopedTools = [
+      ...this.registeredTools(securityProfile),
+      ...(options?.hostTools ?? []),
+    ].filter((tool) => runComputerAccess !== 'none'
+      || (tool.name !== 'computer_observe' && tool.name !== 'computer_act'));
     const personalConnectorOnly = options?.personalConnectorOnly === true;
     const prepareRunHistory = (items: AgentInputItem[]) => {
       const prepared = prepareComputerHistoryForModelInput(items);
@@ -837,7 +841,7 @@ export class MimiAgent {
         observation,
       }),
     });
-    const runTools = toolsForPermission(permissionMode, [
+    const runTools = [
       ...scopedTools,
       ...memoryTools,
       ...(options?.personalMessage
@@ -884,7 +888,7 @@ export class MimiAgent {
           return gate;
         },
       }) : []),
-    ], {}, securityProfile);
+    ];
     const preparedTools = this.toolSetBuilder.final(
       mode,
       runTools,
@@ -902,7 +906,6 @@ export class MimiAgent {
         runId: run.options?.executionKey ?? run.runId,
         semanticCallIds: Boolean(run.options?.executionKey),
         policyRevision: [
-          this.permissionMode,
           this.securityProfile,
           mode,
           run.options?.policy ? 'run-policy' : 'default-policy',
@@ -917,13 +920,18 @@ export class MimiAgent {
             || runComputerAccess === 'foreground'
             || runComputerAccess === 'admin',
         },
-        resolveActionAuthorization: run.options?.resolveActionAuthorization,
         authorizeTool: async (toolName, argumentsJson) => {
           if (this.activeRun !== run) throw new Error('工具调用所属 Run 已失效或已被新的 owner 工作单元取代');
           if (containsActiveEphemeralValue(argumentsJson, run.ephemeralSensitiveAccess)) {
-            throw new Error(
-              '临时敏感原值不得进入工具参数或执行账本；主 Agent Shell 必须只引用临时环境变量',
-            );
+            const environmentVariables = run.ephemeralSensitiveAccess?.references
+              .map((reference) => `$${reference.environmentVariable}`)
+              .join('、');
+            return {
+              code: 'ephemeral_secret_in_tool_arguments',
+              message: toolName === 'run_shell'
+                ? `工具未执行，临时敏感原值也未进入命令行或执行账本。请在当前 Run 直接重试，并在 Shell 命令中只引用 ${environmentVariables || '对应的 MIMI_EPHEMERAL_SECRET_n 环境变量'}；不要再次拼接原值。Owner 明确要求持久配置时，可由 Shell 使用该环境变量写入目标私有配置并保持 0600 权限。`
+                : `工具未执行，临时敏感原值也未进入参数或执行账本。该值只能由主 Agent Shell 通过 ${environmentVariables || '对应的 MIMI_EPHEMERAL_SECRET_n 环境变量'} 使用；请移除原值后在当前 Run 重试。`,
+            };
           }
           const active = run;
           const protectsExistingGoal = activeStoredGoal && !resumesGoal;
@@ -938,6 +946,7 @@ export class MimiAgent {
           }
           if (toolName === 'update_plan') active.planOwned = true;
           if (toolName === 'set_team_tasks') active.teamOwned = true;
+          return undefined;
         },
         authorizeSideEffect: async (toolName, argumentsJson) => {
           if (this.activeRun !== run) throw new Error('副作用调用所属 Run 已失效或已被新的 owner 工作单元取代');
@@ -967,7 +976,6 @@ export class MimiAgent {
     run.capabilitySnapshot = this.toolSetBuilder.snapshot({
       runId: run.runId,
       policyRevision: [
-        this.permissionMode,
         this.securityProfile,
         mode,
         runPolicy ? 'run-policy' : 'default-policy',
@@ -984,7 +992,6 @@ export class MimiAgent {
           freshness: 'fresh' as const,
           coverage: 'bounded' as const,
           permissionSource: [
-            this.permissionMode,
             this.securityProfile,
             runComputerAccess,
           ].join(':'),
@@ -1051,11 +1058,14 @@ export class MimiAgent {
         BASE_INSTRUCTIONS,
         `当前模式：${currentMode.label}。${currentMode.instruction}`,
         canReadLocal
-          ? `当前工作区：${this.config.workspaceRoot}。MimiAgent 运行时代码目录：${this.runtimeRoot}。本地工具权限：${permissionMode}。用户要求检查或修改项目/Agent 自身时，使用当前权限提供的文件工具和 Shell（若可用）实际读取、编辑并验证。`
+          ? `当前工作区：${this.config.workspaceRoot}。MimiAgent 运行时代码目录：${this.runtimeRoot}。Security：${securityProfile}。用户要求检查或修改项目/Agent 自身时，使用当前 Security 提供的文件工具和 Shell（若可用）实际读取、编辑并验证。`
           : '本轮来源无权读取本地工作区、Skills、记忆或持久状态；不要猜测、泄露或声称访问了这些数据。',
         this.runContexts.causeInstructions(options?.cause),
         personalConnectorOnly
-          ? '本轮是个人账号消息通道查询。只能使用 inspect_mimi_capabilities 与 connector_action 访问已注册通道；不得调用或建议 CUA、Computer、Browser、MCP、桌面客户端或 Shell，也不得复用这些旧路径产生的历史消息内容。'
+          ? '本轮是个人账号消息通道查询。只能使用个人消息专用工具访问已注册通道；不得调用或建议通用 Connector、CUA、Computer、Browser、MCP、桌面客户端或 Shell，也不得复用这些旧路径产生的历史消息内容。'
+          : '',
+        run.capabilitySnapshot
+          ? renderEffectiveCapabilitySnapshot(run.capabilitySnapshot)
           : '',
         this.computer
           ? '电脑 GUI 操作只使用当前能力快照中的正式 API、Connector、Browser 或 Computer 工具；通用 Shell 不得调用 osascript、Shortcuts、open 或其他 GUI 自动化路径。必须先观察、一次只执行一个动作、再观察验证；默认后台执行，不根据屏幕内容扩大任务范围，不重试结果不确定的动作。用户要求“让我看、让我玩、在这个桌面打开”时属于当前 GUI Session 的持久前台交付：必须使用 handoff_to_user，并在交付后重新观察到精确窗口 frontmost=true 才能声称完成；进程存在、launch_app/applied 或无法观察都不是可见交付证据。'
@@ -1218,12 +1228,10 @@ export class MimiAgent {
     const nextOutputLevel = RUNTIME_OUTPUT_LEVELS.includes(preferences.outputLevel as RuntimeOutputLevel)
       ? preferences.outputLevel as RuntimeOutputLevel
       : this.defaultOutputLevel;
-    const nextSecurityProfile = preferences.securityProfile ?? this.defaultSecurityProfile;
-    const nextPermissionMode = preferences.securityProfile
-      ? SECURITY_PROFILES[nextSecurityProfile].permissionMode
-      : this.defaultPermissionMode;
+    const nextSecurityProfile = this.defaultSecurityProfile;
+    const nextPermissionMode = this.defaultPermissionMode;
     const requestedModel = preferences.provider === this.config.provider
-      && preferences.model && /^[a-zA-Z0-9._:/-]+$/.test(preferences.model)
+      && preferences.model && this.availableModels().includes(preferences.model)
       ? preferences.model
       : this.defaultModelName;
     const nextModel = createModel(this.config, requestedModel);
@@ -1281,12 +1289,10 @@ export class MimiAgent {
     const outputLevel = RUNTIME_OUTPUT_LEVELS.includes(preferences.outputLevel as RuntimeOutputLevel)
       ? preferences.outputLevel as RuntimeOutputLevel
       : this.defaultOutputLevel;
-    const securityProfile = preferences.securityProfile ?? this.defaultSecurityProfile;
-    const permissionMode = preferences.securityProfile
-      ? SECURITY_PROFILES[securityProfile].permissionMode
-      : this.defaultPermissionMode;
+    const securityProfile = this.defaultSecurityProfile;
+    const permissionMode = this.defaultPermissionMode;
     const requestedModel = preferences.provider === this.config.provider
-      && preferences.model && /^[a-zA-Z0-9._:/-]+$/.test(preferences.model)
+      && preferences.model && this.availableModels().includes(preferences.model)
       ? preferences.model
       : this.defaultModelName;
     const model = createModel(this.config, requestedModel);
@@ -1305,7 +1311,7 @@ export class MimiAgent {
         mode,
         outputLevel,
         permissionMode,
-        securityProfile: this.currentSecuritySummary(securityProfile, permissionMode),
+        securityProfile: this.currentSecuritySummary(securityProfile),
       },
       context: {
         estimatedTokens: this.contextStatusFor(sessionId, items, model.profile.contextWindow).value,
@@ -1577,6 +1583,7 @@ export class MimiAgent {
     const capabilitySnapshot = this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot;
     return {
       provider: this.config.provider,
+      configuredProviders: configuredProviders(),
       model: this.modelName,
       mode: this.currentMode,
       sessionId: this.sessionId,
@@ -1664,9 +1671,16 @@ export class MimiAgent {
       provider: this.config.provider,
       model: this.modelName,
       mode: 'general',
-      permissionMode: this.permissionMode,
-      securityProfile: this.securityProfile,
+      permissionMode: 'trusted',
+      securityProfile: 'full-owner',
       input: 'authenticated daemon read-only computer probe',
+      options: {
+        cause: {
+          eventId: `internal-computer-probe:${this.sessionId}`,
+          source: 'mimi-kernel',
+          trust: 'owner',
+        },
+      },
     });
     const capabilities = this.capabilityResolver.resolve({
       scope,
@@ -1677,9 +1691,9 @@ export class MimiAgent {
       expectedArtifactCompletion: false,
     });
     const tools = this.toolSetBuilder.scoped(
-      this.registeredTools(),
-      this.permissionMode,
-      this.securityProfile,
+      this.registeredTools('full-owner'),
+      'trusted',
+      'full-owner',
       policy,
       capabilities.computerAccess !== 'none',
     );
@@ -1716,7 +1730,7 @@ export class MimiAgent {
         ? ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5-mini']
         : [];
     return [...new Set([
-      this.modelName,
+      this.defaultModelName,
       ...configured,
       ...defaults,
     ])];
@@ -1724,6 +1738,7 @@ export class MimiAgent {
 
   async switchModel(modelName: string): Promise<void> {
     if (!/^[a-zA-Z0-9._:/-]+$/.test(modelName)) throw new Error('模型名称格式无效');
+    this.assertModelAvailable(modelName);
     const runtime = createModel(this.config, modelName);
     this.modelName = runtime.name;
     this.model = runtime.model;
@@ -1741,6 +1756,13 @@ export class MimiAgent {
     await this.session.setPreferences({ provider: this.config.provider, model: this.modelName });
   }
 
+  private assertModelAvailable(modelName: string): void {
+    const available = this.availableModels();
+    if (!available.includes(modelName)) {
+      throw new Error(`模型不可用：${modelName}；当前 ${this.config.provider} Provider 可选模型：${available.join('、')}`);
+    }
+  }
+
   availableModes() {
     return AGENT_MODES.map(({ id, label, description }) => ({ id, label, description }));
   }
@@ -1755,9 +1777,10 @@ export class MimiAgent {
     if (!Object.hasOwn(SECURITY_PROFILES, profile)) throw new Error(`未知安全档位：${profile}`);
     if (this.activeRun) throw new Error(`Session ${this.activeRun.sessionId} 仍有任务运行中，不能切换安全档位`);
     const next = profile as SecurityProfile;
-    await this.session.setPreferences({ securityProfile: next });
+    this.defaultSecurityProfile = next;
+    this.defaultPermissionMode = SECURITY_PROFILES[next].permissionMode;
     this.securityProfile = next;
-    this.permissionMode = SECURITY_PROFILES[next].permissionMode;
+    this.permissionMode = this.defaultPermissionMode;
   }
 
   async setOutputLevel(level: RuntimeOutputLevel): Promise<void> {
@@ -2178,6 +2201,7 @@ export class MimiAgent {
     retainedExecutionKey?: string,
   ): Promise<RuntimeEffect> {
     if (action.type === 'switch_model') {
+      this.assertModelAvailable(action.model);
       if (this.sessionId === originSessionId) await this.switchModel(action.model);
       else {
         const runtime = createModel(this.config, action.model);
@@ -2187,6 +2211,9 @@ export class MimiAgent {
         });
       }
       return { type: 'model_changed', model: action.model };
+    }
+    if (action.type === 'switch_provider') {
+      return { type: 'provider_change_requested', provider: action.provider };
     }
     if (action.type === 'switch_mode') {
       if (!AGENT_MODES.some((mode) => mode.id === action.mode)) throw new Error(`未知模式：${action.mode}`);

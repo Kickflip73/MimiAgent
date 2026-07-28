@@ -1,5 +1,15 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, stat, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -24,6 +34,10 @@ import { prepareComputerHistoryForModelInput } from '../src/runtime/model.js';
 import { decideEvent } from '../src/daemon/policy.js';
 import { ComputerArtifactStore } from '../src/extensions/computer/artifact-store.js';
 import { CuaDriverClient } from '../src/extensions/computer/cua-driver-client.js';
+import {
+  CuaDriverLifecycle,
+  resolveCuaDriverAppBundle,
+} from '../src/extensions/computer/cua-driver-lifecycle.js';
 
 const target: ComputerTargetSummary = {
   bundleId: 'com.example.editor', pid: 42, windowId: 7, appName: 'Editor', title: 'Document',
@@ -87,6 +101,15 @@ async function observeWindow(manager: ComputerManager, authority: ComputerRunAut
     scope: 'window', target: { bundleId: target.bundleId, pid: target.pid, windowId: target.windowId },
     includeScreenshot: false, maxElements: 400, maxDepth: 12,
   }) as Promise<{ observationId: string }>;
+}
+
+async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('condition was not met before timeout');
 }
 
 test('read-only Computer probe observes one allowlisted background window and verifies target stability', async () => {
@@ -291,16 +314,13 @@ test('redacts type_text plaintext from semantic and persisted ledger arguments',
   const [wrapped] = withExecutionLedger([act], ledger, () => ({
     sessionId: 's',
     runId: 'r',
-    resolveActionAuthorization: async (intent, authorizationId) => ({
-      schemaVersion: 1,
-      authorizationId,
-      intentId: intent.intentId,
-      targetRef: intent.targetRef,
-      payloadDigest: intent.payloadDigest,
-      policyRevision: intent.policyRevision,
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      maxUses: 1,
-    }),
+    guardedActionContext: {
+      ownerAuthenticated: true,
+      exactTarget: true,
+      lowRisk: false,
+      reversible: false,
+      boundedLocal: true,
+    },
   }));
   assert.ok(wrapped && 'invoke' in wrapped);
   const actionResult = await wrapped.invoke(
@@ -354,7 +374,7 @@ test('production ledger wiring keeps exact low-risk owner launch on the guarded 
   assert.ok(untrusted && 'invoke' in untrusted);
   await assert.rejects(
     untrusted.invoke(new RunContext({}), input, { toolCall: { callId: 'launch-external' } } as never),
-    /缺少一次性授权/,
+    /当前 Security 或精确目标校验未授权/,
   );
   const [urlLaunch] = withExecutionLedger(
     [act],
@@ -362,18 +382,16 @@ test('production ledger wiring keeps exact low-risk owner launch on the guarded 
     () => run,
   );
   assert.ok(urlLaunch && 'invoke' in urlLaunch);
-  await assert.rejects(
-    urlLaunch.invoke(new RunContext({}), JSON.stringify({
-      action: {
-        type: 'launch_app',
-        bundleId: target.bundleId,
-        urls: ['https://example.invalid/action'],
-        newInstance: false,
-      },
-    }), { toolCall: { callId: 'launch-url' } } as never),
-    /缺少一次性授权/,
-  );
-  assert.equal(backend.actions.length, 1);
+  const urlResult = await urlLaunch.invoke(new RunContext({}), JSON.stringify({
+    action: {
+      type: 'launch_app',
+      bundleId: target.bundleId,
+      urls: ['https://example.invalid/action'],
+      newInstance: false,
+    },
+  }), { toolCall: { callId: 'launch-url' } } as never) as Record<string, unknown>;
+  assert.equal(urlResult.status, 'applied');
+  assert.equal(backend.actions.length, 2);
 });
 
 test('production ledger wiring permits an authenticated owner bounded background UI action', async () => {
@@ -413,7 +431,7 @@ test('production ledger wiring permits an authenticated owner bounded background
   assert.equal(backend.actions[0]?.element?.index, 1);
 });
 
-test('a fresh Computer observation is target evidence, not high-risk authorization', async () => {
+test('Full Owner uses a fresh Computer observation without a second approval layer', async () => {
   const { backend, manager, authority } = await fixture();
   const observed = await observeWindow(manager, authority);
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-evidence-only-'));
@@ -431,14 +449,12 @@ test('a fresh Computer observation is target evidence, not high-risk authorizati
   }));
   assert.ok(wrapped && 'invoke' in wrapped);
 
-  await assert.rejects(
-    wrapped.invoke(new RunContext({}), JSON.stringify({
-      observationId: observed.observationId,
-      action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
-    }), { toolCall: { callId: 'high-risk-click' } } as never),
-    /缺少一次性授权/,
-  );
-  assert.equal(backend.actions.length, 0);
+  const result = await wrapped.invoke(new RunContext({}), JSON.stringify({
+    observationId: observed.observationId,
+    action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
+  }), { toolCall: { callId: 'high-risk-click' } } as never) as Record<string, unknown>;
+  assert.equal(result.status, 'applied');
+  assert.equal(backend.actions.length, 1);
 });
 
 test('removes completed Computer screenshots from later model history without splitting tool pairs', () => {
@@ -634,6 +650,99 @@ printf '{"content":[],"structuredContent":{"ready":true}}\\n'
   const client = new CuaDriverClient(fixture, 2_000);
 
   assert.equal((await client.health()).version, '0.12.3');
+});
+
+test('Cua lifecycle starts a missing daemon and restores it after a crash', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-lifecycle-'));
+  const state = path.join(root, 'daemon-ready');
+  const command = path.join(root, 'cua-driver.mjs');
+  await writeFile(command, `#!/usr/bin/env node
+import { existsSync } from 'node:fs';
+if (process.argv[2] === '--version') {
+  process.stdout.write('cua-driver 0.12.3\\n');
+  process.exit(0);
+}
+if (!existsSync(${JSON.stringify(state)})) {
+  process.stderr.write('Cua Driver daemon is not running on cua-driver.sock\\n');
+  process.exit(1);
+}
+process.stdout.write('{"content":[],"structuredContent":{"overall":"ok"}}\\n');
+`, { mode: 0o700 });
+  const lifecycle = new CuaDriverLifecycle(command, 500, {
+    monitorIntervalMs: 20,
+    startupTimeoutMs: 500,
+    probeIntervalMs: 10,
+    launcher: () => writeFile(state, 'ready'),
+  });
+
+  assert.equal((await lifecycle.start()).ready, true);
+  assert.equal(lifecycle.status().launchAttempts, 1);
+  assert.equal(lifecycle.status().recoveries, 1);
+
+  await rm(state);
+  await waitUntil(() => lifecycle.status().recoveries === 2);
+  assert.equal(lifecycle.status().ready, true);
+  assert.equal(lifecycle.status().launchAttempts, 2);
+  lifecycle.stop();
+  assert.equal(lifecycle.status().state, 'stopped');
+});
+
+test('Cua lifecycle resolves the application bundle through the installed CLI symlink', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-app-bundle-'));
+  const executable = path.join(root, 'CuaDriver.app', 'Contents', 'MacOS', 'cua-driver');
+  const command = path.join(root, 'bin', 'cua-driver');
+  await mkdir(path.dirname(executable), { recursive: true });
+  await mkdir(path.dirname(command), { recursive: true });
+  await writeFile(executable, '#!/bin/sh\n', { mode: 0o700 });
+  await symlink(executable, command);
+
+  assert.equal(
+    resolveCuaDriverAppBundle(command),
+    path.join(await realpath(root), 'CuaDriver.app'),
+  );
+});
+
+test('Cua client recovers read calls but never replays an uncertain action', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-recovery-'));
+  const state = path.join(root, 'daemon-ready');
+  const calls = path.join(root, 'calls.log');
+  const command = path.join(root, 'cua-driver.mjs');
+  await writeFile(command, `#!/usr/bin/env node
+import { appendFileSync, existsSync } from 'node:fs';
+if (process.argv[2] === '--version') {
+  process.stdout.write('cua-driver 0.12.3\\n');
+  process.exit(0);
+}
+const name = process.argv[3] || '';
+appendFileSync(${JSON.stringify(calls)}, name + '\\n');
+if (!existsSync(${JSON.stringify(state)})) {
+  process.stderr.write('Cua Driver daemon is not running on cua-driver.sock\\n');
+  process.exit(1);
+}
+process.stdout.write('{"content":[],"structuredContent":{"status":"applied"}}\\n');
+`, { mode: 0o700 });
+  const lifecycle = new CuaDriverLifecycle(command, 500, {
+    startupTimeoutMs: 500,
+    probeIntervalMs: 10,
+    launcher: () => writeFile(state, 'ready'),
+  });
+  const client = new CuaDriverClient(command, 500, lifecycle);
+
+  assert.equal((await client.health()).version, '0.12.3');
+  assert.equal(lifecycle.status().recoveries, 1);
+  await rm(state);
+  await assert.rejects(
+    () => client.act(
+      { id: 'action-session' },
+      { input: { action: { type: 'wait', milliseconds: 1 } } },
+    ),
+    /结果不确定；不会自动重试/,
+  );
+  await waitUntil(() => lifecycle.status().ready);
+  const actionCalls = (await readFile(calls, 'utf8'))
+    .split('\n')
+    .filter((name) => name === 'wait');
+  assert.equal(actionCalls.length, 1);
 });
 
 test('FileSession never persists computer type_text plaintext', async () => {

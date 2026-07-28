@@ -39,6 +39,9 @@ test('exposes CLI-equivalent runtime controls to the Agent', async () => {
   const tools = createRuntimeControlTools({
     status: () => ({ model: 'demo-model' }),
     models: () => ['demo-model', 'next-model'],
+    providers: () => [
+      { id: 'deepseek', label: 'DeepSeek', model: 'deepseek-v4-pro', models: ['deepseek-v4-pro'] },
+    ],
     modes: () => [{ id: 'ultra', label: 'Ultra Team', description: '大型任务' }],
     listSessions: () => [{ id: 'demo' }],
     history: async () => [],
@@ -51,7 +54,7 @@ test('exposes CLI-equivalent runtime controls to the Agent', async () => {
   };
 
   assert.deepEqual(tools.map((tool) => tool.name), [
-    'runtime_status', 'switch_model', 'switch_mode', 'set_output_level', 'list_sessions',
+    'runtime_status', 'switch_model', 'switch_provider', 'switch_mode', 'set_output_level', 'list_sessions',
     'get_session_history', 'switch_session', 'new_session', 'clear_session', 'reload_mcp', 'request_exit',
   ]);
   const descriptions = tools.map((tool) => (
@@ -61,6 +64,17 @@ test('exposes CLI-equivalent runtime controls to the Agent', async () => {
   assert.deepEqual(await invoke('switch_model', { model: 'next-model' }), {
     model: 'next-model', effective: 'next_turn', available: ['demo-model', 'next-model'],
   });
+  assert.match(
+    String(await invoke('switch_model', { model: 'kimi-k3' })),
+    /模型不可用.*kimi-k3.*demo-model.*next-model/,
+  );
+  assert.deepEqual(await invoke('switch_provider', { provider: 'deepseek' }), {
+    provider: 'deepseek',
+    effective: 'after_current_turn',
+    available: [
+      { id: 'deepseek', label: 'DeepSeek', model: 'deepseek-v4-pro', models: ['deepseek-v4-pro'] },
+    ],
+  });
   assert.deepEqual(await invoke('switch_mode', { mode: 'ultra' }), {
     mode: 'ultra', effective: 'next_turn',
     available: [{ id: 'ultra', label: 'Ultra Team', description: '大型任务' }],
@@ -69,6 +83,7 @@ test('exposes CLI-equivalent runtime controls to the Agent', async () => {
   await invoke('switch_session', { sessionId: 'archive' });
   assert.deepEqual(actions, [
     { type: 'switch_model', model: 'next-model' },
+    { type: 'switch_provider', provider: 'deepseek' },
     { type: 'switch_mode', mode: 'ultra' },
     { type: 'set_output_level', level: 'trace' },
     { type: 'switch_session', sessionId: 'archive' },
@@ -116,7 +131,7 @@ test('process inspection is a bounded read-only host capability outside the Shel
 
 test('does not expose another session unless the user requested session access', async () => {
   const tools = createRuntimeControlTools({
-    status: () => ({}), models: () => [], modes: () => [],
+    status: () => ({}), models: () => [], providers: () => [], modes: () => [],
     listSessions: () => [{ id: 'private-session', preview: 'PRIVATE_SENTINEL' }],
     history: async () => [], canAccessSessions: () => false,
     schedule: () => undefined,
@@ -129,7 +144,7 @@ test('does not expose another session unless the user requested session access',
 test('does not let the model clear a Session without explicit user intent', async () => {
   const actions: RuntimeAction[] = [];
   const tools = createRuntimeControlTools({
-    status: () => ({}), models: () => [], modes: () => [],
+    status: () => ({}), models: () => [], providers: () => [], modes: () => [],
     listSessions: () => [], history: async () => [], canClearSession: () => false,
     schedule: (action) => actions.push(action),
   });

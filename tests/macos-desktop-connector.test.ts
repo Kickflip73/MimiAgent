@@ -10,6 +10,7 @@ interface ProtocolMessage {
   type: string;
   id?: string;
   ok?: boolean;
+  uncertain?: boolean;
   externalId?: string;
   result?: Record<string, unknown>;
   payload?: Record<string, unknown>;
@@ -19,6 +20,7 @@ interface ProtocolMessage {
 interface MockState {
   clipboard: string;
   reads: number;
+  activations: string[];
 }
 
 async function waitFor(
@@ -76,7 +78,7 @@ test('macOS desktop connector controls apps with argv-only actions and bounded c
   const mockOsascript = path.join(root, 'mock-osascript.mjs');
   const mockOpen = path.join(root, 'mock-open.mjs');
   const watchStateFile = path.join(root, '.mimi-agent', 'daemon', 'desktop-clipboard.json');
-  await writeFile(stateFile, JSON.stringify({ clipboard: 'existing clipboard', reads: 0 }));
+  await writeFile(stateFile, JSON.stringify({ clipboard: 'existing clipboard', reads: 0, activations: [] }));
   await writeFile(mockOsascript, `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs';
 const stateFile = ${JSON.stringify(stateFile)};
@@ -102,6 +104,33 @@ else if (action === 'clipboard_read') {
   state.clipboard = payload.text;
   writeFileSync(stateFile, JSON.stringify(state));
   process.stdout.write(JSON.stringify({ written: true, charCount: payload.text.length }));
+} else if (action === 'activate_app') {
+  const state = JSON.parse(readFileSync(stateFile, 'utf8'));
+  state.activations.push(target);
+  writeFileSync(stateFile, JSON.stringify(state));
+  process.stdout.write(JSON.stringify({ activated: true, application: target }));
+} else if (action === 'frontmost_app') {
+  process.stdout.write(JSON.stringify({
+    name: 'Google Chrome',
+    bundleIdentifier: 'com.google.Chrome',
+    pid: 4321,
+    frontmost: true,
+    visible: true,
+    backgroundOnly: false
+  }));
+} else if (action === 'list_windows' && target === 'com.google.Chrome') {
+  process.stdout.write(JSON.stringify({
+    app: {
+      name: 'Google Chrome',
+      bundleIdentifier: 'com.google.Chrome',
+      pid: 4321,
+      frontmost: true,
+      visible: true,
+      backgroundOnly: false
+    },
+    windows: [{ index: 0, title: 'Local game', role: 'AXWindow', subrole: '', position: [0, 0], size: [800, 600], visible: true }],
+    truncated: false
+  }));
 } else {
   process.stdout.write(JSON.stringify({ action, target, payload }));
 }
@@ -204,6 +233,43 @@ writeFileSync(openLog, JSON.stringify(args));
     assert.equal(opened.ok, true, opened.error);
     assert.deepEqual(opened.result, { opened: true, item: hostileUrl, application: hostileApplication });
     assert.deepEqual(JSON.parse(await readFile(openLog, 'utf8')), ['-a', hostileApplication, hostileUrl]);
+
+    const visible = await call('open-visible-1', 'open_visible', '/tmp/local-game/index.html', {
+      bundleId: 'com.google.Chrome',
+      verificationTimeoutMs: 1_000,
+    });
+    assert.equal(visible.ok, true, visible.error);
+    assert.deepEqual(visible.result, {
+      outcome: 'confirmed',
+      opened: true,
+      visible: true,
+      frontmost: true,
+      item: '/tmp/local-game/index.html',
+      bundleId: 'com.google.Chrome',
+      pid: 4321,
+      windowIndex: 0,
+      title: 'Local game',
+    });
+    assert.deepEqual(
+      JSON.parse(await readFile(openLog, 'utf8')),
+      ['-b', 'com.google.Chrome', '/tmp/local-game/index.html'],
+    );
+    assert.deepEqual((await readState(stateFile)).activations, ['com.google.Chrome']);
+
+    const legacyAppField = await call('open-visible-app-1', 'open_visible', hostileUrl, {
+      app: 'Google Chrome',
+      bundleId: 'com.google.Chrome',
+    });
+    assert.equal(legacyAppField.ok, false);
+    assert.match(legacyAppField.error ?? '', /unsupported fields: app/);
+
+    const notVisible = await call('open-visible-timeout-1', 'open_visible', hostileUrl, {
+      bundleId: 'com.apple.Safari',
+      verificationTimeoutMs: 250,
+    });
+    assert.equal(notVisible.ok, false);
+    assert.equal(notVisible.uncertain, true);
+    assert.match(notVisible.error ?? '', /visible confirmation timed out/);
 
     const read = await call('clipboard-read-1', 'clipboard_read', 'clipboard', { maxChars: 10 });
     assert.equal(read.result?.text, externalClipboard.slice(0, 10));

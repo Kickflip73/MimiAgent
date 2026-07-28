@@ -12,6 +12,10 @@ import type {
   ComputerObserveInput,
   ComputerTargetSummary,
 } from './types.js';
+import {
+  isCuaDriverUnavailable,
+  type CuaDriverLifecycle,
+} from './cua-driver-lifecycle.js';
 
 const execFileAsync = promisify(execFile);
 const contentSchema = z.object({
@@ -109,6 +113,7 @@ export class CuaDriverClient implements ComputerBackend {
   constructor(
     private readonly command: string,
     private readonly timeoutMs: number,
+    private readonly lifecycle?: CuaDriverLifecycle,
   ) {}
 
   async health(signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -308,31 +313,16 @@ export class CuaDriverClient implements ComputerBackend {
     await this.ensureCompatibleVersion(signal);
     const argumentsJson = JSON.stringify(Object.fromEntries(Object.entries(argumentsValue).filter(([, value]) => value !== undefined)));
     try {
-      const { stdout } = await execFileAsync(this.command, ['call', name, argumentsJson], {
-        encoding: 'utf8', timeout: this.timeoutMs, maxBuffer: name.includes('state') || name === 'zoom' ? 16 * 1024 * 1024 : 1024 * 1024,
-        signal,
-      });
-      const parsed = JSON.parse(stdout) as unknown;
-      const envelopeCandidate = envelopeSchema.safeParse(parsed);
-      if (!envelopeCandidate.success || !record(parsed).content) return rawDriverResult(parsed);
-      const envelope = envelopeCandidate.data;
-      const text = envelope.content.filter((item) => item.type === 'text').map((item) => item.text ?? '').join('\n');
-      if (envelope.isError) {
-        if (action && /background.*(unsupported|unavailable|occluded)/i.test(text)) {
-          return { structured: { status: 'background_unsupported', reason: text.slice(0, 1_000) } };
-        }
-        const rejected = new Error(`Cua Driver 拒绝 ${name}：${text.slice(0, 1_000)}`);
-        rejected.name = 'CuaDriverRejectedError';
-        throw rejected;
-      }
-      let structured = envelope.structuredContent;
-      if (structured === undefined) {
-        const candidate = text.replace(/^✅[^\n]*\n?/, '').trim();
-        try { structured = candidate ? JSON.parse(candidate) : {}; } catch { structured = { summary: text.slice(0, 2_000) }; }
-      }
-      const image = envelope.content.find((item) => item.type === 'image' && item.data);
-      return { structured, ...(image?.data ? { image: { data: image.data, mediaType: image.mimeType ?? 'image/png' } } : {}) };
+      return await this.callOnce(name, argumentsJson, signal, action);
     } catch (error) {
+      if (this.lifecycle && isCuaDriverUnavailable(error)) {
+        if (action) {
+          this.lifecycle.requestRecovery();
+        } else {
+          await this.lifecycle.ensureReady();
+          return this.callOnce(name, argumentsJson, signal, false);
+        }
+      }
       if (action && (!(error instanceof Error) || error.name !== 'CuaDriverRejectedError')) {
         const uncertain = new Error('Cua Driver 动作结果通道失败，结果不确定；不会自动重试', { cause: error });
         uncertain.name = 'ComputerActionUncertainError';
@@ -340,6 +330,38 @@ export class CuaDriverClient implements ComputerBackend {
       }
       throw new Error(`Cua Driver ${name} 调用失败`, { cause: error });
     }
+  }
+
+  private async callOnce(
+    name: string,
+    argumentsJson: string,
+    signal: AbortSignal | undefined,
+    action: boolean,
+  ): Promise<DriverResult> {
+    const { stdout } = await execFileAsync(this.command, ['call', name, argumentsJson], {
+      encoding: 'utf8', timeout: this.timeoutMs, maxBuffer: name.includes('state') || name === 'zoom' ? 16 * 1024 * 1024 : 1024 * 1024,
+      signal,
+    });
+    const parsed = JSON.parse(stdout) as unknown;
+    const envelopeCandidate = envelopeSchema.safeParse(parsed);
+    if (!envelopeCandidate.success || !record(parsed).content) return rawDriverResult(parsed);
+    const envelope = envelopeCandidate.data;
+    const text = envelope.content.filter((item) => item.type === 'text').map((item) => item.text ?? '').join('\n');
+    if (envelope.isError) {
+      if (action && /background.*(unsupported|unavailable|occluded)/i.test(text)) {
+        return { structured: { status: 'background_unsupported', reason: text.slice(0, 1_000) } };
+      }
+      const rejected = new Error(`Cua Driver 拒绝 ${name}：${text.slice(0, 1_000)}`);
+      rejected.name = 'CuaDriverRejectedError';
+      throw rejected;
+    }
+    let structured = envelope.structuredContent;
+    if (structured === undefined) {
+      const candidate = text.replace(/^✅[^\n]*\n?/, '').trim();
+      try { structured = candidate ? JSON.parse(candidate) : {}; } catch { structured = { summary: text.slice(0, 2_000) }; }
+    }
+    const image = envelope.content.find((item) => item.type === 'image' && item.data);
+    return { structured, ...(image?.data ? { image: { data: image.data, mediaType: image.mimeType ?? 'image/png' } } : {}) };
   }
 
 

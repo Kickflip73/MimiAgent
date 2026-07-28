@@ -11,7 +11,6 @@ import {
   ActionFailedSafeError,
   ActionIntentUncertainError,
   type ActionIntent,
-  type OneTimeActionAuthorization,
 } from '../core/action-intent.js';
 import {
   TOOL_ACTION_INTENT,
@@ -26,7 +25,10 @@ interface RunIdentity {
   sessionId: string;
   runId: string;
   semanticCallIds?: boolean;
-  authorizeTool?: (toolName: string, argumentsJson: string) => Promise<void>;
+  authorizeTool?: (
+    toolName: string,
+    argumentsJson: string,
+  ) => Promise<{ code: string; message: string } | undefined>;
   authorizeSideEffect?: (toolName: string, argumentsJson: string) => Promise<void>;
   sanitizeResult?: <T>(value: T) => T;
   sanitizeError?: (error: unknown) => unknown;
@@ -38,10 +40,6 @@ interface RunIdentity {
     reversible: boolean;
     boundedLocal?: boolean;
   };
-  resolveActionAuthorization?: (
-    intent: ActionIntent,
-    authorizationId: string,
-  ) => Promise<OneTimeActionAuthorization | undefined>;
 }
 
 type InvokableTool = Tool & {
@@ -133,7 +131,15 @@ export function withExecutionLedger(
       ...tool,
       invoke: async (runContext, input, details) => {
         const run = currentRun();
-        await run?.authorizeTool?.(tool.name, input);
+        const rejection = await run?.authorizeTool?.(tool.name, input);
+        if (rejection) {
+          return {
+            mimiStatus: 'tool_input_rejected',
+            retryable: true,
+            code: rejection.code,
+            message: rejection.message,
+          };
+        }
         const invokeSanitized = async () => {
           try {
             const result = await originalInvoke(runContext, input, details);
@@ -190,20 +196,6 @@ export function withExecutionLedger(
             policyRevision,
             status: 'not_started' as const,
           };
-          let authorization = action.authorizationId ? {
-            schemaVersion: 1 as const,
-            authorizationId: action.authorizationId,
-            intentId: intent.intentId,
-            targetRef: intent.targetRef,
-            payloadDigest: intent.payloadDigest,
-            policyRevision,
-            expiresAt: action.authorizationExpiresAt
-              ?? new Date(Date.now() + 5 * 60_000).toISOString(),
-            maxUses: 1 as const,
-          } : undefined;
-          if (!authorization && action.requestedAuthorizationId && run.resolveActionAuthorization) {
-            authorization = await run.resolveActionAuthorization(intent, action.requestedAuthorizationId);
-          }
           const receipt = await ledger.executeActionIntent(
             run.sessionId,
             run.runId,
@@ -221,7 +213,7 @@ export function withExecutionLedger(
                   lowRisk: false,
                   reversible: false,
                 },
-            authorization,
+            undefined,
             async () => {
               const output = await ledger.executeOnce({
                 sessionId: run.sessionId,

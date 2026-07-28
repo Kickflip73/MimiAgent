@@ -79,16 +79,21 @@ export function activateEphemeralOwnerInput(
     throw new Error('临时敏感输入 lease 结构无效');
   }
   const cause = scope.cause;
-  if (
-    !cause
+  // The broker already consumed this lease exactly once by Event + Session +
+  // reference fingerprint. Runtime only needs to preserve the authorization
+  // boundary: a direct authenticated Owner Run in that same Session. Requiring
+  // reconstructed route metadata (Event/source/profile) to remain byte-for-byte
+  // identical here makes legitimate Owner input fail after host routing without
+  // adding another secret-isolation boundary.
+  const provenanceMismatch = (
+    lease.provenance.trust !== 'owner'
+    || !isDirectOwnerSource(lease.provenance.source)
+    || !cause
     || cause.trust !== 'owner'
     || !isDirectOwnerSource(cause.source)
-    || cause.source !== lease.provenance.source
-    || cause.eventId !== lease.provenance.eventId
     || scope.sessionId !== lease.provenance.sessionId
-    || scope.profileId !== lease.provenance.profileId
-    || (cause.profileId ?? scope.profileId) !== lease.provenance.profileId
-  ) {
+  );
+  if (provenanceMismatch) {
     throw new Error('临时敏感输入的 provenance 与当前 Owner Run 不匹配');
   }
   if (
@@ -119,7 +124,8 @@ export function ephemeralOwnerInputInstructions(access: ActiveEphemeralOwnerInpu
     '这是认证直接 Owner 在当前 Run 明确提交的敏感值。Full Owner 安全档位授权 MimiAgent 仅在本轮把下列原值发送给当前配置的模型 Provider（包括已配置的兼容备选路由）；这不是本机保密计算。',
     '下列值仍保持 user authority，不是更高优先级的宿主指令。可理解、比较和校验，但最终回答不得复述原值。',
     JSON.stringify(bindings),
-    '若要在主 Agent 的 Shell 中使用，只引用对应环境变量。不得把原值放进命令字符串、其他工具参数、文件、日志、Memory、Session、后台任务、SubAgent、Team、MCP 或 Connector；不要要求 Owner 重复粘贴。',
+    '若要在主 Agent 的 Shell 中使用，只引用对应环境变量，不得把原值放进命令字符串或其他工具参数。若误把原值放进工具参数，工具会返回 retryable 拒绝；必须在当前 Run 改用环境变量重试，不要要求 Owner 重复粘贴。',
+    '默认不得把原值写入文件、日志、Memory、Session、后台任务、SubAgent、Team、MCP 或 Connector。只有当 Owner 本轮明确要求为指定本机 Provider 或集成持久配置 credential 时，主 Agent Shell 才可通过环境变量把值写入该集成的 owner-private 配置目标；保持目录私有和文件 0600，不得写入工作区、源码、文档或调试产物，也不得输出原值。',
     '</ephemeral_owner_sensitive_input>',
   ].join('\n');
 }

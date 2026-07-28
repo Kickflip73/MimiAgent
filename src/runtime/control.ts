@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { tool, type AgentInputItem, type Tool } from '@openai/agents';
 import { z } from 'zod';
 import { sessionIdSchema } from '../core/session-id.js';
+import type { ConfiguredProvider } from '../provider-config.js';
 
 export const RUNTIME_OUTPUT_LEVELS = ['answer', 'thinking', 'tools', 'trace'] as const;
 export type RuntimeOutputLevel = typeof RUNTIME_OUTPUT_LEVELS[number];
@@ -11,6 +12,10 @@ const modeIdSchema = z.string().regex(/^[a-zA-Z0-9._-]+$/).max(60);
 
 export const runtimeActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('switch_model'), model: modelNameSchema }).strict(),
+  z.object({
+    type: z.literal('switch_provider'),
+    provider: z.enum(['openai', 'deepseek', 'openai-compatible']),
+  }).strict(),
   z.object({ type: z.literal('switch_mode'), mode: modeIdSchema }).strict(),
   z.object({ type: z.literal('switch_session'), sessionId: sessionIdSchema }).strict(),
   z.object({ type: z.literal('new_session'), sessionId: sessionIdSchema }).strict(),
@@ -23,6 +28,10 @@ export type RuntimeAction = z.infer<typeof runtimeActionSchema>;
 
 export const runtimeEffectSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('model_changed'), model: modelNameSchema }).strict(),
+  z.object({
+    type: z.literal('provider_change_requested'),
+    provider: z.enum(['openai', 'deepseek', 'openai-compatible']),
+  }).strict(),
   z.object({ type: z.literal('mode_changed'), mode: modeIdSchema }).strict(),
   z.object({ type: z.literal('session_changed'), sessionId: sessionIdSchema }).strict(),
   z.object({ type: z.literal('session_cleared'), sessionId: sessionIdSchema }).strict(),
@@ -35,6 +44,7 @@ export type RuntimeEffect = z.infer<typeof runtimeEffectSchema>;
 export interface RuntimeControls {
   status: () => unknown | Promise<unknown>;
   models: () => string[];
+  providers: () => ConfiguredProvider[];
   modes: () => Array<{ id: string; label: string; description: string }>;
   listSessions: () => unknown | Promise<unknown>;
   history: (limit: number) => Promise<AgentInputItem[]>;
@@ -53,13 +63,30 @@ export function createRuntimeControlTools(controls: RuntimeControls): Tool[] {
     }),
     tool({
       name: 'switch_model',
-      description: '切换 MimiAgent 模型；当前任务继续使用原模型，新模型从下一轮对话生效。',
+      description: '切换当前 Provider 内的模型；跨 Provider（例如 Kimi 切 DeepSeek）请使用 switch_provider。',
       parameters: z.object({ model: z.string().min(1) }),
       execute: async ({ model }) => {
         if (!modelNameSchema.safeParse(model).success) throw new Error('模型名称格式无效');
         const available = controls.models();
+        if (!available.includes(model)) {
+          throw new Error(`模型不可用：${model}；当前 Provider 可选模型：${available.join('、')}`);
+        }
         controls.schedule({ type: 'switch_model', model });
         return { model, effective: 'next_turn', available };
+      },
+    }),
+    tool({
+      name: 'switch_provider',
+      description: '切换已配置的模型 Provider（OpenAI、DeepSeek 或 OpenAI Compatible/Kimi）；当前回答完成后由 CLI 原子保存配置并安全重启 Daemon。',
+      parameters: z.object({ provider: z.string().min(1) }),
+      execute: async ({ provider }) => {
+        const available = controls.providers();
+        const selected = available.find((candidate) => candidate.id === provider);
+        if (!selected) {
+          throw new Error(`Provider 未配置：${provider}；当前可选：${available.map((item) => item.id).join('、')}`);
+        }
+        controls.schedule({ type: 'switch_provider', provider: selected.id });
+        return { provider: selected.id, effective: 'after_current_turn', available };
       },
     }),
     tool({

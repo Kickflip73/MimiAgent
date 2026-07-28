@@ -46,9 +46,9 @@ export const SECURITY_PROFILES: Readonly<Record<SecurityProfile, SecurityProfile
     id: 'workstation',
     label: 'Workstation',
     permissionMode: 'workspace',
-    shell: false,
+    shell: true,
     ephemeralSensitiveModelAccess: false,
-    externalTransactions: true,
+    externalTransactions: false,
     computerUse: false,
     trustedWorkspaceMcp: false,
   }),
@@ -263,6 +263,7 @@ function configuredSecurityProfile(): SecurityProfile | undefined {
 }
 
 function permissionMode(profile?: SecurityProfile): AgentPermissionMode {
+  if (profile) return SECURITY_PROFILES[profile].permissionMode;
   const modern = environmentEntry('MIMI_PERMISSION_MODE');
   const legacy = environmentEntry('AGENT_PERMISSION_MODE');
   const selected = modern ?? legacy;
@@ -273,14 +274,9 @@ function permissionMode(profile?: SecurityProfile): AgentPermissionMode {
   const oldTemplateWorkspace = !profile && selected?.value === 'workspace' && (version ?? 0) < 2;
   const value = oldTemplateWorkspace
     ? 'trusted'
-    : selected?.value ?? SECURITY_PROFILES[profile ?? 'safe'].permissionMode;
+    : selected?.value ?? SECURITY_PROFILES[profile ?? 'full-owner'].permissionMode;
   if (value !== 'workspace' && value !== 'read-only' && value !== 'trusted') {
     throw new Error(`${selected?.name ?? 'MIMI_PERMISSION_MODE'} 只能是 workspace、read-only 或 trusted`);
-  }
-  if (profile && value !== SECURITY_PROFILES[profile].permissionMode) {
-    throw new Error(
-      `MIMI_SECURITY_PROFILE=${profile} 要求 MIMI_PERMISSION_MODE=${SECURITY_PROFILES[profile].permissionMode}`,
-    );
   }
   return value;
 }
@@ -294,12 +290,11 @@ function inferredSecurityProfile(mode: AgentPermissionMode): SecurityProfile {
 export function securityProfileSummary(
   config: Pick<AppConfig, 'securityProfile' | 'permissionMode' | 'computer' | 'trustedWorkspaceMcp'>,
 ): SecurityProfileSummary {
-  const mode = config.permissionMode ?? 'trusted';
-  const id = config.securityProfile ?? inferredSecurityProfile(mode);
+  const id = config.securityProfile
+    ?? inferredSecurityProfile(config.permissionMode ?? 'trusted');
   const base = SECURITY_PROFILES[id];
   return {
     ...base,
-    permissionMode: mode,
     computerUse: base.computerUse && config.computer !== undefined,
     trustedWorkspaceMcp: base.trustedWorkspaceMcp && config.trustedWorkspaceMcp !== undefined,
   };

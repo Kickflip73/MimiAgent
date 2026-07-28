@@ -105,6 +105,24 @@ test('ephemeral sensitive Runs suppress text streaming and redact final output a
       name: 'tool_called',
       item: { rawItem: { name: 'run_shell', arguments: `{"command":"${secret}"}` } },
     },
+    {
+      type: 'raw_model_stream_event',
+      data: {
+        type: 'model',
+        event: {
+          choices: [{ delta: { reasoning_content: secret.slice(0, 12) } }],
+        },
+      },
+    },
+    {
+      type: 'raw_model_stream_event',
+      data: {
+        type: 'model',
+        event: {
+          choices: [{ delta: { reasoning_content: secret.slice(12) } }],
+        },
+      },
+    },
     { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: secret } },
   ];
   const stream = {

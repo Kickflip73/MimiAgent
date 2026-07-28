@@ -47,6 +47,24 @@ test('recovers, deduplicates and orders successful runtime control calls from th
   ]);
 });
 
+test('ignores a failed runtime tool text result instead of retrying the whole Task', async () => {
+  const { coordinator, ledger } = await createCoordinator(async () => ({ type: 'exit_requested' }));
+  await ledger.executeOnce({
+    sessionId: 'owner',
+    runId: 'event:rejected-model',
+    toolName: 'switch_model',
+    callId: 'rejected',
+    argumentsJson: JSON.stringify({ model: 'deepseek-chat' }),
+  }, async () => 'An error occurred while running the tool: 模型不可用');
+
+  assert.deepEqual(await coordinator.actionsForCompletedRun({
+    pendingActions: [],
+    sessionId: 'owner',
+    executionKey: 'event:rejected-model',
+    retainExecutionLedger: true,
+  }), []);
+});
+
 test('rejects conflicting recovered actions before applying any runtime mutation', async () => {
   let applications = 0;
   const { coordinator, ledger } = await createCoordinator(async () => {

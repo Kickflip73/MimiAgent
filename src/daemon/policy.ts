@@ -35,7 +35,7 @@ export type SourcePolicyAccess = typeof SOURCE_POLICY_ACCESS_LEVELS[number];
 const DAEMON_EXECUTION_CONTRACT = [
   '你是长期在线的 MimiAgent，正在作为 owner 的个人代理处理一个事件。',
   '在当前授权和明确范围内优先直接完成可执行事项，而不是只给建议或重复请求确认；使用工具后只陈述实际结果。',
-  '发送消息、邮件、日程等已配置外部事务时，使用 connector_action 并从其能力目录选择 connector/action；send_message、reply_message 等是 action 参数，不是独立工具，也不需要改用 Shell 或 MCP。',
+  '调用已配置 Connector 能力时，先依据本轮 Effective Capability Snapshot 选择精确 capability/action，再使用 invoke_capability；不需要启停 Connector、猜测 Connector ID，或改用 Shell/MCP。',
   '若事务依赖未来时间或外部变化，建立一次后续唤醒或带明确结束条件的持续监控；把未来仍有价值的稳定决策、偏好和承诺写入长期记忆。',
   '若当前 owner 命令是在取消或替换刚才被打断的任务，先检查当前 Session 活动，并取消对应的 interrupted 旧任务，避免它稍后恢复执行。',
   '需要恢复较早进展时检查当前 Session 活动；自主巡检没有新变化、风险、动作或待关注事项时安静完成。',
@@ -94,7 +94,7 @@ const WORK_SOURCE_POLICY_TOOLS = [
   'read_file', 'write_file', 'edit_file', 'move_file', 'list_directory', 'search_files',
   'inspect_processes', 'run_shell',
   'http_get', 'web_search', 'http_request',
-  'inspect_mimi_capabilities', 'connector_action',
+  'inspect_mimi_capabilities', 'invoke_capability',
   'memory_search', 'memory_read', 'memory_links', 'memory_ingest',
   'list_skills', 'use_skill', 'read_skill_resource',
   'prepare_task', 'finish_task',
@@ -130,7 +130,7 @@ const PERSONAL_MESSAGE_AUTO_TOOLS = [
 
 const WORK_SOURCE_POLICY_SIDE_EFFECT_TOOLS = [
   'write_file', 'edit_file', 'move_file', 'run_shell', 'http_request',
-  'connector_action', 'memory_ingest',
+  'invoke_capability', 'memory_ingest',
   'update_plan', 'set_goal', 'update_goal',
   'schedule_mimi_follow_up', 'schedule_mimi_watch', 'complete_current_mimi_schedule',
   'cancel_mimi_schedule', 'cancel_interrupted_mimi_task',
@@ -138,9 +138,12 @@ const WORK_SOURCE_POLICY_SIDE_EFFECT_TOOLS = [
   'set_team_tasks', 'claim_team_task', 'update_team_task', 'retry_team_task', 'run_team',
 ] as const;
 
-const WORK_TASK_TOOLS = WORK_SOURCE_POLICY_TOOLS.filter((name) => name !== 'delegate_background_task');
+const WORK_TASK_TOOLS = WORK_SOURCE_POLICY_TOOLS
+  .filter((name) => name !== 'delegate_background_task')
+  .map((name) => name === 'invoke_capability' ? 'connector_action' : name);
 const WORK_TASK_SIDE_EFFECT_TOOLS = WORK_SOURCE_POLICY_SIDE_EFFECT_TOOLS
-  .filter((name) => name !== 'delegate_background_task');
+  .filter((name) => name !== 'delegate_background_task')
+  .map((name) => name === 'invoke_capability' ? 'connector_action' : name);
 const NON_OWNER_WORK_TASK_TOOLS = WORK_TASK_TOOLS
   .filter((name) => name !== 'connector_action');
 const NON_OWNER_WORK_TASK_SIDE_EFFECT_TOOLS = WORK_TASK_SIDE_EFFECT_TOOLS

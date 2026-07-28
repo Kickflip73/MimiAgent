@@ -3,6 +3,10 @@ import { readFile } from 'node:fs/promises';
 import process from 'node:process';
 import { loadConfig, loadEnvironment } from './config.js';
 import { daemonHelp, runDaemonCommand } from './daemon/cli.js';
+import {
+  parseProviderSetRequest,
+  persistProviderConfiguration,
+} from './provider-config.js';
 
 async function version(): Promise<string> {
   const file = new URL('../package.json', import.meta.url);
@@ -16,6 +20,7 @@ function cliHelp(): string {
 用法：
   mimi                    开始对话
   mimi "任务"             执行单次任务
+  mimi provider set ...    原子配置模型 Provider 并重启
   mimi --help             查看帮助
   mimi --version          查看版本
 
@@ -39,6 +44,22 @@ async function main(): Promise<void> {
     return;
   }
   loadEnvironment();
+  if (args[0] === 'provider') {
+    const request = parseProviderSetRequest(args.slice(1));
+    const persisted = await persistProviderConfiguration(request);
+    const config = loadConfig();
+    if (!request.restart) {
+      console.log(`Provider 配置已保存到 ${persisted.environmentFile}，未重启后台服务。`);
+      return;
+    }
+    const { restartMimiDaemon } = await import('./daemon/service.js');
+    const status = await restartMimiDaemon(config);
+    console.log(
+      `Provider 已切换为 ${persisted.provider}${persisted.model ? `/${persisted.model}` : ''}`
+      + `，MimiAgent 后台已重启（PID ${status.pid}）。`,
+    );
+    return;
+  }
   const config = loadConfig();
   if (args[0] === 'daemon') {
     await runDaemonCommand(config, args.slice(1));

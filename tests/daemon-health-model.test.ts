@@ -168,3 +168,28 @@ test('Task worker runtime dependency failure is an unhealthy fail-closed risk', 
     nextAction: '修复 Task worker 依赖或 LaunchAgent 运行路径后重启 MimiAgent',
   }]);
 });
+
+test('Computer supervisor outage is unhealthy until Cua Driver recovers', () => {
+  const health = buildDaemonHealth({
+    tasks: taskCounts(),
+    outbox: outboxCounts(),
+    computer: {
+      configured: true,
+      state: 'recovering',
+      ready: false,
+      managed: true,
+      launchAttempts: 2,
+      recoveries: 1,
+      consecutiveFailures: 1,
+      lastFailure: 'daemon is not running',
+    },
+  });
+
+  assert.equal(health.state, 'unhealthy');
+  assert.deepEqual(health.risks, [{
+    code: 'computer_unavailable',
+    severity: 'error',
+    message: 'Computer Use recovering：daemon is not running',
+    nextAction: 'mimi daemon doctor',
+  }]);
+});

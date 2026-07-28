@@ -1,8 +1,16 @@
 import { tool, type Tool } from '@openai/agents';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import {
+  TOOL_ACTION_INTENT,
+  type ToolActionIntentMetadata,
+} from '../core/tool-metadata.js';
 import type { EffectiveCapabilityItem } from '../runtime/pipeline/capability-resolver.js';
-import type { ConnectorActionRequest, ConnectorManager } from './connectors.js';
+import type {
+  ConnectorActionRequest,
+  ConnectorCapabilityRequest,
+  ConnectorManager,
+} from './connectors.js';
 
 const identifier = z.string().regex(/^[a-zA-Z0-9._-]+$/);
 const MAX_CONNECTORS = 50;
@@ -92,6 +100,15 @@ export function connectorEffectiveCapabilityItems(
       selectedRoute: connector.id,
       routeOwner: connector.id,
       capabilities: [...new Set(actions.map((action) => action.capability))].sort(),
+      operations: actions
+        .map((action) => ({
+          capability: action.capability,
+          action: action.name,
+          effect: action.effect,
+        }))
+        .sort((left, right) =>
+          left.capability.localeCompare(right.capability)
+          || left.action.localeCompare(right.action)),
       safeFallback: 'none' as const,
     };
   });
@@ -109,7 +126,7 @@ export interface ConnectorTaskRuntime {
 type InspectCapabilities = ConnectorTaskRuntime['inspectCapabilities'];
 type ExecuteConnectorAction = ConnectorTaskRuntime['executeAction'];
 type ConnectorActionReceipt = Record<string, unknown> & {
-  tool: 'connector_action';
+  tool: 'connector_action' | 'invoke_capability';
   connector: string;
   action: string;
   target: string;
@@ -270,9 +287,7 @@ export function createConnectorHostTools(
 ): Tool[] {
   return [
     createConnectorCapabilityTool(connectors),
-    createConnectorEnabledTool(connectors),
-    createConnectorReloadTool(connectors),
-    createConnectorActionTool(connectors, onAction),
+    createInvokeCapabilityTool(connectors, onAction),
   ];
 }
 
@@ -289,6 +304,115 @@ export function createConnectorActionTool(
   onAction?: OnConnectorAction,
 ): Tool {
   return createConnectorActionRuntimeTool((request) => connectors.executeAction(request), onAction);
+}
+
+export function createInvokeCapabilityTool(
+  connectors: ConnectorManager,
+  onAction?: OnConnectorAction,
+): Tool {
+  const capabilityTool = tool({
+    name: 'invoke_capability',
+    description: '按当前 Effective Capability Snapshot 中的稳定 capability 和 action 执行唯一已就绪 Connector 路线。无需猜 Connector ID，也不要先启停 Connector。能力未就绪、重复 route 或结果不确定时停止，不得改走 Shell、Computer 或其他 Connector。',
+    parameters: z.object({
+      capability: z.string()
+        .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)
+        .max(120),
+      action: identifier.describe('能力目录中返回的精确 action 名称'),
+      target: z.string().min(1).max(2_000),
+      payloadJson: z.string().min(1).max(50_000),
+    }).strict(),
+    execute: async ({ capability, action, target, payloadJson }, _context, details) => {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(payloadJson) as unknown;
+      } catch {
+        throw new Error('payloadJson 不是有效 JSON');
+      }
+      const selected = await connectors.executeCapability({
+        capability,
+        action,
+        target,
+        payload,
+      } satisfies ConnectorCapabilityRequest);
+      const request: ConnectorActionRequest = {
+        connector: selected.connector,
+        action,
+        target,
+        payload,
+      };
+      const receipt = connectorReceipt(
+        'invoke_capability',
+        request,
+        selected.result,
+      );
+      onAction?.(request, receipt);
+      return receipt;
+    },
+  }) as Tool & {
+    [TOOL_ACTION_INTENT]?: (rawInput: string) => ToolActionIntentMetadata;
+  };
+  capabilityTool[TOOL_ACTION_INTENT] = (rawInput) => {
+    const input = JSON.parse(rawInput) as Record<string, unknown>;
+    const capability = String(input.capability ?? '');
+    const action = String(input.action ?? '');
+    const target = String(input.target ?? '');
+    return {
+      actionFamily: `connector.${capability}.${action}`,
+      targetRef: target,
+      payload: {
+        capability,
+        action,
+        target,
+        payloadJson: String(input.payloadJson ?? ''),
+      },
+      selectedRoute: 'capability-router',
+      guarded: {
+        exactTarget: target.length > 0,
+        lowRisk: false,
+        reversible: false,
+      },
+      outcome: (result) => {
+        if (!result || typeof result !== 'object') return 'uncertain';
+        return (result as Record<string, unknown>).outcome === 'confirmed'
+          ? 'confirmed'
+          : 'uncertain';
+      },
+    };
+  };
+  return capabilityTool;
+}
+
+function connectorReceipt(
+  toolName: ConnectorActionReceipt['tool'],
+  request: ConnectorActionRequest,
+  result: unknown,
+): ConnectorActionReceipt {
+  const boundedResult = boundedActionResult(result);
+  const value = boundedResult !== null && typeof boundedResult === 'object' && !Array.isArray(boundedResult)
+    ? boundedResult as Record<string, unknown>
+    : undefined;
+  const declaredOutcome = value?.outcome;
+  const outcome = declaredOutcome === 'confirmed' || declaredOutcome === 'accepted'
+    ? declaredOutcome
+    : value?.deliveryConfirmed === true
+      || typeof value?.messageId === 'string'
+      || typeof value?.requestId === 'string'
+      ? 'confirmed'
+      : 'accepted';
+  return {
+    ...(value ?? {}),
+    operationId: typeof value?.operationId === 'string'
+      ? value.operationId
+      : typeof value?.messageId === 'string' ? value.messageId
+        : typeof value?.requestId === 'string' ? value.requestId : randomUUID(),
+    tool: toolName,
+    connector: request.connector,
+    action: request.action,
+    target: request.target,
+    outcome,
+    ...(value ? {} : { evidence: boundedResult }),
+    occurredAt: new Date().toISOString(),
+  };
 }
 
 function createConnectorActionRuntimeTool(
@@ -312,33 +436,9 @@ function createConnectorActionRuntimeTool(
         throw new Error('payloadJson 不是有效 JSON');
       }
       const result = await executeAction({ connector, action, target, payload }, details?.signal);
-      const boundedResult = boundedActionResult(result);
-      const value = boundedResult !== null && typeof boundedResult === 'object' && !Array.isArray(boundedResult)
-        ? boundedResult as Record<string, unknown>
-        : undefined;
-      const declaredOutcome = value?.outcome;
-      const outcome = declaredOutcome === 'confirmed' || declaredOutcome === 'accepted'
-        ? declaredOutcome
-        : value?.deliveryConfirmed === true
-          || typeof value?.messageId === 'string'
-          || typeof value?.requestId === 'string'
-          ? 'confirmed'
-          : 'accepted';
-      const receipt: ConnectorActionReceipt = {
-        ...(value ?? {}),
-        operationId: typeof value?.operationId === 'string'
-          ? value.operationId
-          : typeof value?.messageId === 'string' ? value.messageId
-            : typeof value?.requestId === 'string' ? value.requestId : randomUUID(),
-        tool: 'connector_action',
-        connector,
-        action,
-        target,
-        outcome,
-        ...(value ? {} : { evidence: boundedResult }),
-        occurredAt: new Date().toISOString(),
-      };
-      onAction?.({ connector, action, target, payload }, receipt);
+      const request = { connector, action, target, payload };
+      const receipt = connectorReceipt('connector_action', request, result);
+      onAction?.(request, receipt);
       return receipt;
     },
   });

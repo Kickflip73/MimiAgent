@@ -11,6 +11,7 @@ import {
 import type {
   ConnectorActionRequest,
   ConnectorCapability,
+  ConnectorCapabilityRequest,
   ConnectorManager,
 } from '../src/daemon/connectors.js';
 
@@ -126,24 +127,23 @@ test('capability snapshot filters exact ids and actions while bounding the catal
   assert.equal(bounded.truncated, true);
 });
 
-test('host connector tools reload, toggle, inspect and return auditable bounded receipts', async () => {
+test('model-facing host tools expose only inspect and capability invocation with bounded receipts', async () => {
   const capabilities = [capability('mail')];
   const requests: ConnectorActionRequest[] = [];
-  let reloads = 0;
   const manager = {
     configPath: '/fixture/connectors.json',
     listCapabilities: () => capabilities,
-    reload: async () => {
-      reloads += 1;
-      return capabilities;
-    },
-    setEnabled: async (connector: string, enabled: boolean) => ({ connector, enabled }),
-    executeAction: async (request: ConnectorActionRequest) => {
+    executeCapability: async (input: ConnectorCapabilityRequest) => {
+      const request = { ...input, connector: 'mail' };
       requests.push(request);
-      if ((request.payload as { mode?: string }).mode === 'message') return { messageId: 'message-1' };
-      if ((request.payload as { mode?: string }).mode === 'request') return { requestId: 'request-1' };
-      if ((request.payload as { mode?: string }).mode === 'large') return { data: 'x'.repeat(40_000) };
-      return 'plain-result';
+      const result = (request.payload as { mode?: string }).mode === 'message'
+        ? { messageId: 'message-1' }
+        : (request.payload as { mode?: string }).mode === 'request'
+          ? { requestId: 'request-1' }
+          : (request.payload as { mode?: string }).mode === 'large'
+            ? { data: 'x'.repeat(40_000) }
+            : 'plain-result';
+      return { connector: 'mail', result };
     },
   } as unknown as ConnectorManager;
   const observed: Array<{ request: ConnectorActionRequest; outcome: string }> = [];
@@ -153,44 +153,42 @@ test('host connector tools reload, toggle, inspect and return auditable bounded 
   const snapshot = await invoke(tools, 'inspect_mimi_capabilities', { connector: 'mail' }) as ConnectorCapabilitySnapshot;
   assert.equal(snapshot.total, 1);
   assert.match(String(await invoke(tools, 'inspect_mimi_capabilities', { connector: 'missing' })), /未注册/);
-  assert.deepEqual(await invoke(tools, 'set_mimi_connector_enabled', {
-    connector: 'mail',
-    enabled: false,
-  }), { connector: 'mail', enabled: false });
-  assert.equal((await invoke(tools, 'reload_mimi_connectors', {}) as ConnectorCapabilitySnapshot).total, 1);
-  assert.equal(reloads, 1);
-  assert.match(String(await invoke(tools, 'connector_action', {
-    connector: 'mail',
+  assert.deepEqual(tools.map((item) => item.name), [
+    'inspect_mimi_capabilities',
+    'invoke_capability',
+  ]);
+  assert.match(String(await invoke(tools, 'invoke_capability', {
+    capability: 'message.send',
     action: 'send_message',
     target: 'owner',
     payloadJson: '{',
   })), /有效 JSON/);
-  const confirmed = await invoke(tools, 'connector_action', {
-    connector: 'mail',
+  const confirmed = await invoke(tools, 'invoke_capability', {
+    capability: 'message.send',
     action: 'send_message',
     target: 'owner',
     payloadJson: JSON.stringify({ mode: 'message' }),
   }) as Record<string, unknown>;
   assert.equal(confirmed.outcome, 'confirmed');
   assert.equal(confirmed.operationId, 'message-1');
-  const requestReceipt = await invoke(tools, 'connector_action', {
-    connector: 'mail',
+  const requestReceipt = await invoke(tools, 'invoke_capability', {
+    capability: 'message.send',
     action: 'send_message',
     target: 'owner',
     payloadJson: JSON.stringify({ mode: 'request' }),
   }) as Record<string, unknown>;
   assert.equal(requestReceipt.operationId, 'request-1');
-  const accepted = await invoke(tools, 'connector_action', {
-    connector: 'mail',
-    action: 'inspect',
+  const accepted = await invoke(tools, 'invoke_capability', {
+    capability: 'message.send',
+    action: 'send_message',
     target: 'owner',
     payloadJson: JSON.stringify({ mode: 'plain' }),
   }) as Record<string, unknown>;
   assert.equal(accepted.outcome, 'accepted');
   assert.equal(accepted.evidence, 'plain-result');
-  const large = await invoke(tools, 'connector_action', {
-    connector: 'mail',
-    action: 'inspect',
+  const large = await invoke(tools, 'invoke_capability', {
+    capability: 'message.send',
+    action: 'send_message',
     target: 'owner',
     payloadJson: JSON.stringify({ mode: 'large' }),
   }) as Record<string, unknown>;

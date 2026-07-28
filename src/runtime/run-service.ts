@@ -218,10 +218,13 @@ export class AgentRunService {
         const hiddenCandidate = this.agent.completionGateRequired
           && event.type === 'raw_model_stream_event'
           && event.data.type === 'output_text_delta';
-        const sensitiveOutputDelta = this.agent.activeRunHasEphemeralSensitiveAccess
-          && event.type === 'raw_model_stream_event'
-          && event.data.type === 'output_text_delta';
-        if (!hiddenCandidate && !sensitiveOutputDelta) {
+        // Exact-value redaction cannot safely reconstruct a credential split
+        // across Provider text or reasoning deltas. Suppress every raw model
+        // stream event for an ephemeral-sensitive Run and expose only the
+        // redacted final answer plus non-model status events.
+        const sensitiveModelStream = this.agent.activeRunHasEphemeralSensitiveAccess
+          && event.type === 'raw_model_stream_event';
+        if (!hiddenCandidate && !sensitiveModelStream) {
           await observe(observer.onStreamEvent, safeEvent);
         }
         const progress = progressFrom(safeEvent);

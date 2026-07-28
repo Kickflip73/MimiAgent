@@ -253,11 +253,21 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
         readiness: { inbound: 'ready', outbound: 'ready', deliveryConfirmed: true },
         source: 'fixture:mail',
         trust: 'owner',
-        actions: [{ name: 'send_message', description: 'send' }],
+        actions: [{
+          name: 'send_message',
+          description: 'send',
+          capability: 'message.send',
+          effect: 'write',
+          routeOwner: 'mail',
+        }],
       }],
       setEnabled: async () => ({ ok: true }),
       reload: async () => [],
       executeAction: async () => ({ outcome: 'confirmed', messageId: 'message-1' }),
+      executeCapability: async () => ({
+        connector: 'mail',
+        result: { outcome: 'confirmed', messageId: 'message-1' },
+      }),
     } as unknown as ConnectorManager;
     const control = { suppressed: false, reason: undefined as string | undefined };
     const connectorTools = createMimiHostTools({
@@ -270,8 +280,8 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       connectors: manager,
       replyRoute: { channel: 'connector:mail', target: 'owner' },
     });
-    await invoke(connectorTools, 'connector_action', {
-      connector: 'mail',
+    await invoke(connectorTools, 'invoke_capability', {
+      capability: 'message.send',
       action: 'send_message',
       target: 'owner',
       payloadJson: '{}',
@@ -290,8 +300,8 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       connectors: manager,
       replyRoute: { channel: 'connector:mail', target: 'another-target' },
     });
-    await invoke(mismatchTools, 'connector_action', {
-      connector: 'mail',
+    await invoke(mismatchTools, 'invoke_capability', {
+      capability: 'message.send',
       action: 'send_message',
       target: 'owner',
       payloadJson: '{}',

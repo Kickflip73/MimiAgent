@@ -16,6 +16,7 @@ import {
   type AgentPermissionMode,
   type AppConfig,
 } from '../config.js';
+import { persistEnvironmentValues } from '../provider-config.js';
 import { MimiAgent } from '../agent.js';
 import { sanitizeSensitiveData } from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
@@ -84,6 +85,10 @@ import {
   mimiStreamTaskState,
 } from './live-events.js';
 import { ownerSessionId } from './policy.js';
+import {
+  sharedCuaDriverLifecycle,
+  type CuaDriverLifecycle,
+} from '../extensions/computer/cua-driver-lifecycle.js';
 import {
   assertReadOnlyProbeIdle,
   executeReadOnlyProbe,
@@ -908,12 +913,15 @@ export async function launchAgentProviderConfigured(
   return Boolean(parseDotenv(contents)[providerKeyName(config)]?.trim());
 }
 
-async function requireLaunchAgentProviderApiKey(config: AppConfig): Promise<void> {
-  const environmentFile = resolveEnvironmentFile();
+export async function persistLaunchAgentProviderApiKey(
+  config: AppConfig,
+  environmentFile = resolveEnvironmentFile(),
+): Promise<void> {
   if (await launchAgentProviderConfigured(config, environmentFile)) return;
-  throw new Error(
-    `launchd 需要在持久环境文件 ${environmentFile} 中配置 ${providerKeyName(config)}；仅在当前 Shell export 无法跨登录或重启保留。`,
-  );
+  const keyName = providerKeyName(config);
+  const value = process.env[keyName]?.trim();
+  if (!value) return;
+  await persistEnvironmentValues(environmentFile, { [keyName]: value });
 }
 
 export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
@@ -1256,7 +1264,7 @@ export async function installMimiLaunchAgent(config: AppConfig): Promise<string>
   config = await resolveDaemonWorkspaceConfig(config);
   await initializeMimi(config);
   requireProviderApiKey(config);
-  await requireLaunchAgentProviderApiKey(config);
+  await persistLaunchAgentProviderApiKey(config);
   const paths = mimiPaths(config);
   await mkdir(paths.root, { recursive: true, mode: 0o700 });
   await chmod(paths.root, 0o700);
@@ -1298,6 +1306,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
   let taskSupervisor: TaskProcessSupervisor | undefined;
   let server: MimiIpcServer | undefined;
   let attention: AttentionEngine | undefined;
+  let computerLifecycle: CuaDriverLifecycle | undefined;
   const stopping = new AbortController();
   const mutationGate = new DaemonMutationGate();
   const ephemeralSecrets = new EphemeralSecretBroker();
@@ -1317,6 +1326,13 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       providerId: config.provider,
       ...(backupProvider ? { backupProvider } : {}),
     });
+    if (config.computer) {
+      computerLifecycle = sharedCuaDriverLifecycle(
+        config.computer.driverCommand,
+        config.computer.actionTimeoutMs,
+      );
+      await computerLifecycle.start();
+    }
     const agent = await MimiAgent.create(config);
     host = new MimiHost(agent, runService(agent), {
       maxConcurrentSessions: config.sessionMaxConcurrency ?? 4,
@@ -1431,6 +1447,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       const effectiveCapability = host?.currentCapabilitySnapshot();
       const providerHealth = host?.providerHealth();
       const providerHealthRoutes = host?.providerHealthRoutes();
+      const computer = computerLifecycle?.status();
       return {
         ...status,
         ...(providerHealth ? { providerHealth } : {}),
@@ -1442,6 +1459,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             observedAt: effectiveCapability.observedAt,
           },
         } : {}),
+        ...(computer ? { computer } : {}),
         health: buildDaemonHealth({
           tasks: status.tasks,
           outbox: status.outbox,
@@ -1449,6 +1467,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           connectors: activeConnectors.listCapabilities(),
           checkedAt: activity.generatedAt,
           taskWorkerRuntime,
+          computer,
         }),
       };
     };
@@ -1961,6 +1980,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
     await connectors?.stop().catch(() => undefined);
     await server?.close().catch(() => undefined);
     await host?.close().catch(() => undefined);
+    computerLifecycle?.stop();
     store.close();
   }
 }

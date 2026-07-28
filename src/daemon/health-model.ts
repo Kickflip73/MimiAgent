@@ -1,4 +1,5 @@
 import type { ConnectorCapability } from './connectors.js';
+import type { CuaDriverLifecycleStatus } from '../extensions/computer/cua-driver-lifecycle.js';
 import type { OutboxStatus, TaskStatus } from './types.js';
 
 export type DaemonHealthState = 'ready' | 'degraded' | 'unhealthy';
@@ -15,7 +16,8 @@ export interface DaemonHealthRisk {
     | 'connector_offline'
     | 'connector_unavailable'
     | 'connector_stale'
-    | 'connector_readiness_unknown';
+    | 'connector_readiness_unknown'
+    | 'computer_unavailable';
   severity: DaemonHealthSeverity;
   message: string;
   nextAction: string;
@@ -50,6 +52,7 @@ export interface DaemonHealthInput {
   connectors?: readonly ConnectorCapability[];
   checkedAt?: string;
   taskWorkerRuntime?: { ready: boolean; reason?: string };
+  computer?: CuaDriverLifecycleStatus;
 }
 
 export function doctorBlockingHealthRisks(
@@ -95,6 +98,14 @@ export function buildDaemonHealth(input: DaemonHealthInput): DaemonHealthSnapsho
       severity: 'error',
       message: input.taskWorkerRuntime.reason ?? 'Task worker runtime 不可用',
       nextAction: '修复 Task worker 依赖或 LaunchAgent 运行路径后重启 MimiAgent',
+    });
+  }
+  if (input.computer && !input.computer.ready) {
+    risks.push({
+      code: 'computer_unavailable',
+      severity: 'error',
+      message: `Computer Use ${input.computer.state}：${input.computer.lastFailure ?? 'Cua Driver 尚未就绪'}`,
+      nextAction: 'mimi daemon doctor',
     });
   }
   if (taskDeadLetters > 0) {

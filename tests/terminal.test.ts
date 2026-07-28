@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AgentInputItem, RunStreamEvent } from '@openai/agents';
-import { parseRunEvent, renderAssistantAnswer, renderBanner, renderMarkdownLine, renderRecoveryCheckpoint, renderSessionTranscript, TerminalRenderer, type OutputLevel } from '../src/terminal.js';
+import { formatRunDuration, parseRunEvent, renderAssistantAnswer, renderBanner, renderMarkdownLine, renderMimiFrame, renderRecoveryCheckpoint, renderSessionTranscript, TerminalRenderer, type OutputLevel } from '../src/terminal.js';
 
 class BufferWriter {
   isTTY = false;
@@ -183,17 +183,55 @@ test('does not repeat the code gutter when one source line arrives in delayed ch
   assert.equal((plain.match(/│/g) ?? []).length, 1);
 });
 
-test('keeps TTY run status static instead of redrawing during IME input', async () => {
+test('animates the TTY run status at a steady pace and stops redrawing when the run stops', async () => {
+  const status = new BufferWriter();
+  status.isTTY = true;
+  const renderer = new TerminalRenderer(status, new BufferWriter());
+
+  renderer.start('任务运行中', undefined, 'running');
+  await new Promise((resolve) => setTimeout(resolve, 1_250));
+
+  assert.match(status.value, /\^\._\.\^~/);
+  assert.match(status.value, /\^\._\.\^-/);
+  assert.match(status.value, /\^\._\.\^\\/);
+  assert.match(status.value, /任务运行中 · 1秒/);
+  renderer.stop();
+  const stoppedValue = status.value;
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  assert.equal(status.value, stoppedValue);
+});
+
+test('animates Mimi tail independently while expressions change only every few seconds', () => {
+  assert.equal(renderMimiFrame('running', 0, 0), '^._.^~');
+  assert.equal(renderMimiFrame('running', 7_999, 1), '^._.^-');
+  assert.equal(renderMimiFrame('running', 8_000, 1), '^>_<^-');
+  assert.equal(renderMimiFrame('thinking', 9_999, 2), '^._.^\\');
+  assert.equal(renderMimiFrame('thinking', 10_000, 2), '^._?^\\');
+});
+
+test('uses a slow thinking Mimi and a fast running Mimi for their matching phases', () => {
   const status = new BufferWriter();
   status.isTTY = true;
   const renderer = new TerminalRenderer(status, new BufferWriter());
 
   renderer.start();
-  status.value = '';
-  await new Promise((resolve) => setTimeout(resolve, 90));
-
-  assert.equal(status.value, '');
+  assert.match(status.value, /\^\._\.\^~ 模型思考中 · 0秒/);
+  renderer.handle({
+    type: 'run_item_stream_event',
+    name: 'tool_called',
+    item: { rawItem: { name: 'read_file', arguments: '{"path":"README.md"}' } },
+  } as unknown as RunStreamEvent);
+  assert.match(status.value, /\^\._\.\^~ 正在执行 read_file · 0秒/);
   renderer.stop();
+});
+
+test('formats run duration adaptively in seconds, minutes, and hours', () => {
+  assert.equal(formatRunDuration(999), '0秒');
+  assert.equal(formatRunDuration(59_999), '59秒');
+  assert.equal(formatRunDuration(60_000), '1分 00秒');
+  assert.equal(formatRunDuration(65_999), '1分 05秒');
+  assert.equal(formatRunDuration(3_600_000), '1小时 00分 00秒');
+  assert.equal(formatRunDuration(7_445_000), '2小时 04分 05秒');
 });
 
 test('renders a compact project banner without ANSI in plain output', () => {
