@@ -108,8 +108,8 @@ async function reportHealth(probe = false) {
   return health;
 }
 
-async function poll({ fromAction = false } = {}) {
-  if (stopping || polling || pendingBatch || (!fromAction && activeActions > 0)) {
+async function poll() {
+  if (stopping || polling || pendingBatch || activeActions > 0) {
     return { emitted: 0, pending: Boolean(pendingBatch), actionActive: activeActions > 0 };
   }
   polling = true;
@@ -164,8 +164,10 @@ async function handleAction(message) {
     ? message.payload
     : {};
   if (message.action === 'health_check') return reportHealth(payload.probe === true);
-  if (message.action === 'sync_now') return poll({ fromAction: true });
   if (message.action === 'list_targets') return adapter.listTargets();
+  if (!['get_context', 'send_message'].includes(message.action)) {
+    throw new Error(`unsupported action: ${message.action}`);
+  }
   const target = targetConversation(message.target);
   if (message.action === 'get_context') {
     const health = await adapter.health();
@@ -185,7 +187,6 @@ async function handleAction(message) {
       text: payload.text,
     });
   }
-  throw new Error(`unsupported action: ${message.action}`);
 }
 
 const input = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });

@@ -10,6 +10,7 @@ interface ProtocolMessage {
   type: string;
   id?: string;
   ok?: boolean;
+  error?: string;
   inbound?: string;
   outbound?: string;
   eventAcknowledgement?: boolean;
@@ -98,10 +99,8 @@ test('personal message connector stays diagnosable when Daxiang config is missin
       deadlineAt: Date.now() + 2_000,
     })}\n`);
     const sync = await waitFor(messages, (message) => message.id === 'sync-1');
-    assert.equal(sync.ok, true);
-    assert.equal(sync.result?.emitted, 0);
-    assert.equal(sync.result?.pending, false);
-    assert.equal(sync.result?.actionActive, undefined);
+    assert.equal(sync.ok, false);
+    assert.match(sync.error ?? '', /unsupported action: sync_now/);
   } finally {
     await stop(child);
   }

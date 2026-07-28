@@ -996,7 +996,7 @@ export class ConnectorManager {
     if (!request.connector.startsWith('personal-')) {
       throw new Error(`Connector ${request.connector} 不是个人消息 Connector`);
     }
-    if (!['list_targets', 'get_context', 'send_message', 'health_check', 'sync_now'].includes(request.action)) {
+    if (!['list_targets', 'get_context', 'send_message', 'health_check'].includes(request.action)) {
       throw new Error(`个人消息 Connector 不允许 action ${request.action}`);
     }
     return this.executeRegisteredAction(request);

@@ -431,7 +431,7 @@ function createConnectorActionRuntimeTool(
 ): Tool {
   return tool({
     name: 'connector_action',
-    description: '调用隔离 Connector 已声明的有界读取或外部 action。调用前先用 inspect_mimi_capabilities 按稳定 capability 获取完整 connector ID、action、effect、routeOwner、target 格式和 readiness；禁止从业务词猜测能力。只能调用目录中已声明且由所选 routeOwner 持有的 action；资源被某路线声明后不得改走 GUI、CUA、MCP 或 Shell。个人消息查看、读取或汇总只能使用 effect=read 的目标目录和上下文动作，不能调用 effect=write 的事件同步作为前置步骤。payloadJson 必须是严格 JSON；结果超时、accepted 或 uncertain 时不得自动重试或换路。',
+    description: '调用隔离 Connector 已声明的有界读取或外部 action。调用前先用 inspect_mimi_capabilities 按稳定 capability 获取完整 connector ID、action、effect、routeOwner、target 格式和 readiness；禁止从业务词猜测能力。只能调用目录中已声明且由所选 routeOwner 持有的 action；资源被某路线声明后不得改走 GUI、CUA、MCP 或 Shell。个人消息查看、读取或汇总只能使用 effect=read 的目标目录和上下文动作；新消息 Event 同步由 Connector 内部轮询负责，不是模型 action。payloadJson 必须是严格 JSON；结果超时、accepted 或 uncertain 时不得自动重试或换路。',
     parameters: z.object({
       connector: identifier.describe('Connector ID，例如 macos-mail'),
       action: identifier.describe('Connector 声明的 action 名称，例如 send_message'),

@@ -444,15 +444,16 @@ ComputerManager。
 
 ### 8.3 统一 Action
 
-每个 Adapter 最多暴露：
+每个 Adapter 最多向模型暴露：
 
 | Action | 用途 | 默认性质 |
 |---|---|---|
 | `health_check` | 检查账号、客户端和覆盖 | 只读 |
-| `sync_now` | 立即拉取一次新消息 | 只读或可能改变未读 |
+| `list_targets` | 列出 owner 配置且当前可唯一定位的会话 | 只读 |
 | `get_context` | 读取指定会话上下文 | 只读或可能改变未读 |
 | `send_message` | 正式接口或已验证的 Browser Companion 可用时发送 | 外部写操作 |
 
+新消息 Event 由 Connector 内部定时轮询采集，不暴露 `sync_now` 模型 action。
 Browser Companion 可实现受限 `send_message` Connector action；CUA 路线不伪装成
 Connector action，而是由渠道 Skill 明确调用 ComputerManager。
 
@@ -1044,14 +1045,15 @@ selected session，但不得切换 Chrome 活动标签。无法恢复只影响�
 | Action | target | 结果 |
 |---|---|---|
 | `health_check` | `account` | 账号/页面摘要、标签状态、coverage、是否可读写 |
-| `sync_now` | `all` 或配置中的 `sid` | 立即执行一次受监控会话同步 |
+| `list_targets` | `all` | 返回 owner 配置且当前页面存在唯一候选的会话 |
 | `get_context` | 配置中的 `sid` | 返回最多 50 条有界上下文和最新指纹 |
 | `send_message` | 配置中的 `sid` | 只发送 Hub 已绑定目标的一条文本 |
 
 `send_message` 虽登记在 Connector Manager 的 action 目录中，但通用
 `connector_action` 必须对 `personal-*` Connector 拒绝写 action；它只能由
 `PersonalMessageHub` 持有的、已经绑定账号和 `sid` 的内部 callback 调用。
-`health_check`、`sync_now` 和 `get_context` 仍可按现有只读权限开放。
+`health_check`、`list_targets` 和 `get_context` 按只读权限开放；新消息同步只由
+Connector 内部轮询执行，不登记为模型 action。
 
 #### 14.1.7 单次发送算法
 
@@ -1481,7 +1483,7 @@ Connector ID 和 source 固定为：
     "actionTimeoutMs": 30000,
     "actions": {
       "health_check": { "description": "只读检查大象个人账号、专用后台标签和页面兼容性" },
-      "sync_now": { "description": "立即同步配置中的大象会话" },
+      "list_targets": { "description": "列出 owner 配置且当前页面存在唯一候选的会话" },
       "get_context": { "description": "按稳定 sid 读取有界大象会话上下文" },
       "send_message": { "description": "仅供 PersonalMessageHub 向已绑定 sid 发送一条文本" }
     }

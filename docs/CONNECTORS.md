@@ -154,7 +154,7 @@ Connector 完成远端发送后必须确认：
 
 Agent 需要主动执行 Connector 事务时，依据本轮 Effective Capability Snapshot 的精确 `capability/action` 调用 `invoke_capability`。Daemon 只在恰好一个在线且新鲜的 Connector 声明该组合时执行；写或 unknown effect 还必须要求 outbound ready，零个返回 unavailable，多个返回 ambiguous，不要求模型猜 Connector ID。精确声明的 `effect=read` 动作不进入副作用账本，可在明确失败后安全重试；写或 unknown effect 继续由 ActionIntent 和 ExecutionLedger 提供 at-most-once 防护。底层 Task/operator 兼容面仍可使用 `connector_action`，但不再暴露给普通模型 Run。
 
-个人消息的查看、读取和汇总只调用 `effect=read` 的目标目录与上下文动作。`personal-message.sync.write` 会主动轮询并产生 Event，只能在 owner 明确要求同步、刷新或建立监控时调用，不能作为普通消息读取的前置步骤。
+个人消息的查看、读取和汇总只调用 `effect=read` 的目标目录与上下文动作。新消息 Event 由 Connector 自身的定时轮询采集；该内部同步不登记为模型 action，也不能作为普通消息读取的前置步骤。
 
 每个 Daemon Agent Run 还会获得只读 `inspect_mimi_capabilities`，动态返回当前 Connector 的 enabled/online、inbound/outbound readiness、`capability/effect/routeOwner` 与 action 目录。能力选择优先使用 `capability` 精确过滤；`query` 只检索展示元数据，业务词零命中时 `total=0` 但 `catalogTotal/catalogActions` 和 `availableCapabilities` 仍明确保留，不能据此声称没有 Connector 或切换到更宽权限路线。精确 ID 未注册会明确报错。输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals、`filterMatched` 与 `truncated` 明示过滤和截断。状态仍可能随后变化，因此 Manager 在真正发送前再次校验。
 

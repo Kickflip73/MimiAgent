@@ -17,10 +17,9 @@ test('personal channel templates are disabled and only Daxiang declares actions'
   assert.ok(daxiang && qq && wechat);
   assert.equal(daxiang.enabled, false);
   assert.deepEqual(Object.keys(daxiang.actions).sort(), [
-    'get_context', 'health_check', 'list_targets', 'send_message', 'sync_now',
+    'get_context', 'health_check', 'list_targets', 'send_message',
   ]);
-  assert.match(daxiang.actions.sync_now?.description ?? '', /查看、读取或汇总消息不得调用/);
-  assert.equal(daxiang.actions.sync_now?.effect, 'write');
+  assert.equal(daxiang.actions.sync_now, undefined);
   assert.equal(qq.enabled, false);
   assert.deepEqual(qq.actions, {});
   assert.equal(wechat.enabled, false);
@@ -80,6 +79,12 @@ test('generic connector_action cannot reach personal-message send_message', asyn
       connector: 'personal-daxiang',
       action: 'unknown',
       target: '123',
+      payload: {},
+    }), /不允许 action/);
+    await assert.rejects(() => manager.executePersonalMessageAction({
+      connector: 'personal-daxiang',
+      action: 'sync_now',
+      target: 'all',
       payload: {},
     }), /不允许 action/);
   } finally {
