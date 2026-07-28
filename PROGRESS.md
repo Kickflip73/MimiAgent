@@ -1,5 +1,18 @@
 # Progress
 
+## 2026-07-28 process diagnosis permission Badcase
+
+- 根因不是 SIP：Darwin `run_shell` 无条件进入 `sandbox-exec`，而 macOS 的
+  `/bin/ps`、`/usr/bin/top` 带特权位，即使 profile 为 `allow default` 也会在 exec
+  边界返回 `Operation not permitted`。
+- 新增只读 `inspect_processes`：固定调用 `/bin/ps` argv，按 CPU/内存排序，最多返回
+  50 条 PID、UID、RSS/VSZ、CPU/内存比例和 executable；不返回命令行参数，不支持
+  signal、kill、注入、提权或 GUI 控制，也不需要 ActionIntent/逐次批准。
+- Shell 保持一个简单边界：继续防止 Apple Events、Accessibility 和本机控制面绕过；
+  同时启用 `pipefail`，管道中间失败不再表现为 `exitCode=0 + 空输出`。
+- Agent 指令明确把 Shell `operation not permitted` 归因于 MimiAgent 自身沙箱，并优先
+  使用已注册只读诊断能力；不得误报 SIP、反复换命令试探或直接把任务退回 owner。
+
 ## 2026-07-28 M1 current closeout
 
 1. 正式实机门槛已达到：9 个 canary run 共 180 requested、123

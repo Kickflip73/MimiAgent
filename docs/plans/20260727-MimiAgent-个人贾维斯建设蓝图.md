@@ -1013,3 +1013,14 @@ M1 的 100 次与 95% 门槛已经满足，但 M1 尚未整体退出：24h 只�
 `2026-07-29T07:55:46.391Z` 后按首尾样本、成功率和 S0/S1 复核。大象/QQ 的真实
 发送能力仍分别受 owner target 绑定和真实 Adapter 阻塞，不以本轮只读结果替代 72h
 发送 soak。
+
+### 16.2 2026-07-28 只读系统诊断权限收口
+
+进程级 CPU/内存诊断不再经过通用 Shell：macOS 的 `ps`/`top` 带特权位，在
+`sandbox-exec` 中即使 `allow default` 也无法可靠执行。MimiAgent 通过内置只读
+`inspect_processes` 使用固定 argv 获取有界快照，不返回命令行参数，也不具备
+signal、kill、注入、提权或 GUI 控制能力，因此无需 ActionIntent 或逐次 owner 批准。
+通用 Shell 继续只承担工程命令并阻断 Apple Events、Accessibility 与已登记控制面，
+不通过自然语言关键词或命令字符串给权限。Shell pipeline 同时启用 `pipefail`，任何
+中间命令失败都必须显式返回失败；Agent 不得再把自身沙箱的 `operation not permitted`
+误报为 SIP，或要求 owner 手工执行已有正式只读能力。

@@ -82,6 +82,35 @@ test('exposes unique tool names for OpenAI and compatible providers', () => {
     const names = createTools(process.cwd(), openAI).map((tool) => tool.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes('web_search'));
+    assert.ok(names.includes('inspect_processes'));
+  }
+});
+
+test('process inspection is a bounded read-only host capability outside the Shell sandbox', async () => {
+  const selected = createTools(process.cwd(), false).find((item) => item.name === 'inspect_processes');
+  assert.ok(selected && 'invoke' in selected);
+  const result = await selected.invoke(
+    new RunContext({}),
+    JSON.stringify({ sortBy: 'memory', limit: 5 }),
+  ) as unknown as {
+    supported: boolean;
+    processes: Array<Record<string, unknown>>;
+    truncated: boolean;
+  };
+  if (process.platform !== 'darwin') {
+    assert.equal(result.supported, false);
+    return;
+  }
+  assert.equal(result.supported, true);
+  assert.ok(result.processes.length > 0 && result.processes.length <= 5);
+  assert.equal(typeof result.truncated, 'boolean');
+  for (const processInfo of result.processes) {
+    assert.equal(typeof processInfo.pid, 'number');
+    assert.equal(typeof processInfo.residentBytes, 'number');
+    assert.equal(typeof processInfo.memoryPercent, 'number');
+    assert.equal(typeof processInfo.cpuPercent, 'number');
+    assert.equal(typeof processInfo.executable, 'string');
+    assert.equal('commandLine' in processInfo, false);
   }
 });
 
@@ -235,6 +264,12 @@ test('Darwin Shell sandbox blocks direct and interpreter-mediated system automat
     10,
   );
   assert.equal(indirect.exitCode, 73);
+});
+
+test('Shell propagates a failed pipeline stage instead of reporting empty success', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-pipefail-'));
+  const result = await runShellCommand(root, 'false | true', 5);
+  assert.notEqual(result.exitCode, 0);
 });
 
 test('Darwin Shell sandbox blocks the registered Computer backend Unix socket through child interpreters', async () => {

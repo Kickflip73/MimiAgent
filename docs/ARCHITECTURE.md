@@ -55,7 +55,7 @@ src/daemon/
 Connector、不保存正文；Connector cursor 仍由隔离进程维护，Event、Task 和副作用
 回执继续由现有 Store 与 ExecutionLedger 持有。
 
-可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 `computer_observe` 与 `computer_act` 两个 Function Tool。它按 Run 管理不可复用的 Observation、动作/截图预算、Cua session、前台 lease 和受保护录制 artifact；GUI 写动作继续经过统一 Tool policy、ExecutionLedger 与跨进程动作锁。owner 自由文本不参与 Tool 裁剪或授权。Darwin 上的通用 `run_shell` 无条件进入进程沙箱，沙箱拒绝 Apple Events、LaunchServices、Accessibility，以及正式执行面登记的 Unix socket/本地控制端口；未登记的本地开发服务保持可用。正式 Connector、Browser 与 Computer Tool 在 Shell 之外按各自结构化授权运行。Terminal、Codex、IDE 等控制面应用，以及启用 Connector 通过 `claimedComputerApps` 声明的应用，不能成为 Computer 观察/写入目标。`full-owner` 可自动发现已安装的 Cua Driver 并默认启用后台访问；Safe/Workstation 不会因此扩大权限，显式 `MIMI_COMPUTER_BACKEND=off` 始终关闭。
+可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 `computer_observe` 与 `computer_act` 两个 Function Tool。它按 Run 管理不可复用的 Observation、动作/截图预算、Cua session、前台 lease 和受保护录制 artifact；GUI 写动作继续经过统一 Tool policy、ExecutionLedger 与跨进程动作锁。owner 自由文本不参与 Tool 裁剪或授权。Darwin 上的通用 `run_shell` 无条件进入进程沙箱，沙箱拒绝 Apple Events、LaunchServices、Accessibility，以及正式执行面登记的 Unix socket/本地控制端口；未登记的本地开发服务保持可用。macOS 的 `ps`/`top` 带特权位，不能从该沙箱可靠启动，因此只读 CPU/内存诊断使用 argv 固定、无审批的 `inspect_processes` Host Tool；它只返回有界 PID、资源数值和 executable，不返回命令行参数，也不具备 signal、kill、注入或应用控制能力。Shell pipeline 默认启用 `pipefail`，中间命令被沙箱拒绝时不能再以空输出和 exit 0 冒充成功。正式 Connector、Browser 与 Computer Tool 在 Shell 之外按各自结构化授权运行。Terminal、Codex、IDE 等控制面应用，以及启用 Connector 通过 `claimedComputerApps` 声明的应用，不能成为 Computer 观察/写入目标。`full-owner` 可自动发现已安装的 Cua Driver 并默认启用后台访问；Safe/Workstation 不会因此扩大权限，显式 `MIMI_COMPUTER_BACKEND=off` 始终关闭。
 
 `src/agent.ts` 导出 `MimiAgent`；实现位于 `runtime/mimi-agent.ts`。
 

@@ -47,6 +47,8 @@ test('capability routing instructions use stable declarations instead of busines
   assert.match(BASE_INSTRUCTIONS, /稳定 capability、effect 与 routeOwner/);
   assert.match(BASE_INSTRUCTIONS, /query 零命中只表示展示元数据不匹配/);
   assert.match(BASE_INSTRUCTIONS, /uncertain 禁止换路或重放/);
+  assert.match(BASE_INSTRUCTIONS, /Shell 沙箱.*不是 SIP/);
+  assert.match(BASE_INSTRUCTIONS, /只读诊断能力/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /大象|QQ|微信/);
 });
 

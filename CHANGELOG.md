@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- add a bounded read-only `inspect_processes` Host Tool for macOS CPU/memory
+  diagnosis without command-line arguments or Shell approval; keep GUI/control
+  capabilities sandboxed, propagate failed Shell pipeline stages, and stop
+  attributing MimiAgent sandbox denials to SIP
 - keep the M1 canary host-idle gate independent from unrelated Connector readiness
   warnings; active Event, Task, Outbox, and host mutations still stop the whole run,
   while each fixed probe continues to enforce its own registered capability and

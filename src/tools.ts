@@ -20,6 +20,8 @@ const MAX_RANGED_TEXT_BYTES = 5_000_000;
 const MAX_SHELL_OUTPUT = 100_000;
 const MAX_HTTP_BYTES = 200_000;
 const MAX_HTTP_REDIRECTS = 5;
+const MAX_PROCESS_SNAPSHOT_BYTES = 1_000_000;
+const PROCESS_SNAPSHOT_TIMEOUT_MS = 10_000;
 const SKIPPED_DIRECTORIES = new Set([
   '.git', '.mimi-agent', PRE_MIMI_DATA_DIRECTORY, 'node_modules', 'dist',
 ]);
@@ -204,6 +206,135 @@ function boundShellResult(
     }
   }
   return bounded;
+}
+
+export interface SystemProcessSnapshot {
+  supported: boolean;
+  capturedAt: string;
+  sortBy: 'cpu' | 'memory';
+  totalObserved: number;
+  truncated: boolean;
+  processes: Array<{
+    pid: number;
+    parentPid: number;
+    uid: number;
+    residentBytes: number;
+    virtualBytes: number;
+    memoryPercent: number;
+    cpuPercent: number;
+    executable: string;
+  }>;
+  reason?: string;
+}
+
+export async function inspectSystemProcesses(
+  sortBy: 'cpu' | 'memory',
+  limit: number,
+  signal?: AbortSignal,
+): Promise<SystemProcessSnapshot> {
+  const capturedAt = new Date().toISOString();
+  if (process.platform !== 'darwin') {
+    return {
+      supported: false,
+      capturedAt,
+      sortBy,
+      totalObserved: 0,
+      truncated: false,
+      processes: [],
+      reason: 'inspect_processes 当前仅支持 macOS',
+    };
+  }
+  signal?.throwIfAborted();
+  const output = await new Promise<string>((resolve, reject) => {
+    const child = spawn('/bin/ps', [
+      '-axo', 'pid=,ppid=,uid=,rss=,vsz=,%mem=,%cpu=,comm=',
+    ], {
+      env: {
+        PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+        LANG: process.env.LANG,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let bytes = 0;
+    let overflow = false;
+    let settled = false;
+    const finish = (error?: Error, value = '') => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const abort = () => {
+      child.kill('SIGKILL');
+      finish(signal?.reason instanceof Error ? signal.reason : new Error('进程快照已取消'));
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(new Error(`进程快照超过 ${PROCESS_SNAPSHOT_TIMEOUT_MS}ms`));
+    }, PROCESS_SNAPSHOT_TIMEOUT_MS);
+    signal?.addEventListener('abort', abort, { once: true });
+    child.stdout.on('data', (chunk: Buffer) => {
+      bytes += chunk.length;
+      if (bytes > MAX_PROCESS_SNAPSHOT_BYTES) {
+        overflow = true;
+        child.kill('SIGKILL');
+        return;
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (Buffer.concat(stderr).length < 8_000) stderr.push(chunk);
+    });
+    child.once('error', (error) => finish(error));
+    child.once('exit', (code, exitSignal) => {
+      if (overflow) return finish(new Error('进程快照输出超过 1000000 bytes'));
+      if (code !== 0) {
+        const detail = Buffer.concat(stderr).toString('utf8').trim();
+        return finish(new Error(detail || `ps exited code=${String(code)} signal=${exitSignal ?? 'none'}`));
+      }
+      return finish(undefined, Buffer.concat(stdout).toString('utf8'));
+    });
+  });
+  const processes = output.split('\n').flatMap((line) => {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+(.+?)\s*$/u.exec(line);
+    if (!match) return [];
+    const pid = Number(match[1]);
+    const parentPid = Number(match[2]);
+    const uid = Number(match[3]);
+    const residentKiB = Number(match[4]);
+    const virtualKiB = Number(match[5]);
+    const memoryPercent = Number(match[6]);
+    const cpuPercent = Number(match[7]);
+    if ([pid, parentPid, uid, residentKiB, virtualKiB, memoryPercent, cpuPercent]
+      .some((value) => !Number.isFinite(value) || value < 0)) return [];
+    return [{
+      pid,
+      parentPid,
+      uid,
+      residentBytes: residentKiB * 1024,
+      virtualBytes: virtualKiB * 1024,
+      memoryPercent,
+      cpuPercent,
+      executable: match[8]!.slice(0, 4_096),
+    }];
+  });
+  processes.sort((left, right) => (
+    sortBy === 'memory'
+      ? right.residentBytes - left.residentBytes || right.cpuPercent - left.cpuPercent
+      : right.cpuPercent - left.cpuPercent || right.residentBytes - left.residentBytes
+  ) || left.pid - right.pid);
+  return {
+    supported: true,
+    capturedAt,
+    sortBy,
+    totalObserved: processes.length,
+    truncated: processes.length > limit,
+    processes: processes.slice(0, limit),
+  };
 }
 
 export async function readLocalFile(
@@ -1123,6 +1254,8 @@ export async function runShellCommand(
           validatedBlockedLocalTcpPorts,
         ),
         '/bin/zsh',
+        '-o',
+        'pipefail',
         '-lc',
         command,
       ]
@@ -1461,6 +1594,17 @@ export function createTools(
     },
   });
 
+  const inspectProcesses = tool({
+    name: 'inspect_processes',
+    description: '只读获取 macOS 进程 CPU/内存快照并按资源占用排序；仅返回可执行文件名和有界数值，不返回命令行参数。系统卡顿、内存或 CPU 排查直接使用本工具，不要通过 Shell 调用 ps/top。',
+    parameters: z.object({
+      sortBy: z.enum(['memory', 'cpu']).default('memory'),
+      limit: z.number().int().min(1).max(50).default(20),
+    }),
+    execute: async ({ sortBy, limit }, _context, details) =>
+      inspectSystemProcesses(sortBy, limit, details?.signal),
+  });
+
   const shell = tool({
     name: 'run_shell',
     description:
@@ -1607,6 +1751,7 @@ export function createTools(
     listDirectory,
     searchFiles,
     inspectChanges,
+    inspectProcesses,
     ...(access.allowShell === false ? [] : [shell]),
     calculate,
     httpGet,

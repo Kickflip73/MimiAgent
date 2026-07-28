@@ -35,6 +35,7 @@ const TOOL_DESCRIPTOR_DEFINITIONS = {
   list_directory: { capabilities: ['read'], modes: ALL_MODES },
   search_files: { capabilities: ['read'], modes: ALL_MODES },
   inspect_changes: { capabilities: ['read'], modes: ALL_MODES },
+  inspect_processes: { capabilities: ['read'], modes: ALL_MODES },
   run_shell: {
     capabilities: ['execute'],
     sideEffect: true,

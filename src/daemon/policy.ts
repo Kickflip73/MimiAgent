@@ -55,7 +55,7 @@ const READ_TASK_CAPABILITIES = [
 
 const READ_TASK_TOOLS = [
   'current_time', 'calculate',
-  'read_file', 'list_directory', 'search_files',
+  'read_file', 'list_directory', 'search_files', 'inspect_processes',
   'http_get', 'web_search',
   'memory_search', 'memory_read', 'memory_links',
   'list_skills', 'use_skill', 'read_skill_resource',
@@ -86,7 +86,8 @@ const WORK_SOURCE_POLICY_CAPABILITIES = [
 
 const WORK_SOURCE_POLICY_TOOLS = [
   'current_time', 'calculate',
-  'read_file', 'write_file', 'edit_file', 'move_file', 'list_directory', 'search_files', 'run_shell',
+  'read_file', 'write_file', 'edit_file', 'move_file', 'list_directory', 'search_files',
+  'inspect_processes', 'run_shell',
   'http_get', 'web_search', 'http_request',
   'inspect_mimi_capabilities', 'connector_action',
   'memory_search', 'memory_read', 'memory_links', 'memory_ingest',

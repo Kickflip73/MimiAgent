@@ -602,7 +602,7 @@ Provider canary 对 OpenAI/DeepSeek 各执行一个固定、低成本、Safe 档
 | 类别 | 工具 |
 |---|---|
 | 文件 | `read_file`、`write_file`、`edit_file`、`apply_patch`、`move_file`、`list_directory`、`search_files`、`inspect_changes` |
-| 系统与网络 | `run_shell`、`http_request`、`web_search`、`current_time`、`calculate` |
+| 系统与网络 | `inspect_processes`、`run_shell`、`http_request`、`web_search`、`current_time`、`calculate` |
 | MemoryHub | `memory_search`、`memory_read`、`memory_links`、`remember`、`forget`、`memory_ingest` |
 | Skill | `use_skill`、`read_skill_resource`、`list_skills`、`reload_skills` |
 | 验收 / Plan / Goal | `prepare_task`、`finish_task`、`update_plan`、`show_plan`、`set_goal`、`update_goal`、`show_goal` |
@@ -612,7 +612,7 @@ Provider canary 对 OpenAI/DeepSeek 各执行一个固定、低成本、Safe 档
 | OpenAI 托管 | `code_interpreter`，以及 Provider 支持时的托管能力 |
 | MCP | Server Tools、`list_mcp_resources`、`read_mcp_resource` |
 
-文件工具保持小而可组合：`list_directory` 支持有界递归和 glob；`read_file` 保持默认全文字符串兼容，并在分段读取或显式请求元数据时返回 SHA-256；`search_files` 优先使用 ripgrep，并支持纯路径清单、正则、glob、大小写和上下文行，不可用时回退内置搜索；`edit_file` 负责精确局部替换；`apply_patch` 在校验全部 unified-diff hunk 与可选旧文件摘要后写入，当前不处理删除，重命名继续使用 `move_file`；`inspect_changes` 只读返回有界 Git status、diffstat 和 diff，并排除 MimiAgent 私有运行数据。更复杂的 Git、数据库或业务能力应优先通过 Skill、MCP 或现有 Shell 工具组合，而不是继续堆内置工具。
+文件工具保持小而可组合：`list_directory` 支持有界递归和 glob；`read_file` 保持默认全文字符串兼容，并在分段读取或显式请求元数据时返回 SHA-256；`search_files` 优先使用 ripgrep，并支持纯路径清单、正则、glob、大小写和上下文行，不可用时回退内置搜索；`edit_file` 负责精确局部替换；`apply_patch` 在校验全部 unified-diff hunk 与可选旧文件摘要后写入，当前不处理删除，重命名继续使用 `move_file`；`inspect_changes` 只读返回有界 Git status、diffstat 和 diff，并排除 MimiAgent 私有运行数据。`inspect_processes` 是一个窄例外：macOS 的 `ps`/`top` 不能从通用 Shell 沙箱可靠启动，它用固定 argv 返回有界 CPU/内存进程快照，不读取命令行参数，也不能控制进程。更复杂的 Git、数据库或业务能力应优先通过 Skill、MCP 或现有 Shell 工具组合，而不是继续堆内置工具。
 
 ## 有意保留的边界
 

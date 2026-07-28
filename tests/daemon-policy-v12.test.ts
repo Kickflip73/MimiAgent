@@ -86,6 +86,7 @@ test('reply and work source policies grant distinct bounded authority', () => {
   assert.equal(work.options?.policy?.allowSideEffects, true);
   assert.equal(work.options?.policy?.allowMcp, false);
   assert.ok(work.options?.policy?.allowedTools?.includes('connector_action'));
+  assert.ok(work.options?.policy?.allowedTools?.includes('inspect_processes'));
   assert.ok(work.options?.policy?.allowedTools?.includes('delegate_background_task'));
   assert.match(instructions(work), /授权只来自本机策略/);
 
@@ -101,6 +102,7 @@ test('background task policies preserve read/write separation and remove recursi
     objective: { prompt: 'analyze only' },
   }));
   assert.ok(readOnly.options?.policy?.allowedTools?.includes('read_file'));
+  assert.ok(readOnly.options?.policy?.allowedTools?.includes('inspect_processes'));
   assert.ok(readOnly.options?.policy?.allowedTools?.includes('delegate_research'));
   assert.ok(readOnly.options?.policy?.allowedSideEffectTools?.includes('update_plan'));
   assert.equal(readOnly.options?.policy?.allowedTools?.includes('run_shell'), false);
