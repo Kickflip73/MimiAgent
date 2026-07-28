@@ -124,6 +124,47 @@ test('registered read probes require enabled online routes and reject write or u
   }
 });
 
+test('personal Connector actions receive a fresh execution timeout after earlier calls settle', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-personal-action-lane-'));
+  const database = path.join(root, 'mimi.db');
+  const configFile = path.join(root, 'connectors.json');
+  await writeFile(configFile, JSON.stringify({
+    connectors: {
+      'personal-fixture': {
+        command: process.execPath,
+        args: [path.resolve('tests/fixtures/connector-fixture.mjs')],
+        restart: false,
+        healthEvents: false,
+        actionTimeoutMs: 1_000,
+        actions: {
+          inspect: { description: 'serial read fixture', capability: 'fixture.read', effect: 'read' },
+        },
+      },
+    },
+  }));
+  const store = new MimiStore(database);
+  const manager = await ConnectorManager.load(configFile, store, new NotifierRegistry());
+  manager.start();
+  try {
+    await waitUntil(() => manager.listCapabilities()[0]?.readiness.outbound === 'ready');
+    const results = await Promise.all(Array.from({ length: 6 }, async (_, index) => (
+      manager.executeCapability({
+        capability: 'fixture.read',
+        action: 'inspect',
+        target: `serial-delay-${index}`,
+        payload: { index },
+      })
+    )));
+    assert.deepEqual(results.map((item) => (
+      (item.result as { target?: string }).target
+    )), Array.from({ length: 6 }, (_, index) => `serial-delay-${index}`));
+    assert.equal(manager.listCapabilities()[0]?.online, true);
+  } finally {
+    await manager.stop();
+    store.close();
+  }
+});
+
 test('a registered read probe establishes and refreshes bounded readiness without bypassing unavailable', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-readiness-bootstrap-'));
   const database = path.join(root, 'mimi.db');

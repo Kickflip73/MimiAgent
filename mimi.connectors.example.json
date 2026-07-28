@@ -17,7 +17,7 @@
       "actions": {
         "health_check": { "description": "只读检查大象个人账号、专用后台标签和页面兼容性；target=health，payloadJson={}", "capability": "personal-message.health.read", "effect": "read" },
         "list_targets": { "description": "列出配置允许且当前页面存在唯一候选的本人和 watch 稳定 sid，并报告 unavailableTargetCount；target=all，payloadJson={}", "capability": "personal-message.targets.read", "effect": "read" },
-        "get_context": { "description": "按 list_targets 返回的稳定 sid 读取有界大象会话上下文；payloadJson 可只传 {\"limit\":30}", "capability": "personal-message.context.read", "effect": "read" },
+        "get_context": { "description": "按 list_targets 返回的单个稳定 numeric sid 读取有界大象会话上下文；target=* 或 all 无效；payloadJson 建议传 {\"limit\":15}", "capability": "personal-message.context.read", "effect": "read" },
         "send_message": { "description": "仅供 PersonalMessageHub 向已绑定 sid 发送一条文本", "capability": "personal-message.send", "effect": "write" }
       }
     },

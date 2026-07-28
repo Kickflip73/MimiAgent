@@ -585,6 +585,7 @@ export class DaxiangWebAdapter {
         unavailableTargetCount: 0,
         targets: [],
         targetBindingStatus: 'target_not_bound',
+        contextReadUsage: 'get_context 必须逐个使用 targets[].sid；* 和 all 无效',
       };
     }
     const configured = [
@@ -609,6 +610,7 @@ export class DaxiangWebAdapter {
       unavailableTargetCount: configured.length - targets.length,
       targets,
       targetBindingStatus: targets.length === configured.length ? 'bound' : 'target_not_bound',
+      contextReadUsage: 'get_context 必须逐个使用 targets[].sid；* 和 all 无效',
     };
   }
 

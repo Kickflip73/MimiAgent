@@ -739,6 +739,7 @@ class ConnectorProcess implements NotificationSink {
 
 export class ConnectorManager {
   private connectors: Map<string, ConnectorProcess>;
+  private readonly personalActionLanes = new Map<string, Promise<void>>();
   private reloading = false;
 
   private constructor(
@@ -1002,10 +1003,24 @@ export class ConnectorManager {
     return this.executeRegisteredAction(request);
   }
 
-  private async executeRegisteredAction(request: ConnectorActionRequest): Promise<unknown> {
+  private executeRegisteredAction(request: ConnectorActionRequest): Promise<unknown> {
     const connector = this.connectors.get(request.connector);
     if (!connector) throw new Error(`未找到 Connector ${request.connector}`);
-    return connector.executeAction(request.action, request.target, request.payload);
+    if (!request.connector.startsWith('personal-')) {
+      return connector.executeAction(request.action, request.target, request.payload);
+    }
+    // Personal adapters navigate one bound client surface, so queue before starting each action timeout.
+    const previous = this.personalActionLanes.get(request.connector) ?? Promise.resolve();
+    const operation = previous.then(
+      () => connector.executeAction(request.action, request.target, request.payload),
+    );
+    const settled = operation.then(() => undefined, () => undefined);
+    this.personalActionLanes.set(request.connector, settled);
+    return operation.finally(() => {
+      if (this.personalActionLanes.get(request.connector) === settled) {
+        this.personalActionLanes.delete(request.connector);
+      }
+    });
   }
 
   get size(): number {

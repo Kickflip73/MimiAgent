@@ -16,6 +16,7 @@ process.stdout.write(`${JSON.stringify({
 
 process.stdin.setEncoding('utf8');
 let input = '';
+let serialActionLane = Promise.resolve();
 process.stdin.on('data', (chunk) => {
   input += chunk;
   while (input.includes('\n')) {
@@ -50,7 +51,12 @@ process.stdin.on('data', (chunk) => {
           ok: true,
           result: { requestId: message.id, action: message.action, target: message.target, payload: message.payload },
         })}\n`);
-      if (message.target === 'delay') setTimeout(respond, 100);
+      if (message.target.startsWith('serial-delay-')) {
+        const operation = serialActionLane.then(
+          () => new Promise((resolve) => setTimeout(resolve, 200)),
+        ).then(respond);
+        serialActionLane = operation.then(() => undefined, () => undefined);
+      } else if (message.target === 'delay') setTimeout(respond, 100);
       else respond();
     }
   }

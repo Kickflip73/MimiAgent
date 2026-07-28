@@ -209,6 +209,7 @@ test('Daxiang target listing excludes configured conversations missing from the 
       unavailableTargetCount: number;
       targets: Array<{ sid: string }>;
       targetBindingStatus: string;
+      contextReadUsage: string;
     }>;
   }).listTargets();
 
@@ -216,6 +217,7 @@ test('Daxiang target listing excludes configured conversations missing from the 
   assert.equal(listed.unavailableTargetCount, 1);
   assert.deepEqual(listed.targets.map((target: { sid: string }) => target.sid), ['123', '123']);
   assert.equal(listed.targetBindingStatus, 'target_not_bound');
+  assert.match(listed.contextReadUsage, /targets\[\]\.sid/);
   await assert.rejects(() => adapter.getContext({
     accountFingerprint,
     sid: '456',
