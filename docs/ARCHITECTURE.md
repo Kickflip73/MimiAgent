@@ -577,3 +577,20 @@ CPU/内存/磁盘尚无持久样本时同样返回 `null` 和 host sampling=`not
 dead letter/Digest/readiness 分类进入
 status、Doctor 和脱敏 diagnostic bundle。历史 dead letter 保留原记录，只增加
 `retry_after_fix/archive_safe/external_blocked/manual_verify/investigate` 处置投影。
+
+### M1 Jarvis Eval
+
+M1 eval 使用 `evals/m1/manifest.v1.json` 固定 dataset、policy 和 tool snapshot revision，
+并由 `src/runtime/m1-eval.ts` 同时验证 manifest 与 run record。每条 record 都保留
+App/渠道、动作族、执行路径、风险、Provider、outcome、首次/重试/接管、S0-S3 和仅含
+hash 或 `meta:` 的 evidence ref。run 文件通过排他锁和原子替换写入；损坏输入、重复
+scenario、并发写和 uncertain retry 均 fail closed。
+
+`npm run eval:m1` 会按 manifest 中的公共边界测试文件执行真实 deterministic suite，
+然后按 App × action family × execution path 报告分母；suite 失败不会被 expected
+blocked/failed 场景掩盖。`npm run eval:m1:canary` 先复核 Doctor、Event、Task、
+Outbox 和 host mutation idle，只执行 20 个 Browser/Shortcuts/Computer/Daxiang
+只读 probe。probe 返回的标签、URL、快捷指令名或页面正文会被立即丢弃，run 仅留
+状态分类和元数据 evidence ref。该 canary 不是 24/72h soak，也不能替代 100 次实机门禁。
+默认输出使用不覆盖的时间戳文件名；`run-m1-eval.ts report <run...>` 只聚合同一 dataset
+revision 的多次 run，因此分母可以持续累计而不会混入不同口径。

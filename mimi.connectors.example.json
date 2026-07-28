@@ -246,9 +246,9 @@
       "deliveryTimeoutMs": 30000,
       "actionTimeoutMs": 900000,
       "actions": {
-        "list_shortcuts": { "description": "列出全部或指定文件夹中的快捷指令；target 为 all 或文件夹名/ID" },
-        "list_folders": { "description": "列出快捷指令文件夹；target 为 all" },
-        "run_shortcut": { "description": "按名称或 ID 运行快捷指令，支持文本/文件输入和文件/stdout 输出" }
+        "list_shortcuts": { "description": "列出全部或指定文件夹中的快捷指令；target 为 all 或文件夹名/ID", "capability": "shortcuts.catalog.read", "effect": "read" },
+        "list_folders": { "description": "列出快捷指令文件夹；target 为 all", "capability": "shortcuts.catalog.read", "effect": "read" },
+        "run_shortcut": { "description": "按名称或 ID 运行快捷指令，支持文本/文件输入和文件/stdout 输出", "capability": "shortcuts.run", "effect": "write" }
       }
     },
     "macos-desktop": {
@@ -270,20 +270,20 @@
       "deliveryTimeoutMs": 30000,
       "actionTimeoutMs": 30000,
       "actions": {
-        "desktop_context": { "description": "读取前台应用、窗口和可选文本剪贴板上下文；target 为 all" },
-        "frontmost_app": { "description": "读取当前前台应用；target 为 all" },
-        "list_apps": { "description": "列出运行中的应用；target 为 all" },
-        "list_windows": { "description": "列出指定或前台应用的窗口；target 为应用名、bundle ID 或 frontmost" },
-        "activate_app": { "description": "激活应用；target 为应用名或 bundle ID" },
-        "open_item": { "description": "打开 URL 或绝对路径，可选指定应用；target 为 URL/路径" },
-        "clipboard_read": { "description": "读取有界文本剪贴板；target 为 clipboard" },
-        "clipboard_write": { "description": "写入或清空文本剪贴板；target 为 clipboard" },
-        "clipboard_watch_status": { "description": "读取剪贴板感知是否启用及轮询间隔；target 为 clipboard" },
-        "clipboard_watch_start": { "description": "持久启用剪贴板变化感知；target 为 clipboard，可设置 payload.pollIntervalMs" },
-        "clipboard_watch_stop": { "description": "持久停止剪贴板变化感知；target 为 clipboard" },
-        "keyboard_type": { "description": "向指定或前台应用输入有界文本和 modifier；target 为应用名/bundle ID/frontmost" },
-        "keyboard_key": { "description": "向指定或前台应用发送 macOS key code；target 为应用名/bundle ID/frontmost" },
-        "click_menu": { "description": "点击应用的一级菜单项；target 为应用名/bundle ID/frontmost" }
+        "desktop_context": { "description": "读取前台应用、窗口和可选文本剪贴板上下文；target 为 all", "capability": "desktop.context.read", "effect": "read" },
+        "frontmost_app": { "description": "读取当前前台应用；target 为 all", "capability": "desktop.apps.read", "effect": "read" },
+        "list_apps": { "description": "列出运行中的应用；target 为 all", "capability": "desktop.apps.read", "effect": "read" },
+        "list_windows": { "description": "列出指定或前台应用的窗口；target 为应用名、bundle ID 或 frontmost", "capability": "desktop.windows.read", "effect": "read" },
+        "activate_app": { "description": "激活应用；target 为应用名或 bundle ID", "capability": "desktop.apps.activate", "effect": "write" },
+        "open_item": { "description": "打开 URL 或绝对路径，可选指定应用；target 为 URL/路径", "capability": "desktop.items.open", "effect": "write" },
+        "clipboard_read": { "description": "读取有界文本剪贴板；target 为 clipboard", "capability": "desktop.clipboard.read", "effect": "read" },
+        "clipboard_write": { "description": "写入或清空文本剪贴板；target 为 clipboard", "capability": "desktop.clipboard.write", "effect": "write" },
+        "clipboard_watch_status": { "description": "读取剪贴板感知是否启用及轮询间隔；target 为 clipboard", "capability": "desktop.clipboard.watch.read", "effect": "read" },
+        "clipboard_watch_start": { "description": "持久启用剪贴板变化感知；target 为 clipboard，可设置 payload.pollIntervalMs", "capability": "desktop.clipboard.watch.write", "effect": "write" },
+        "clipboard_watch_stop": { "description": "持久停止剪贴板变化感知；target 为 clipboard", "capability": "desktop.clipboard.watch.write", "effect": "write" },
+        "keyboard_type": { "description": "向指定或前台应用输入有界文本和 modifier；target 为应用名/bundle ID/frontmost", "capability": "desktop.keyboard.write", "effect": "write" },
+        "keyboard_key": { "description": "向指定或前台应用发送 macOS key code；target 为应用名/bundle ID/frontmost", "capability": "desktop.keyboard.write", "effect": "write" },
+        "click_menu": { "description": "点击应用的一级菜单项；target 为应用名/bundle ID/frontmost", "capability": "desktop.menu.write", "effect": "write" }
       }
     },
     "macos-browser": {
@@ -322,9 +322,9 @@
       "deliveryTimeoutMs": 30000,
       "actionTimeoutMs": 90000,
       "actions": {
-        "capture_screen": { "description": "将主屏、display、window 或矩形区域截图保存为显式绝对 PNG 路径" },
-        "ocr_image": { "description": "使用 macOS Vision 对绝对路径图片执行有界本地 OCR" },
-        "read_screen": { "description": "临时截图并 OCR 当前屏幕区域，返回后立即删除图片" }
+        "capture_screen": { "description": "将主屏、display、window 或矩形区域截图保存为显式绝对 PNG 路径", "capability": "screen.capture.write", "effect": "write" },
+        "ocr_image": { "description": "使用 macOS Vision 对绝对路径图片执行有界本地 OCR", "capability": "screen.ocr.read", "effect": "read" },
+        "read_screen": { "description": "临时截图并 OCR 当前屏幕区域，返回后立即删除图片", "capability": "screen.content.read", "effect": "read" }
       }
     },
     "macos-voice": {

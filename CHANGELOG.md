@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- add the versioned M1 Jarvis Eval manifest/schema, atomic reproducible runner,
+  App/action-family/path denominator reports, 60 deterministic boundary scenarios,
+  and a gated 20-sample metadata-only read canary; classify Browser, Screen,
+  Shortcuts, Desktop, and Daxiang actions with stable capability/effect ownership
 - recognize Multica access tokens at the common persistence/display sanitization boundary,
   keep classified historical Task dead letters visible without blocking Doctor readiness,
   derive `/status` Skill availability from the effective capability snapshot, and

@@ -25,6 +25,25 @@ test('personal channel templates are disabled and only Daxiang declares actions'
   assert.deepEqual(wechat.actions, {});
 });
 
+test('M1 execution surfaces have stable capability, effect, and route ownership metadata', async () => {
+  const template = parseConnectorConfig(JSON.parse(
+    await readFile(path.join(process.cwd(), 'mimi.connectors.example.json'), 'utf8'),
+  ));
+  for (const id of [
+    'macos-browser', 'macos-screen', 'macos-shortcuts', 'macos-desktop', 'personal-daxiang',
+  ]) {
+    const connector = template.connectors[id];
+    assert.ok(connector, id);
+    for (const [name, action] of Object.entries(connector.actions)) {
+      assert.ok(action.capability, `${id}.${name} capability`);
+      assert.notEqual(action.effect, 'unknown', `${id}.${name} effect`);
+    }
+  }
+  assert.equal(template.connectors['macos-shortcuts']?.actions.run_shortcut?.effect, 'write');
+  assert.equal(template.connectors['macos-screen']?.actions.read_screen?.effect, 'read');
+  assert.equal(template.connectors['personal-daxiang']?.actions.send_message?.capability, 'personal-message.send');
+});
+
 test('generic connector_action cannot reach personal-message send_message', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'personal-message-action-'));
   const configFile = path.join(root, 'connectors.json');

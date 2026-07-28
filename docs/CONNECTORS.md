@@ -619,6 +619,18 @@ Tool 不经过此 Shell 沙箱，继续使用各自的结构化 capability、rou
 `accepted`、timeout、uncertain、Shell exit code 或自然语言“已完成”都不能充当外部事务
 完成证据；completed step 的证据不能静默替换或重新打开。
 
+## M1 执行面与只读 Eval
+
+Browser、Screen、Shortcuts、Desktop 和 Daxiang action 必须在模板中声明稳定
+`capability` 与 `effect`，运行时 `routeOwner` 固定为精确 Connector ID。读取目录、
+bounded page/screen/OCR 和状态查询为 `read`；Shortcut 执行、截图显式落盘、导航、
+DOM 执行、应用/键盘/菜单/剪贴板变更为 `write`。缺失或旧配置中的 `unknown` 不能被
+解释为只读；初始化只会把同一 packaged action 的未知元数据升级为明确值。
+
+只读实机基线用 `npm run eval:m1:canary`。它不会启用 Connector、请求 TCC、激活应用、
+发送消息或保存截图/OCR；Daxiang 未精确绑定时保留为 `blocked/target-not-bound` 分母，
+不会扫描联系人或改走 Browser、Computer、Shell。
+
 Connector readiness 使用固定词义：`online` 只代表进程存活；`readiness` 表示渠道能否
 收/发；`freshness` 表示状态是否仍在有效期；`coverage` 说明完整、bounded、
 notification-only 或 metadata-only。旧 Connector 缺字段时显示 unknown，并由 Doctor

@@ -970,3 +970,16 @@ M0 全绿后启动的 JRV-102 仅交付不扩大副作用面的代码纵切面�
 PersonalMessageHub 可达，post-click timeout 固定为 uncertain 且不切 Browser、
 Computer 或 Shell。本轮没有 owner 精确目标与正文，因此不执行真实绑定、发送或
 72 小时 soak，外部阻塞记录在 `BLOCKED.md`。
+
+## 16. 2026-07-28 M1 JRV-101/102 验收基线
+
+本增量建立 Jarvis Eval schema/manifest/run/report v1，并以 60 个 Computer、Browser、
+Screen、Shortcuts、Daxiang deterministic 场景作为每提交可复跑层。fixture 的
+expected blocked/failed/uncertain 是安全行为本身，不从分母移除；runner suite 失败则
+统一记为 fixture-suite-failed。报告不允许只给总成功数，必须按 App × 动作族 × 路径
+公开首次、重试、接管、blocked/failed/uncertain 和 S0-S3。
+
+只读实机 runner 在运行态全部 idle 后最多执行 20 个 probe，只留元数据。Daxiang
+target-not-bound 作为真实 blocked 样本保留；没有 owner 精确绑定时不执行发送。
+本增量完成不改变 M1 退出条件：仍需累计至少 100 次分层实机、成功率不低于 95%、
+S0/S1=0、只读 24h，以及任何进入发送渠道的 72h soak。

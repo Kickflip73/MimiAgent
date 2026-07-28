@@ -92,6 +92,8 @@
     "dev": "tsx src/index.ts",
     "eval": "tsx src/eval.ts",
     "eval:security": "node --import tsx --test tests/security-policy-eval.test.ts tests/tool-policy.test.ts",
+    "eval:m1": "tsx scripts/run-m1-eval.ts fixtures",
+    "eval:m1:canary": "tsx scripts/run-m1-canary.ts",
     "eval:agent": "tsx src/agent-eval.ts",
     "eval:canary": "node --import tsx src/provider-canary.ts",
     "bench:capacity": "node --import tsx scripts/benchmark-capacity.ts",

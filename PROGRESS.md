@@ -31,6 +31,43 @@
 - 已完成安全面：bounded read + Draft 保留；通用 Connector 写被拒；OpenAI/DeepSeek 共用 no-fallback fixture；页面/账号失效 fail closed；post-click timeout 只 commit 一次并返回 uncertain。
 - 门禁红→绿：新增测试先 8/15 pass、7 fail（binding schema 未实现）→ 实现后聚焦 38/38、skipped=0；未执行真实绑定、发送或 soak。
 
+## M1 JRV-101/102 验收基线（2026-07-28）
+
+- Task 0 起点：新 worktree 在 `c4e3e4a` detached HEAD，工作树干净；已切到
+  `codex/mimiagent-m1-eval-baseline`。`knowledge/wiki/_log.md` 为 tracked 且无本轮
+  修改，继续列入禁止触碰项。
+- CI 基线首跑：repo checks 通过，但 worktree 无 `node_modules`，在
+  `tsc: command not found` 停止；`npm ci` 按现有锁文件安装 115 packages 后，
+  基线 `npm run ci` 通过，coverage 85.16/76.45/82.39，未修改依赖或锁文件。
+- 运行态基线：全局 Daemon build `0.12.0+28a12e836691`；Doctor `ready=true`,
+  `issues=[]`；Connector enabled/online/ready=4/4/4，unknown/stale/unavailable=0；
+  Computer/CUA ready。历史 85 dead letter 保留且 unclassified=0；Task queued=4、
+  blocked=1、running=0，Event/worker/Outbox/host mutation 均 idle。
+- Eval 基础设施：新增 manifest/schema v1、原子 run 文件、损坏输入拒绝、并发写、
+  uncertain 禁止 retry 和分层 report；报告固定按 App × action family × execution path
+  给 denominator、首次/重试/接管和 S0-S3。
+- Fixture dataset：当前 60 个互不重复场景，覆盖 Computer、Browser、Screen、
+  Shortcuts、Daxiang；runner 以相关 `node:test` 公共边界执行并以测试输出摘要作为
+  脱敏 evidence ref，不直接把 manifest 标绿。
+- 执行面元数据：Browser、Screen、Shortcuts、Desktop、Daxiang 的 M1 action 均固定
+  capability/effect；route owner 仍由 Connector ID 结构化生成。`run_shortcut`、
+  screen 显式落盘和 GUI/clipboard 输入均为 write，不再以 unknown 绕过门禁。
+- 反向故障注入：测试把 Daxiang post-click `uncertain` 记录改成 retry 时 schema
+  必然报错；恢复为 first attempt 后通过。该证据只证明 eval 门禁，不代表真实发送。
+- 实机只读 canary：在 Doctor ready 且 Event/active Task/Outbox/host mutation 全 idle 后
+  执行到本轮上限 20 次，覆盖 4 个 App × 动作族 × 路径。Computer readiness 5/5、
+  Shortcuts catalog 5/5；Browser tabs 0/5（直接只读 worker 不可用，blocked）；
+  Daxiang binding 0/5（disabled/target_not_bound，blocked）。总体 success=10、
+  blocked=10、failed/uncertain=0、S0/S1=0；未触发前台切换、TCC、发送、截图或 OCR，
+  也未保留标题、URL、快捷指令名或正文。由于只有 2 个组合实际成功，“至少 4 个可用
+  组合”尚未达标；达到 20 上限后未继续补跑。
+- 未关闭差额：尚未累计 100 次分层实机、95% 成功率、只读 24h 或发送 72h；真实
+  Daxiang target/authorization 仍见 `BLOCKED.md`。本增量不得据此宣布 M1 全绿。
+- 本增量最终 CI：`npm run ci` 为 628/628 pass，fail/skipped/todo=0；coverage
+  lines 85.25%、branches 76.44%、functions 82.45%；Build 与 packed-package smoke
+  通过。没有安装或重启 Daemon；运行态继续使用已验收的
+  `0.12.0+28a12e836691`，本提交只交付下一次安全安装可使用的源码与评测基线。
+
 ## 最终验收
 
 - `npm run ci`：621/621 pass，fail/skipped/todo=0；coverage lines 85.17、branches 76.46、functions 82.39；build 与 packed-package smoke 通过。
