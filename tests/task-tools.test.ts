@@ -80,6 +80,7 @@ test('repeated background delegation returns the same durable task', async () =>
       objective: 'Implement the game MVP',
       executor: 'codex',
       workspaceAccess: 'write',
+      requiredCapabilities: ['workspace.read', 'workspace.write', 'shell.execute'],
     };
 
     const first = await invoke(tools, 'delegate_background_task', input) as { taskId: string };
@@ -92,6 +93,18 @@ test('repeated background delegation returns the same durable task', async () =>
       (store.getTask(first.taskId)?.objective as Record<string, unknown>).workspaceRoot,
       path.join(root, 'selected-workspace'),
     );
+    assert.deepEqual(
+      (store.getTask(first.taskId)?.objective as Record<string, unknown>).requiredCapabilities,
+      ['workspace.read', 'workspace.write', 'shell.execute'],
+    );
+
+    const incompatible = await invoke(tools, 'delegate_background_task', {
+      objective: 'Use the desktop to submit a form',
+      executor: 'mimi',
+      workspaceAccess: 'write',
+      requiredCapabilities: ['computer.act'],
+    });
+    assert.match(JSON.stringify(incompatible), /不具备必需能力.*computer\.act/);
 
     const outputJsonlPath = path.join(root, 'events.jsonl');
     await writeFile(outputJsonlPath, `${JSON.stringify({

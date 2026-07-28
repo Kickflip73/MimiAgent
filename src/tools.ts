@@ -79,6 +79,8 @@ export interface ToolAccessPolicy {
   allowProtectedPathShellAccess?: boolean;
   shellEnvironment?: NodeJS.ProcessEnv;
   shellDetachedProcessGroup?: boolean;
+  blockedUnixSocketPaths?: string[];
+  blockedLocalTcpPorts?: number[];
   postWriteDiagnostics?: boolean;
   mutationObserver?: FileMutationObserver;
 }
@@ -131,11 +133,36 @@ async function assertWritablePath(
   return assertScopedPath(workspaceRoot, target, writablePaths, '写入');
 }
 
-function sandboxProfile(protectedPaths: string[]): string {
+function sandboxProfile(
+  protectedPaths: string[],
+  blockedUnixSocketPaths: string[],
+  blockedLocalTcpPorts: number[],
+): string {
   const quote = (value: string) => `"${path.resolve(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   return [
     '(version 1)',
     '(allow default)',
+    // The general-purpose Shell is not a GUI/Browser/Computer route. Block the
+    // OS capabilities and local control channels rather than trying to
+    // classify command text or enumerate scripting languages.
+    '(deny appleevent-send)',
+    '(deny lsopen)',
+    ...blockedUnixSocketPaths.map((socketPath) =>
+      `(deny network-outbound (remote unix-socket (path-literal ${quote(socketPath)})))`),
+    ...blockedLocalTcpPorts.map((port) =>
+      `(deny network-outbound (remote ip "localhost:${port}"))`),
+    ...[
+      'com.apple.appleeventsd',
+      'com.apple.axserver',
+      'com.apple.accessibility.api',
+      'com.apple.coreservices.launchservicesd',
+      'com.apple.coreservices.launchservicesd.management',
+      'com.apple.hiservices-xpcservice',
+      'com.apple.tccd',
+      'com.apple.tccd.system',
+      'com.apple.windowserver',
+      'com.apple.windowserver.active',
+    ].map((service) => `(deny mach-lookup (global-name "${service}"))`),
     ...protectedPaths.flatMap((protectedPath) => [
       `(deny file-read* (subpath ${quote(protectedPath)}))`,
       `(deny file-write* (subpath ${quote(protectedPath)}))`,
@@ -1052,6 +1079,8 @@ export async function runShellCommand(
   protectedPaths: string[] = [],
   environment: NodeJS.ProcessEnv = process.env,
   detachedProcessGroup = process.platform !== 'win32',
+  blockedUnixSocketPaths: string[] = [],
+  blockedLocalTcpPorts: number[] = [],
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   if (/(?:^|[;&|()\s])(?:nohup|disown|setsid)(?:$|[;&|()\s])/u.test(command)
     || /(^|[^&])&(?!&)(?:\s*(?:#.*)?)$/u.test(command)
@@ -1072,12 +1101,31 @@ export async function runShellCommand(
       return path.resolve(protectedPath);
     }
   }));
+  const canonicalBlockedUnixSocketPaths = await Promise.all(
+    blockedUnixSocketPaths.map(canonicalPotentialPath),
+  );
+  const validatedBlockedLocalTcpPorts = blockedLocalTcpPorts.map((port) => {
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+      throw new Error(`blockedLocalTcpPorts 包含无效端口：${port}`);
+    }
+    return port;
+  });
   const localShell = process.platform === 'win32'
     ? (process.env.ComSpec ?? 'cmd.exe')
     : process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh';
-  const executable = canonicalProtectedPaths.length && process.platform === 'darwin' ? '/usr/bin/sandbox-exec' : localShell;
-  const args = canonicalProtectedPaths.length && process.platform === 'darwin'
-    ? ['-p', sandboxProfile(canonicalProtectedPaths), '/bin/zsh', '-lc', command]
+  const executable = process.platform === 'darwin' ? '/usr/bin/sandbox-exec' : localShell;
+  const args = process.platform === 'darwin'
+    ? [
+        '-p',
+        sandboxProfile(
+          canonicalProtectedPaths,
+          canonicalBlockedUnixSocketPaths,
+          validatedBlockedLocalTcpPorts,
+        ),
+        '/bin/zsh',
+        '-lc',
+        command,
+      ]
     : process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-lc', command];
 
   if (signal?.aborted) {
@@ -1416,7 +1464,7 @@ export function createTools(
   const shell = tool({
     name: 'run_shell',
     description:
-      '在本机系统 Shell 中执行命令。可用于搜索文件、Git、网络请求、安装依赖、运行代码和系统自动化。',
+      '在本机系统 Shell 中执行工程命令。可用于搜索文件、Git、网络请求、安装依赖和运行代码；不提供 GUI 或系统自动化能力。',
     parameters: z.object({
       command: z.string().min(1),
       timeoutSeconds: z.number().int().min(1).max(300).default(60),
@@ -1430,6 +1478,8 @@ export function createTools(
         access.allowProtectedPathShellAccess ? [] : protectedPaths,
         access.shellEnvironment,
         access.shellDetachedProcessGroup,
+        access.blockedUnixSocketPaths,
+        access.blockedLocalTcpPorts,
       ),
   });
 

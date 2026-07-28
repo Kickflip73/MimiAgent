@@ -24,8 +24,20 @@ export interface ComputerRunAuthority {
   runId: string;
   access: ComputerAccess;
   allowedApps?: readonly string[];
+  deniedApps?: readonly string[];
   supportsImageInput?: boolean;
 }
+
+const PROTECTED_CONTROL_PLANE_APPS = new Set([
+  'com.apple.Terminal',
+  'com.googlecode.iterm2',
+  'com.microsoft.VSCode',
+  'com.openai.codex',
+]);
+
+const PROTECTED_CONTROL_PLANE_PREFIXES = [
+  'com.jetbrains.',
+];
 
 interface StoredObservation extends BackendObservation {
   id: string;
@@ -348,6 +360,13 @@ export class ComputerManager {
   }
 
   private authorizeApp(authority: ComputerRunAuthority, bundleId: string): void {
+    if (PROTECTED_CONTROL_PLANE_APPS.has(bundleId)
+      || PROTECTED_CONTROL_PLANE_PREFIXES.some((prefix) => bundleId.startsWith(prefix))) {
+      throw new Error(`应用 ${bundleId} 是受保护控制面，Computer 不得观察或注入输入`);
+    }
+    if (authority.deniedApps?.includes(bundleId)) {
+      throw new Error(`应用 ${bundleId} 已由正式 Connector 声明 route owner，Computer 不能跨执行面接管`);
+    }
     if (authority.allowedApps !== undefined && !authority.allowedApps.includes(bundleId)) {
       throw new Error(`应用 ${bundleId} 不在当前 Run 的 computerApps allowlist`);
     }

@@ -40,6 +40,7 @@ function connector(
     readiness: { inbound: 'ready', outbound: 'ready' },
     source: `connector:${id}`,
     trust: 'trusted',
+    claimedComputerApps: [],
     actions: [],
     ...options,
   };

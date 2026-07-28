@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { createServer as createUnixServer } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -207,6 +208,112 @@ test('Shell uses an explicitly isolated environment when provided', async () => 
   });
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout, 'yes:');
+});
+
+test('Darwin Shell sandbox blocks direct and interpreter-mediated system automation', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-automation-'));
+  if (process.platform !== 'darwin') {
+    assert.equal((await runShellCommand(root, 'printf portable', 5)).stdout, 'portable');
+    return;
+  }
+
+  const direct = await runShellCommand(
+    root,
+    '/usr/bin/osascript -e \'tell application "System Events" to get name of first process whose frontmost is true\'',
+    10,
+  );
+  assert.notEqual(direct.exitCode, 0);
+
+  const script = [
+    'const { spawnSync } = require("node:child_process");',
+    'const result = spawnSync("/usr/bin/osascript", ["-e", "tell application \\"System Events\\" to get name of first process whose frontmost is true"]);',
+    'process.exit(result.status === 0 ? 0 : 73);',
+  ].join('');
+  const indirect = await runShellCommand(
+    root,
+    `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+    10,
+  );
+  assert.equal(indirect.exitCode, 73);
+});
+
+test('Darwin Shell sandbox blocks the registered Computer backend Unix socket through child interpreters', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-computer-socket-'));
+  const socketPath = path.join(root, 'cua-driver.sock');
+  const server = createUnixServer(() => {});
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socketPath, resolve);
+  });
+  try {
+    if (process.platform !== 'darwin') {
+      assert.equal((await realpath(socketPath)), socketPath);
+      return;
+    }
+    const script = [
+      'const net = require("node:net");',
+      `const socket = net.createConnection(${JSON.stringify(socketPath)});`,
+      'socket.once("connect", () => { socket.destroy(); process.exit(0); });',
+      'socket.once("error", () => process.exit(77));',
+      'setTimeout(() => process.exit(78), 2000);',
+    ].join('');
+    const result = await runShellCommand(
+      root,
+      `/bin/sh -lc ${JSON.stringify(`${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`)}`,
+      10,
+      undefined,
+      [],
+      process.env,
+      true,
+      [socketPath],
+    );
+    assert.equal(result.exitCode, 77);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('Darwin Shell sandbox blocks local control ports without parsing command text', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-loopback-'));
+  const server = createServer((_request, response) => {
+    response.writeHead(200);
+    response.end('control');
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    if (process.platform !== 'darwin') return;
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const script = [
+      'const http = require("node:http");',
+      `const request = http.get("http://127.0.0.1:${address.port}/", () => process.exit(0));`,
+      'request.once("error", () => process.exit(79));',
+      'setTimeout(() => process.exit(78), 2000);',
+    ].join('');
+    const allowed = await runShellCommand(
+      root,
+      `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+      10,
+    );
+    assert.equal(allowed.exitCode, 0);
+    const result = await runShellCommand(
+      root,
+      `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+      10,
+      undefined,
+      [],
+      process.env,
+      true,
+      [],
+      [address.port],
+    );
+    assert.equal(result.exitCode, 79);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });
 
 test('Shell bounds its combined result to the execution ledger output limit', async () => {

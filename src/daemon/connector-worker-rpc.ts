@@ -16,6 +16,7 @@ const taskIdSchema = z.string().uuid();
 
 export const workerConnectorFilterSchema = z.object({
   connector: identifier.optional(),
+  capability: z.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/).max(120).optional(),
   query: z.string().trim().min(1).max(100).optional(),
 }).strict();
 
@@ -52,6 +53,8 @@ const readinessSchema = z.object({
 
 export const connectorCapabilitySnapshotSchema = z.object({
   configFile: z.string().min(1).max(16_384),
+  catalogTotal: z.number().int().nonnegative(),
+  catalogActions: z.number().int().nonnegative(),
   total: z.number().int().nonnegative(),
   enabled: z.number().int().nonnegative(),
   online: z.number().int().nonnegative(),
@@ -59,6 +62,10 @@ export const connectorCapabilitySnapshotSchema = z.object({
   outboundReady: z.number().int().nonnegative(),
   stale: z.number().int().nonnegative(),
   actions: z.number().int().nonnegative(),
+  filterMatched: z.boolean(),
+  availableCapabilities: z.array(
+    z.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/).max(120),
+  ).max(100),
   truncated: z.boolean(),
   connectors: z.array(z.object({
     id: identifier,
@@ -66,9 +73,14 @@ export const connectorCapabilitySnapshotSchema = z.object({
     online: z.boolean(),
     readiness: readinessSchema,
     source: z.string().max(300),
+    routeOwner: identifier,
+    claimedComputerApps: z.array(z.string().min(1).max(500)).max(100),
     actions: z.array(z.object({
       name: identifier,
       description: z.string().max(300),
+      capability: z.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/).max(120),
+      effect: z.enum(['read', 'write', 'unknown']),
+      routeOwner: identifier,
     }).strict()).max(100),
   }).strict()).max(50),
 }).strict().superRefine((snapshot, context) => {

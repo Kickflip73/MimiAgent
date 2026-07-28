@@ -1,6 +1,9 @@
 import type { Tool } from '@openai/agents';
 import { createHash } from 'node:crypto';
-import type { ExecutionLedger } from '../core/execution-ledger.js';
+import {
+  executionReceiptRef,
+  type ExecutionLedger,
+} from '../core/execution-ledger.js';
 import {
   ACTION_INTENT_SCHEMA_VERSION,
   actionExecutionKey,
@@ -84,6 +87,32 @@ function alreadyExecutedResult(result: unknown): unknown {
   return result && typeof result === 'object' && !Array.isArray(result)
     ? { ...result as Record<string, unknown>, ...replay }
     : replay;
+}
+
+function withActionIntentEvidence(receipt: {
+  intent: ActionIntent;
+  outcome: 'confirmed' | 'failed_safe' | 'uncertain';
+  result?: unknown;
+}): unknown {
+  const evidence = {
+    ref: `action-intent:${receipt.intent.executionKey}`,
+    intentId: receipt.intent.intentId,
+    actionFamily: receipt.intent.actionFamily,
+    targetRef: receipt.intent.targetRef,
+    route: receipt.intent.selectedRoute,
+    outcome: receipt.outcome,
+  };
+  const result = receipt.result;
+  return result && typeof result === 'object' && !Array.isArray(result)
+    ? { ...result as Record<string, unknown>, mimiActionIntent: evidence }
+    : { result, mimiActionIntent: evidence };
+}
+
+function withExecutionEvidence(result: unknown, ref: string): unknown {
+  const evidence = { ref, outcome: 'succeeded' as const };
+  return result && typeof result === 'object' && !Array.isArray(result)
+    ? { ...result as Record<string, unknown>, mimiExecutionReceipt: evidence }
+    : { result, mimiExecutionReceipt: evidence };
 }
 
 export function withExecutionLedger(
@@ -195,17 +224,21 @@ export function withExecutionLedger(
               return output;
             },
           );
-          return receipt.result;
+          return withActionIntentEvidence(receipt);
         }
-        const result = await ledger.executeOnce({
+        const call = {
           sessionId: run.sessionId,
           runId: run.runId,
           toolName: tool.name,
           callId,
           ...(sdkCallId && sdkCallId !== callId ? { modelCallId: sdkCallId } : {}),
           argumentsJson,
-        }, invokeAuthorized);
-        return consecutiveDuplicate ? alreadyExecutedResult(result) : result;
+        };
+        const result = await ledger.executeOnce(call, invokeAuthorized);
+        if (consecutiveDuplicate) return alreadyExecutedResult(result);
+        return tool.name === 'connector_action'
+          ? withExecutionEvidence(result, executionReceiptRef(call))
+          : result;
       },
     } as Tool;
   });

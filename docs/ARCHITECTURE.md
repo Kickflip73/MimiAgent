@@ -55,7 +55,7 @@ src/daemon/
 Connector、不保存正文；Connector cursor 仍由隔离进程维护，Event、Task 和副作用
 回执继续由现有 Store 与 ExecutionLedger 持有。
 
-可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 `computer_observe` 与 `computer_act` 两个 Function Tool。它按 Run 管理不可复用的 Observation、动作/截图预算、Cua session、前台 lease 和受保护录制 artifact；GUI 写动作继续经过统一 Tool policy、ExecutionLedger 与跨进程动作锁。普通 GUI 业务意图在最终 Tool 选择阶段移除 `run_shell`，只能使用 Effective Capability Snapshot 中的 Connector、Browser 或 Computer 正式路径；开发和测试任务仍保留 Shell，但调用时授权会拒绝 GUI 系统命令、Apple Events/Accessibility API 和直接运行内置 macOS Connector。`full-owner` 可自动发现已安装的 Cua Driver 并默认启用后台访问；Safe/Workstation 不会因此扩大权限，显式 `MIMI_COMPUTER_BACKEND=off` 始终关闭。
+可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 `computer_observe` 与 `computer_act` 两个 Function Tool。它按 Run 管理不可复用的 Observation、动作/截图预算、Cua session、前台 lease 和受保护录制 artifact；GUI 写动作继续经过统一 Tool policy、ExecutionLedger 与跨进程动作锁。owner 自由文本不参与 Tool 裁剪或授权。Darwin 上的通用 `run_shell` 无条件进入进程沙箱，沙箱拒绝 Apple Events、LaunchServices、Accessibility，以及正式执行面登记的 Unix socket/本地控制端口；未登记的本地开发服务保持可用。正式 Connector、Browser 与 Computer Tool 在 Shell 之外按各自结构化授权运行。Terminal、Codex、IDE 等控制面应用，以及启用 Connector 通过 `claimedComputerApps` 声明的应用，不能成为 Computer 观察/写入目标。`full-owner` 可自动发现已安装的 Cua Driver 并默认启用后台访问；Safe/Workstation 不会因此扩大权限，显式 `MIMI_COMPUTER_BACKEND=off` 始终关闭。
 
 `src/agent.ts` 导出 `MimiAgent`；实现位于 `runtime/mimi-agent.ts`。
 
@@ -204,7 +204,7 @@ Attention Engine 是同步、确定性的 Host 层分类器，不是第二个模
 
 来源 `trust` 只作为 provenance 标签，授权由本机 event policy 决定；它绝不因消息自称 owner/trusted 而扩大部署权限。owner/system 在部署权限内工作；其他 provenance 默认受限，只有 Host 用 source/kind/actor/conversation 命中本机 owner source policy 时才获得固定 `reply | work` 档位。后台 Task 不把 provenance 改写成 owner，而是从被保留且确认为 conversation root 的来源 Event 与当前 source policy 重新计算授权；policy 被删除、root/parent 缺失或引用 Task 而非 conversation root 时失败关闭，即使 Task 自带 owner provenance 也不能绕过。外部正文始终只作为数据并记录 provenance。
 
-Connector Action Bridge 把外部凭证保留在 Kernel 监督的隔离 Connector 子进程中。一个 Daemon 数据根只有一个 Connector Manager/broker；Conversation actor 与后台 Task worker 都不能各自拉起同一渠道或复制凭证，而是通过这一个 broker 做能力发现和 action。每个 Connector 在 owner 配置里声明 action 目录；Agent 可先通过动态只读 `inspect_mimi_capabilities` 查看配置路径及 enabled/online 状态，通过 `reload_mimi_connectors` 复用 Manager 的 validate-before-swap/drain 热重载，再通过通用 `connector_action` 发出 `action(id, action, target, payload)` 并等待 `action_result`。能力快照最多返回 50 个 Connector、全局 100 个 action 和 300 字符描述，同时保留真实 totals/truncated，避免异常配置膨胀上下文；action 执行时仍由 Manager 做最终在线检查。目录用于能力发现，不是审批层。超时或子进程退出时不自动重放，以避免不确定结果造成重复事务；Agent 只能选择不会重复原事务的替代执行面或向 owner 汇报。
+Connector Action Bridge 把外部凭证保留在 Kernel 监督的隔离 Connector 子进程中。一个 Daemon 数据根只有一个 Connector Manager/broker；Conversation actor 与后台 Task worker 都不能各自拉起同一渠道或复制凭证，而是通过这一个 broker 做能力发现和 action。每个 action 声明稳定 `capability`、`effect` 与 Connector `routeOwner`，资源声明与自然语言描述分离；未显式声明的新旧配置只回退到稳定的 `connector.<id>.<action>`，不从业务词推断。`inspect_mimi_capabilities` 的 `capability` 是权威过滤条件，`query` 零命中仍返回过滤前 `catalogTotal` 和 `availableCapabilities`。`claimedComputerApps` 还把应用级资源绑定到 Connector，Computer 不能跨路线接管。目录用于能力发现和 owner 归属，不代替 readiness 或审批；action 执行时仍由 Manager 做最终在线检查。超时或子进程退出时不自动重放。
 
 `personal-*` Connector 的写 action 是例外：通用 `connector_action` 确定性拒绝
 `send_message`。Dispatcher 只能从当前个人消息 Event、精确 Source Policy 和实时
@@ -515,7 +515,7 @@ export 和 owner 管理入口承担，所有展示仍经过净化边界。
 
 `EffectiveCapabilitySnapshot` schema v1 由最终 `ToolSetBuilder` 生成，记录本轮实际 Tool、
 通过共同 availability evaluator 的 Skill、Run 开始时 Connector/Computer 的实际投影、
-permission source，以及统一的
+permission source、稳定 capabilities、routeOwner，以及统一的
 `availability/readiness/freshness/coverage` 术语。`toolSetDigest` 和
 `snapshotDigest` 对排序后的实际集合计算；Run runtime info、Daemon status 和 Doctor/
 diagnostic bundle 传递同一个最后实跑摘要。旧 Daemon status 没有该可选字段时按 unknown
@@ -541,6 +541,14 @@ Tool/Provider/route 只执行一次，不同 Event 即使目标和载荷相同�
 - personal message 的 `contextToken` 只授权实际 send Tool，读取上下文不误占 Intent；
   它与 Computer 写动作都在原 Tool ledger 外层进入同一 Intent fence；传统
   call receipt 仍保留为 Completion evidence。
+
+通用 Connector action 成功后也把 `execution:*` 回执附加到返回值；只有结果内明确
+`outcome=confirmed` 的同 Session 回执可以证明普通 Plan 的外部事务完成。Plan 的
+completed 是受约束终态：内部步骤必须提供 evidence refs，外部步骤必须提供通过
+ExecutionLedger 验证的 receipt refs；completed step 不能由后续模型静默删除、重开或
+替换证据。后台委派同样要求显式 `requiredCapabilities`，Host 在入队前与 executor、
+workspaceAccess 和实时 Connector capability 取交集；后台 Computer 固定为 none，
+委派不能成为能力升级路径。
 
 Tool 或 ActionIntent 已成功执行但结果超过账本上限时，`ExecutionLedger` 不再把动作误记
 为失败。它丢弃超限正文并原子提交一个包含 `output_truncated`、原始字节数和 SHA-256 的

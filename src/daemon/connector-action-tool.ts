@@ -12,6 +12,8 @@ const MAX_ACTION_RESULT_BYTES = 32_000;
 
 export interface ConnectorCapabilitySnapshot {
   configFile: string;
+  catalogTotal: number;
+  catalogActions: number;
   total: number;
   enabled: number;
   online: number;
@@ -19,6 +21,8 @@ export interface ConnectorCapabilitySnapshot {
   outboundReady: number;
   stale: number;
   actions: number;
+  filterMatched: boolean;
+  availableCapabilities: string[];
   truncated: boolean;
   connectors: Array<{
     id: string;
@@ -41,12 +45,21 @@ export interface ConnectorCapabilitySnapshot {
       lastObservedAt?: string;
     };
     source: string;
-    actions: Array<{ name: string; description: string }>;
+    routeOwner: string;
+    claimedComputerApps: string[];
+    actions: Array<{
+      name: string;
+      description: string;
+      capability: string;
+      effect: 'read' | 'write' | 'unknown';
+      routeOwner: string;
+    }>;
   }>;
 }
 
 export interface ConnectorCapabilityFilter {
   connector?: string;
+  capability?: string;
   query?: string;
 }
 
@@ -55,6 +68,7 @@ export function connectorEffectiveCapabilityItems(
 ): EffectiveCapabilityItem[] {
   return connectors.listCapabilities().map((connector) => {
     const readiness = connector.readiness;
+    const actions = connector.actions ?? [];
     const stale = readiness.stale === true;
     const anyReady = readiness.inbound === 'ready' || readiness.outbound === 'ready';
     const bothUnavailable = readiness.inbound === 'unavailable' && readiness.outbound === 'unavailable';
@@ -74,6 +88,8 @@ export function connectorEffectiveCapabilityItems(
       coverage: readiness.coverage ?? (bothUnavailable ? 'unavailable' as const : 'unknown' as const),
       permissionSource: connector.enabled ? 'connector-manager:enabled' : 'connector-manager:disabled',
       selectedRoute: connector.id,
+      routeOwner: connector.id,
+      capabilities: [...new Set(actions.map((action) => action.capability))].sort(),
       safeFallback: 'none' as const,
     };
   });
@@ -118,24 +134,41 @@ export function connectorCapabilitySnapshot(
   const exact = filter.connector
     ? connectors.listCapabilities().filter((connector) => connector.id === filter.connector)
     : connectors.listCapabilities();
-  const query = filter.query?.trim().toLowerCase();
-  const all = query
+  const capability = filter.capability?.trim();
+  const capabilityFiltered = capability
     ? exact.flatMap((connector) => {
-      const connectorMatches = `${connector.id}\n${connector.source}`.toLowerCase().includes(query);
-      if (connectorMatches) return [connector];
-      const actions = connector.actions.filter((action) => (
-        `${action.name}\n${action.description}`.toLowerCase().includes(query)
-      ));
+      const actions = connector.actions.filter((action) => action.capability === capability);
       return actions.length ? [{ ...connector, actions }] : [];
     })
     : exact;
+  const query = filter.query?.trim().toLowerCase();
+  const all = query
+    ? capabilityFiltered.flatMap((connector) => {
+      const connectorMatches = `${connector.id}\n${connector.source}`.toLowerCase().includes(query);
+      if (connectorMatches) return [connector];
+      const actions = connector.actions.filter((action) => (
+        `${action.name}\n${action.description}\n${action.capability}`.toLowerCase().includes(query)
+      ));
+      return actions.length ? [{ ...connector, actions }] : [];
+    })
+    : capabilityFiltered;
+  const catalogActions = exact.reduce((total, connector) => total + connector.actions.length, 0);
+  const availableCapabilities = [...new Set(
+    exact.flatMap((connector) => connector.actions.map((action) => action.capability)),
+  )].sort().slice(0, MAX_ACTIONS);
   const actionCount = all.reduce((total, connector) => total + connector.actions.length, 0);
   let remainingActions = MAX_ACTIONS;
   let truncatedDescription = false;
   const visible = all.slice(0, MAX_CONNECTORS).map((connector) => {
     const actions = connector.actions.slice(0, remainingActions).map((action) => {
       if (action.description.length > MAX_DESCRIPTION_CHARS) truncatedDescription = true;
-      return { name: action.name, description: action.description.slice(0, MAX_DESCRIPTION_CHARS) };
+      return {
+        name: action.name,
+        description: action.description.slice(0, MAX_DESCRIPTION_CHARS),
+        capability: action.capability,
+        effect: action.effect,
+        routeOwner: action.routeOwner,
+      };
     });
     remainingActions -= actions.length;
     return {
@@ -144,12 +177,16 @@ export function connectorCapabilitySnapshot(
       online: connector.online,
       readiness: connector.readiness,
       source: connector.source.slice(0, 300),
+      routeOwner: connector.id,
+      claimedComputerApps: connector.claimedComputerApps,
       actions,
     };
   });
   const visibleActions = visible.reduce((total, connector) => total + connector.actions.length, 0);
   return {
     configFile: connectors.configPath,
+    catalogTotal: exact.length,
+    catalogActions,
     total: all.length,
     enabled: all.filter((connector) => connector.enabled).length,
     online: all.filter((connector) => connector.online).length,
@@ -159,7 +196,14 @@ export function connectorCapabilitySnapshot(
       && connector.readiness.stale !== true && connector.readiness.outbound === 'ready').length,
     stale: all.filter((connector) => connector.online && connector.readiness.stale === true).length,
     actions: actionCount,
-    truncated: all.length > visible.length || actionCount > visibleActions || truncatedDescription,
+    filterMatched: all.length > 0,
+    availableCapabilities,
+    truncated: all.length > visible.length
+      || actionCount > visibleActions
+      || availableCapabilities.length < new Set(
+        exact.flatMap((connector) => connector.actions.map((action) => action.capability)),
+      ).size
+      || truncatedDescription,
     connectors: visible,
   };
 }
@@ -171,17 +215,22 @@ export function createConnectorCapabilityTool(connectors: ConnectorManager): Too
 export function createConnectorCapabilityRuntimeTool(inspect: InspectCapabilities): Tool {
   return tool({
     name: 'inspect_mimi_capabilities',
-    description: '动态读取 MimiAgent 当前 Connector 的进程状态、真实 inbound/outbound 就绪度和有界 action 目录。connector 必须是完整精确 ID（例如 personal-daxiang 或 openclaw-weixin）；不确定 ID 时必须用 query 搜索渠道关键词。精确 ID 未命中不代表离线，工具会报错要求重新搜索。online 只表示 Connector 进程存活；执行 action 前应优先检查 readiness。',
+    description: '动态读取 MimiAgent 当前 Connector 的进程状态、真实 inbound/outbound 就绪度和结构化 action capability 目录。优先用稳定 capability（例如 browser.page.read）选择能力；query 只是人类可读目录检索，零字面命中不等于没有 Connector。catalogTotal/catalogActions 表示过滤前目录，filterMatched 表示本次过滤是否命中。online 只表示进程存活；执行 action 前还要检查 readiness、effect 和 routeOwner。',
     parameters: z.object({
       connector: identifier.optional().describe('可选完整 Connector ID 精确过滤，例如 personal-daxiang 或 openclaw-weixin；不要填 daxiang、qq 等渠道简称'),
-      query: z.string().trim().min(1).max(100).optional().describe('可选关键词，匹配 Connector ID、source、action 名或描述'),
+      capability: z.string()
+        .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)
+        .max(120)
+        .optional()
+        .describe('可选稳定 capability 精确过滤，例如 browser.page.read'),
+      query: z.string().trim().min(1).max(100).optional().describe('可选目录关键词，仅匹配展示元数据；零命中不能作为能力不存在或降级依据'),
     }).strict(),
     execute: async (filter, _context, details) => {
       const snapshot = await inspect(filter, details?.signal);
-      if (filter.connector && snapshot.total === 0) {
+      if (filter.connector && snapshot.catalogTotal === 0) {
         throw new Error(
           `Connector ID "${filter.connector}" 未注册；这不是 Connector 离线证据。`
-          + '请改用 query 搜索渠道关键词并使用返回的完整 ID，不得据此自动降级到 GUI、CUA 或 Shell。',
+          + '请先读取完整 capability 目录并使用返回的 routeOwner，不得据此自动降级到 GUI、CUA 或 Shell。',
         );
       }
       return snapshot;
@@ -246,7 +295,7 @@ function createConnectorActionRuntimeTool(
 ): Tool {
   return tool({
     name: 'connector_action',
-    description: '调用隔离 Connector 已声明的有界读取或外部 action。调用前先用 inspect_mimi_capabilities 获取完整 connector ID、action、target 格式和 readiness；不知道完整 ID 时必须用 query 搜索，禁止猜测。个人大象查询应使用 personal-daxiang 的 list_targets、sync_now 或 get_context，不得自动改走 GUI、CUA、osascript 或 Shell。只能使用目录中已声明的能力；payloadJson 必须是严格 JSON。结果超时或不确定时不要自动重试。',
+    description: '调用隔离 Connector 已声明的有界读取或外部 action。调用前先用 inspect_mimi_capabilities 按稳定 capability 获取完整 connector ID、action、effect、routeOwner、target 格式和 readiness；禁止从业务词猜测能力。只能调用目录中已声明且由所选 routeOwner 持有的 action；资源被某路线声明后不得改走 GUI、CUA、MCP 或 Shell。payloadJson 必须是严格 JSON；结果超时、accepted 或 uncertain 时不得自动重试或换路。',
     parameters: z.object({
       connector: identifier.describe('Connector ID，例如 macos-mail'),
       action: identifier.describe('Connector 声明的 action 名称，例如 send_message'),

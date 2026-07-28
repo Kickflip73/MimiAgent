@@ -22,7 +22,19 @@ async function invoke(tools: Tool[], name: string, input: unknown): Promise<unkn
 
 function capability(
   id: string,
-  actions: Array<{ name: string; description: string }> = [{ name: 'send_message', description: 'send a message' }],
+  actions: Array<{
+    name: string;
+    description: string;
+    capability: string;
+    effect: 'read' | 'write' | 'unknown';
+    routeOwner: string;
+  }> = [{
+    name: 'send_message',
+    description: 'send a message',
+    capability: 'message.send',
+    effect: 'write',
+    routeOwner: id,
+  }],
 ): ConnectorCapability {
   return {
     id,
@@ -37,6 +49,7 @@ function capability(
     },
     source: `fixture:${id}`,
     trust: 'owner',
+    claimedComputerApps: [],
     actions,
   };
 }
@@ -44,38 +57,63 @@ function capability(
 test('capability snapshot filters exact ids and actions while bounding the catalog', () => {
   const capabilities = [
     capability('mail', [
-      { name: 'list', description: 'list inbox' },
-      { name: 'send', description: 'deliver owner mail' },
+      { name: 'list', description: 'list inbox', capability: 'mail.list.read', effect: 'read', routeOwner: 'mail' },
+      { name: 'send', description: 'deliver owner mail', capability: 'mail.send', effect: 'write', routeOwner: 'mail' },
     ]),
     {
-      ...capability('stale', [{ name: 'inspect', description: 'inspect stale channel' }]),
+      ...capability('stale', [{
+        name: 'inspect',
+        description: 'inspect stale channel',
+        capability: 'channel.inspect',
+        effect: 'read',
+        routeOwner: 'stale',
+      }]),
       readiness: { inbound: 'ready' as const, outbound: 'ready' as const, stale: true },
     },
+    capability('browser', [{
+      name: 'page_text',
+      description: 'read bounded visible page text',
+      capability: 'browser.page.read',
+      effect: 'read',
+      routeOwner: 'browser',
+    }]),
   ];
   const manager = {
     configPath: '/fixture/connectors.json',
     listCapabilities: () => capabilities,
   } as ConnectorManager;
   const all = connectorCapabilitySnapshot(manager);
-  assert.equal(all.total, 2);
-  assert.equal(all.enabled, 2);
-  assert.equal(all.online, 2);
-  assert.equal(all.inboundReady, 1);
-  assert.equal(all.outboundReady, 1);
+  assert.equal(all.total, 3);
+  assert.equal(all.enabled, 3);
+  assert.equal(all.online, 3);
+  assert.equal(all.inboundReady, 2);
+  assert.equal(all.outboundReady, 2);
   assert.equal(all.stale, 1);
-  assert.equal(all.actions, 3);
+  assert.equal(all.actions, 4);
   assert.equal(all.truncated, false);
   assert.deepEqual(connectorCapabilitySnapshot(manager, { connector: 'mail' }).connectors.map((item) => item.id), ['mail']);
   const actionMatch = connectorCapabilitySnapshot(manager, { query: 'deliver' });
   assert.equal(actionMatch.total, 1);
   assert.deepEqual(actionMatch.connectors[0]?.actions.map((action) => action.name), ['send']);
   assert.equal(connectorCapabilitySnapshot(manager, { query: 'stale' }).total, 1);
+  const businessWordMiss = connectorCapabilitySnapshot(manager, { query: 'multica' });
+  assert.equal(businessWordMiss.total, 0);
+  assert.equal(businessWordMiss.catalogTotal, 3);
+  assert.equal(businessWordMiss.filterMatched, false);
+  assert.ok(businessWordMiss.availableCapabilities.includes('browser.page.read'));
+  const browserRead = connectorCapabilitySnapshot(manager, { capability: 'browser.page.read' });
+  assert.equal(browserRead.total, 1);
+  assert.equal(browserRead.connectors[0]?.routeOwner, 'browser');
+  assert.equal(browserRead.connectors[0]?.actions[0]?.name, 'page_text');
 
   const many = Array.from({ length: 51 }, (_, index) => capability(
     `connector-${index}`,
     Array.from({ length: index === 0 ? 101 : 1 }, (__, actionIndex) => ({
       name: `action-${actionIndex}`,
       description: actionIndex === 0 ? 'x'.repeat(400) : 'bounded',
+      capability: `fixture.action-${actionIndex}`,
+      effect: 'unknown' as const,
+      routeOwner: `connector-${index}`,
     })),
   ));
   const bounded = connectorCapabilitySnapshot({
@@ -166,6 +204,8 @@ test('task connector tools proxy only inspect and action with the exact signal a
   const calls: Array<{ kind: string; value: unknown; aborted?: boolean }> = [];
   const snapshot: ConnectorCapabilitySnapshot = {
     configFile: '/fixture/connectors.json',
+    catalogTotal: 1,
+    catalogActions: 1,
     total: 1,
     enabled: 1,
     online: 1,
@@ -173,6 +213,8 @@ test('task connector tools proxy only inspect and action with the exact signal a
     outboundReady: 1,
     stale: 0,
     actions: 1,
+    filterMatched: true,
+    availableCapabilities: ['mail.inspect'],
     truncated: false,
     connectors: [{
       id: 'mail',
@@ -180,7 +222,15 @@ test('task connector tools proxy only inspect and action with the exact signal a
       online: true,
       readiness: { inbound: 'ready', outbound: 'ready' },
       source: 'fixture:mail',
-      actions: [{ name: 'inspect', description: 'inspect' }],
+      routeOwner: 'mail',
+      claimedComputerApps: [],
+      actions: [{
+        name: 'inspect',
+        description: 'inspect',
+        capability: 'mail.inspect',
+        effect: 'read',
+        routeOwner: 'mail',
+      }],
     }],
   };
   const runtime: ConnectorTaskRuntime = {

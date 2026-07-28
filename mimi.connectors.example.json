@@ -13,12 +13,13 @@
       "healthStabilityMs": 5000,
       "deliveryTimeoutMs": 30000,
       "actionTimeoutMs": 30000,
+      "claimedComputerApps": ["com.google.Chrome"],
       "actions": {
-        "health_check": { "description": "只读检查大象个人账号、专用后台标签和页面兼容性；target=health，payloadJson={}" },
-        "list_targets": { "description": "列出配置允许访问的本人和 watch 会话稳定 sid；target=all，payloadJson={}" },
-        "sync_now": { "description": "立即同步配置中的大象 watch 会话并产生新消息 Event；target=all，payloadJson={}" },
-        "get_context": { "description": "按 list_targets 返回的稳定 sid 读取有界大象会话上下文；payloadJson 可只传 {\"limit\":30}" },
-        "send_message": { "description": "仅供 PersonalMessageHub 向已绑定 sid 发送一条文本" }
+        "health_check": { "description": "只读检查大象个人账号、专用后台标签和页面兼容性；target=health，payloadJson={}", "capability": "personal-message.health.read", "effect": "read" },
+        "list_targets": { "description": "列出配置允许访问的本人和 watch 会话稳定 sid；target=all，payloadJson={}", "capability": "personal-message.targets.read", "effect": "read" },
+        "sync_now": { "description": "立即同步配置中的大象 watch 会话并产生新消息 Event；target=all，payloadJson={}", "capability": "personal-message.sync.write", "effect": "write" },
+        "get_context": { "description": "按 list_targets 返回的稳定 sid 读取有界大象会话上下文；payloadJson 可只传 {\"limit\":30}", "capability": "personal-message.context.read", "effect": "read" },
+        "send_message": { "description": "仅供 PersonalMessageHub 向已绑定 sid 发送一条文本", "capability": "personal-message.send", "effect": "write" }
       }
     },
     "personal-qq": {
@@ -296,16 +297,17 @@
       "restart": true,
       "deliveryTimeoutMs": 30000,
       "actionTimeoutMs": 30000,
+      "claimedComputerApps": ["com.apple.Safari", "com.google.Chrome"],
       "actions": {
-        "list_tabs": { "description": "列出 Safari、Chrome 或全部浏览器标签；target 为 safari、chrome 或 all" },
-        "active_tab": { "description": "读取浏览器最前窗口的当前标签；target 为 safari 或 chrome" },
-        "open_tab": { "description": "用指定浏览器打开 http/https URL；target 为 safari 或 chrome" },
-        "navigate_tab": { "description": "导航指定标签；target 为 safari:<window>:<tab> 或 chrome:<window>:<tab>" },
-        "activate_tab": { "description": "激活指定标签和浏览器" },
-        "close_tab": { "description": "关闭指定标签" },
-        "reload_tab": { "description": "刷新指定标签" },
-        "page_text": { "description": "读取指定标签的有界可见正文" },
-        "execute_javascript": { "description": "在指定标签执行有界 JavaScript DOM 操作" }
+        "list_tabs": { "description": "列出 Safari、Chrome 或全部浏览器标签；target 为 safari、chrome 或 all", "capability": "browser.tabs.read", "effect": "read" },
+        "active_tab": { "description": "读取浏览器最前窗口的当前标签；target 为 safari 或 chrome", "capability": "browser.tabs.read", "effect": "read" },
+        "open_tab": { "description": "用指定浏览器打开 http/https URL；target 为 safari 或 chrome", "capability": "browser.tabs.write", "effect": "write" },
+        "navigate_tab": { "description": "导航指定标签；target 为 safari:<window>:<tab> 或 chrome:<window>:<tab>", "capability": "browser.navigation.write", "effect": "write" },
+        "activate_tab": { "description": "激活指定标签和浏览器", "capability": "browser.tabs.write", "effect": "write" },
+        "close_tab": { "description": "关闭指定标签", "capability": "browser.tabs.write", "effect": "write" },
+        "reload_tab": { "description": "刷新指定标签", "capability": "browser.navigation.write", "effect": "write" },
+        "page_text": { "description": "读取指定标签的有界可见正文", "capability": "browser.page.read", "effect": "read" },
+        "execute_javascript": { "description": "在指定标签执行有界 JavaScript DOM 操作", "capability": "browser.page.execute", "effect": "write" }
       }
     },
     "macos-screen": {

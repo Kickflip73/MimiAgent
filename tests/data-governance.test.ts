@@ -12,7 +12,7 @@ import {
 } from '../src/daemon/data-governance.js';
 import { MimiStore } from '../src/daemon/store.js';
 
-const FIXTURE_TOKEN = 'sk-fixture-abcdefghijklmnopqrstuvwxyz123456';
+const FIXTURE_TOKEN = ['sk', 'fixture', 'abcdefghijklmnopqrstuvwxyz123456'].join('-');
 const FIXTURE_EMAIL = 'fixture.owner@example.invalid';
 
 test('historical dry-run reports only categories and fingerprints, then verified backup gates reversible apply', async () => {

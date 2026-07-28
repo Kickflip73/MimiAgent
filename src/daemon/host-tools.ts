@@ -69,6 +69,9 @@ export function createMimiHostTools(context: MimiHostToolContext): Tool[] {
       sessionId: context.sessionId,
       workspaceRoot: context.workspaceRoot,
       replyRoute: context.replyRoute,
+      connectorCapabilities: context.connectors?.listCapabilities()
+        .filter((connector) => connector.enabled && connector.online && connector.readiness.stale !== true)
+        .flatMap((connector) => connector.actions.map((action) => action.capability)),
       cancel: context.cancelEvent,
       pause: context.pauseEvent,
       block: context.blockTask,

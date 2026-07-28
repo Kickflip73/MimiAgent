@@ -111,6 +111,10 @@ function executionKey(call: ExecutionCall): string {
   return digest([call.sessionId, call.runId, call.toolName, call.callId].join('\0'));
 }
 
+export function executionReceiptRef(call: ExecutionCall): string {
+  return `execution:${executionKey(call)}`;
+}
+
 function receiptCall(sessionId: string, runId: string): ExecutionCall {
   return {
     sessionId,
@@ -333,6 +337,31 @@ export class ExecutionLedger {
       attempts: entry.attempts,
       updatedAt: entry.updatedAt,
     };
+  }
+
+  async isConfirmedActionIntent(executionKeyValue: string, sessionId: string): Promise<boolean> {
+    const entry = (await this.state.read()).actionIntents[executionKeyValue];
+    return entry?.sessionId === sessionId
+      && entry.status === 'confirmed'
+      && entry.intent.status === 'confirmed'
+      && entry.resultJson !== undefined;
+  }
+
+  async isConfirmedExternalReceipt(reference: string, sessionId: string): Promise<boolean> {
+    if (reference.startsWith('action-intent:')) {
+      return this.isConfirmedActionIntent(reference.slice('action-intent:'.length), sessionId);
+    }
+    if (!reference.startsWith('execution:')) return false;
+    const entry = (await this.state.read()).entries[reference.slice('execution:'.length)];
+    if (entry?.sessionId !== sessionId
+      || entry.status !== 'succeeded'
+      || entry.toolName !== 'connector_action'
+      || !entry.outputJson) return false;
+    const output = deserializeOutput<unknown>(entry.outputJson);
+    return output !== null
+      && typeof output === 'object'
+      && !Array.isArray(output)
+      && (output as Record<string, unknown>).outcome === 'confirmed';
   }
 
   private async commitActionIntent<T>(

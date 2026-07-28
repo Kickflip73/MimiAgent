@@ -1275,6 +1275,57 @@ test('set_goal preserves the prepared Completion Contract and runs state isolati
   assert.deepEqual((await plans.getGoal())?.completionContract, contract);
 });
 
+test('plan completion requires structured evidence and verifies external ActionIntent receipts', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-plan-receipts-'));
+  const plans = new PlanStore(path.join(root, 'plans.json'), 'plan-receipts');
+  const tools = createPlanTools(plans, {
+    verifyExternalReceiptRef: (reference) => reference === 'action-intent:confirmed',
+  });
+  const update = tools.find((candidate) => candidate.name === 'update_plan');
+  assert.ok(update && 'invoke' in update);
+
+  const missingEvidence = await update.invoke(new RunContext({}), JSON.stringify({
+    steps: [{ id: 'submit', description: 'submit external request', status: 'completed' }],
+  }));
+  assert.match(JSON.stringify(missingEvidence), /Invalid JSON input/);
+  assert.deepEqual(await plans.get(), []);
+
+  const unconfirmed = await update.invoke(new RunContext({}), JSON.stringify({
+    steps: [{
+      id: 'submit',
+      description: 'submit external request',
+      status: 'completed',
+      completion: {
+        kind: 'external_action',
+        receiptRefs: ['action-intent:uncertain'],
+        verification: 'confirmed',
+      },
+    }],
+  }));
+  assert.match(JSON.stringify(unconfirmed), /未 confirmed/);
+  assert.deepEqual(await plans.get(), []);
+
+  await update.invoke(new RunContext({}), JSON.stringify({
+    steps: [{
+      id: 'submit',
+      description: 'submit external request',
+      status: 'completed',
+      completion: {
+        kind: 'external_action',
+        receiptRefs: ['action-intent:confirmed'],
+        verification: 'confirmed',
+      },
+    }],
+  }));
+  assert.equal((await plans.get())[0]?.status, 'completed');
+
+  const reopened = await update.invoke(new RunContext({}), JSON.stringify({
+    steps: [{ id: 'submit', description: 'submit external request', status: 'running' }],
+  }));
+  assert.match(JSON.stringify(reopened), /不能静默删除或重新打开/);
+  assert.equal((await plans.get())[0]?.status, 'completed');
+});
+
 test('emits plan snapshots after task updates', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-plan-events-'));
   const plans = new PlanStore(path.join(root, 'plans.json'), 'demo');

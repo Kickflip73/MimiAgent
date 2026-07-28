@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -98,11 +99,7 @@ import type {
 import { captureRunScope, type RunScope } from './pipeline/run-scope.js';
 import { RunStateLoader } from './pipeline/state-loader.js';
 import {
-  assertShellCommandDoesNotBypassManagedGui,
-  requiresManagedGuiBoundary,
-  requiresPersonalConnectorOnly,
   ToolSetBuilder,
-  withoutUnmanagedGuiShell,
   withoutPersonalMessageDesktopFallback,
   withoutPersonalMessageFallbackHistory,
 } from './pipeline/tool-set-builder.js';
@@ -220,6 +217,7 @@ export interface MimiRunOptions {
   completionContract?: CompletionContract;
   computerAccess?: ComputerAccess;
   computerApps?: readonly string[];
+  computerDeniedApps?: readonly string[];
   completionDelivery?: (calls?: readonly ExecutionCallRecord[]) => CompletionDeliveryDisposition | undefined
     | Promise<CompletionDeliveryDisposition | undefined>;
   personalMessage?: PersonalMessageScope;
@@ -412,6 +410,11 @@ export class MimiAgent {
           allowShell: true,
           shellEnvironment: createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env),
           shellDetachedProcessGroup: createOptions.shellDetachedProcessGroup,
+          ...(config.computer?.backend === 'cua' ? {
+            blockedUnixSocketPaths: [
+              path.join(os.homedir(), 'Library', 'Caches', 'cua-driver', 'cua-driver.sock'),
+            ],
+          } : {}),
           mutationObserver: this.fileChanges,
         }
       : {
@@ -431,6 +434,9 @@ export class MimiAgent {
         access: configuredAccess ?? (active.options?.cause ? 'none' : this.config.computer?.defaultAccess ?? 'none'),
         ...((active.options?.computerApps ?? policy?.computerApps)
           ? { allowedApps: active.options?.computerApps ?? policy?.computerApps }
+          : {}),
+        ...(active.options?.computerDeniedApps
+          ? { deniedApps: active.options.computerDeniedApps }
           : {}),
         supportsImageInput: this.modelProfile.supportsImageInput,
       };
@@ -595,9 +601,7 @@ export class MimiAgent {
       runPolicy,
       runComputerAccess !== 'none',
     );
-    const personalConnectorOnly = options?.personalConnectorOnly === true
-      || requiresPersonalConnectorOnly(textInput);
-    const managedGuiBoundary = requiresManagedGuiBoundary(textInput);
+    const personalConnectorOnly = options?.personalConnectorOnly === true;
     const prepareRunHistory = (items: AgentInputItem[]) => {
       const prepared = prepareComputerHistoryForModelInput(items);
       return personalConnectorOnly
@@ -606,7 +610,7 @@ export class MimiAgent {
     };
     const scopedTools = personalConnectorOnly
       ? withoutPersonalMessageDesktopFallback(availableScopedTools)
-      : managedGuiBoundary ? withoutUnmanagedGuiShell(availableScopedTools) : availableScopedTools;
+      : availableScopedTools;
     const currentMode = AGENT_MODES.find((item) => item.id === mode)!;
     await run.session.cleanupGeneratedSummaries();
     await run.session.repairToolPairs();
@@ -751,6 +755,8 @@ export class MimiAgent {
       ...createPlanTools(runPlans, {
         beforeGoalSet: () => runTeam.clear(),
         completionContract: () => run.completionContract,
+        verifyExternalReceiptRef: (reference) =>
+          this.ledger.isConfirmedExternalReceipt(reference, run.sessionId),
         onGoalSet: async (createdGoal) => {
           run.goalCreatedAt = createdGoal.createdAt;
           run.completionRequired = completionToolsAllowed;
@@ -800,30 +806,27 @@ export class MimiAgent {
     const allTools = withExecutionLedger(
       preparedTools,
       this.ledger,
-      () => this.activeRun ? {
-        sessionId: this.activeRun.sessionId,
-        runId: this.activeRun.options?.executionKey ?? this.activeRun.runId,
-          semanticCallIds: Boolean(this.activeRun.options?.executionKey),
-          policyRevision: [
-            this.permissionMode,
-            this.securityProfile,
-            this.currentMode,
-            this.activeRun.options?.policy ? 'run-policy' : 'default-policy',
-          ].join(':'),
-          guardedActionContext: {
-            ownerAuthenticated: this.activeRun.options?.cause === undefined
-              || this.activeRun.options.cause.trust === 'owner',
-            exactTarget: true,
-            lowRisk: true,
-            reversible: false,
-          },
-          resolveActionAuthorization: this.activeRun.options?.resolveActionAuthorization,
+      () => ({
+        sessionId: run.sessionId,
+        runId: run.options?.executionKey ?? run.runId,
+        semanticCallIds: Boolean(run.options?.executionKey),
+        policyRevision: [
+          this.permissionMode,
+          this.securityProfile,
+          mode,
+          run.options?.policy ? 'run-policy' : 'default-policy',
+        ].join(':'),
+        guardedActionContext: {
+          ownerAuthenticated: run.options?.cause === undefined
+            || run.options.cause.trust === 'owner',
+          exactTarget: true,
+          lowRisk: true,
+          reversible: false,
+        },
+        resolveActionAuthorization: run.options?.resolveActionAuthorization,
         authorizeTool: async (toolName, argumentsJson) => {
-          const active = this.activeRun;
-          if (!active) throw new Error('当前 Run 已失效');
-          if (toolName === 'run_shell') {
-            assertShellCommandDoesNotBypassManagedGui(argumentsJson);
-          }
+          if (this.activeRun !== run) throw new Error('工具调用所属 Run 已失效或已被新的 owner 工作单元取代');
+          const active = run;
           const protectsExistingGoal = activeStoredGoal && !resumesGoal;
           if (protectsExistingGoal && [
             'update_plan', 'set_goal', 'update_goal', 'set_team_tasks', 'claim_team_task',
@@ -838,14 +841,17 @@ export class MimiAgent {
           if (toolName === 'set_team_tasks') active.teamOwned = true;
         },
         authorizeSideEffect: async (toolName, argumentsJson) => {
-          const active = this.activeRun;
-          if (!active) throw new Error('当前 Run 已失效');
+          if (this.activeRun !== run) throw new Error('副作用调用所属 Run 已失效或已被新的 owner 工作单元取代');
+          const active = run;
           if (active.completionRequired && !active.completionContract) {
             throw new Error(`执行 ${toolName} 前必须先调用 prepare_task 建立完整验收标准`);
           }
           await active.options?.authorizeSideEffect?.(toolName, argumentsJson);
+          if (this.activeRun !== run) {
+            throw new Error('副作用授权期间 Run 已被取代；动作未 dispatch');
+          }
         },
-      } : undefined,
+      }),
     );
     run.availableToolNames = allTools.map((tool) => tool.name);
     const availableSkillNames = this.skills.list()
@@ -1011,19 +1017,24 @@ export class MimiAgent {
       // Plan mode keeps only the explicit read-only MCP resource wrappers above.
       mcpServers: mode === 'plan' || runPolicy?.allowMcp === false || personalConnectorOnly
         ? []
-        : withMcpExecutionLedger(this.mcp.servers, this.ledger, () => this.activeRun ? {
-            sessionId: this.activeRun.sessionId,
-            runId: this.activeRun.options?.executionKey ?? this.activeRun.runId,
-            semanticCallIds: Boolean(this.activeRun.options?.executionKey),
+        : withMcpExecutionLedger(this.mcp.servers, this.ledger, () => ({
+            sessionId: run.sessionId,
+            runId: run.options?.executionKey ?? run.runId,
+            semanticCallIds: Boolean(run.options?.executionKey),
             authorizeSideEffect: async (toolName, argumentsJson) => {
-              const active = this.activeRun;
-              if (!active) throw new Error('当前 Run 已失效');
+              if (this.activeRun !== run) {
+                throw new Error('MCP 副作用调用所属 Run 已失效或已被新的 owner 工作单元取代');
+              }
+              const active = run;
               if (active.completionRequired && !active.completionContract) {
                 throw new Error(`执行 ${toolName} 前必须先调用 prepare_task 建立完整验收标准`);
               }
               await active.options?.authorizeSideEffect?.(toolName, argumentsJson);
+              if (this.activeRun !== run) {
+                throw new Error('MCP 副作用授权期间 Run 已被取代；动作未 dispatch');
+              }
             },
-          } : undefined),
+          })),
     });
     await run.session.updateRunProgress('模型执行中', undefined, run.runId);
     const contextInputCallback = canReadSessionContext

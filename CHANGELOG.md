@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- remove owner free-text and Shell command-string classification from capability
+  routing; Darwin Shell now always runs behind a process capability sandbox that
+  blocks Apple Events, Accessibility, LaunchServices, and registered local Unix
+  sockets or loopback control ports while preserving ordinary development services
+- add stable Connector `capability`, `effect`, `routeOwner`, catalog-before-filter
+  evidence and claimed Computer app resources, so a business-word query miss cannot
+  be mistaken for an absent capability or used to cross execution routes
+- require structured capabilities before durable background delegation, expose
+  confirmed ActionIntent/Connector receipts, and bind external Plan completion to
+  those receipts while preventing completed steps from being silently reopened
 - bound combined `run_shell` output to the execution-ledger budget so large
   command responses are truncated with an explicit marker instead of turning a
   completed side effect into a non-retryable ledger failure
@@ -23,9 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   explicit page-failure detection, and action/poll exclusion prevent send races
 - require exact same-Session owner confirmation for personal-message Confirm drafts,
   preserving the original Event target and approved text across Runs
-- route owner personal-message queries through keyword Connector discovery and
+- route structured personal-message Events through bound Connector scopes and
   configured target listing, reject unknown exact IDs as non-offline misses, and
-  remove Shell/Computer/CUA/Browser desktop fallbacks unless explicitly requested
+  remove Shell/Computer/CUA/Browser desktop fallbacks without deriving policy from
+  owner wording
 - index every completed owner conversation round and search private Session
   episodes by default so a new Session can recall relevant prior conversations
   without a separate history-intent or evidence flag

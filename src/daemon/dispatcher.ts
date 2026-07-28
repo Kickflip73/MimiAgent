@@ -454,6 +454,11 @@ export class MimiDispatcher {
           capabilityItems: this.connectors
             ? connectorEffectiveCapabilityItems(this.connectors)
             : [],
+          computerDeniedApps: this.connectors
+            ? [...new Set(this.connectors.listCapabilities()
+                .filter((connector) => connector.enabled)
+                .flatMap((connector) => connector.claimedComputerApps))]
+            : [],
           ...(personalMessage ? { personalMessage } : {}),
           executionKey,
           retainExecutionLedger: true,

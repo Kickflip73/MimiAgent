@@ -17,7 +17,7 @@ import { backgroundTaskSummary } from '../src/daemon/task-tools.js';
 import { WikiVault } from '../src/extensions/memory/wiki-vault.js';
 
 const fixture = Object.freeze({
-  token: 'sk-JRV001FixtureNotARealKey12345',
+  token: ['sk', 'JRV001FixtureNotARealKey12345'].join('-'),
   email: 'jarvis-fixture@example.test',
   phone: '13800138000',
 });

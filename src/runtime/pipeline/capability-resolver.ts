@@ -49,6 +49,8 @@ export interface EffectiveCapabilityItem {
   coverage: CapabilityCoverage;
   permissionSource: string;
   selectedRoute?: string;
+  routeOwner?: string;
+  capabilities?: readonly string[];
   safeFallback?: 'not_started_or_failed_safe' | 'none';
 }
 

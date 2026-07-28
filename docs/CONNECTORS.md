@@ -38,7 +38,7 @@ Connector 把个人大象、微信 Bot、邮件、Messages、新闻、天气、�
 }
 ```
 
-Daemon 只向子进程传递 `PATH`、`HOME`、locale、临时目录和 `envAllowlist` 明确列出的变量，不会把整份模型密钥环境泄漏给 Connector。`actions` 是能力发现目录：未声明的 action 不会发给子进程。`syncTemplateActions` 默认开启，只负责随软件升级补齐内置 Connector 新增的 action，不是权限等级或审批模型。若 owner 需要主动移除内置 action 或完全维护自定义目录，应先将它设为 `false`。`trust` 是 Host 认定的事件 provenance，不是来源自称即可获得的授权；除 `owner/system` 外的值都进入同一最小外部事件策略。
+Daemon 只向子进程传递 `PATH`、`HOME`、locale、临时目录和 `envAllowlist` 明确列出的变量，不会把整份模型密钥环境泄漏给 Connector。`actions` 是能力发现目录：每项除描述外可声明稳定 `capability` 与 `effect=read|write|unknown`；未声明 capability 的兼容配置使用 `connector.<id>.<action>`，不从描述或业务词推断。未声明的 action 不会发给子进程。`claimedComputerApps` 声明该 Connector 独占的 macOS bundle ID；启用后 Computer 不能接管这些应用。`syncTemplateActions` 默认开启，随升级补齐内置 action、缺失的稳定元数据和资源声明，不是审批模型。若 owner 需要完全维护自定义目录，应先将它设为 `false`。`trust` 是 Host 认定的 event provenance，不是来源自称即可获得的授权。
 
 `healthEvents` 默认开启。Connector 异常退出或启动失败时，Host 会把一条 `system:connector-health` 告警先写入 Inbox，再沿用 Attention、Agent 与 Outbox 处理；正常 daemon 停止和 disabled Connector 不产生告警。自动重启期间的连续失败属于同一个故障窗口，不重复告警；子进程连续存活 `healthStabilityMs`（默认 5 秒）后才生成一次恢复事件。MimiAgent 会先核对实时能力：自动重启中的故障只建立一个恢复 Watch，未启用自动重启的瞬时故障最多执行一次启停恢复，配置或命令缺失则给出精确修复信息；已恢复且没有遗留影响时静默结束。中断期间结果不确定的 delivery/action 永不自动重放。诊断 Event 只保存有界错误类别；完整子进程错误仍留在本机 daemon stderr。
 
@@ -147,7 +147,7 @@ Connector 完成远端发送后必须确认：
 
 Agent 需要主动执行 Connector 事务时，调用通用 `connector_action`。Daemon 先检查配置中的 `actions` 目录，再向子进程发送：
 
-每个 Daemon Agent Run 还会获得只读 `inspect_mimi_capabilities`，动态返回当前 Connector 的 enabled/online、inbound/outbound readiness 和 action 目录。已知完整 ID 时用 `connector` 精确过滤，只知道“大象”“微信”等渠道词时用 `query` 匹配 ID、source、action 或描述；精确 ID 未命中会明确报错，不能把 `daxiang` 与真实 `personal-daxiang` 的不匹配解释成离线。过滤后的能力输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals 与 `truncated` 明示是否截断。`connector_action` 使用固定短描述并要求先调用这份小范围能力检查，避免整份动态目录在每轮模型请求中重复占用上下文；状态仍可能随后变化，因此 Manager 在真正发送前再次校验。
+每个 Daemon Agent Run 还会获得只读 `inspect_mimi_capabilities`，动态返回当前 Connector 的 enabled/online、inbound/outbound readiness、`capability/effect/routeOwner` 与 action 目录。能力选择优先使用 `capability` 精确过滤；`query` 只检索展示元数据，业务词零命中时 `total=0` 但 `catalogTotal/catalogActions` 和 `availableCapabilities` 仍明确保留，不能据此声称没有 Connector 或切换到更宽权限路线。精确 ID 未注册会明确报错。输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals、`filterMatched` 与 `truncated` 明示过滤和截断。状态仍可能随后变化，因此 Manager 在真正发送前再次校验。
 
 ```json
 {"type":"action","id":"action-uuid","action":"send_message","target":"group:123","payload":{"text":"会议延后 10 分钟"},"deadlineAt":1784176000000}
@@ -167,12 +167,11 @@ Connector 执行完成后返回：
 
 `personal-message-connector.mjs` 是大象、QQ、微信个人账号 Adapter 的共享 NDJSON host。当前只实现 `--channel=daxiang`；`personal-qq` 和 `personal-wechat` 仅保留默认关闭、无 action 的配置槽位，启用时会明确报告尚未实现，不会冒充可用通道。
 
-owner 主动查询大象消息时，固定使用
-`inspect_mimi_capabilities(query="大象") → personal-daxiang/list_targets →
-sync_now/get_context`。`list_targets` 只返回配置允许访问的 self/watch 稳定 sid，不扫描
-或复制全部联系人。此类消息查询的 Run 会移除 Shell、Computer/CUA、Browser/Desktop
-工具；只有 owner 明确要求视觉/桌面观察或在 Connector 明确 unavailable 后另行授权，
-才允许进入 GUI 路径。
+个人消息 Event 由 Host 结构化绑定为 `PersonalMessageScope`，不是根据 owner 文本或渠道
+关键词分类。该 Scope 只开放绑定 Connector 的有界读取/发送工具；`list_targets` 只返回
+配置允许访问的 self/watch 稳定 sid，不扫描或复制全部联系人。readiness、账号、页面、
+target 或 outbound 任一失败时都失败关闭，同一资源不能降级到 Shell、Computer/CUA、
+Browser/Desktop 或其他 Connector。
 
 大象 Adapter 使用已登录的 `https://x.sankuai.com/` 专用 Chrome 后台标签。它通过 Chrome Apple Events JavaScript 接口注入窄页面 Bridge，不激活 Chrome、不发送键盘鼠标事件，也不读取或导出浏览器认证资料。标签必须通过 `origin + window.name tabMarker` 唯一绑定，并且不能是任何 Chrome 窗口的当前标签；账号指纹、页面指纹、稳定 `sid` 和稳定 `mid` 任一不匹配都会停止写操作。
 
@@ -563,12 +562,20 @@ schema v1 `ActionIntent`；其 action family、目标和 payload 摘要跨 Tool/
 已认证 owner 的 Computer `launch_app` 仅在 bundleId 精确且不带 URL 时使用 guarded
 快速通道；URL scheme、外部来源和其他 Computer 动作不能继承该判定。
 
-运行时会把普通 GUI 业务请求硬绑定到正式能力面，并从该轮最终 Tool 集移除
-`run_shell`；因此 Shell 不能直接调用 `osascript`、`shortcuts`、`open` 或其他 GUI
-自动化来绕过 Connector/Browser/Computer。代码开发、测试和 Connector 实现任务不按
-GUI 业务请求处理，仍可保留 Shell 进行工程验证；即使分类未命中，`run_shell` 的
-调用时授权边界也会拒绝 GUI 系统命令、Apple Events/Accessibility API 和直接运行
-内置 `macos-*` Connector。
+owner 自由文本不参与 Tool 裁剪或授权。Darwin 上的 `run_shell` 无条件进入进程沙箱：
+拒绝 Apple Events、LaunchServices、Accessibility 相关服务，以及正式执行面登记的
+本机 Unix socket/loopback 控制端口，因此脚本语言或子进程也不能连接对应控制面；
+普通本地开发服务不会被一并裁掉。
+该限制由进程能力边界实施，不检查命令字符串。正式 Connector、Browser 与 Computer
+Tool 不经过此 Shell 沙箱，继续使用各自的结构化 capability、route owner、ActionIntent
+与授权边界。Terminal、Codex、VS Code、JetBrains 和其他声明为 Connector-owned 的应用
+也不能成为 Computer 写目标。
+
+`connector_action` 返回 `outcome=confirmed` 时，ExecutionLedger 会附加可验证的
+`execution:*` 回执；PersonalMessage/Computer ActionIntent 返回 `action-intent:*` 回执。
+普通 Plan 的外部事务步骤只有引用这些已落账的 confirmed receipt 才能标记 completed。
+`accepted`、timeout、uncertain、Shell exit code 或自然语言“已完成”都不能充当外部事务
+完成证据；completed step 的证据不能静默替换或重新打开。
 
 Connector readiness 使用固定词义：`online` 只代表进程存活；`readiness` 表示渠道能否
 收/发；`freshness` 表示状态是否仍在有效期；`coverage` 说明完整、bounded、

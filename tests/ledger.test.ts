@@ -445,6 +445,32 @@ test('wraps SDK side-effect tools with the active run ledger', async () => {
   assert.equal(executions, 1);
 });
 
+test('confirmed Connector actions expose a verifiable external receipt for Plan completion', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-connector-receipt-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const original = tool({
+    name: 'connector_action',
+    description: 'test connector action',
+    parameters: z.object({ action: z.string() }),
+    execute: async () => ({ outcome: 'confirmed', operationId: 'operation-1' }),
+  });
+  const [wrapped] = withExecutionLedger(
+    [original],
+    ledger,
+    () => ({ sessionId: 'demo', runId: 'run-connector' }),
+  );
+  assert.ok(wrapped && 'invoke' in wrapped);
+  const result = await wrapped.invoke(
+    new RunContext({}),
+    '{"action":"submit"}',
+    { toolCall: { callId: 'connector-call-1' } } as never,
+  ) as Record<string, unknown>;
+  const evidence = result.mimiExecutionReceipt as Record<string, unknown>;
+  assert.match(String(evidence.ref), /^execution:/);
+  assert.equal(await ledger.isConfirmedExternalReceipt(String(evidence.ref), 'demo'), true);
+  assert.equal(await ledger.isConfirmedExternalReceipt(String(evidence.ref), 'other-session'), false);
+});
+
 test('daemon semantic call ids replay consecutive duplicate effects and distinguish them after another effect', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-ledger-semantic-'));
   const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));

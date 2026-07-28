@@ -172,6 +172,39 @@ test('enforces image capability and application allowlist', async () => {
   );
 });
 
+test('protects control-plane apps and Connector-owned apps from Computer takeover', async () => {
+  const { backend, manager, authority } = await fixture({ deniedApps: ['com.google.Chrome'] });
+  const setTarget = (bundleId: string) => {
+    const claimed = { ...target, bundleId };
+    backend.targets = [claimed];
+    backend.observation = { ...backend.observation, target: claimed };
+  };
+
+  setTarget('com.apple.Terminal');
+  await assert.rejects(
+    () => manager.observe(authority, {
+      scope: 'window',
+      target: { bundleId: 'com.apple.Terminal', pid: target.pid, windowId: target.windowId },
+      includeScreenshot: false,
+      maxElements: 400,
+      maxDepth: 12,
+    }),
+    /受保护控制面/,
+  );
+
+  setTarget('com.google.Chrome');
+  await assert.rejects(
+    () => manager.observe(authority, {
+      scope: 'window',
+      target: { bundleId: 'com.google.Chrome', pid: target.pid, windowId: target.windowId },
+      includeScreenshot: false,
+      maxElements: 400,
+      maxDepth: 12,
+    }),
+    /route owner/,
+  );
+});
+
 test('computer tools respect mode and deployment permission boundaries', async () => {
   const { manager, authority } = await fixture();
   const tools = createComputerTools(manager, () => authority);
@@ -219,7 +252,15 @@ test('redacts type_text plaintext from semantic and persisted ledger arguments',
     }),
   }));
   assert.ok(wrapped && 'invoke' in wrapped);
-  await wrapped.invoke(new RunContext({}), executionRaw, { toolCall: { callId: 'c' } } as never);
+  const actionResult = await wrapped.invoke(
+    new RunContext({}),
+    executionRaw,
+    { toolCall: { callId: 'c' } } as never,
+  ) as Record<string, unknown>;
+  const actionEvidence = actionResult.mimiActionIntent as Record<string, unknown>;
+  assert.match(String(actionEvidence.ref), /^action-intent:/);
+  assert.equal(actionEvidence.outcome, 'confirmed');
+  assert.match(String(actionEvidence.actionFamily), /^computer\./);
   const calls = await ledger.listCalls('s', 'r');
   assert.equal(calls.length, 1);
   assert.doesNotMatch(calls[0]!.argumentsJson, /private value/);

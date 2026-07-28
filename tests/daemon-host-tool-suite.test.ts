@@ -308,6 +308,8 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       connectorRuntime: {
         inspectCapabilities: async () => ({
           configFile: '/fixture/connectors.json',
+          catalogTotal: 0,
+          catalogActions: 0,
           total: 0,
           enabled: 0,
           online: 0,
@@ -315,6 +317,8 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
           outboundReady: 0,
           stale: 0,
           actions: 0,
+          filterMatched: false,
+          availableCapabilities: [],
           truncated: false,
           connectors: [],
         }),

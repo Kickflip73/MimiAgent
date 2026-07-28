@@ -10,20 +10,64 @@ export interface PlanToolOptions {
   beforeGoalSet?: () => void | Promise<void>;
   completionContract?: () => CompletionContract | undefined;
   onGoalSet?: (goal: Goal) => void | Promise<void>;
+  verifyExternalReceiptRef?: (reference: string) => boolean | Promise<boolean>;
 }
 
 export function createPlanTools(store: PlanStore, options: PlanToolOptions = {}): Tool[] {
+  const completion = z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('internal'),
+      evidenceRefs: z.array(z.string().min(1).max(500)).min(1).max(20),
+      verification: z.enum(['confirmed', 'observed', 'business_ok']),
+    }).strict(),
+    z.object({
+      kind: z.literal('external_action'),
+      receiptRefs: z.array(z.string().min(1).max(500)).min(1).max(20),
+      verification: z.enum(['confirmed', 'observed', 'business_ok']),
+    }).strict(),
+  ]);
   const step = z.object({
     id: z.string().min(1),
     description: z.string().min(1),
     status: z.enum(['pending', 'running', 'completed', 'failed']),
+    completion: completion.optional(),
+  }).strict().superRefine((value, context) => {
+    if (value.status === 'completed' && !value.completion) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'completed step 必须提供结构化 completion 证据',
+        path: ['completion'],
+      });
+    }
+    if (value.status !== 'completed' && value.completion) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: '只有 completed step 可以携带 completion 证据',
+        path: ['completion'],
+      });
+    }
   });
   return [
     tool({
       name: 'update_plan',
-      description: '为多步骤任务创建或更新执行计划。阶段开始前将对应步骤设为 running，结束后立即设为 completed 或 failed，再推进下一步；返回的完整列表是本轮后续执行的当前权威状态。简单问题无需使用。',
+      description: '为多步骤任务创建或更新执行计划。completed 不是自由标签：内部步骤必须附带真实 evidenceRefs；外部事务必须附带正式工具返回的 action-intent:* 或 execution:* receiptRefs，并由 Host 验证为 confirmed。已完成步骤不能静默删除、重开或替换证据；需要重做时创建新的 Goal/Plan revision。简单问题无需使用。',
       parameters: z.object({ steps: z.array(step).max(20) }),
-      execute: async ({ steps }) => store.update(steps),
+      execute: async ({ steps }) => {
+        for (const candidate of steps) {
+          if (candidate.status !== 'completed' || candidate.completion?.kind !== 'external_action') continue;
+          if (!options.verifyExternalReceiptRef) {
+            throw new Error(`Plan step ${candidate.id} 是外部事务，但当前 Host 没有回执验证器`);
+          }
+          for (const reference of candidate.completion.receiptRefs) {
+            if (!await options.verifyExternalReceiptRef(reference)) {
+              throw new Error(
+                `Plan step ${candidate.id} 的外部事务回执 ${reference} 不存在、未 confirmed 或不属于当前执行账本`,
+              );
+            }
+          }
+        }
+        return store.update(steps);
+      },
     }),
     tool({
       name: 'show_plan',

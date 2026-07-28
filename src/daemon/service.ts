@@ -746,23 +746,49 @@ async function mergeTemplateActions(
     const missing = connector.syncTemplateActions
       ? Object.entries(packaged.actions).filter(([name]) => !Object.hasOwn(connector.actions, name))
       : [];
+    const metadataUpdates = connector.syncTemplateActions
+      ? Object.entries(packaged.actions).filter(([name, packagedAction]) => {
+        const currentAction = connector.actions[name];
+        return currentAction !== undefined
+          && ((currentAction.capability === undefined && packagedAction.capability !== undefined)
+            || (currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown'));
+      })
+      : [];
     const missingEnv = (REQUIRED_CONNECTOR_ENV[id] ?? []).filter((name) => (
       packaged.envAllowlist.includes(name) && !connector.envAllowlist.includes(name)
     ));
+    const missingClaimedComputerApps = packaged.claimedComputerApps.filter(
+      (bundleId) => !connector.claimedComputerApps.includes(bundleId),
+    );
     if (
       !migrateSystemProvenance
       && !migrateNodeCommand
       && !missing.length
+      && !metadataUpdates.length
       && !missingEnv.length
+      && !missingClaimedComputerApps.length
     ) continue;
-    updatedActions += missing.length;
+    updatedActions += missing.length + metadataUpdates.length;
     changed = true;
+    const updatedMetadata = Object.fromEntries(metadataUpdates.map(([name, packagedAction]) => {
+      const currentAction = connector.actions[name]!;
+      return [name, {
+        ...currentAction,
+        ...(currentAction.capability === undefined && packagedAction.capability !== undefined
+          ? { capability: packagedAction.capability }
+          : {}),
+        ...(currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown'
+          ? { effect: packagedAction.effect }
+          : {}),
+      }];
+    }));
     connectors[id] = {
       ...connector,
       ...(migrateNodeCommand ? { command: packaged.command } : {}),
       ...(migrateSystemProvenance ? { source: packaged.source, trust: packaged.trust } : {}),
       envAllowlist: [...connector.envAllowlist, ...missingEnv],
-      actions: { ...Object.fromEntries(missing), ...connector.actions },
+      claimedComputerApps: [...connector.claimedComputerApps, ...missingClaimedComputerApps],
+      actions: { ...Object.fromEntries(missing), ...connector.actions, ...updatedMetadata },
     };
   }
   return {

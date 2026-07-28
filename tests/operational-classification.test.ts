@@ -20,6 +20,7 @@ function connector(
     readiness,
     source: `fixture:${id}`,
     trust: 'owner',
+    claimedComputerApps: [],
     actions: [],
   };
 }

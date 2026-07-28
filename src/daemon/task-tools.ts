@@ -35,6 +35,10 @@ const delegationSchema = z.object({
     .describe('mimi（默认）由 MimiAgent 执行；codex 由独立 Codex CLI 进程自主执行，MimiAgent 只登记、启动和追踪'),
   workspaceAccess: z.enum(['read', 'write']).default('write')
     .describe('write（默认）可修改工作区且独占执行；read 只读工作区，可与其他只读后台任务并行'),
+  requiredCapabilities: z.array(
+    z.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/).max(120),
+  ).min(1).max(20)
+    .describe('任务实际需要的结构化能力；例如 workspace.read、workspace.write、shell.execute、browser.page.read 或 computer.act。后台委派不能扩大当前能力'),
   priority: z.number().int().min(0).max(100).default(70),
 }).strict();
 
@@ -45,6 +49,7 @@ export interface BackgroundTaskToolContext {
   sessionId: string;
   workspaceRoot?: string;
   replyRoute?: ReplyRoute;
+  connectorCapabilities?: readonly string[];
   cancel?: (eventId: string, reason?: string) => MaybePromise<EventCancelResult>;
   pause?: (eventId: string, reason?: string) => MaybePromise<BackgroundTaskPauseResult>;
   block?: (request: BackgroundTaskBlockRequest) => MaybePromise<unknown>;
@@ -77,7 +82,24 @@ function taskPrompt(input: z.infer<typeof delegationSchema>): string {
     `\n## 执行策略\n${input.strategy}`,
     `\n## 执行器\n${input.executor}`,
     `\n## 工作区访问\n${input.workspaceAccess}`,
+    `\n## 必需能力\n${input.requiredCapabilities.join(', ')}`,
   ].filter(Boolean).join('\n');
+}
+
+function delegatedCapabilities(
+  input: z.infer<typeof delegationSchema>,
+  connectorCapabilities: readonly string[],
+): Set<string> {
+  const available = new Set<string>(['workspace.read']);
+  if (input.workspaceAccess === 'write') {
+    available.add('workspace.write');
+    available.add('shell.execute');
+  }
+  if (input.executor === 'mimi') {
+    available.add('connector.catalog.read');
+    for (const capability of connectorCapabilities) available.add(capability);
+  }
+  return available;
 }
 
 function delegatedTaskId(idempotencyKey: string): string {
@@ -360,6 +382,20 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
       parameters: delegationSchema,
       execute: async (input) => {
         const normalized = delegationSchema.parse(input);
+        const availableCapabilities = delegatedCapabilities(
+          normalized,
+          context.connectorCapabilities ?? [],
+        );
+        const missingCapabilities = normalized.requiredCapabilities.filter(
+          (capability) => !availableCapabilities.has(capability),
+        );
+        if (missingCapabilities.length) {
+          throw new Error(
+            `后台 worker 不具备必需能力：${missingCapabilities.join(', ')}；`
+            + `可用能力：${[...availableCapabilities].sort().join(', ')}。`
+            + '委派不能用于恢复当前 Run 没有的 Computer、Browser 或 Connector 权限。',
+          );
+        }
         const digest = createHash('sha256')
           .update(JSON.stringify(normalized))
           .digest('hex')
@@ -388,6 +424,7 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
             strategy: normalized.strategy,
             executor: normalized.executor,
             workspaceAccess: normalized.workspaceAccess,
+            requiredCapabilities: normalized.requiredCapabilities,
             ...(context.workspaceRoot ? { workspaceRoot: context.workspaceRoot } : {}),
             originSessionId: context.sessionId,
             replyRoute: context.replyRoute ?? context.event.replyRoute ?? { channel: 'system' },

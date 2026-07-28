@@ -12,6 +12,15 @@ export interface PlanStep {
   id: string;
   description: string;
   status: 'pending' | 'running' | 'completed' | 'failed';
+  completion?: {
+    kind: 'internal';
+    evidenceRefs: string[];
+    verification: 'confirmed' | 'observed' | 'business_ok';
+  } | {
+    kind: 'external_action';
+    receiptRefs: string[];
+    verification: 'confirmed' | 'observed' | 'business_ok';
+  };
 }
 
 export type GoalStatus = 'active' | 'paused' | 'completed' | 'failed';
@@ -41,6 +50,18 @@ const planStepSchema = z.object({
   id: z.string(),
   description: z.string(),
   status: z.enum(['pending', 'running', 'completed', 'failed']),
+  completion: z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('internal'),
+      evidenceRefs: z.array(z.string().min(1).max(500)).min(1).max(20),
+      verification: z.enum(['confirmed', 'observed', 'business_ok']),
+    }).strict(),
+    z.object({
+      kind: z.literal('external_action'),
+      receiptRefs: z.array(z.string().min(1).max(500)).min(1).max(20),
+      verification: z.enum(['confirmed', 'observed', 'business_ok']),
+    }).strict(),
+  ]).optional(),
 });
 const goalSchema = z.object({
   objective: z.string(),
@@ -93,6 +114,17 @@ export class PlanStore {
   async update(steps: PlanStep[]): Promise<PlanStep[]> {
     const sessionId = this.sessionId;
     const updated = await this.mutate((plans) => {
+      const previous = plans[sessionId]?.steps ?? [];
+      for (const completed of previous.filter((step) => step.status === 'completed')) {
+        const candidate = steps.find((step) => step.id === completed.id);
+        if (!candidate || candidate.status !== 'completed') {
+          throw new Error(`Plan step ${completed.id} 已完成，不能静默删除或重新打开；需要新的 Goal/Plan revision`);
+        }
+        if (completed.completion
+          && JSON.stringify(candidate.completion) !== JSON.stringify(completed.completion)) {
+          throw new Error(`Plan step ${completed.id} 的完成证据已锁定，不能静默替换`);
+        }
+      }
       plans[sessionId] = { ...plans[sessionId], steps };
       return steps;
     });

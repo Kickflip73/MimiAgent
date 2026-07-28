@@ -9,11 +9,7 @@ import { AgentRequestFactory } from '../src/runtime/pipeline/request-factory.js'
 import { captureRunScope } from '../src/runtime/pipeline/run-scope.js';
 import { RunStateLoader } from '../src/runtime/pipeline/state-loader.js';
 import {
-  assertShellCommandDoesNotBypassManagedGui,
-  requiresManagedGuiBoundary,
-  requiresPersonalConnectorOnly,
   ToolSetBuilder,
-  withoutUnmanagedGuiShell,
   withoutPersonalMessageDesktopFallback,
   withoutPersonalMessageFallbackHistory,
 } from '../src/runtime/pipeline/tool-set-builder.js';
@@ -179,11 +175,8 @@ test('capability snapshot is deterministic and distinguishes readiness terminolo
   assert.equal(first.items.find((item) => item.kind === 'connector')?.freshness, 'unknown');
 });
 
-test('personal message queries expose Connector tools without desktop fallback tools', () => {
+test('structured personal message scope excludes desktop fallback tools', () => {
   const tool = (name: string) => ({ name }) as Tool;
-  assert.equal(requiresPersonalConnectorOnly('检查待处理的大象消息'), true);
-  assert.equal(requiresPersonalConnectorOnly('用大象客户端窗口检查消息'), false);
-  assert.equal(requiresPersonalConnectorOnly('修复大象消息通道代码'), false);
   const prepared = withoutPersonalMessageDesktopFallback([
     tool('inspect_mimi_capabilities'),
     tool('connector_action'),
@@ -200,37 +193,33 @@ test('personal message queries expose Connector tools without desktop fallback t
   ]);
 });
 
-test('GUI business requests cannot bypass managed capabilities through run_shell', () => {
+test('general tool selection retains shell and managed GUI capabilities', () => {
   const tool = (name: string) => ({ name }) as Tool;
-  assert.equal(requiresManagedGuiBoundary('在桌面打开日历并新建一个日程'), true);
-  assert.equal(requiresManagedGuiBoundary('打开 QQ 并发送消息'), true);
-  assert.equal(requiresManagedGuiBoundary('用 GUI 修复这个前端窗口组件'), false);
-  assert.equal(requiresManagedGuiBoundary('运行单元测试'), false);
   assert.deepEqual(
-    withoutUnmanagedGuiShell([tool('run_shell'), tool('connector_action'), tool('computer_act')])
+    new ToolSetBuilder().scoped(
+      [tool('run_shell'), tool('connector_action'), tool('computer_act')],
+      'trusted',
+      'workstation',
+      undefined,
+      true,
+    )
       .map((item) => item.name),
-    ['connector_action', 'computer_act'],
+    ['run_shell', 'connector_action', 'computer_act'],
   );
 });
 
-test('run_shell rejects direct GUI automation even when the request classifier misses it', () => {
-  for (const command of [
-    '/usr/bin/osascript -e \'tell application "System Events" to keystroke "x"\'',
-    '/usr/bin/shortcuts run "Daily Briefing"',
-    'open -a Calendar',
-    'python -c "import pyautogui; pyautogui.click()"',
-    'swift -e "import AppKit; NSWorkspace.shared.open(URL(string: \\"https://example.com\\")!)"',
-    'node examples/connectors/macos-desktop-connector.mjs',
-  ]) {
-    assert.throws(
-      () => assertShellCommandDoesNotBypassManagedGui(JSON.stringify({ command })),
-      /正式 Connector、Browser 或 Computer/,
-      command,
-    );
-  }
-  assert.doesNotThrow(() => assertShellCommandDoesNotBypassManagedGui(JSON.stringify({
-    command: 'npm test -- --test-name-pattern open',
-  })));
+test('tool selection is independent from shell command strings', () => {
+  const tool = (name: string) => ({ name }) as Tool;
+  const builder = new ToolSetBuilder();
+  const selected = () => builder.scoped(
+    [tool('run_shell'), tool('connector_action')],
+    'trusted',
+    'workstation',
+    undefined,
+    true,
+  ).map((item) => item.name);
+  assert.deepEqual(selected(), ['run_shell', 'connector_action']);
+  assert.deepEqual(selected(), ['run_shell', 'connector_action']);
 });
 
 test('personal message history excludes completed desktop fallback turns', () => {

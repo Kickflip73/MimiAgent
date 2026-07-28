@@ -177,21 +177,21 @@ test('owner natural language never selects a tool policy from message wording', 
   }
 });
 
-test('owner personal-message queries add only a narrowing Connector routing hint', () => {
-  const decision = decideEvent(event({
-    trust: 'owner',
-    source: 'local-cli',
-    payload: { prompt: '检查待处理的大象消息' },
-  }));
-  assert.equal(decision.options?.policy, undefined);
-  assert.equal(decision.options?.personalConnectorOnly, true);
-
-  const development = decideEvent(event({
-    trust: 'owner',
-    source: 'local-cli',
-    payload: { prompt: '修复大象消息通道代码' },
-  }));
-  assert.equal(development.options?.personalConnectorOnly, undefined);
+test('owner wording never derives a personal-message routing hint', () => {
+  for (const prompt of [
+    '检查待处理的大象消息',
+    '修复大象消息通道代码',
+    '先检查大象消息，然后修改项目并运行测试',
+    '打开 QQ 并发送消息',
+  ]) {
+    const decision = decideEvent(event({
+      trust: 'owner',
+      source: 'local-cli',
+      payload: { prompt },
+    }));
+    assert.equal(decision.options?.policy, undefined, prompt);
+    assert.equal(decision.options?.personalConnectorOnly, undefined, prompt);
+  }
 });
 
 test('source playbooks require exact trusted provenance', () => {

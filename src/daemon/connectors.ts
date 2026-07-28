@@ -28,9 +28,17 @@ const connectorSchema = z.object({
   deliveryTimeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
   actionTimeoutMs: z.number().int().min(1_000).max(900_000).default(30_000),
   syncTemplateActions: z.boolean().default(true),
+  claimedComputerApps: z.array(z.string().min(1).max(500)).max(100).default([]),
   actions: z.record(
     z.string().regex(/^[a-zA-Z0-9._-]+$/),
-    z.object({ description: z.string().min(1).max(500) }).strict(),
+    z.object({
+      description: z.string().min(1).max(500),
+      capability: z.string()
+        .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)
+        .max(120)
+        .optional(),
+      effect: z.enum(['read', 'write', 'unknown']).default('unknown'),
+    }).strict(),
   ).default({}),
 }).strict();
 
@@ -136,7 +144,14 @@ export interface ConnectorCapability {
   };
   source: string;
   trust: EventTrust;
-  actions: Array<{ name: string; description: string }>;
+  claimedComputerApps: string[];
+  actions: Array<{
+    name: string;
+    description: string;
+    capability: string;
+    effect: 'read' | 'write' | 'unknown';
+    routeOwner: string;
+  }>;
 }
 
 export interface ConnectorActionRequest {
@@ -302,9 +317,13 @@ class ConnectorProcess implements NotificationSink {
         : { inbound: 'unavailable', outbound: 'unavailable' },
       source: this.config.source ?? `connector:${this.id}`,
       trust: this.config.trust as EventTrust,
+      claimedComputerApps: [...this.config.claimedComputerApps],
       actions: Object.entries(this.config.actions).map(([name, value]) => ({
         name,
         description: value.description,
+        capability: value.capability ?? `connector.${this.id}.${name}`,
+        effect: value.effect,
+        routeOwner: this.id,
       })),
     };
   }

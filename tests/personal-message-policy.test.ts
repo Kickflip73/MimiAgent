@@ -111,6 +111,7 @@ test('personal auto runs receive only narrow message tools', () => {
   );
   assert.equal(decision.action, 'run');
   assert.equal(decision.personalMessage?.mode, 'auto');
+  assert.equal(decision.options?.personalConnectorOnly, true);
   const tools = decision.options?.policy?.allowedTools ?? [];
   assert.ok(tools.includes('get_personal_message_context'));
   assert.ok(tools.includes('send_personal_message'));

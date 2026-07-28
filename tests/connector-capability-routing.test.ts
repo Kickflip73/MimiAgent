@@ -11,6 +11,8 @@ import { BASE_INSTRUCTIONS } from '../src/runtime/instructions.js';
 function snapshot(connectors: ConnectorCapabilitySnapshot['connectors']): ConnectorCapabilitySnapshot {
   return {
     configFile: '/tmp/connectors.json',
+    catalogTotal: connectors.length,
+    catalogActions: connectors.reduce((total, connector) => total + connector.actions.length, 0),
     total: connectors.length,
     enabled: connectors.filter((connector) => connector.enabled).length,
     online: connectors.filter((connector) => connector.online).length,
@@ -18,6 +20,10 @@ function snapshot(connectors: ConnectorCapabilitySnapshot['connectors']): Connec
     outboundReady: connectors.filter((connector) => connector.readiness.outbound === 'ready').length,
     stale: 0,
     actions: connectors.reduce((total, connector) => total + connector.actions.length, 0),
+    filterMatched: connectors.length > 0,
+    availableCapabilities: [...new Set(
+      connectors.flatMap((connector) => connector.actions.map((action) => action.capability)),
+    )],
     truncated: false,
     connectors,
   };
@@ -33,14 +39,15 @@ test('an unknown exact Connector ID is not reported as offline', async () => {
   };
   const result = await invoke(tool, { connector: 'daxiang' });
   assert.match(JSON.stringify(result), /不是 Connector 离线证据/);
-  assert.match(JSON.stringify(result), /query/);
+  assert.match(JSON.stringify(result), /routeOwner/);
   assert.match(JSON.stringify(result), /不得据此自动降级/);
 });
 
-test('personal messaging instructions prefer the registered Connector over CUA', () => {
-  assert.match(BASE_INSTRUCTIONS, /personal-\* Connector/);
-  assert.match(BASE_INSTRUCTIONS, /未命中不代表离线/);
-  assert.match(BASE_INSTRUCTIONS, /不得自动改用 Computer\/CUA/);
+test('capability routing instructions use stable declarations instead of business wording', () => {
+  assert.match(BASE_INSTRUCTIONS, /稳定 capability、effect 与 routeOwner/);
+  assert.match(BASE_INSTRUCTIONS, /query 零命中只表示展示元数据不匹配/);
+  assert.match(BASE_INSTRUCTIONS, /uncertain 禁止换路或重放/);
+  assert.doesNotMatch(BASE_INSTRUCTIONS, /大象|QQ|微信/);
 });
 
 test('effective capability items preserve Connector availability, readiness, freshness and coverage', () => {

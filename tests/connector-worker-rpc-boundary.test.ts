@@ -18,8 +18,13 @@ const TASK_ID = '00000000-0000-4000-8000-000000000001';
 const WORKER_TOKEN = 'abcdefghijklmnopqrstuvwxyzABCDEFGH123456789';
 
 test('worker connector schemas reject ambiguous identifiers and oversized catalogs', () => {
-  assert.deepEqual(workerConnectorFilterSchema.parse({ connector: 'mail', query: 'owner' }), {
+  assert.deepEqual(workerConnectorFilterSchema.parse({
     connector: 'mail',
+    capability: 'mail.message.read',
+    query: 'owner',
+  }), {
+    connector: 'mail',
+    capability: 'mail.message.read',
     query: 'owner',
   });
   assert.throws(() => workerConnectorFilterSchema.parse({ connector: 'mail/unsafe' }));
@@ -35,6 +40,8 @@ test('worker connector schemas reject ambiguous identifiers and oversized catalo
   }));
   const base = {
     configFile: '/fixture/connectors.json',
+    catalogTotal: 1,
+    catalogActions: 101,
     total: 1,
     enabled: 1,
     online: 1,
@@ -42,6 +49,8 @@ test('worker connector schemas reject ambiguous identifiers and oversized catalo
     outboundReady: 1,
     stale: 0,
     actions: 101,
+    filterMatched: true,
+    availableCapabilities: ['mail.inspect'],
     truncated: false,
     connectors: [{
       id: 'mail',
@@ -49,9 +58,14 @@ test('worker connector schemas reject ambiguous identifiers and oversized catalo
       online: true,
       readiness: { inbound: 'ready', outbound: 'ready' },
       source: 'fixture:mail',
+      routeOwner: 'mail',
+      claimedComputerApps: [],
       actions: Array.from({ length: 101 }, (_, index) => ({
         name: `action-${index}`,
         description: 'action',
+        capability: 'mail.inspect',
+        effect: 'read',
+        routeOwner: 'mail',
       })),
     }],
   };
@@ -67,6 +81,8 @@ test('kernel connector runtime sends exact worker authorization without control 
     if (method === WORKER_CONNECTOR_INSPECT_METHOD) {
       return {
         configFile: '/fixture/connectors.json',
+        catalogTotal: 1,
+        catalogActions: 1,
         total: 1,
         enabled: 1,
         online: 1,
@@ -74,6 +90,8 @@ test('kernel connector runtime sends exact worker authorization without control 
         outboundReady: 1,
         stale: 0,
         actions: 1,
+        filterMatched: true,
+        availableCapabilities: ['mail.inspect'],
         truncated: false,
         connectors: [{
           id: 'mail',
@@ -81,7 +99,15 @@ test('kernel connector runtime sends exact worker authorization without control 
           online: true,
           readiness: { inbound: 'ready', outbound: 'ready' },
           source: 'fixture:mail',
-          actions: [{ name: 'inspect', description: 'inspect' }],
+          routeOwner: 'mail',
+          claimedComputerApps: [],
+          actions: [{
+            name: 'inspect',
+            description: 'inspect',
+            capability: 'mail.inspect',
+            effect: 'read',
+            routeOwner: 'mail',
+          }],
         }],
       };
     }
