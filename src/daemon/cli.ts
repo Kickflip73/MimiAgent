@@ -25,6 +25,8 @@ export function daemonHelp(): string {
   mimi daemon connectors [reload]          查看或重载 Connector 在线状态和可执行能力
   mimi daemon connectors <enable|disable> <id>
                                              原子启停已配置 Connector，不改命令、凭证或 action
+  mimi daemon probe <profile>               认证执行固定只读 probe；profile 为 browser-tabs、
+                                             shortcuts-catalog、computer-window 或 screen-window
   mimi daemon attention [reload]           查看或重载注意力策略
   mimi daemon digest [数量]                 查看待简报摘要
   mimi daemon brief                        立即生成主动简报
@@ -241,6 +243,12 @@ export async function runDaemonCommand(config: AppConfig, args: string[]): Promi
   }
   if (command === 'activity') {
     output(await mimiRpc(socket, 'activity.get', { limit: Number(args[1] ?? 10) }));
+    return;
+  }
+  if (command === 'probe') {
+    const profile = args[1]?.trim();
+    if (!profile) throw new Error('probe 需要精确 profile');
+    output(await mimiRpc(socket, 'probe.read', { profile }, 60_000));
     return;
   }
   if (command === 'submit') {

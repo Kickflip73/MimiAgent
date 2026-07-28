@@ -158,6 +158,21 @@ export interface ConnectorCapability {
   }>;
 }
 
+export interface ConnectorReadProbeRequest extends ConnectorActionRequest {
+  capability: string;
+}
+
+export interface ConnectorReadProbeReceipt {
+  boundary: 'connector_manager';
+  effect: 'read';
+  registered: true;
+  ready: true;
+  fresh: true;
+  targetVerified: true;
+  actionResult: true;
+  result: unknown;
+}
+
 export interface ConnectorActionRequest {
   connector: string;
   action: string;
@@ -686,7 +701,9 @@ class ConnectorProcess implements NotificationSink {
     this.pending.clear();
     for (const pending of this.pendingActions.values()) {
       clearTimeout(pending.timer);
-      pending.reject(new Error(`${error.message}；为避免重复副作用 action 不会自动重放`));
+      pending.reject(new UncertainDeliveryError(
+        `${error.message}；action 可能已执行，为避免重复副作用不会自动重放`,
+      ));
     }
     this.pendingActions.clear();
   }
@@ -848,6 +865,51 @@ export class ConnectorManager {
       );
     }
     return this.executeRegisteredAction(request);
+  }
+
+  async executeReadProbe(request: ConnectorReadProbeRequest): Promise<ConnectorReadProbeReceipt> {
+    const connector = this.connectors.get(request.connector);
+    if (!connector) throw new Error(`unregistered：未找到 Connector ${request.connector}`);
+    const before = connector.capability();
+    if (!before.enabled) throw new Error(`disabled：Connector ${request.connector} 未启用`);
+    if (!before.online) throw new Error(`offline：Connector ${request.connector} 当前不在线`);
+    if (before.readiness.outbound !== 'ready') {
+      throw new Error(`not_ready：Connector ${request.connector} outbound 未就绪`);
+    }
+    if (!before.readiness.reportedAt || before.readiness.stale === true) {
+      throw new Error(`stale：Connector ${request.connector} readiness 不新鲜`);
+    }
+    const action = before.actions.find((candidate) => candidate.name === request.action);
+    if (!action) throw new Error(`unregistered：Connector ${request.connector} 未声明 action ${request.action}`);
+    if (action.routeOwner !== request.connector) {
+      throw new Error(`route drift：action ${request.action} routeOwner 不匹配`);
+    }
+    if (action.capability !== request.capability) {
+      throw new Error(`capability drift：action ${request.action} capability 不匹配`);
+    }
+    if (action.effect !== 'read') {
+      throw new Error(`effect ${action.effect}：read probe 只允许 effect=read`);
+    }
+    const result = await connector.executeAction(request.action, request.target, request.payload);
+    const after = connector.capability();
+    const afterAction = after.actions.find((candidate) => candidate.name === request.action);
+    if (!after.enabled || !after.online || after.readiness.outbound !== 'ready'
+      || !after.readiness.reportedAt || after.readiness.stale === true
+      || afterAction?.routeOwner !== request.connector
+      || afterAction.capability !== request.capability
+      || afterAction.effect !== 'read') {
+      throw new Error(`target drift：Connector ${request.connector} read probe 执行后正式边界已变化`);
+    }
+    return {
+      boundary: 'connector_manager',
+      effect: 'read',
+      registered: true,
+      ready: true,
+      fresh: true,
+      targetVerified: true,
+      actionResult: true,
+      result,
+    };
   }
 
   async executePersonalMessageAction(request: ConnectorActionRequest): Promise<unknown> {

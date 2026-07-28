@@ -1,12 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mimiagent.local/evals/m1/manifest.schema.v1.json",
+  "$id": "https://mimiagent.local/evals/m1/manifest.schema.v2.json",
   "title": "MimiAgent M1 Eval Manifest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "datasetRevision", "policyRevision", "toolSnapshotRevision", "scenarios"],
+  "required": ["schemaVersion", "evidenceKind", "datasetRevision", "policyRevision", "toolSnapshotRevision", "scenarios"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
+    "evidenceKind": { "enum": ["fixture", "readiness", "live_action", "soak"] },
     "datasetRevision": { "$ref": "#/$defs/revision" },
     "policyRevision": { "$ref": "#/$defs/revision" },
     "toolSnapshotRevision": { "$ref": "#/$defs/revision" },
@@ -32,7 +33,7 @@
         "executionPath": { "$ref": "#/$defs/identifier" },
         "risk": { "enum": ["read", "draft", "low_write", "high_write"] },
         "boundaryRef": { "type": "string", "minLength": 1, "maxLength": 240 },
-        "expectedOutcome": { "enum": ["success", "partial", "blocked", "failed", "uncertain"] },
+        "expectedOutcome": { "enum": ["success", "blocked", "skipped", "failed", "uncertain"] },
         "tags": {
           "type": "array",
           "minItems": 1,

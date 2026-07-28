@@ -55,7 +55,7 @@ import { createSubAgentTools } from '../extensions/subagents.js';
 import { createTeamTools } from '../extensions/team.js';
 import { createComputerTools } from '../extensions/computer/tools.js';
 import type { ComputerManager } from '../extensions/computer/manager.js';
-import type { ComputerAccess } from '../extensions/computer/types.js';
+import type { ComputerAccess, ComputerTargetSummary } from '../extensions/computer/types.js';
 import { createTools } from '../tools.js';
 import { HookBus, type RuntimeHook } from './hooks.js';
 import { configureAgentRuntime } from './bootstrap.js';
@@ -1442,6 +1442,92 @@ export class MimiAgent {
 
   currentCapabilitySnapshot(): Readonly<EffectiveCapabilitySnapshot> | undefined {
     return this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot;
+  }
+
+  assertReadOnlyDaemonProbePolicy(hostTools: readonly Tool[]): void {
+    const policy: RunPolicy = {
+      allowedCapabilities: ['state-read'],
+      allowedTools: ['inspect_mimi_capabilities'],
+    };
+    const scope = captureRunScope({
+      sessionId: this.sessionId,
+      workspaceRoot: this.config.workspaceRoot,
+      provider: this.config.provider,
+      model: this.modelName,
+      mode: 'general',
+      permissionMode: this.permissionMode,
+      securityProfile: this.securityProfile,
+      input: 'authenticated daemon read-only probe policy check',
+    });
+    const capabilities = this.capabilityResolver.resolve({
+      scope,
+      policy,
+      developmentTask: false,
+      expectedArtifactCompletion: false,
+    });
+    const tools = this.toolSetBuilder.scoped(
+      [...hostTools],
+      this.permissionMode,
+      this.securityProfile,
+      policy,
+      false,
+    );
+    if (!capabilities.canReadState
+      || tools.length !== 1
+      || tools[0]?.name !== 'inspect_mimi_capabilities') {
+      throw new Error('正式 CapabilityResolver/Tool policy 未授权只读 Connector probe');
+    }
+  }
+
+  async probeReadOnlyComputerWindow(
+    allowedApps: readonly string[],
+    deniedApps: readonly string[],
+    signal?: AbortSignal,
+    expectedTarget?: Pick<ComputerTargetSummary, 'bundleId' | 'pid' | 'windowId'>,
+  ) {
+    if (!this.computer) throw new Error('ComputerManager 未注册');
+    const policy: RunPolicy = {
+      allowedCapabilities: ['computer-read'],
+      allowedTools: ['computer_observe'],
+      computerAccess: 'observe',
+    };
+    const scope = captureRunScope({
+      sessionId: this.sessionId,
+      workspaceRoot: this.config.workspaceRoot,
+      provider: this.config.provider,
+      model: this.modelName,
+      mode: 'general',
+      permissionMode: this.permissionMode,
+      securityProfile: this.securityProfile,
+      input: 'authenticated daemon read-only computer probe',
+    });
+    const capabilities = this.capabilityResolver.resolve({
+      scope,
+      policy,
+      requestedComputerAccess: 'observe',
+      defaultComputerAccess: this.config.computer?.defaultAccess,
+      developmentTask: false,
+      expectedArtifactCompletion: false,
+    });
+    const tools = this.toolSetBuilder.scoped(
+      this.tools,
+      this.permissionMode,
+      this.securityProfile,
+      policy,
+      capabilities.computerAccess !== 'none',
+    );
+    if (capabilities.computerAccess !== 'observe'
+      || tools.length !== 1
+      || tools[0]?.name !== 'computer_observe') {
+      throw new Error('正式 CapabilityResolver/Tool policy 未授权 computer_observe');
+    }
+    return this.computer.observeStableBackgroundWindow({
+      runId: scope.runId,
+      access: capabilities.computerAccess,
+      allowedApps,
+      deniedApps,
+      supportsImageInput: false,
+    }, signal, expectedTarget);
   }
 
   async guidanceInfo() {

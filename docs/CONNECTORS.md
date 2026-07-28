@@ -627,9 +627,15 @@ bounded page/screen/OCR 和状态查询为 `read`；Shortcut 执行、截图显�
 DOM 执行、应用/键盘/菜单/剪贴板变更为 `write`。缺失或旧配置中的 `unknown` 不能被
 解释为只读；初始化只会把同一 packaged action 的未知元数据升级为明确值。
 
-只读实机基线用 `npm run eval:m1:canary`。它不会启用 Connector、请求 TCC、激活应用、
-发送消息或保存截图/OCR；Daxiang 未精确绑定时保留为 `blocked/target-not-bound` 分母，
-不会扫描联系人或改走 Browser、Computer、Shell。
+只读实机基线用 `npm run eval:m1:canary`。runner 不再直接启动 Connector 源码，也不把
+Doctor/readiness 当动作；它只调用认证的本机 `mimi daemon probe <profile>`，服务端
+固定映射 Browser tabs、Shortcuts catalog、后台 Computer window 和 Screen window
+四种 profile，不接受任意 action/payload。ConnectorManager 在 dispatch 前后复核
+enabled、online、outbound ready、fresh、catalog capability、`effect=read` 和
+route owner；write/unknown、未注册、stale 和漂移全部拒绝。Computer 仅观察 allowlist
+后台窗口，拒绝 Codex/Terminal/IDE、Connector-owned App 和 frontmost 目标，并在动作后
+重新验证精确 pid/window。IPC 只返回计数与正式 receipt，不返回标签、URL、Shortcut 名、
+AX/OCR 正文或图像。runner 本身不会启用 Connector、请求 TCC、激活应用或发送消息。
 
 Connector readiness 使用固定词义：`online` 只代表进程存活；`readiness` 表示渠道能否
 收/发；`freshness` 表示状态是否仍在有效期；`coverage` 说明完整、bounded、

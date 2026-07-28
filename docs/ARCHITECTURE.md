@@ -580,17 +580,24 @@ status、Doctor 和脱敏 diagnostic bundle。历史 dead letter 保留原记录
 
 ### M1 Jarvis Eval
 
-M1 eval 使用 `evals/m1/manifest.v1.json` 固定 dataset、policy 和 tool snapshot revision，
-并由 `src/runtime/m1-eval.ts` 同时验证 manifest 与 run record。每条 record 都保留
-App/渠道、动作族、执行路径、风险、Provider、outcome、首次/重试/接管、S0-S3 和仅含
-hash 或 `meta:` 的 evidence ref。run 文件通过排他锁和原子替换写入；损坏输入、重复
-scenario、并发写和 uncertain retry 均 fail closed。
+M1 eval 使用 `evals/m1/manifest.v2.json` 固定 dataset、policy、tool snapshot revision
+和 `fixture | readiness | live_action | soak` 证据层级，并由 `src/runtime/m1-eval.ts`
+同时验证 manifest 与 run record。每条 record 都保留 App/渠道、动作族、执行路径、
+风险、Provider、requested/eligible/executed/outcome、首次/重试/接管、S0-S3 和仅含
+hash 或 `meta:` 的 evidence ref。旧 v1 因无法还原 provenance 而明确拒绝晋级；
+run 文件通过排他锁和原子替换写入，冲突覆盖、损坏输入、重复 run/record/scenario、
+跨 run uncertain retry 和伪造 evidence-kind 均 fail closed。
 
 `npm run eval:m1` 会按 manifest 中的公共边界测试文件执行真实 deterministic suite，
-然后按 App × action family × execution path 报告分母；suite 失败不会被 expected
-blocked/failed 场景掩盖。`npm run eval:m1:canary` 先复核 Doctor、Event、Task、
-Outbox 和 host mutation idle，只执行 20 个 Browser/Shortcuts/Computer/Daxiang
-只读 probe。probe 返回的标签、URL、快捷指令名或页面正文会被立即丢弃，run 仅留
-状态分类和元数据 evidence ref。该 canary 不是 24/72h soak，也不能替代 100 次实机门禁。
+然后按 evidence kind × App × action family × execution path 报告 requested coverage
+与 eligible execution success；suite 失败不会被 expected blocked/failed 场景掩盖。
+`npm run eval:m1:canary` 先复核 Doctor、Event、Task、Outbox 和 host mutation idle，
+再通过 control-auth Unix Socket 的固定 `probe.read` profile 执行最多 20 个 Browser、
+Shortcuts、Computer、Screen 只读动作。Connector 由同一 ConnectorManager 复核
+enabled/online/readiness/freshness/catalog/effect/route owner；Computer 复用同一
+ComputerManager、CapabilityResolver 和 Tool policy，并执行 allowlist、控制面、
+frontmost 和前后目标漂移检查。标签、URL、快捷指令名、OCR 正文和临时图像不会进入
+IPC evidence；只有正式 Manager 返回动作结果的 `live_action` 才计入 100 次。readiness、
+direct worker、blocked/skipped 和 uncertain 均不能晋级。该 canary 不是 24/72h soak。
 默认输出使用不覆盖的时间戳文件名；`run-m1-eval.ts report <run...>` 只聚合同一 dataset
 revision 的多次 run，因此分母可以持续累计而不会混入不同口径。

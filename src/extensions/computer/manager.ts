@@ -28,6 +28,17 @@ export interface ComputerRunAuthority {
   supportsImageInput?: boolean;
 }
 
+export interface ComputerReadProbeReceipt {
+  boundary: 'computer_manager';
+  effect: 'read';
+  registered: true;
+  ready: true;
+  fresh: true;
+  targetVerified: true;
+  actionResult: true;
+  target: Pick<ComputerTargetSummary, 'bundleId' | 'pid' | 'windowId'>;
+}
+
 const PROTECTED_CONTROL_PLANE_APPS = new Set([
   'com.apple.Terminal',
   'com.googlecode.iterm2',
@@ -165,6 +176,73 @@ export class ComputerManager {
       data: observation.data,
       screenshot: observation.screenshot,
     };
+  }
+
+  async observeStableBackgroundWindow(
+    authority: ComputerRunAuthority,
+    signal?: AbortSignal,
+    expectedTarget?: Pick<ComputerTargetSummary, 'bundleId' | 'pid' | 'windowId'>,
+  ): Promise<ComputerReadProbeReceipt> {
+    this.authorize(authority, 'observe');
+    if (!authority.allowedApps?.length) {
+      throw new Error('computerApps allowlist 不能为空');
+    }
+    try {
+      const targets = await this.backend.listTargets({ limit: 50 }, signal);
+      const target = targets.find((candidate) => (
+        authority.allowedApps!.includes(candidate.bundleId)
+        && candidate.frontmost !== true
+        && (!expectedTarget
+          || (candidate.bundleId === expectedTarget.bundleId
+            && candidate.pid === expectedTarget.pid
+            && candidate.windowId === expectedTarget.windowId))
+      ));
+      if (!target) {
+        const frontmost = targets.some((candidate) => (
+          authority.allowedApps!.includes(candidate.bundleId)
+          && candidate.frontmost === true
+        ));
+        throw new Error(frontmost
+          ? 'target_in_use：allowlist 目标当前 frontmost，拒绝后台观察'
+          : 'target_not_found：没有可验证的 allowlist 后台窗口');
+      }
+      await this.observe(authority, {
+        scope: 'window',
+        target: {
+          bundleId: target.bundleId,
+          pid: target.pid,
+          windowId: target.windowId,
+        },
+        includeScreenshot: false,
+        maxElements: 100,
+        maxDepth: 8,
+      }, signal);
+      const after = await this.backend.listTargets({ query: target.bundleId, limit: 50 }, signal);
+      const verified = after.find((candidate) => (
+        candidate.bundleId === target.bundleId
+        && candidate.pid === target.pid
+        && candidate.windowId === target.windowId
+      ));
+      if (!verified || verified.frontmost === true) {
+        throw new Error('target drift：Computer read probe 后目标窗口漂移或进入前台');
+      }
+      return {
+        boundary: 'computer_manager',
+        effect: 'read',
+        registered: true,
+        ready: true,
+        fresh: true,
+        targetVerified: true,
+        actionResult: true,
+        target: {
+          bundleId: target.bundleId,
+          pid: target.pid,
+          windowId: target.windowId,
+        },
+      };
+    } finally {
+      await this.endRun(authority.runId);
+    }
   }
 
   async act(authority: ComputerRunAuthority, input: ComputerActInput, signal?: AbortSignal) {

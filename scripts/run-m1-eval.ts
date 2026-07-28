@@ -81,7 +81,7 @@ async function main(): Promise<void> {
   if (mode !== 'fixtures') {
     throw new Error('usage: run-m1-eval.ts fixtures|report [--manifest file] [--output file] [--build identity]');
   }
-  const manifestFile = path.resolve(argument('--manifest', 'evals/m1/manifest.v1.json')!);
+  const manifestFile = path.resolve(argument('--manifest', 'evals/m1/manifest.v2.json')!);
   const manifest = await readM1EvalManifest(manifestFile);
   const suiteResults = new Map<string, Promise<SuiteResult>>();
   for (const scenario of manifest.scenarios) {
@@ -96,14 +96,28 @@ async function main(): Promise<void> {
       return result.ok
         ? {
             outcome: scenario.expectedOutcome,
+            eligible: scenario.expectedOutcome !== 'blocked' && scenario.expectedOutcome !== 'skipped',
+            executed: scenario.expectedOutcome !== 'blocked' && scenario.expectedOutcome !== 'skipped',
             severity: 'none',
+            evidence: {
+              kind: 'fixture',
+              boundary: 'fixture_suite',
+              resultReceived: true,
+            },
             evidenceRef: result.evidenceRef,
             durationMs: result.durationMs,
             classification: `expected-${scenario.expectedOutcome}`,
           }
         : {
             outcome: 'failed',
+            eligible: true,
+            executed: true,
             severity: 'S2',
+            evidence: {
+              kind: 'fixture',
+              boundary: 'fixture_suite',
+              resultReceived: true,
+            },
             evidenceRef: result.evidenceRef,
             durationMs: result.durationMs,
             classification: 'fixture-suite-failed',

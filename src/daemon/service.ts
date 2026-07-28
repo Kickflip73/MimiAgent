@@ -34,7 +34,10 @@ import {
   type ConnectorCapability,
   type ConnectorFileConfig,
 } from './connectors.js';
-import { connectorCapabilitySnapshot } from './connector-action-tool.js';
+import {
+  connectorCapabilitySnapshot,
+  createConnectorHostTools,
+} from './connector-action-tool.js';
 import {
   WORKER_CONNECTOR_ACTION_METHOD,
   WORKER_CONNECTOR_INSPECT_METHOD,
@@ -80,6 +83,10 @@ import {
   mimiStreamTaskState,
 } from './live-events.js';
 import { ownerSessionId } from './policy.js';
+import {
+  assertReadOnlyProbeIdle,
+  executeReadOnlyProbe,
+} from './read-only-probe.js';
 import {
   assertDaemonWorkspace,
   daemonHasActiveWork,
@@ -1484,6 +1491,39 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         attention: activeAttention.status(), workspaceRoot: config.workspaceRoot,
       };
       if (stopping.signal.aborted) throw new Error('MimiAgent 正在关闭，不再接受新事务');
+      if (method === 'probe.read') {
+        assertReadOnlyProbeIdle(activeStatus());
+        await host!.mutate(
+          host!.currentSessionId,
+          (agent) => agent.assertReadOnlyDaemonProbePolicy(
+            createConnectorHostTools(activeConnectors),
+          ),
+          signal,
+        );
+        const claimedApps = [...new Set(activeConnectors.listCapabilities()
+          .filter((connector) => connector.enabled)
+          .flatMap((connector) => connector.claimedComputerApps))];
+        const receipt = await executeReadOnlyProbe(rawParams, {
+          connectors: activeConnectors,
+          computerWindow: (expectedTarget, probeSignal) => host!.mutate(
+            host!.currentSessionId,
+            (agent) => agent.probeReadOnlyComputerWindow(
+              [
+                'com.apple.finder',
+                'com.apple.Preview',
+                'com.apple.TextEdit',
+                'com.apple.SystemSettings',
+              ],
+              claimedApps,
+              probeSignal,
+              expectedTarget,
+            ),
+            probeSignal,
+          ),
+        }, signal);
+        assertReadOnlyProbeIdle(activeStatus());
+        return sanitizeSensitiveData(receipt);
+      }
       if (method === 'activity.get') {
         return sanitizeSensitiveData(store.activitySnapshot(limit(object(rawParams).limit, 10)));
       }

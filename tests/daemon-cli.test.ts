@@ -24,6 +24,7 @@ test('daemon help exposes one-command lifecycle and maintenance operations', asy
   assert.match(daemonHelp(), /mimi daemon diagnostics/);
   assert.match(daemonHelp(), /mimi daemon backup/);
   assert.match(daemonHelp(), /mimi daemon restore/);
+  assert.match(daemonHelp(), /mimi daemon probe/);
   assert.doesNotMatch(daemonHelp(), /daemon (?:init|run|install)(?:\s|$)/);
   let output = '';
   const write = process.stdout.write;
@@ -41,6 +42,30 @@ test('daemon help exposes one-command lifecycle and maintenance operations', asy
   await assert.rejects(runDaemonCommand(config, ['submit']), /请提供要提交的任务/);
   await assert.rejects(runDaemonCommand(config, ['schedule', 'every', 'tomorrow', 'task']), /周期格式/);
   await assert.rejects(runDaemonCommand(config, ['not-a-command']), /未知 MimiAgent 命令/);
+});
+
+test('daemon probe CLI sends only one exact authenticated read profile', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cli-probe-'));
+  const localConfig = { ...config, daemonDataRoot: root };
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const server = new MimiIpcServer(path.join(root, 'mimi.sock'), async (method, params) => {
+    requests.push({ method, params });
+    return { profile: 'browser-tabs', classification: 'readonly-probe-ok' };
+  });
+  await server.start();
+  const write = process.stdout.write;
+  process.stdout.write = (() => true) as typeof process.stdout.write;
+  try {
+    await runDaemonCommand(localConfig, ['probe', 'browser-tabs']);
+    await assert.rejects(runDaemonCommand(localConfig, ['probe']), /精确 profile/);
+  } finally {
+    process.stdout.write = write;
+    await server.close();
+  }
+  assert.deepEqual(requests, [{
+    method: 'probe.read',
+    params: { profile: 'browser-tabs' },
+  }]);
 });
 
 test('daemon status presents an immediate human summary while preserving JSON mode', () => {

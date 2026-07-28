@@ -14,6 +14,7 @@ import {
   type AgentInputItem,
   type MCPServer,
   type Model,
+  type Tool,
 } from '@openai/agents';
 import { ContextManager, estimateTokens } from '../src/core/context.js';
 import { ProjectGuidanceLoader, SoulLoader } from '../src/core/guidance.js';
@@ -34,6 +35,59 @@ import {
 import { SkillLoader } from '../src/extensions/skills.js';
 import { createSubAgentTools } from '../src/extensions/subagents.js';
 import { MimiAgent } from '../src/agent.js';
+
+test('daemon read probes must pass runtime policy and cannot invent an unregistered Computer manager', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-probe-policy-'));
+  const agent = await MimiAgent.create({
+    provider: 'openai',
+    workspaceRoot: root,
+    dataRoot: path.join(root, '.mimi-agent'),
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: 20,
+    permissionMode: 'trusted',
+    securityProfile: 'full-owner',
+  });
+  try {
+    assert.doesNotThrow(() => agent.assertReadOnlyDaemonProbePolicy([
+      { name: 'inspect_mimi_capabilities' } as Tool,
+    ]));
+    assert.throws(() => agent.assertReadOnlyDaemonProbePolicy([]), /Tool policy/);
+    await assert.rejects(
+      agent.probeReadOnlyComputerWindow(['com.apple.finder'], []),
+      /ComputerManager 未注册/,
+    );
+    let observed: unknown;
+    (agent as unknown as { computer: unknown }).computer = {
+      close: async () => undefined,
+      observeStableBackgroundWindow: async (...args: unknown[]) => {
+        observed = args;
+        return {
+          boundary: 'computer_manager',
+          effect: 'read',
+          registered: true,
+          ready: true,
+          fresh: true,
+          targetVerified: true,
+          actionResult: true,
+          target: { bundleId: 'com.apple.finder', pid: 42, windowId: 7 },
+        };
+      },
+    };
+    (agent as unknown as { tools: Tool[] }).tools.push({ name: 'computer_observe' } as Tool);
+    const receipt = await agent.probeReadOnlyComputerWindow(
+      ['com.apple.finder'],
+      ['com.openai.codex'],
+      undefined,
+      { bundleId: 'com.apple.finder', pid: 42, windowId: 7 },
+    );
+    assert.equal(receipt.actionResult, true);
+    assert.deepEqual((observed as Array<Record<string, unknown>>)[0]?.allowedApps, ['com.apple.finder']);
+  } finally {
+    await agent.close();
+  }
+});
 
 test('persists sessions and returns the latest items', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-'));

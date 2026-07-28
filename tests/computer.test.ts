@@ -89,6 +89,57 @@ async function observeWindow(manager: ComputerManager, authority: ComputerRunAut
   }) as Promise<{ observationId: string }>;
 }
 
+test('read-only Computer probe observes one allowlisted background window and verifies target stability', async () => {
+  const { backend, manager } = await fixture();
+  const receipt = await manager.observeStableBackgroundWindow({
+    runId: 'probe-1',
+    access: 'observe',
+    allowedApps: [target.bundleId],
+    supportsImageInput: false,
+  });
+  assert.equal(receipt.boundary, 'computer_manager');
+  assert.equal(receipt.effect, 'read');
+  assert.equal(receipt.targetVerified, true);
+  assert.equal(receipt.actionResult, true);
+  assert.equal(backend.actions.length, 0);
+  assert.equal(backend.ends, 1);
+});
+
+test('read-only Computer probe rejects frontmost, control-plane, denied and drifting targets', async () => {
+  const frontmost = await fixture();
+  frontmost.backend.targets = [{ ...target, frontmost: true }];
+  await assert.rejects(() => frontmost.manager.observeStableBackgroundWindow({
+    runId: 'probe-frontmost', access: 'observe', allowedApps: [target.bundleId],
+  }), /frontmost|target_in_use/);
+
+  const denied = await fixture();
+  await assert.rejects(() => denied.manager.observeStableBackgroundWindow({
+    runId: 'probe-denied', access: 'observe', allowedApps: [target.bundleId], deniedApps: [target.bundleId],
+  }), /route owner|接管/);
+
+  const control = await fixture();
+  control.backend.targets = [{
+    ...target, bundleId: 'com.openai.codex', appName: 'Codex',
+  }];
+  control.backend.observation = {
+    ...control.backend.observation,
+    target: control.backend.targets[0],
+  };
+  await assert.rejects(() => control.manager.observeStableBackgroundWindow({
+    runId: 'probe-control', access: 'observe', allowedApps: ['com.openai.codex'],
+  }), /控制面/);
+
+  const drifting = await fixture();
+  let calls = 0;
+  drifting.backend.listTargets = async () => {
+    calls += 1;
+    return calls < 2 ? [target] : [{ ...target, windowId: 8 }];
+  };
+  await assert.rejects(() => drifting.manager.observeStableBackgroundWindow({
+    runId: 'probe-drift', access: 'observe', allowedApps: [target.bundleId],
+  }), /drift|漂移|stale/);
+});
+
 test('requires a fresh observation for each bounded UI action', async () => {
   const { backend, manager, authority } = await fixture();
   const observed = await observeWindow(manager, authority);

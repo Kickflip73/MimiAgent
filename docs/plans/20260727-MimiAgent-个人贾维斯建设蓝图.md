@@ -764,17 +764,16 @@ JRV-001/002
 
 - dataset revision、场景来源、App/渠道/动作族/风险等级；
 - Provider、model、Prompt、Skill、Tool catalog 和 policy revision；
-- success/partial/blocked/failed/uncertain 的判定规则；
-- 总样本、首次成功、重试后成功、人工接管和被跳过的分母；
+- `fixture | readiness | live_action | soak` 证据层级和
+  success/blocked/skipped/failed/uncertain 的判定规则；
+- requested、eligible、executed、首次成功、重试后成功、人工接管和被跳过的分母；
 - 严重度：S0 数据/资金/账号安全，S1 错目标/重复副作用/公开误发，S2 任务失败，
   S3 体验或延迟问题；
 - Evidence refs 和不含敏感正文的最小复现信息。
 
-评测分三层：
-
-1. deterministic fixture/fault injection：每次提交运行；
-2. shadow/draft canary：真实数据、无外部写；
-3. authorized live canary/soak：精确安全目标和真实业务回执。
+评测分四层：fixture 每次提交运行；readiness 只说明环境门禁；live_action 必须经正式
+Manager/Tool policy 并收到动作结果；soak 另行累计时间窗。readiness、direct worker、
+预期 blocked 和 uncertain 不得作为 live_action 计入 100 次。
 
 需要持续维护六类真实评测：
 
@@ -973,13 +972,24 @@ Computer 或 Shell。本轮没有 owner 精确目标与正文，因此不执行�
 
 ## 16. 2026-07-28 M1 JRV-101/102 验收基线
 
-本增量建立 Jarvis Eval schema/manifest/run/report v1，并以 60 个 Computer、Browser、
+本增量建立 Jarvis Eval schema/manifest/run/report v2，并以 60 个 Computer、Browser、
 Screen、Shortcuts、Daxiang deterministic 场景作为每提交可复跑层。fixture 的
 expected blocked/failed/uncertain 是安全行为本身，不从分母移除；runner suite 失败则
 统一记为 fixture-suite-failed。报告不允许只给总成功数，必须按 App × 动作族 × 路径
-公开首次、重试、接管、blocked/failed/uncertain 和 S0-S3。
+公开 requested/eligible/executed、coverage、eligible execution success、首次、重试、
+接管、blocked/skipped/failed/uncertain 和 S0-S3。旧 v1 只作为无 provenance 的历史
+环境校准，不自动迁移成 live_action。
 
-只读实机 runner 在运行态全部 idle 后最多执行 20 个 probe，只留元数据。Daxiang
-target-not-bound 作为真实 blocked 样本保留；没有 owner 精确绑定时不执行发送。
+旧 20 次 runner 因 Browser/Shortcuts 直接启动源码 Connector、Computer 只查 readiness，
+本轮按 0 次合格 live_action 起算。新版 runner 在运行态全部 idle 后，通过认证 Unix
+Socket 和固定 profile 最多执行 20 个 Browser/Shortcuts/Computer/Screen 正式只读
+probe，只留脱敏计数与 receipt；blocked/skipped 仍留在 requested 分母。
 本增量完成不改变 M1 退出条件：仍需累计至少 100 次分层实机、成功率不低于 95%、
 S0/S1=0、只读 24h，以及任何进入发送渠道的 72h soak。
+
+2026-07-28 本轮校准在安装前 idle 门禁连续三轮均观察到 `activeEvent=1`、
+`tasks.running=1`，因此没有安装、重启、启用 Screen/Shortcuts 或调用实机 probe。
+canary v2 仍把四个 App × 动作族 × 正式路径组合各 5 次保留在请求分母：20 requested、
+20 blocked、0 eligible/executed/success/qualifying，coverage=0，eligible execution
+success 无可计算分母，S0/S1=0。距 100 次仍差 100 次，95% 门槛尚无执行样本，24h
+只读 soak 未开始；机器可复跑门禁和命令记录在 `PROGRESS.md`/`BLOCKED.md`。
