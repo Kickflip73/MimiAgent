@@ -58,7 +58,7 @@ test('marks an online Connector stale after its declared readiness heartbeat exp
   }
 });
 
-test('registered read probes require enabled online fresh readiness and reject write or unknown actions', async () => {
+test('registered read probes require enabled online routes and reject write or unknown actions', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-read-probe-'));
   const database = path.join(root, 'mimi.db');
   const configFile = path.join(root, 'connectors.json');
@@ -118,6 +118,96 @@ test('registered read probes require enabled online fresh readiness and reject w
     await assert.rejects(() => manager.executeReadProbe({
       connector: 'fixture', action: 'inspect', capability: 'fixture.read', target: 'bounded', payload: {},
     }), /disabled|未启用/i);
+  } finally {
+    await manager.stop();
+    store.close();
+  }
+});
+
+test('a registered read probe establishes and refreshes bounded readiness without bypassing unavailable', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-readiness-bootstrap-'));
+  const database = path.join(root, 'mimi.db');
+  const configFile = path.join(root, 'connectors.json');
+  const fixture = path.resolve('tests/fixtures/connector-readiness-bootstrap.mjs');
+  await writeFile(configFile, JSON.stringify({
+    connectors: {
+      bootstrap: {
+        command: process.execPath,
+        args: [fixture],
+        restart: false,
+        healthEvents: false,
+        actions: {
+          inspect: { description: 'read fixture', capability: 'fixture.read', effect: 'read' },
+        },
+      },
+      unavailable: {
+        command: process.execPath,
+        args: [fixture, '--unavailable'],
+        restart: false,
+        healthEvents: false,
+        actions: {
+          inspect: { description: 'read fixture', capability: 'fixture.read', effect: 'read' },
+        },
+      },
+    },
+  }));
+  const store = new MimiStore(database);
+  const manager = await ConnectorManager.load(configFile, store, new NotifierRegistry());
+  manager.start();
+  try {
+    await waitUntil(() => manager.listCapabilities().every((connector) => connector.online));
+    await waitUntil(() => (
+      manager.listCapabilities().find((connector) => connector.id === 'unavailable')
+        ?.readiness.outbound === 'unavailable'
+    ));
+
+    const first = await manager.executeReadProbe({
+      connector: 'bootstrap',
+      action: 'inspect',
+      capability: 'fixture.read',
+      target: 'bounded',
+      payload: { limit: 1 },
+    });
+    assert.equal(first.actionResult, true);
+    const established = manager.listCapabilities().find((connector) => connector.id === 'bootstrap')!;
+    assert.equal(established.readiness.inbound, 'unavailable');
+    assert.equal(established.readiness.outbound, 'ready');
+    assert.equal(established.readiness.stale, false);
+    assert.match(established.readiness.reportedAt ?? '', /^20\d\d-/);
+    assert.match(established.readiness.freshUntil ?? '', /^20\d\d-/);
+
+    const now = Date.now;
+    Date.now = () => now() + 16 * 60_000;
+    try {
+      assert.equal(
+        manager.listCapabilities().find((connector) => connector.id === 'bootstrap')
+          ?.readiness.stale,
+        true,
+      );
+      const refreshed = await manager.executeReadProbe({
+        connector: 'bootstrap',
+        action: 'inspect',
+        capability: 'fixture.read',
+        target: 'bounded',
+        payload: { limit: 2 },
+      });
+      assert.equal(refreshed.actionResult, true);
+      assert.equal(
+        manager.listCapabilities().find((connector) => connector.id === 'bootstrap')
+          ?.readiness.stale,
+        false,
+      );
+    } finally {
+      Date.now = now;
+    }
+
+    await assert.rejects(() => manager.executeReadProbe({
+      connector: 'unavailable',
+      action: 'inspect',
+      capability: 'fixture.read',
+      target: 'bounded',
+      payload: {},
+    }), /not_ready|未就绪/i);
   } finally {
     await manager.stop();
     store.close();

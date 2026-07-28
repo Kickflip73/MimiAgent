@@ -649,6 +649,7 @@ interface ConnectorScriptIdentity {
   canonicalPath: string;
   device?: bigint;
   inode?: bigint;
+  sha256?: string;
 }
 
 async function connectorScriptIdentity(
@@ -659,7 +660,10 @@ async function connectorScriptIdentity(
   try {
     const canonicalPath = await realpath(script);
     const metadata = await stat(canonicalPath, { bigint: true });
-    return { canonicalPath, device: metadata.dev, inode: metadata.ino };
+    const sha256 = metadata.isFile() && metadata.size <= 2_000_000n
+      ? createHash('sha256').update(await readFile(canonicalPath)).digest('hex')
+      : undefined;
+    return { canonicalPath, device: metadata.dev, inode: metadata.ino, sha256 };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     return { canonicalPath: path.resolve(script) };
@@ -676,10 +680,13 @@ async function sameConnectorScript(
   ]);
   if (!currentIdentity || !packagedIdentity) return false;
   if (currentIdentity.canonicalPath === packagedIdentity.canonicalPath) return true;
-  return currentIdentity.device !== undefined
+  if (currentIdentity.device !== undefined
     && packagedIdentity.device !== undefined
     && currentIdentity.device === packagedIdentity.device
-    && currentIdentity.inode === packagedIdentity.inode;
+    && currentIdentity.inode === packagedIdentity.inode) return true;
+  return path.basename(currentIdentity.canonicalPath) === path.basename(packagedIdentity.canonicalPath)
+    && currentIdentity.sha256 !== undefined
+    && currentIdentity.sha256 === packagedIdentity.sha256;
 }
 
 async function mergeTemplateActions(

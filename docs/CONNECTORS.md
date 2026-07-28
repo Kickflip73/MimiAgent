@@ -631,8 +631,10 @@ DOM 执行、应用/键盘/菜单/剪贴板变更为 `write`。缺失或旧配�
 Doctor/readiness 当动作；它只调用认证的本机 `mimi daemon probe <profile>`，服务端
 固定映射 Browser tabs、Shortcuts catalog、后台 Computer window 和 Screen window
 四种 profile，不接受任意 action/payload。ConnectorManager 在 dispatch 前后复核
-enabled、online、outbound ready、fresh、catalog capability、`effect=read` 和
-route owner；write/unknown、未注册、stale 和漂移全部拒绝。Computer 仅观察 allowlist
+enabled、online、catalog capability、`effect=read` 和 route owner。明确上报
+unavailable 的执行面直接拒绝；未上报或已过期的 readiness 只能由该正式只读动作的成功
+结果建立或刷新 15 分钟租约，动作失败不能标记 ready。write/unknown、未注册和漂移全部
+拒绝。Computer 仅观察 allowlist
 后台窗口，拒绝 Codex/Terminal/IDE、Connector-owned App 和 frontmost 目标，并在动作后
 重新验证精确 pid/window。IPC 只返回计数与正式 receipt，不返回标签、URL、Shortcut 名、
 AX/OCR 正文或图像。runner 本身不会启用 Connector、请求 TCC、激活应用或发送消息。

@@ -47,6 +47,8 @@ const configSchema = z.object({
   connectors: z.record(z.string().regex(/^[a-zA-Z0-9._-]+$/), connectorSchema).default({}),
 }).strict();
 
+const READ_PROBE_FRESHNESS_MS = 15 * 60_000;
+
 type ConnectorConfig = z.infer<typeof connectorSchema>;
 export type ConnectorFileConfig = z.infer<typeof configSchema>;
 
@@ -382,6 +384,17 @@ class ConnectorProcess implements NotificationSink {
         ));
       });
     });
+  }
+
+  confirmReadProbeSuccess(now = Date.now()): void {
+    if (!this.isOnline || this.readiness.outbound === 'unavailable') return;
+    this.statusReportedAt = new Date(now).toISOString();
+    this.statusFreshForMs = READ_PROBE_FRESHNESS_MS;
+    this.readiness = {
+      ...this.readiness,
+      inbound: this.readiness.inbound === 'unknown' ? 'unavailable' : this.readiness.inbound,
+      outbound: 'ready',
+    };
   }
 
   private get isOnline(): boolean {
@@ -873,11 +886,8 @@ export class ConnectorManager {
     const before = connector.capability();
     if (!before.enabled) throw new Error(`disabled：Connector ${request.connector} 未启用`);
     if (!before.online) throw new Error(`offline：Connector ${request.connector} 当前不在线`);
-    if (before.readiness.outbound !== 'ready') {
+    if (before.readiness.outbound === 'unavailable') {
       throw new Error(`not_ready：Connector ${request.connector} outbound 未就绪`);
-    }
-    if (!before.readiness.reportedAt || before.readiness.stale === true) {
-      throw new Error(`stale：Connector ${request.connector} readiness 不新鲜`);
     }
     const action = before.actions.find((candidate) => candidate.name === request.action);
     if (!action) throw new Error(`unregistered：Connector ${request.connector} 未声明 action ${request.action}`);
@@ -890,7 +900,11 @@ export class ConnectorManager {
     if (action.effect !== 'read') {
       throw new Error(`effect ${action.effect}：read probe 只允许 effect=read`);
     }
+    const refreshReadiness = before.readiness.outbound === 'unknown'
+      || !before.readiness.reportedAt
+      || before.readiness.stale === true;
     const result = await connector.executeAction(request.action, request.target, request.payload);
+    if (refreshReadiness) connector.confirmReadProbeSuccess();
     const after = connector.capability();
     const afterAction = after.actions.find((candidate) => candidate.name === request.action);
     if (!after.enabled || !after.online || after.readiness.outbound !== 'ready'

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- let an authenticated fixed-profile read probe establish or refresh a 15-minute
+  Connector readiness lease only after the registered `effect=read` action succeeds;
+  keep declared unavailable, write, unknown-effect, route-drift, and failed actions
+  fail-closed; recognize identical bounded script copies when syncing managed Connector
+  action metadata without changing their configured execution path
 - allow authenticated owner Runs with explicit background Computer capability to execute
   Observation-bound background UI actions through ActionIntent without an unreachable
   per-gesture approval; keep runtime target checks inside ComputerManager and external,
