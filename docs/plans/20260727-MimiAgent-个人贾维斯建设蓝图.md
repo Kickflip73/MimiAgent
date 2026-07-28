@@ -1008,9 +1008,12 @@ canary 的全局门禁只判断 Event、Task、Outbox 和 host mutation 是否�
 enabled/online/catalog/effect/route/freshness 校验。只读 Connector 也只有在已注册
 `effect=read` 动作真实成功后才能建立有界 readiness 租约。
 
-M1 的 100 次与 95% 门槛已经满足，但 M1 尚未整体退出：24h 只读 soak 从最终构建
-`0.12.0+09c805fcf95b` 在 `2026-07-28T07:55:46.391Z` 完成的成功 run 起算，最早在
-`2026-07-29T07:55:46.391Z` 后按首尾样本、成功率和 S0/S1 复核。大象/QQ 的真实
+M1 的 100 次与 95% 门槛已经满足，但 M1 尚未整体退出。进程诊断修复改变了最终
+运行时构建，因此 24h 只读 soak 从 `0.12.0+b585e4b37ef5` 的正式 run
+`587b8ad0-061c-40f3-b8c9-ed1d4dad8c18` 在 `2026-07-28T08:19:57.061Z`
+完成时重新起算。本轮四类能力均有成功样本，6/6 实际执行成功、14 项因并发忙门禁
+在执行前 blocked；累计正式 live_action 为 129/129，S0/S1/S2/S3=0。最早在
+`2026-07-29T08:19:57.061Z` 后按首尾样本、成功率和 S0/S1 复核。大象/QQ 的真实
 发送能力仍分别受 owner target 绑定和真实 Adapter 阻塞，不以本轮只读结果替代 72h
 发送 soak。
 
@@ -1024,3 +1027,8 @@ signal、kill、注入、提权或 GUI 控制能力，因此无需 ActionIntent 
 不通过自然语言关键词或命令字符串给权限。Shell pipeline 同时启用 `pipefail`，任何
 中间命令失败都必须显式返回失败；Agent 不得再把自身沙箱的 `operation not permitted`
 误报为 SIP，或要求 owner 手工执行已有正式只读能力。
+
+该能力已在全局安装构建 `0.12.0+b585e4b37ef5` 上通过真实 owner Run 验证：Agent
+直接调用 `inspect_processes` 完成前 5 项内存进程诊断，没有触发 Shell、审批或人工
+接管。部署过程仅在无活动 Event/Task/Outbox/host mutation 的空档安全重启，持久化
+队列保持不变。

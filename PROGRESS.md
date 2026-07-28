@@ -12,15 +12,18 @@
   同时启用 `pipefail`，管道中间失败不再表现为 `exitCode=0 + 空输出`。
 - Agent 指令明确把 Shell `operation not permitted` 归因于 MimiAgent 自身沙箱，并优先
   使用已注册只读诊断能力；不得误报 SIP、反复换命令试探或直接把任务退回 owner。
+- 修复已随构建 `0.12.0+b585e4b37ef5` 安装并安全重启 Daemon；真实 owner Run
+  直接选择 `inspect_processes`，在 700 个进程中返回前 5 项并完成回答，没有尝试
+  `ps`/`top`、误报 SIP 或要求 owner 手工执行。
 
 ## 2026-07-28 M1 current closeout
 
-1. 正式实机门槛已达到：9 个 canary run 共 180 requested、123
-   eligible/executed/success/qualifying、57 blocked、0 failed/uncertain，eligible
+1. 正式实机门槛已达到：10 个 canary run 共 200 requested、129
+   eligible/executed/success/qualifying、71 blocked、0 failed/uncertain，eligible
    execution success=100%，S0/S1/S2/S3=0。blocked 均未执行动作，保留在公开请求分母，
    不冒充成功。
-2. 分层结果：Browser `34/34`、Computer `33/33`、Screen `27/27`、Shortcuts
-   `29/29`，四个 App × 动作族 × 正式路径均为 100% eligible execution success。
+2. 分层结果：Browser `36/36`、Computer `34/34`、Screen `28/28`、Shortcuts
+   `31/31`，四个 App × 动作族 × 正式路径均为 100% eligible execution success。
 3. Screen/Shortcuts 旧配置未迁移的根因是 live config 指向内容相同但路径不同的 managed
    script 副本；`673b59f` 以同名、普通文件、2MB 上限和 SHA-256 相等为门禁同步稳定
    action metadata，不改变 owner 的执行路径。
@@ -31,16 +34,19 @@
    warning 不再误裁剪其他能力，目标能力仍由各自正式 Manager 独立校验。
 6. CuaDriver 曾出现“进程和 socket 存在但客户端不响应”的假在线，后台精确重启后
    Accessibility/Screen Recording 均为 true，随后两轮各 `20/20` 全部成功。
-7. 发布级 `npm run ci` 通过：644/644，skip/todo=0；coverage line 85.73%、
-   branch 76.57%、function 83.11%，Build 与 package smoke 通过。
-8. 运行态为 `0.12.0+09c805fcf95b`；Browser、Computer、Screen、Shortcuts 和其余
+7. 发布级 `npm run ci` 通过：646/646，skip/todo=0；coverage line 85.86%、
+   branch 76.54%、function 83.06%，Build 与 package smoke 通过。为避免测试进程
+   与真实 QQ 后台操作争用，CI 使用独立的 0700 临时锁目录；产品锁策略未改变。
+8. 运行态为 `0.12.0+b585e4b37ef5`；Browser、Computer、Screen、Shortcuts 和其余
    已就绪本机通道保持正式门禁。`personal-daxiang` 因 owner target 未绑定诚实标记
    unavailable，不影响其他能力族验收。
-9. 只读 24h soak 以最终构建 run `60bc4470-74bc-43ed-a0e3-cc88943be38b`
-   (`2026-07-28T07:54:33.367Z`～`07:55:46.391Z`, 20/20) 为首样本，计划在
-   `2026-07-29T07:55:46.391Z` 后验收。heartbeat `m1-24h` 每 4 小时只在运行态
+9. 只读 24h soak 因运行时变化从新构建 run
+   `587b8ad0-061c-40f3-b8c9-ed1d4dad8c18`
+   (`2026-07-28T08:19:35.011Z`～`08:19:57.061Z`) 重新起算；本轮 6/6 实际动作
+   成功且四类能力均有样本，14 项在并发忙门禁前 blocked。计划在
+   `2026-07-29T08:19:57.061Z` 后验收。heartbeat `m1-24h` 每 4 小时只在运行态
    idle 时追加正式只读样本；忙时只记录 blocked，不抢占。
-10. 部署前备份位于 `/tmp/mimi-backup-673b59f-20260728`，SQLite integrity、
+10. 本次部署前备份位于 `/tmp/mimi-process-fix-parent.p0Swnn/backup`，SQLite integrity、
     文件清单和摘要已校验；回滚仍必须在 Event/Task/Outbox/host mutation 全部 idle
     时执行。
 
