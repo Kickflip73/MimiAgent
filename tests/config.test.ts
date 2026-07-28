@@ -143,6 +143,35 @@ test('fails fast on invalid runtime environment values', () => {
   }
 });
 
+test('loads a generic OpenAI-compatible provider and validates required endpoint settings', () => {
+  const keys = [
+    'MIMI_MODEL_PROVIDER', 'MIMI_PROVIDER_BASE_URL', 'MIMI_MODEL', 'MIMI_MODELS',
+  ] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.MIMI_MODEL_PROVIDER = 'openai-compatible';
+    assert.throws(() => loadConfig(ISOLATED_HOME), /MIMI_PROVIDER_BASE_URL/);
+    process.env.MIMI_PROVIDER_BASE_URL = 'not-a-url';
+    assert.throws(() => loadConfig(ISOLATED_HOME), /MIMI_PROVIDER_BASE_URL.*URL/);
+    process.env.MIMI_PROVIDER_BASE_URL = 'https://api.provider.example/v1';
+    assert.throws(() => loadConfig(ISOLATED_HOME), /MIMI_MODEL/);
+    process.env.MIMI_MODEL = 'provider-model';
+    process.env.MIMI_MODELS = 'provider-model, provider-fast,provider-model';
+    const config = loadConfig(ISOLATED_HOME);
+    assert.equal(config.provider, 'openai-compatible');
+    assert.equal(config.providerBaseUrl, 'https://api.provider.example/v1');
+    assert.equal(config.defaultModel, 'provider-model');
+    assert.deepEqual(config.availableModels, ['provider-model', 'provider-fast', 'provider-model']);
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('parses valid runtime limits once at startup', () => {
   const keys = [
     'HISTORY_LIMIT', 'CONTEXT_WINDOW', 'OUTPUT_TOKEN_RESERVE', 'MAX_TURNS',

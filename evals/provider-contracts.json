@@ -32,6 +32,22 @@
         "preserveNative": true,
         "preserveForeign": true
       }
+    },
+    {
+      "provider": "openai-compatible",
+      "apiKeyEnvironment": "MIMI_PROVIDER_API_KEY",
+      "defaultModel": "provider-model",
+      "transport": "chat_completions",
+      "profile": {
+        "contextWindow": 128000,
+        "outputReserve": 16384,
+        "supportsImageInput": false
+      },
+      "messageIds": {
+        "nativePrefix": "msg",
+        "preserveNative": true,
+        "preserveForeign": true
+      }
     }
   ]
 }

@@ -1447,15 +1447,21 @@ export class MimiAgent {
   }
 
   availableModels(): string[] {
-    const configured = this.config.provider === 'deepseek'
-      ? process.env.DEEPSEEK_MODELS
-      : process.env.OPENAI_MODELS;
+    const configured = this.config.availableModels ?? (
+      this.config.provider === 'deepseek'
+        ? process.env.DEEPSEEK_MODELS
+        : this.config.provider === 'openai'
+          ? process.env.OPENAI_MODELS
+          : undefined
+    )?.split(',').map((item) => item.trim()).filter(Boolean) ?? [];
     const defaults = this.config.provider === 'deepseek'
       ? ['deepseek-v4-pro', 'deepseek-v4-flash']
-      : ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5-mini'];
+      : this.config.provider === 'openai'
+        ? ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5-mini']
+        : [];
     return [...new Set([
       this.modelName,
-      ...(configured?.split(',').map((item) => item.trim()).filter(Boolean) ?? []),
+      ...configured,
       ...defaults,
     ])];
   }

@@ -17,8 +17,8 @@ import { createTools } from '../src/tools.js';
 const contractSchema = z.object({
   schemaVersion: z.literal(1),
   providers: z.array(z.object({
-    provider: z.enum(['openai', 'deepseek']),
-    apiKeyEnvironment: z.enum(['OPENAI_API_KEY', 'DEEPSEEK_API_KEY']),
+    provider: z.enum(['openai', 'deepseek', 'openai-compatible']),
+    apiKeyEnvironment: z.enum(['OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'MIMI_PROVIDER_API_KEY']),
     defaultModel: z.string().min(1),
     transport: z.enum(['responses', 'chat_completions']),
     profile: z.object({
@@ -31,7 +31,7 @@ const contractSchema = z.object({
       preserveNative: z.boolean(),
       preserveForeign: z.boolean(),
     }).strict(),
-  }).strict()).length(2),
+  }).strict()).length(3),
 }).strict();
 
 const canarySchema = z.object({
@@ -48,6 +48,10 @@ const canarySchema = z.object({
 function config(provider: AppConfig['provider']): AppConfig {
   return {
     provider,
+    ...(provider === 'openai-compatible' ? {
+      providerBaseUrl: 'https://provider.example/v1',
+      defaultModel: 'provider-model',
+    } : {}),
     workspaceRoot: '/tmp/provider-contract-workspace',
     dataRoot: '/tmp/provider-contract-data',
     daemonDataRoot: '/tmp/provider-contract-daemon',
@@ -60,17 +64,21 @@ function config(provider: AppConfig['provider']): AppConfig {
   };
 }
 
-test('OpenAI and DeepSeek obey the checked-in provider contract fixture', async () => {
+test('built-in and OpenAI-compatible providers obey the checked-in provider contract fixture', async () => {
   const directory = path.dirname(fileURLToPath(import.meta.url));
   const fixture = contractSchema.parse(JSON.parse(await readFile(
     path.join(directory, '../evals/provider-contracts.json'),
     'utf8',
   )) as unknown);
-  assert.deepEqual(fixture.providers.map((entry) => entry.provider).sort(), ['deepseek', 'openai']);
+  assert.deepEqual(
+    fixture.providers.map((entry) => entry.provider).sort(),
+    ['deepseek', 'openai', 'openai-compatible'],
+  );
 
   const saved = {
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+    MIMI_PROVIDER_API_KEY: process.env.MIMI_PROVIDER_API_KEY,
     OPENAI_MODEL: process.env.OPENAI_MODEL,
     DEEPSEEK_MODEL: process.env.DEEPSEEK_MODEL,
   };
@@ -129,10 +137,21 @@ test('real Provider canary stays aligned with the offline provider contract', as
   ]);
   assert.deepEqual(
     canary.cases.map(({ provider, apiKeyEnvironment }) => ({ provider, apiKeyEnvironment })),
-    contract.providers.map(({ provider, apiKeyEnvironment }) => ({ provider, apiKeyEnvironment })),
+    contract.providers
+      .filter(({ provider }) => provider !== 'openai-compatible')
+      .map(({ provider, apiKeyEnvironment }) => ({ provider, apiKeyEnvironment })),
   );
   for (const item of canary.cases) {
     assert.deepEqual(item.expectedTools, ['calculate']);
     assert.match(item.expectedOutput, /^CANARY_OK=\d+$/);
   }
+});
+
+test('OpenAI-compatible model construction fails closed without endpoint or model', () => {
+  const missingEndpoint = config('openai-compatible');
+  delete missingEndpoint.providerBaseUrl;
+  assert.throws(() => createModel(missingEndpoint), /MIMI_PROVIDER_BASE_URL/);
+  const missingModel = config('openai-compatible');
+  delete missingModel.defaultModel;
+  assert.throws(() => createModel(missingModel), /MIMI_MODEL/);
 });

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- add a generic `openai-compatible` model Provider with validated custom endpoint,
+  API key and model configuration, including Session persistence, daemon Task
+  credential isolation, model switching, offline contracts and setup guidance
 - make MemoryHub a maintained three-layer LLMWiki with an Obsidian-ready owner
   Vault (`raw/`, `wiki/`, executable `WIKI.md`), one canonical topic resolver
   across remember/capture/maintenance, deterministic page rendering, Wiki-first

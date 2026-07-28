@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AppConfig } from '../src/config.js';
-import { taskWorkerConfig, taskWorkerInitSchema } from '../src/daemon/worker-protocol.js';
+import {
+  taskProviderEnvironmentName,
+  taskWorkerConfig,
+  taskWorkerInitSchema,
+} from '../src/daemon/worker-protocol.js';
 
 test('Task worker configuration excludes Computer Use capability', () => {
   const config = {
@@ -45,5 +49,35 @@ test('Task worker configuration excludes Computer Use capability', () => {
     enableMcp: false,
     mcpEnvironment: {},
     config: workerConfig,
+  }));
+});
+
+test('Task worker accepts OpenAI-compatible provider configuration and credential', () => {
+  const config = taskWorkerConfig({
+    provider: 'openai-compatible',
+    providerBaseUrl: 'https://api.provider.example/v1',
+    defaultModel: 'provider-model',
+    availableModels: ['provider-model', 'provider-fast'],
+    workspaceRoot: '/workspace',
+    dataRoot: '/data',
+    daemonDataRoot: '/daemon',
+    skillsRoot: '/workspace/skills',
+    mcpConfig: '/workspace/mcp.json',
+    historyLimit: 40,
+    maxTurns: null,
+  });
+  assert.equal(taskProviderEnvironmentName('openai-compatible'), 'MIMI_PROVIDER_API_KEY');
+  assert.doesNotThrow(() => taskWorkerInitSchema.parse({
+    type: 'init',
+    taskId: 'd4d0011b-d947-5963-b2ef-7982b303f612',
+    database: '/daemon/mimi.db',
+    assistantConfig: '/daemon/assistant.json',
+    socket: '/daemon/mimi.sock',
+    workerToken: 'a'.repeat(43),
+    workspaceAccess: 'write',
+    enableMcp: false,
+    providerCredential: { provider: 'openai-compatible', apiKey: 'fixture-key' },
+    mcpEnvironment: {},
+    config,
   }));
 });

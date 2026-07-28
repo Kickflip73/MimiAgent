@@ -83,9 +83,9 @@ function modelEnvironmentPrefix(name: string): string {
 }
 
 export function resolveModelProfile(config: AppConfig, name: string): ModelProfile {
-  const fallback = config.provider === 'deepseek'
-    ? { contextWindow: 128_000, outputReserve: 16_384, supportsImageInput: false }
-    : { contextWindow: 400_000, outputReserve: 32_768, supportsImageInput: false };
+  const fallback = config.provider === 'openai'
+    ? { contextWindow: 400_000, outputReserve: 32_768, supportsImageInput: false }
+    : { contextWindow: 128_000, outputReserve: 16_384, supportsImageInput: false };
   const builtIn = MODEL_PROFILES[name] ?? fallback;
   const prefix = modelEnvironmentPrefix(name);
   const contextOverride = positiveInteger(
@@ -108,16 +108,26 @@ export function resolveModelProfile(config: AppConfig, name: string): ModelProfi
 }
 
 export function createModel(config: AppConfig, name?: string): ModelRuntime {
-  const modelName = name ?? (config.provider === 'deepseek'
-    ? (process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro')
-    : (process.env.OPENAI_MODEL ?? 'gpt-5.4-mini'));
+  if (config.provider === 'openai-compatible' && !config.providerBaseUrl) {
+    throw new Error('OpenAI-compatible Provider 缺少 MIMI_PROVIDER_BASE_URL');
+  }
+  if (config.provider === 'openai-compatible' && !name && !config.defaultModel) {
+    throw new Error('OpenAI-compatible Provider 缺少 MIMI_MODEL');
+  }
+  const modelName = name ?? config.defaultModel ?? (config.provider === 'deepseek'
+    ? process.env.DEEPSEEK_MODEL ?? 'deepseek-v4-pro'
+    : process.env.OPENAI_MODEL ?? 'gpt-5.4-mini');
   const profile = resolveModelProfile(config, modelName);
   if (config.provider === 'openai') return { model: modelName, name: modelName, profile };
   return {
     model: new OpenAIChatCompletionsModel(
       new OpenAI({
-        apiKey: process.env.DEEPSEEK_API_KEY,
-        baseURL: process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com',
+        apiKey: config.provider === 'deepseek'
+          ? process.env.DEEPSEEK_API_KEY
+          : process.env.MIMI_PROVIDER_API_KEY,
+        baseURL: config.provider === 'deepseek'
+          ? config.providerBaseUrl ?? 'https://api.deepseek.com'
+          : config.providerBaseUrl,
         fetch: globalThis.fetch,
       }),
       modelName,

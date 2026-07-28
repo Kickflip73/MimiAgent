@@ -6,7 +6,11 @@ import type { AppConfig } from '../config.js';
 let configured = false;
 
 export function requireProviderApiKey(config: AppConfig): void {
-  const name = config.provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'OPENAI_API_KEY';
+  const name = config.provider === 'deepseek'
+    ? 'DEEPSEEK_API_KEY'
+    : config.provider === 'openai-compatible'
+      ? 'MIMI_PROVIDER_API_KEY'
+      : 'OPENAI_API_KEY';
   if (!process.env[name]) throw new Error(`缺少 ${name}`);
 }
 
@@ -29,4 +33,3 @@ export function configureAgentRuntime(config: AppConfig): void {
     setDefaultOpenAIClient(new OpenAI({ apiKey: process.env.OPENAI_API_KEY, fetch: globalThis.fetch }));
   }
 }
-
