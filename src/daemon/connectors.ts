@@ -940,6 +940,9 @@ export class ConnectorManager {
       target: request.target,
       payload: request.payload,
     });
+    if (selected.action.effect === 'read') {
+      this.connectors.get(selected.connector.id)?.confirmReadProbeSuccess();
+    }
     return {
       connector: selected.connector.id,
       effect: selected.action.effect,

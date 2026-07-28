@@ -158,7 +158,10 @@ test('personal Connector actions receive a fresh execution timeout after earlier
     assert.deepEqual(results.map((item) => (
       (item.result as { target?: string }).target
     )), Array.from({ length: 6 }, (_, index) => `serial-delay-${index}`));
-    assert.equal(manager.listCapabilities()[0]?.online, true);
+    const current = manager.listCapabilities()[0];
+    assert.equal(current?.online, true);
+    assert.match(current?.readiness.freshUntil ?? '', /^20\d\d-/);
+    assert.equal(current?.readiness.stale, false);
   } finally {
     await manager.stop();
     store.close();
