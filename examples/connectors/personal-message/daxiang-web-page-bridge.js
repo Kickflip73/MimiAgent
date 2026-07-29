@@ -127,8 +127,13 @@
           || selfRows[0].getAttribute('title'),
         )
       : null;
-    const identityLabel = rowLabel
-      || (uniqueIdentityLabels.length === 1 ? uniqueIdentityLabels[0] : null);
+    const identityCandidates = [...new Set(
+      [rowLabel, ...uniqueIdentityLabels].filter(Boolean),
+    )];
+    const identityAmbiguous = selfRows.length > 1 || identityCandidates.length > 1;
+    const identityLabel = !identityAmbiguous && identityCandidates.length === 1
+      ? identityCandidates[0]
+      : null;
     const shape = pageShape();
     return {
       version: VERSION,
@@ -139,7 +144,8 @@
       selfRowCount: selfRows.length,
       selfRowLabel: rowLabel,
       selfIdentityLabel: identityLabel,
-      selfIdentityUnique: Boolean(identityLabel),
+      selfIdentityUnique: Boolean(identityLabel) && !identityAmbiguous,
+      selfIdentityAmbiguous: identityAmbiguous,
       readable: shape.stableSessionCount > 0,
       sendStructureReady: shape.inputCount === 1 && shape.inputTag === 'TEXTAREA'
         && shape.sendButtonCount === 1,

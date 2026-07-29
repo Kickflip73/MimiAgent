@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ActionIntents as a Run-local action fence so bounded reads and the final answer
   can continue without replay or route hopping; include bounded Connector-declared
   target and payload usage in the effective capability contract; keep Daxiang
-  bounded reads ready on a virtualized session-list page before its composer is open
+  bounded reads ready on a virtualized session-list page before its composer is open;
+  retain verified account identity across same-tab DOM virtualization while failing
+  closed on contradictory evidence, and structurally bound context before tool caps
 - keep bounded Daxiang web reads available when its dedicated tab is selected in a
   background Chrome window, restore the prior conversation after access, expose
   structured readiness reasons, detect missing owner bindings in Doctor, keep

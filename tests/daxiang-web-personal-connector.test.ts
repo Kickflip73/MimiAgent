@@ -62,7 +62,8 @@ class FakeDriver {
     receipt: null,
   }];
   selfRowCount = 1;
-  selfIdentityLabel = selfLabel;
+  selfIdentityLabel: string | null = selfLabel;
+  selfIdentityAmbiguous = false;
   inspectPageShape: {
     bridgeMajor: number;
     origin: string;
@@ -94,6 +95,7 @@ class FakeDriver {
         selfRowLabel: this.selfRowCount === 1 ? selfLabel : null,
         selfIdentityLabel: this.selfIdentityLabel,
         selfIdentityUnique: Boolean(this.selfIdentityLabel),
+        selfIdentityAmbiguous: this.selfIdentityAmbiguous,
         pageShape: this.inspectPageShape,
         readable: this.readable,
         sendStructureReady: this.inspectPageShape.inputCount === 1,
@@ -386,6 +388,98 @@ test('Daxiang keeps bounded reads available on the session list before a compose
   assert.equal(health.contextRead, 'bounded');
   assert.equal(health.inbound, 'ready');
   assert.equal(health.outbound, 'unavailable');
+});
+
+test('Daxiang keeps an observed account proof across virtualized identity absence', async () => {
+  const driver = new FakeDriver();
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-session-proof-${Date.now()}.json`),
+  });
+
+  const observed = await adapter.health({ probe: true });
+  assert.equal(observed.accountVerified, true);
+  assert.equal(observed.accountEvidence, 'observed');
+
+  driver.selfRowCount = 0;
+  driver.selfIdentityLabel = null;
+  const sessionBound = await adapter.health();
+  assert.equal(sessionBound.accountVerified, true);
+  assert.equal(sessionBound.accountFingerprint, accountFingerprint);
+  assert.equal(sessionBound.accountEvidence, 'dedicated_tab_session');
+
+  const context = await adapter.getContext({
+    accountFingerprint,
+    sid: '123',
+    type: 'chat',
+    limit: 1,
+  });
+  assert.equal(context.accountFingerprint, accountFingerprint);
+});
+
+test('Daxiang clears a session account proof on contradictory or ambiguous identity evidence', async () => {
+  for (const [name, mutate] of [
+    ['mismatch', (driver: FakeDriver) => {
+      driver.selfIdentityLabel = 'Another Account';
+    }],
+    ['ambiguous', (driver: FakeDriver) => {
+      driver.selfIdentityLabel = null;
+      driver.selfIdentityAmbiguous = true;
+    }],
+  ] as const) {
+    const driver = new FakeDriver();
+    const adapter = new DaxiangWebAdapter({
+      config: config(),
+      driver,
+      bridgeSource: 'bridge',
+      stateFile: path.join(os.tmpdir(), `daxiang-session-proof-${name}-${Date.now()}.json`),
+    });
+    assert.equal((await adapter.health({ probe: true })).accountVerified, true);
+    mutate(driver);
+    const health = await adapter.health();
+    assert.equal(health.accountVerified, false);
+    await assert.rejects(() => adapter.getContext({
+      accountFingerprint,
+      sid: '123',
+      type: 'chat',
+      limit: 1,
+    }), /account fingerprint is not verified/);
+  }
+});
+
+test('Daxiang bounds context as structured newest messages before the generic tool cap', async () => {
+  const driver = new FakeDriver();
+  driver.messages = Array.from({ length: 15 }, (_, index) => ({
+    mid: String(10_000 + index),
+    direction: 'incoming',
+    actorId: 'actor-1',
+    text: `${index}: ${'x'.repeat(3_900)}`,
+    occurredAt: `2026-07-27T10:00:${String(index).padStart(2, '0')}.000Z`,
+    receipt: null,
+  }));
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-context-budget-${Date.now()}.json`),
+  });
+  await adapter.health({ probe: true });
+
+  const context = await adapter.getContext({
+    accountFingerprint,
+    sid: '123',
+    type: 'chat',
+    limit: 15,
+  });
+
+  assert.ok(Buffer.byteLength(JSON.stringify(context)) <= 28_000);
+  assert.equal(context.truncated, true);
+  assert.ok(Number(context.omittedMessageCount) > 0);
+  assert.equal(context.truncationReason, 'response_budget');
+  const messages = context.messages as Array<{ id: string }>;
+  assert.equal(messages.at(-1)?.id, '10014');
 });
 
 test('Daxiang rejects a configured binding that is absent or type-mismatched on the current page', async () => {

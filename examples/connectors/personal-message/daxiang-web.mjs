@@ -16,6 +16,7 @@ const ORIGIN = 'https://x.sankuai.com';
 const SOURCE = 'personal-message:daxiang';
 const DEFAULT_TIMEOUT_MS = 20_000;
 const CONVERSATION_SETTLE_MS = 750;
+const MAX_CONTEXT_RESULT_BYTES = 28_000;
 const BRIDGE_FILE = fileURLToPath(new URL('./daxiang-web-page-bridge.js', import.meta.url));
 const ALLOWED_CONFIG_KEYS = new Set([
   'schemaVersion', 'tabMarker', 'expectedAccountFingerprint', 'allowedPageFingerprints',
@@ -346,6 +347,7 @@ export class DaxiangWebAdapter {
     this.state = defaultState(this.configDigest);
     this.pending = new Map();
     this.lastHealth = undefined;
+    this.verifiedAccountFingerprint = undefined;
     this.bridgeReady = false;
   }
 
@@ -406,17 +408,35 @@ export class DaxiangWebAdapter {
     try {
       await this.driver.locate(this.config.tabMarker, probe);
       const inspect = await this.#bridgeCall('inspect', { selfSid: this.config.selfConversation.sid }, probe);
-      const accountFingerprint = inspect.selfIdentityUnique === true && inspect.selfIdentityLabel
+      const observedAccountFingerprint = inspect.selfIdentityUnique === true && inspect.selfIdentityLabel
         ? sha256(`daxiang-web-v1\0${ORIGIN}\0${this.config.selfConversation.sid}\0${sha256(inspect.selfIdentityLabel)}`)
         : undefined;
       const pageFingerprint = pageFingerprintFor(inspect.pageShape);
+      const readable = Boolean(inspect.readable && inspect.pageShape?.bridgeMajor === 1);
+      if (inspect.selfIdentityAmbiguous === true
+        || (observedAccountFingerprint
+          && observedAccountFingerprint !== this.config.expectedAccountFingerprint)) {
+        this.verifiedAccountFingerprint = undefined;
+      } else if (observedAccountFingerprint === this.config.expectedAccountFingerprint) {
+        this.verifiedAccountFingerprint = observedAccountFingerprint;
+      }
+      const accountFingerprint = observedAccountFingerprint
+        || (readable && inspect.selfIdentityAmbiguous !== true
+          ? this.verifiedAccountFingerprint
+          : undefined);
       const accountVerified = Boolean(
         accountFingerprint
         && this.config.expectedAccountFingerprint
         && accountFingerprint === this.config.expectedAccountFingerprint
       );
+      const accountEvidence = observedAccountFingerprint
+        ? 'observed'
+        : accountVerified
+          ? 'dedicated_tab_session'
+          : inspect.selfIdentityAmbiguous === true
+            ? 'ambiguous'
+            : 'unavailable';
       const pageAllowed = this.config.allowedPageFingerprints.includes(pageFingerprint);
-      const readable = Boolean(inspect.readable && inspect.pageShape?.bridgeMajor === 1);
       const configuredBindings = [
         this.config.selfConversation,
         ...this.config.watch.conversations,
@@ -449,6 +469,7 @@ export class DaxiangWebAdapter {
         available: readable,
         accountVerified,
         accountFingerprint,
+        accountEvidence,
         pageFingerprint,
         pageAllowed,
         backgroundSafe: true,
@@ -484,6 +505,9 @@ export class DaxiangWebAdapter {
     } catch (error) {
       const now = new Date().toISOString();
       const category = errorCategory(error);
+      if (category === 'chrome_not_running' || category === 'dedicated_tab_unavailable') {
+        this.verifiedAccountFingerprint = undefined;
+      }
       if (!probe && category === 'dedicated_tab_unavailable') {
         await this.#recordDiagnostics({
           checkedAt: now,
@@ -562,7 +586,7 @@ export class DaxiangWebAdapter {
           occurredAt: new Date(message.occurredAt).toISOString(),
         } : {}),
       }));
-    return {
+    const result = {
       channel: 'daxiang',
       accountFingerprint: this.lastHealth.accountFingerprint,
       conversationId: this.#conversationId(target.sid),
@@ -572,6 +596,18 @@ export class DaxiangWebAdapter {
       messages,
       truncated: snapshot.messages.length >= limit,
     };
+    let omittedMessageCount = 0;
+    while (result.messages.length > 1
+      && Buffer.byteLength(JSON.stringify(result)) > MAX_CONTEXT_RESULT_BYTES) {
+      result.messages.shift();
+      omittedMessageCount += 1;
+    }
+    if (omittedMessageCount > 0) {
+      result.truncated = true;
+      result.omittedMessageCount = omittedMessageCount;
+      result.truncationReason = 'response_budget';
+    }
+    return result;
   }
 
   async listTargets() {
