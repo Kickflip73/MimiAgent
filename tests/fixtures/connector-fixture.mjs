@@ -45,6 +45,13 @@ process.stdin.on('data', (chunk) => {
         })}\n`);
         continue;
       }
+      if (message.target === 'rejected') {
+        process.stdout.write(`${JSON.stringify({
+          type: 'action_result', id: message.id, ok: false,
+          error: 'fixture rejected before execution',
+        })}\n`);
+        continue;
+      }
       const respond = () => process.stdout.write(`${JSON.stringify({
           type: 'action_result',
           id: message.id,

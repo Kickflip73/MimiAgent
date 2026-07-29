@@ -31,7 +31,7 @@ test('M1 execution surfaces have stable capability, effect, and route ownership 
     await readFile(path.join(process.cwd(), 'mimi.connectors.example.json'), 'utf8'),
   ));
   for (const id of [
-    'macos-browser', 'macos-screen', 'macos-shortcuts', 'macos-desktop', 'personal-daxiang',
+    'browser', 'macos-screen', 'macos-shortcuts', 'macos-desktop', 'personal-daxiang',
   ]) {
     const connector = template.connectors[id];
     assert.ok(connector, id);

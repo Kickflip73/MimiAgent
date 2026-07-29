@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- preserve explicit pre-execution Connector rejections as `failed_safe` across
+  the SDK tool boundary, so input, target, readiness, and business validation
+  errors remain correctable without freezing the Run; keep timeout, disconnect,
+  and explicitly uncertain results non-replayable
+- replace the Safari/Chrome JXA `macos-browser` route with one Chrome-only
+  Browser Connector backed by OpenCLI, including isolated/bound sessions,
+  DOM/AX observations, semantic locators, bounded reads and structured page
+  actions that consume a fresh observation before every write
 - dynamically paginate every existing Daxiang web conversation for bounded reads,
   including direct, group, public-account, and collection sessions, while keeping
   polling and sends restricted to explicit owner-bound stable sids

@@ -130,3 +130,54 @@ test('initialization syncs action metadata for an identical managed connector co
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('initialization replaces enabled macos-browser with the unified Browser Connector', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-browser-migration-'));
+  const daemonDataRoot = path.join(root, 'daemon');
+  const config: AppConfig = {
+    provider: 'openai',
+    workspaceRoot: process.cwd(),
+    dataRoot: path.join(root, 'data'),
+    daemonDataRoot,
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: 200,
+  };
+
+  try {
+    const template = JSON.parse(
+      await readFile(path.join(process.cwd(), 'mimi.connectors.example.json'), 'utf8'),
+    ) as { backgroundDefaultsVersion?: number; connectors: Record<string, Record<string, unknown>> };
+    const legacy = {
+      ...template.connectors.browser,
+      enabled: true,
+      args: ['/tmp/macos-browser-connector.mjs'],
+      claimedComputerApps: ['com.apple.Safari', 'com.google.Chrome'],
+    };
+    await mkdir(daemonDataRoot, { recursive: true });
+    await writeFile(path.join(daemonDataRoot, 'connectors.json'), `${JSON.stringify({
+      backgroundDefaultsVersion: template.backgroundDefaultsVersion,
+      connectors: { 'macos-browser': legacy },
+    })}\n`);
+
+    const result = await initializeMimi(config, { runtimeRoot: process.cwd() });
+    const persisted = JSON.parse(
+      await readFile(path.join(daemonDataRoot, 'connectors.json'), 'utf8'),
+    ) as {
+      connectors: Record<string, {
+        enabled: boolean;
+        args: string[];
+        claimedComputerApps: string[];
+      }>;
+    };
+
+    assert.equal(persisted.connectors['macos-browser'], undefined);
+    assert.equal(persisted.connectors.browser?.enabled, true);
+    assert.deepEqual(persisted.connectors.browser?.claimedComputerApps, ['com.google.Chrome']);
+    assert.match(persisted.connectors.browser?.args[0] ?? '', /browser-connector\.mjs$/);
+    assert.equal(result.connectors.removedRetired, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

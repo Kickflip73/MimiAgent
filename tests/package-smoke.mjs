@@ -53,7 +53,7 @@ try {
     access(path.join(packageRoot, 'examples', 'connectors', 'macos-notes-connector.mjs')),
     access(path.join(packageRoot, 'examples', 'connectors', 'macos-shortcuts-connector.mjs')),
     access(path.join(packageRoot, 'examples', 'connectors', 'macos-desktop-connector.mjs')),
-    access(path.join(packageRoot, 'examples', 'connectors', 'macos-browser-connector.mjs')),
+    access(path.join(packageRoot, 'examples', 'connectors', 'browser-connector.mjs')),
     access(path.join(packageRoot, 'examples', 'connectors', 'macos-screen-connector.mjs')),
     access(path.join(packageRoot, 'examples', 'connectors', 'macos-screen-ocr.swift')),
     access(path.join(packageRoot, 'examples', 'connectors', 'macos-voice-connector.mjs')),

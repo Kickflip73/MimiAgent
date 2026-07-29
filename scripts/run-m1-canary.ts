@@ -62,7 +62,7 @@ const profiles = {
   'browser.tabs': {
     profile: 'browser-tabs',
     app: 'Browser',
-    channel: 'macos-browser',
+    channel: 'browser',
     actionFamily: 'tabs.read',
     executionPath: 'connector-manager',
     boundary: 'connector_manager',

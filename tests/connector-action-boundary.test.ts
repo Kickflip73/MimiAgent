@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { RunContext, type Tool } from '@openai/agents';
 import test from 'node:test';
+import { ActionFailedSafeError } from '../src/core/action-intent.js';
+import { ExecutionLedger } from '../src/core/execution-ledger.js';
 import {
   connectorCapabilitySnapshot,
   createConnectorHostTools,
@@ -14,6 +19,7 @@ import type {
   ConnectorCapabilityRequest,
   ConnectorManager,
 } from '../src/daemon/connectors.js';
+import { withExecutionLedger } from '../src/runtime/tool-ledger.js';
 
 async function invoke(tools: Tool[], name: string, input: unknown): Promise<unknown> {
   const selected = tools.find((candidate) => candidate.name === name);
@@ -226,6 +232,70 @@ test('read capability receipts are confirmed from the declared effect', async ()
   assert.equal(receipt.effect, 'read');
   assert.equal(receipt.outcome, 'confirmed');
   assert.deepEqual(receipt.messages, ['bounded']);
+});
+
+test('explicit Connector rejection remains failed_safe across the SDK tool boundary', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-failed-safe-'));
+  let executions = 0;
+  const manager = {
+    configPath: '/fixture/connectors.json',
+    listCapabilities: () => [capability('fixture', [{
+      name: 'mutate',
+      description: 'mutate fixture',
+      capability: 'fixture.write',
+      effect: 'write',
+      routeOwner: 'fixture',
+    }])],
+    executeCapability: async (request: ConnectorCapabilityRequest) => {
+      executions += 1;
+      if ((request.payload as { valid?: boolean }).valid !== true) {
+        throw new ActionFailedSafeError('payload rejected before execution');
+      }
+      return {
+        connector: 'fixture',
+        effect: 'write' as const,
+        result: { outcome: 'confirmed', operationId: 'confirmed-operation' },
+      };
+    },
+  } as unknown as ConnectorManager;
+  const wrapped = withExecutionLedger(
+    createConnectorHostTools(manager),
+    new ExecutionLedger(path.join(root, 'ledger.json')),
+    () => ({
+      sessionId: 'owner',
+      runId: 'event:connector-failed-safe',
+      semanticCallIds: true,
+      guardedActionContext: {
+        ownerAuthenticated: true,
+        exactTarget: true,
+        lowRisk: false,
+        reversible: false,
+      },
+    }),
+  );
+  const invokeWrapped = (payloadJson: string, callId: string) => {
+    const selected = wrapped.find((tool) => tool.name === 'invoke_capability');
+    assert.ok(selected && 'invoke' in selected);
+    return selected.invoke(new RunContext({}), JSON.stringify({
+      capability: 'fixture.write',
+      action: 'mutate',
+      target: 'fixture:1',
+      payloadJson,
+    }), { toolCall: { callId } } as never);
+  };
+
+  const rejected = await invokeWrapped('{"valid":false}', 'rejected') as {
+    mimiActionIntent?: { outcome?: string };
+  };
+  assert.equal(rejected.mimiActionIntent?.outcome, 'failed_safe');
+
+  const corrected = await invokeWrapped('{"valid":true}', 'corrected') as {
+    outcome?: string;
+    mimiActionIntent?: { outcome?: string };
+  };
+  assert.equal(corrected.outcome, 'confirmed');
+  assert.equal(corrected.mimiActionIntent?.outcome, 'confirmed');
+  assert.equal(executions, 2);
 });
 
 test('task connector tools proxy only inspect and action with the exact signal and payload', async () => {

@@ -5,7 +5,9 @@ import {
   TOOL_ACTION_INTENT,
   type ToolActionIntentMetadata,
 } from '../core/tool-metadata.js';
+import { ActionFailedSafeError } from '../core/action-intent.js';
 import type { EffectiveCapabilityItem } from '../runtime/pipeline/capability-resolver.js';
+import { isUncertainDeliveryError } from './notifier.js';
 import type {
   ConnectorActionRequest,
   ConnectorCapabilityRequest,
@@ -135,6 +137,41 @@ type ConnectorActionReceipt = Record<string, unknown> & {
   outcome: 'confirmed' | 'accepted';
 };
 type OnConnectorAction = (request: ConnectorActionRequest, receipt: ConnectorActionReceipt) => void;
+
+function connectorActionErrorResult(error: unknown): string {
+  const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+  if (error instanceof ActionFailedSafeError) {
+    return JSON.stringify({
+      mimiStatus: 'action_failed_safe',
+      retryable: true,
+      sideEffectsFrozen: false,
+      message,
+    });
+  }
+  return JSON.stringify({
+    mimiStatus: 'action_uncertain',
+    retryable: false,
+    sideEffectsFrozen: true,
+    message: isUncertainDeliveryError(error)
+      ? message
+      : `${message}；无法确认 Connector 是否越过副作用提交点`,
+  });
+}
+
+function connectorActionOutcome(result: unknown): 'confirmed' | 'failed_safe' | 'uncertain' {
+  let value = result;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return 'uncertain';
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'uncertain';
+  const record = value as Record<string, unknown>;
+  if (record.mimiStatus === 'action_failed_safe') return 'failed_safe';
+  return record.outcome === 'confirmed' ? 'confirmed' : 'uncertain';
+}
 
 function boundedActionResult(result: unknown): unknown {
   const serialized = JSON.stringify(result);
@@ -323,12 +360,13 @@ export function createInvokeCapabilityTool(
       target: z.string().min(1).max(2_000),
       payloadJson: z.string().min(1).max(50_000),
     }).strict(),
+    errorFunction: (_context, error) => connectorActionErrorResult(error),
     execute: async ({ capability, action, target, payloadJson }, _context, details) => {
       let payload: unknown;
       try {
         payload = JSON.parse(payloadJson) as unknown;
       } catch {
-        throw new Error('payloadJson 不是有效 JSON');
+        throw new ActionFailedSafeError('payloadJson 不是有效 JSON');
       }
       const selected = await connectors.executeCapability({
         capability,
@@ -378,12 +416,7 @@ export function createInvokeCapabilityTool(
         lowRisk: false,
         reversible: false,
       },
-      outcome: (result) => {
-        if (!result || typeof result !== 'object') return 'uncertain';
-        return (result as Record<string, unknown>).outcome === 'confirmed'
-          ? 'confirmed'
-          : 'uncertain';
-      },
+      outcome: connectorActionOutcome,
     };
   };
   return capabilityTool;
@@ -439,12 +472,13 @@ function createConnectorActionRuntimeTool(
       target: z.string().min(1).max(2_000).describe('主要操作对象，例如 single:zhangsan 或 group:123'),
       payloadJson: z.string().min(1).max(50_000).describe('要传给 Connector 的 JSON 载荷'),
     }).strict(),
+    errorFunction: (_context, error) => connectorActionErrorResult(error),
     execute: async ({ connector, action, target, payloadJson }, _context, details) => {
       let payload: unknown;
       try {
         payload = JSON.parse(payloadJson) as unknown;
       } catch {
-        throw new Error('payloadJson 不是有效 JSON');
+        throw new ActionFailedSafeError('payloadJson 不是有效 JSON');
       }
       const result = await executeAction({ connector, action, target, payload }, details?.signal);
       const request = { connector, action, target, payload };

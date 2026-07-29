@@ -288,7 +288,7 @@ ID 猜错或 bounded coverage
 
 `macos-desktop-connector.mjs` 通过 System Events 感知前台应用和窗口，并可激活应用、打开 URL/绝对路径、读写文本剪贴板、输入文本、发送 key code 和点击一级菜单项。`open_visible` 要求精确 bundle ID，并且只有观察到目标应用已置前且存在可见窗口才返回 `outcome=confirmed`；系统只接受打开请求但验证超时会返回 uncertain，禁止重放。剪贴板感知默认关闭，持久启停只由 operator 管理。
 
-`macos-browser-connector.mjs` 复用 Safari/Chrome 当前 profile 和已登录会话，提供标签页查询、打开、导航、激活、关闭、刷新、正文读取和 JavaScript DOM 执行。它无浏览器驱动、扩展和新增依赖，不轮询或保存浏览历史；页面正文与脚本结果始终标记为不可信外部数据。详细动作和系统设置见 [docs/CONNECTORS.md](docs/CONNECTORS.md#macos-browser-bridge)。
+`browser-connector.mjs` 是唯一网页语义执行面，只使用 Chrome 和 OpenCLI Browser Bridge。它提供隔离/绑定会话、DOM/AX 状态、语义 locator、标签、正文、iframe、网络 shape、表单和结构化页面动作；写入必须消费新鲜 observationId，页面变化后重新观察。MimiAgent 不再提供 Safari/JXA Browser 路径，也不通过 Shell 直接运行 OpenCLI。安装与完整动作见 [docs/CONNECTORS.md](docs/CONNECTORS.md#browser-connector)。
 
 `macos-screen-connector.mjs` 使用系统 `screencapture` 和 Vision Framework 读取原生应用、画布、远程桌面等非 DOM 界面的屏幕文字。它支持显式保存 PNG、OCR 已有图片，以及临时截图后 OCR 并立即清理；默认不持续录屏、不轮询屏幕、不保存图片历史，也不增加云端 OCR 依赖。
 

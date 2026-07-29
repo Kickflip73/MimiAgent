@@ -10,11 +10,9 @@ function manager(requests: ConnectorReadProbeRequest[]): ConnectorManager {
   return {
     executeReadProbe: async (request: ConnectorReadProbeRequest) => {
       requests.push(request);
-      const result = request.connector === 'macos-browser'
+      const result = request.connector === 'browser'
         ? {
-            tabs: [{ title: 'private title', url: 'https://private.example' }],
             total: 2,
-            unavailable: [{ browser: 'chrome', error: 'private path' }],
             truncated: true,
           }
         : request.connector === 'macos-shortcuts'
@@ -61,11 +59,11 @@ test('fixed connector probe profiles return only bounded metadata and formal rec
   const shortcuts = await executeReadOnlyProbe({ profile: 'shortcuts-catalog' }, dependencies);
   assert.deepEqual(requests, [
     {
-      connector: 'macos-browser',
-      action: 'list_tabs',
+      connector: 'browser',
+      action: 'probe_tabs',
       capability: 'browser.tabs.read',
       target: 'all',
-      payload: { limit: 5 },
+      payload: {},
     },
     {
       connector: 'macos-shortcuts',
@@ -76,9 +74,9 @@ test('fixed connector probe profiles return only bounded metadata and formal rec
     },
   ]);
   assert.deepEqual(browser.metadata, {
-    itemCount: 1,
+    itemCount: 2,
     total: 2,
-    unavailableCount: 1,
+    unavailableCount: 0,
     truncated: true,
   });
   assert.deepEqual(shortcuts.metadata, { itemCount: 1, truncated: false });
@@ -120,7 +118,7 @@ test('Computer profile discards target identity and metadata fallbacks never exp
       fresh: true as const,
       targetVerified: true as const,
       actionResult: true as const,
-      result: request.connector === 'macos-browser'
+      result: request.connector === 'browser'
         ? []
         : { text: 'two\nprivate lines', charCount: -1, capturedBytes: 'unknown', truncated: true },
     }),

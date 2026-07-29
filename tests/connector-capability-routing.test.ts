@@ -49,12 +49,15 @@ test('capability routing instructions use stable declarations instead of busines
   assert.match(BASE_INSTRUCTIONS, /不要.*启停或重载 Connector/);
   assert.match(BASE_INSTRUCTIONS, /uncertain 禁止重放/);
   assert.match(BASE_INSTRUCTIONS, /Connector 已声明并持有的资源只能走该 Connector/);
-  assert.match(BASE_INSTRUCTIONS, /不得调用、建议或声称可改走 Browser、Computer\/CUA、MCP 或 Shell/);
-  assert.match(BASE_INSTRUCTIONS, /CuaDriver.*绝不能通过 run_shell/);
+  assert.match(BASE_INSTRUCTIONS, /不得改走 Browser、Computer\/CUA、MCP、Shell/);
+  assert.match(BASE_INSTRUCTIONS, /CuaDriver 仅由 computer_observe\/computer_act 使用/);
   assert.match(BASE_INSTRUCTIONS, /个人消息的查看、读取或汇总只使用 effect=read/);
   assert.match(BASE_INSTRUCTIONS, /新消息 Event 同步由 Connector 内部轮询负责，不是模型 action/);
   assert.match(BASE_INSTRUCTIONS, /Shell 沙箱.*不是 SIP/);
   assert.match(BASE_INSTRUCTIONS, /只读诊断能力/);
+  assert.match(BASE_INSTRUCTIONS, /网页 routeOwner 唯一为 Chrome Browser Connector/);
+  assert.match(BASE_INSTRUCTIONS, /禁 Safari\/Shell\/OpenCLI\/CDP\/JXA\/任意 JavaScript/);
+  assert.match(BASE_INSTRUCTIONS, /使用最新 observationId，写后重观察/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /大象|QQ|微信/);
 });
 

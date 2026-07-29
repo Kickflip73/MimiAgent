@@ -658,6 +658,7 @@ test('daemon retries replay native MCP calls through the execution ledger', asyn
 test('uncertain ActionIntent freezes later actions but keeps the Run available for reads', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-uncertain-fence-'));
   const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  let rejectedExecutions = 0;
   let firstExecutions = 0;
   let fallbackExecutions = 0;
   let readExecutions = 0;
@@ -671,6 +672,7 @@ test('uncertain ActionIntent freezes later actions but keeps the Run available f
       name,
       description: 'fixture action',
       parameters: z.object({ target: z.string() }),
+      errorFunction: null,
       execute,
     }) as ReturnType<typeof tool> & {
       [TOOL_ACTION_INTENT]?: (rawInput: string) => {
@@ -692,6 +694,10 @@ test('uncertain ActionIntent freezes later actions but keeps the Run available f
     });
     return value;
   };
+  const rejected = actionTool('invoke_capability', async () => {
+    rejectedExecutions += 1;
+    throw new ActionFailedSafeError('payload rejected before execution');
+  }, 'connector');
   const first = actionTool('computer_act', async () => {
     firstExecutions += 1;
     throw new Error('connection ended after dispatch');
@@ -709,7 +715,7 @@ test('uncertain ActionIntent freezes later actions but keeps the Run available f
       return 'bounded evidence';
     },
   });
-  const wrapped = withExecutionLedger([first, fallback, read], ledger, () => ({
+  const wrapped = withExecutionLedger([rejected, first, fallback, read], ledger, () => ({
     sessionId: 'owner',
     runId: 'event:uncertain-fence',
     semanticCallIds: true,
@@ -730,15 +736,21 @@ test('uncertain ActionIntent freezes later actions but keeps the Run available f
     );
   };
 
-  const uncertain = await invoke(0, { target: 'com.example.app' }, 'first') as Record<string, unknown>;
+  const failedSafe = await invoke(0, { target: 'com.example.app' }, 'rejected') as {
+    mimiActionIntent?: { outcome?: string };
+  };
+  assert.equal(failedSafe.mimiActionIntent?.outcome, 'failed_safe');
+  assert.equal(rejectedExecutions, 1);
+
+  const uncertain = await invoke(1, { target: 'com.example.app' }, 'first') as Record<string, unknown>;
   assert.equal(uncertain.mimiStatus, 'action_uncertain');
   assert.equal(uncertain.retryable, false);
   assert.equal(uncertain.sideEffectsFrozen, true);
 
-  const fenced = await invoke(1, { target: 'com.example.app' }, 'fallback') as Record<string, unknown>;
+  const fenced = await invoke(2, { target: 'com.example.app' }, 'fallback') as Record<string, unknown>;
   assert.equal(fenced.mimiStatus, 'action_uncertain');
   assert.equal(fallbackExecutions, 0);
-  assert.equal(await invoke(2, { path: 'README.md' }, 'read'), 'bounded evidence');
+  assert.equal(await invoke(3, { path: 'README.md' }, 'read'), 'bounded evidence');
   assert.equal(firstExecutions, 1);
   assert.equal(readExecutions, 1);
 });

@@ -97,11 +97,11 @@ function manifest(evidenceKind: M1EvalManifest['evidenceKind'] = 'fixture'): M1E
       {
         id: 'browser.stale',
         app: 'Browser',
-        channel: 'macos-browser',
+        channel: 'browser',
         actionFamily: 'page.read',
         executionPath: 'connector-manager',
         risk: 'read',
-        boundaryRef: 'tests/macos-browser-connector.test.ts#stale',
+        boundaryRef: 'tests/browser-connector.test.ts#stale-observation',
         expectedOutcome: 'blocked',
         tags: ['fixture', 'stale'],
       },

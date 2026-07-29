@@ -21,7 +21,6 @@ export const LEGACY_VISIBLE_MACOS_CONNECTORS = [
   'macos-notes',
   'macos-shortcuts',
   'macos-desktop',
-  'macos-browser',
   'macos-screen',
   'macos-voice',
 ] as const;

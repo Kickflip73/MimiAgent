@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
+import { ActionFailedSafeError } from '../src/core/action-intent.js';
 import { ConnectorManager } from '../src/daemon/connectors.js';
 import { NotifierRegistry } from '../src/daemon/notifier.js';
 import { MimiStore } from '../src/daemon/store.js';
@@ -118,6 +119,58 @@ test('registered read probes require enabled online routes and reject write or u
     await assert.rejects(() => manager.executeReadProbe({
       connector: 'fixture', action: 'inspect', capability: 'fixture.read', target: 'bounded', payload: {},
     }), /disabled|未启用/i);
+  } finally {
+    await manager.stop();
+    store.close();
+  }
+});
+
+test('Connector action_result distinguishes explicit rejection from uncertain execution', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-action-result-'));
+  const database = path.join(root, 'mimi.db');
+  const configFile = path.join(root, 'connectors.json');
+  await writeFile(configFile, JSON.stringify({
+    connectors: {
+      fixture: {
+        command: process.execPath,
+        args: [path.resolve('tests/fixtures/connector-fixture.mjs')],
+        restart: false,
+        healthEvents: false,
+        actions: {
+          mutate: { description: 'write fixture', capability: 'fixture.write', effect: 'write' },
+        },
+      },
+    },
+  }));
+  const store = new MimiStore(database);
+  const manager = await ConnectorManager.load(configFile, store, new NotifierRegistry());
+  manager.start();
+  try {
+    await waitUntil(() => manager.listCapabilities()[0]?.readiness.outbound === 'ready');
+    await assert.rejects(
+      manager.executeCapability({
+        capability: 'fixture.write',
+        action: 'mutate',
+        target: 'rejected',
+        payload: { invalid: true },
+      }),
+      (error: unknown) => (
+        error instanceof ActionFailedSafeError
+        && /rejected before execution/.test(error.message)
+      ),
+    );
+    await assert.rejects(
+      manager.executeCapability({
+        capability: 'fixture.write',
+        action: 'mutate',
+        target: 'uncertain',
+        payload: {},
+      }),
+      (error: unknown) => (
+        error instanceof Error
+        && error.name === 'UncertainDeliveryError'
+      ),
+    );
   } finally {
     await manager.stop();
     store.close();

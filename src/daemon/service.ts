@@ -657,6 +657,7 @@ const RETIRED_CONNECTOR_IDS = new Set([
   'daxiang',
   'daxiang-applescript',
   'http-action',
+  'macos-browser',
   'qq',
   'qq-applescript',
   'wechat-applescript',
@@ -666,6 +667,7 @@ const RETIRED_CONNECTOR_SCRIPTS = new Set([
   'daxiang-applescript-connector.mjs',
   'daxiang-connector.mjs',
   'http-action-connector.mjs',
+  'macos-browser-connector.mjs',
   'qq-applescript-connector.mjs',
   'qq-napcat-connector.mjs',
   'wechat-applescript-connector.mjs',
@@ -732,6 +734,12 @@ async function mergeTemplateActions(
   let removedRetired = 0;
   let changed = false;
   const connectors = { ...current.connectors };
+  const legacyBrowser = connectors['macos-browser'];
+  const browserTemplate = template.connectors.browser;
+  if (legacyBrowser && browserTemplate && !connectors.browser) {
+    connectors.browser = { ...browserTemplate, enabled: legacyBrowser.enabled };
+    changed = true;
+  }
   let backgroundDefaultsVersion = current.backgroundDefaultsVersion;
   if (backgroundDefaultsVersion < BACKGROUND_DEFAULTS_VERSION) {
     const canonical = new Set<string>();

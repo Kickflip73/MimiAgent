@@ -280,7 +280,7 @@ macOS Shortcuts 适配把系统 `shortcuts` CLI 作为通用能力总线，但�
 
 macOS Desktop 适配补齐没有专用 API 的即时桌面操作。System Events/JXA 只承担前台应用、窗口、剪贴板、菜单和键盘的窄动作，`/usr/bin/open` 只接受参数数组形式的 URL 或绝对路径；复杂多步骤流程仍交给 Shortcuts。可选剪贴板轮询只有进程内 hash：首次读取静默建立基线，外部变化产生 ambient Event，Connector 自身写入同步更新基线，避免形成自触发循环。它不引入 UI 工作流、截图模型或额外持久状态。
 
-macOS Browser 适配补齐已登录网页执行面。独立 Connector 只调用 Safari/Chrome 随应用提供的 JXA 字典，复用浏览器当前 profile，不引入 Playwright、WebDriver、扩展或登录态镜像。标签引用是当前窗口/标签索引快照；页面正文和 JavaScript 结果有硬上限并标为外部不可信数据，所有导航与脚本参数经 argv JSON 传递，超时结果不自动重放。
+Browser Connector 是唯一网页语义执行面，只支持 Chrome，并通过 OpenCLI daemon 与 Browser Bridge 扩展复用当前 profile 和登录态。Connector 为 Mimi 创建隔离的 `mimi-*` owned/bound session；DOM/AX snapshot、locator、正文、iframe、网络 shape 和结构化页面动作均使用有界 argv 调用。写动作必须消费当前 Connector 签发的 observationId，随后重新观察；超时、输出溢出或进程中断视为不确定且不自动重放。Safari/JXA、任意 JavaScript 和 Shell/CDP 浏览器控制不再属于产品能力。
 
 macOS Screen 适配补齐非 DOM 视觉文字入口。Node Connector 只编排系统 `screencapture` 和一份窄职责 Swift Vision helper；截图 target、图片大小、OCR 字符/行数、子进程输出和超时全部有界。`read_screen` 的临时图片在所有终态清理，显式 `capture_screen` 才持久保存文件；没有持续录屏、屏幕轮询、图片数据库、云端 OCR 或视觉 Agent。
 

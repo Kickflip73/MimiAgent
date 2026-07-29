@@ -168,7 +168,7 @@ Connector 执行完成后返回：
 {"type":"action_result","id":"action-uuid","ok":true,"result":{"sent":true}}
 ```
 
-失败返回 `ok:false` 和简短 `error`。`target` 是主要事务对象，`payload` 是 Connector 自己定义的 JSON。`deadlineAt` 是 Daemon 给出的 Unix 毫秒绝对截止时间；新 Connector 应在截止时间前停止底层进程或请求并返回失败，旧 Connector 可忽略该兼容字段。外层 `deliveryTimeoutMs` / `actionTimeoutMs` 到达后，Manager 会终止并重启整个 Connector 子进程，防止已经向调用方报超时的本地动作继续晚到；子进程退出或 action 超时时仍把结果视为不确定并拒绝自动重放。Connector 应在上游支持时使用 action `id` 做幂等键。
+在执行前完成入参、目标或业务前置条件校验并明确拒绝时，返回 `ok:false` 和简短 `error`，不得设置 `uncertain:true`；Host 将其记为 `failed_safe`，本轮不会冻结后续 ActionIntent。只有请求可能已经越过副作用提交点、但无法确认结果时，才返回 `ok:false,uncertain:true`。`target` 是主要事务对象，`payload` 是 Connector 自己定义的 JSON。`deadlineAt` 是 Daemon 给出的 Unix 毫秒绝对截止时间；新 Connector 应在截止时间前停止底层进程或请求并返回失败，旧 Connector 可忽略该兼容字段。外层 `deliveryTimeoutMs` / `actionTimeoutMs` 到达后，Manager 会终止并重启整个 Connector 子进程，防止已经向调用方报超时的本地动作继续晚到；子进程退出或 action 超时时仍把结果视为不确定并拒绝自动重放。Connector 应在上游支持时使用 action `id` 做幂等键。
 
 运行 `mimi daemon connectors` 可查看每个 Connector 的当前进程状态、双向就绪度和 action 目录，输出不包含凭证。恢复通知仍需要通过上述稳定窗口。
 
@@ -523,22 +523,42 @@ Actions：
 
 首次执行窗口、菜单或键盘动作时，macOS 会请求 Accessibility/Automation 权限。该权限属于实际运行 Node/Terminal/LaunchAgent 的系统边界，MimiAgent 不叠加审批。剪贴板可能包含密码、令牌和私人内容，只有明确接受其进入模型上下文时才开启轮询。
 
-## macOS Browser Bridge
+## Browser Connector
 
-`examples/connectors/macos-browser-connector.mjs` 直接调用 Safari 和 Google Chrome 随应用提供的 JXA 脚本接口，复用当前 profile、Cookie 和登录状态；不需要 Playwright、WebDriver、浏览器扩展或额外 npm 依赖。Connector action-only，不轮询标签、正文或浏览历史。
+`examples/connectors/browser-connector.mjs` 是唯一网页语义执行面，只支持 Google Chrome，并通过本机 OpenCLI daemon 与 Browser Bridge 扩展复用 Chrome profile、Cookie 和登录状态。MimiAgent 不再提供 Safari/JXA Browser 路径，也不允许 Agent 通过 `run_shell` 直接调用 OpenCLI、CDP 或浏览器自动化脚本。
 
-Actions：
+依赖：
 
-- `list_tabs`：`target=all|safari|chrome`，返回最多 `limit`（默认 100，上限 500）个标签。ref 格式是 `safari:<windowIndex>:<tabIndex>` 或 `chrome:<windowIndex>:<tabIndex>`。
-- `active_tab`：`target=safari|chrome`，读取最前窗口的当前标签。
-- `open_tab`：payload `url` 必须是最多 8000 字符的绝对 http/https URL；`active:false` 可在后台打开。
-- `navigate_tab`、`activate_tab`、`close_tab`、`reload_tab`：target 使用上述 tab ref。
-- `page_text`：读取 Safari 原生页面 text 或 Chrome `document.body.innerText`，`maxChars` 默认 40000、上限 200000。
-- `execute_javascript`：payload `script` 最多 40000 字符，`maxResultChars` 默认 100000、上限 500000；支持即时 DOM 查询和操作。
+```bash
+npm install -g @jackwener/opencli
+opencli doctor
+```
 
-tab ref 是查询时的索引快照，不是永久 ID；标签增删或窗口重排后应重新调用 `list_tabs`。命令默认 20 秒超时，可用 `MACOS_BROWSER_COMMAND_TIMEOUT_MS=100..120000` 调整，输出硬上限为 1MB。所有 URL、脚本和 payload 都通过 argv JSON 传递，不经过 Shell；页面标题、URL、正文和脚本结果标记为 `untrusted:true`。
+`opencli doctor` 必须确认 daemon、Chrome 扩展和 connectivity 都可用。Connector 启动时执行同一只读检查；失败时进程保持在线但上报 `outbound=unavailable` 和 `reasonCode=opencli_unavailable`，不会把缺失依赖误报成浏览器可用。
+Connector 默认先查找与当前 Node 可执行文件同目录的 `opencli`，以兼容 launchd 的最小 PATH；若 OpenCLI 安装在其他位置，通过 `OPENCLI_BIN` 提供绝对路径。
 
-首次使用会触发 macOS Automation 权限。Safari 的 JavaScript 动作还要求在开发者设置中允许来自 Apple Events 的 JavaScript；Chrome 也可能要求开启对应的 Apple Events JavaScript 选项。JavaScript、导航、关闭等动作超时后结果可能不确定，Action Bridge 不自动重放。
+会话动作：
+
+- `open_session`：创建 Mimi 独占的 Chrome 会话，打开绝对 http/https URL；默认 `window=background`，返回不透明 `sessionRef`。
+- `bind_session`：绑定 owner 当前 Chrome 标签以复用人工完成的登录、SSO 或页面定位；绑定会话不会拥有或关闭用户标签。
+- `close_session`：独占会话执行 close，绑定会话只 unbind。Connector/Daemon 正常退出时也会尽力释放仍持有的会话。
+- `probe_tabs`：只返回 Connector 当前持有的会话/标签计数，供只读 canary 使用，不创建、绑定、激活或泄露页面内容。
+- `list_tabs/new_tab/select_tab/close_tab`：标签读取或精确写动作；page ID 只能来自当前会话的 `list_tabs`。
+
+页面读取：
+
+- `snapshot`：读取 OpenCLI DOM 或 AX 状态，返回交互元素 ref 和新的 `observationId`。
+- `find`、`read_element`：支持 CSS，以及 role/name/label/text/testid 语义 locator；不开放 input value 或任意 JavaScript。
+- `read_page`：有界读取 HTML 或结构化 DOM 树。
+- `extract`：按 `next_start_char` 游标分块读取 Markdown 正文。
+- `frames`、`wait`：读取 iframe 目录，或有界等待 selector、text、XHR、download。
+- `network`：只返回响应 shape 目录；Connector 删除 URL query/hash，并递归裁剪 authorization、cookie、token、secret、password、body 等字段，不开放 raw body。
+
+页面写动作包括 `navigate/back/click/type/fill/select/check/uncheck/hover/focus/double_click/keys/scroll/upload/drag/dialog`。除建立/释放会话外，每个写动作都必须携带最近一次 `snapshot`、`find` 或 `list_tabs` 返回的 `observationId`。Connector 在投递动作前立即消费该 ID；无论后续成功、失败还是超时，都必须重新观察后才能继续，避免复用过期 DOM ref 或重放不确定副作用。
+
+OpenCLI 命令使用固定 argv 数组启动，不拼接 Shell。Connector 为每个逻辑任务生成 `mimi-*` 内部 session 名，不能接管 owner 直接创建的 OpenCLI session；所有 action 串行执行。命令默认 30 秒超时，可用 `OPENCLI_BROWSER_COMMAND_TIMEOUT_MS=1000..300000` 调整；stdout 默认上限 1MB，可用 `OPENCLI_BROWSER_MAX_OUTPUT_BYTES=32000..8000000` 调整。Host 的 `actionTimeoutMs` 必须不小于命令超时。
+
+页面、DOM、AX、标签和网络元数据固定标记为 `untrusted:true`。`type/fill/dialog` 回执删除输入明文，`upload` 回执删除绝对路径；运行时的 owner ephemeral-sensitive redaction 仍负责对本轮敏感值做精确清理。写动作超时或输出溢出按 uncertain 返回，Action Bridge 和 Agent 都不得自动重放或改走 Desktop、Computer、Shell、MCP。Canvas、WebGL、浏览器原生权限框和验证码不属于 DOM 通用能力；只有结果明确未执行时才能按当前 Security 选择 Computer Use 或人工接管。
 
 ## macOS Screen Bridge
 

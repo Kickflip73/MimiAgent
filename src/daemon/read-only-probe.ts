@@ -72,7 +72,7 @@ function connectorEvidence(
 function browserMetadata(result: unknown): ReadOnlyProbeReceipt['metadata'] {
   const value = object(result);
   return {
-    itemCount: Array.isArray(value.tabs) ? value.tabs.length : 0,
+    itemCount: number(value.total) ?? (Array.isArray(value.tabs) ? value.tabs.length : 0),
     ...(number(value.total) !== undefined ? { total: number(value.total) } : {}),
     unavailableCount: Array.isArray(value.unavailable) ? value.unavailable.length : 0,
     truncated: value.truncated === true,
@@ -118,11 +118,11 @@ export async function executeReadOnlyProbe(
   }
   if (request.profile === 'browser-tabs') {
     const receipt = await dependencies.connectors.executeReadProbe({
-      connector: 'macos-browser',
-      action: 'list_tabs',
+      connector: 'browser',
+      action: 'probe_tabs',
       capability: 'browser.tabs.read',
       target: 'all',
-      payload: { limit: 5 },
+      payload: {},
     });
     return {
       receiptId: randomUUID(),

@@ -361,13 +361,13 @@ class ConnectorProcess implements NotificationSink {
 
   async executeAction(action: string, target: string, payload: unknown): Promise<unknown> {
     if (!Object.hasOwn(this.config.actions, action)) {
-      throw new Error(`Connector ${this.id} 未声明 action ${action}`);
+      throw new ActionFailedSafeError(`Connector ${this.id} 未声明 action ${action}`);
     }
-    if (!target.trim()) throw new Error('Connector action target 不能为空');
-    if (this.draining) throw new Error(`Connector ${this.id} 正在重载`);
+    if (!target.trim()) throw new ActionFailedSafeError('Connector action target 不能为空');
+    if (this.draining) throw new ActionFailedSafeError(`Connector ${this.id} 正在重载`);
     const child = this.child;
     if (!child || child.exitCode !== null || child.stdin.destroyed) {
-      throw new Error(`Connector ${this.id} 当前不在线`);
+      throw new ActionFailedSafeError(`Connector ${this.id} 当前不在线`);
     }
     const id = randomUUID();
     return new Promise<unknown>((resolve, reject) => {
@@ -627,7 +627,11 @@ class ConnectorProcess implements NotificationSink {
     else if (message.uncertain) {
       pending.reject(new UncertainDeliveryError(message.error ?? `Connector ${this.id} action 结果不确定`));
     }
-    else pending.reject(new Error(message.error ?? `Connector ${this.id} action 执行失败`));
+    else {
+      pending.reject(new ActionFailedSafeError(
+        message.error ?? `Connector ${this.id} action 明确未执行`,
+      ));
+    }
   }
 
   private onExit(error: Error): void {
