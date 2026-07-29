@@ -332,7 +332,7 @@
         "upload": { "description": "向文件输入控件附加显式绝对路径文件；target 为 sessionRef，payload 含 observationId、files 和元素 locator", "capability": "browser.file.upload", "effect": "write" },
         "drag": { "description": "在新鲜 source/destination locator 间执行拖拽；target 为 sessionRef，payload 必须含 observationId", "capability": "browser.element.write", "effect": "write" },
         "dialog": { "description": "接受或拒绝当前 JavaScript dialog；target 为 sessionRef，payload 含 observationId、decision 和可选 value", "capability": "browser.dialog.write", "effect": "write" },
-        "execute_javascript": { "description": "Full Owner 在当前 sessionRef 页面执行 JavaScript；payload 使用 script 或 code，可选 page；用于结构化动作不足以完成的页面操作", "capability": "browser.page.execute", "effect": "write" }
+        "execute_javascript": { "description": "Full Owner 在当前 sessionRef 页面执行 JavaScript；payload 必须含最新 snapshot 的 observationId，并使用 script 或 code、可选 page；用于结构化动作不足以完成的页面操作，执行后必须重新观察", "capability": "browser.page.execute", "effect": "write" }
       }
     },
     "macos-screen": {

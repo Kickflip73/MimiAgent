@@ -152,7 +152,7 @@ Connector 完成远端发送后必须确认：
 
 ## 主动事务 Action Bridge
 
-Agent 需要主动执行 Connector 事务时，依据本轮 Effective Capability Snapshot 的精确 `capability/action` 调用 `invoke_capability`。Daemon 只在恰好一个在线且新鲜的 Connector 声明该组合时执行；写或 unknown effect 还必须要求 outbound ready，零个返回 unavailable，多个返回 ambiguous，不要求模型猜 Connector ID。精确声明的 `effect=read` 动作不进入副作用账本，可在明确失败后安全重试；写或 unknown effect 继续由 ActionIntent 和 ExecutionLedger 提供 at-most-once 防护。底层 Task/operator 兼容面仍可使用 `connector_action`，但不再暴露给普通模型 Run。
+Agent 需要主动执行 Connector 事务时，依据本轮 Effective Capability Snapshot 的精确 `capability/action` 调用 `invoke_capability`。Daemon 只在恰好一个在线且新鲜的 Connector 声明该组合时执行；写或 unknown effect 还必须要求 outbound ready，零个返回 unavailable，多个返回 ambiguous，不要求模型猜 Connector ID。精确声明的 `effect=read` 动作不进入副作用账本，可在明确失败后安全重试；写或 unknown effect 必须附带稳定 `operationRef`，用系统、环境和业务资源标识同一项用户操作，不能使用 Browser `sessionRef`、窗口 ID 或临时页面 ID。切换页面、临时会话或执行路线时仍复用该引用；相同 `operationRef + action family` 已 confirmed 时复用原回执，进入 `started/uncertain` 时更换 target、payload 或临时会话也不能重放，只有 failed-safe 才能换路。底层 Task/operator 兼容面仍可使用 `connector_action`，但不再暴露给普通模型 Run。
 
 个人消息的查看、读取和汇总只调用 `effect=read` 的目标目录与上下文动作。新消息 Event 由 Connector 自身的定时轮询采集；该内部同步不登记为模型 action，也不能作为普通消息读取的前置步骤。
 
@@ -556,7 +556,7 @@ Connector 默认先查找与当前 Node 可执行文件同目录的 `opencli`，
 - `frames`、`wait`：读取 iframe 目录，或有界等待 selector、text、XHR、download。
 - `network`：只返回响应 shape 目录；Connector 删除 URL query/hash，并递归裁剪 authorization、cookie、token、secret、password、body 等字段，不开放 raw body。
 
-页面写动作包括 `navigate/back/click/type/fill/select/check/uncheck/hover/focus/double_click/keys/scroll/upload/drag/dialog`。除建立/释放会话外，每个写动作都必须携带最近一次 `snapshot`、`find` 或 `list_tabs` 返回的 `observationId`。Connector 先完成全部参数和本地前置条件校验，只在即将投递动作时消费该 ID；明确拒绝且未投递的参数错误可使用同一 Observation 修正，已投递后的成功、失败或超时都必须重新观察。写回执包含 `observationInvalidated` 和 `nextRead`；点击或双击后先 `list_tabs`，发现新 page 后按精确 page 读取，避免页面实际已打开但 Agent 仍反复读取旧 page。
+页面写动作包括 `navigate/back/click/type/fill/select/check/uncheck/hover/focus/double_click/keys/scroll/upload/drag/dialog/execute_javascript`。除建立/释放会话外，每个写动作都必须携带最新 Observation；任意 JavaScript 因执行面最宽，只接受最新 `snapshot` 返回的 `observationId`，不能用 `find` 或 `list_tabs` 代替。Connector 先完成全部参数和本地前置条件校验，只在即将投递动作时消费该 ID；明确拒绝且未投递的参数错误可使用同一 Observation 修正，已投递后的成功、失败或超时都必须重新观察。写回执包含 `completionScope=interaction`、`businessOutcome=unverified`、`observationInvalidated` 和 `nextRead`；其中 `outcome=confirmed` 只证明这次浏览器交互已执行，不能证明网页业务事务成功。点击或双击后先 `list_tabs`，发现新 page 后按精确 page 读取；外部配置、环境、账号、权限、部署或任务变更还必须在提交前核对环境/对象/旧值，提交后回读新值。
 
 OpenCLI 命令使用固定 argv 数组启动，不拼接 Shell。Connector 为每个逻辑任务生成 `mimi-*` 内部 session 名，不能接管 owner 直接创建的 OpenCLI session；所有 action 串行执行。命令默认 30 秒超时，可用 `OPENCLI_BROWSER_COMMAND_TIMEOUT_MS=1000..300000` 调整；stdout 默认上限 1MB，可用 `OPENCLI_BROWSER_MAX_OUTPUT_BYTES=32000..8000000` 调整。Host 的 `actionTimeoutMs` 必须不小于命令超时。
 

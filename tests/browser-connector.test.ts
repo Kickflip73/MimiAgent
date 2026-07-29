@@ -155,6 +155,8 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     });
     assert.equal(clicked.ok, true, clicked.error);
     assert.equal(clicked.result?.outcome, 'confirmed');
+    assert.equal(clicked.result?.completionScope, 'interaction');
+    assert.equal(clicked.result?.businessOutcome, 'unverified');
     assert.equal(clicked.result?.clicked, true);
     assert.equal(clicked.result?.observationInvalidated, true);
     assert.deepEqual(clicked.result?.nextRead, {
@@ -162,11 +164,24 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
       reason: '点击可能打开或选择新标签页；先重新列出 page，再读取目标 page',
     });
 
+    const unobservedEval = await call('unobserved-eval', 'execute_javascript', sessionRef, {
+      code: 'document.title',
+    });
+    assert.equal(unobservedEval.ok, false);
+    assert.match(unobservedEval.error ?? '', /payload\.observationId|observationId is stale/);
+
+    const evalSnapshot = await call('eval-snapshot', 'snapshot', sessionRef, {
+      source: 'dom',
+    });
     const evaluated = await call('eval', 'execute_javascript', sessionRef, {
+      observationId: String(evalSnapshot.result?.observationId),
       code: 'document.title',
     });
     assert.equal(evaluated.ok, true, evaluated.error);
     assert.equal(evaluated.result?.outcome, 'confirmed');
+    assert.equal(evaluated.result?.observationInvalidated, true);
+    assert.equal(evaluated.result?.completionScope, 'interaction');
+    assert.equal(evaluated.result?.businessOutcome, 'unverified');
     assert.equal(evaluated.result?.value, 'script-result');
 
     const foundButton = await call('find-button', 'find', sessionRef, {

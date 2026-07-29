@@ -146,6 +146,55 @@ test('different business action references execute identical payloads independen
   assert.equal(executions, 2);
 });
 
+test('confirmed business actions replay across temporary target and payload changes', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-confirmed-business-action-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const context = {
+    ownerAuthenticated: true,
+    exactTarget: true,
+    lowRisk: false,
+    reversible: false,
+  };
+  let executions = 0;
+  const first = await ledger.executeActionIntent(
+    'owner',
+    'event:confirmed-route',
+    actionIntent('browser:first', {
+      businessActionRef: 'crane:test:job:route',
+      actionFamily: 'connector.browser.page.execute_javascript',
+      targetRef: 'browser:first-session',
+    }),
+    context,
+    undefined,
+    async () => ({ execution: ++executions, completionScope: 'interaction' }),
+  );
+  const changedAttempt = actionIntent('browser:second', {
+    intentId: 'confirmed-route-retry',
+    businessActionRef: 'crane:test:job:route',
+    actionFamily: 'connector.browser.page.execute_javascript',
+    targetRef: 'browser:second-session',
+    payloadDigest: actionPayloadDigest({ code: 'changed retry payload' }),
+  });
+  changedAttempt.executionKey = actionExecutionKey(
+    changedAttempt.actionFamily,
+    changedAttempt.targetRef,
+    changedAttempt.payloadDigest,
+    changedAttempt.policyRevision,
+    changedAttempt.businessActionRef,
+  );
+  const replay = await ledger.executeActionIntent(
+    'owner',
+    'event:confirmed-route:retry',
+    changedAttempt,
+    context,
+    undefined,
+    async () => ({ execution: ++executions }),
+  );
+
+  assert.deepEqual(replay, first);
+  assert.equal(executions, 1);
+});
+
 test('ActionIntent permits route change only after failed_safe and fences uncertain', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-action-intent-state-'));
   const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
@@ -192,6 +241,7 @@ test('ActionIntent permits route change only after failed_safe and fences uncert
 
   const uncertainIntent = actionIntent('connector', {
     intentId: 'uncertain',
+    businessActionRef: 'event:uncertain:send:1',
     targetRef: 'qq:account:other',
   });
   uncertainIntent.executionKey = actionExecutionKey(
@@ -222,6 +272,32 @@ test('ActionIntent permits route change only after failed_safe and fences uncert
       async () => ++executions,
     ),
     /禁止换路或自动重放/,
+  );
+  const reopenedSessionAttempt = {
+    ...uncertainIntent,
+    intentId: 'uncertain-new-browser-session',
+    targetRef: 'browser:new-session-ref',
+    payloadDigest: actionPayloadDigest({ code: 'same business mutation through a new page' }),
+    selectedRoute: 'browser:new-session',
+    status: 'not_started' as const,
+  };
+  reopenedSessionAttempt.executionKey = actionExecutionKey(
+    reopenedSessionAttempt.actionFamily,
+    reopenedSessionAttempt.targetRef,
+    reopenedSessionAttempt.payloadDigest,
+    reopenedSessionAttempt.policyRevision,
+    reopenedSessionAttempt.businessActionRef,
+  );
+  await assert.rejects(
+    ledger.executeActionIntent(
+      'owner',
+      'event:uncertain',
+      reopenedSessionAttempt,
+      context,
+      undefined,
+      async () => ++executions,
+    ),
+    /更换临时目标、载荷或会话也禁止自动重放/,
   );
   assert.equal(executions, 3);
 });
@@ -509,6 +585,47 @@ test('confirmed Connector actions expose a verifiable external receipt for Plan 
   assert.match(String(evidence.ref), /^execution:/);
   assert.equal(await ledger.isConfirmedExternalReceipt(String(evidence.ref), 'demo'), true);
   assert.equal(await ledger.isConfirmedExternalReceipt(String(evidence.ref), 'other-session'), false);
+});
+
+test('interaction-only ActionIntent receipts cannot complete an external Plan step', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-interaction-receipt-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const intent = actionIntent('browser', {
+    intentId: 'browser-click',
+    businessActionRef: 'crane:test:job:route',
+    actionFamily: 'connector.browser.page.click',
+    targetRef: 'crane:test:job:route',
+  });
+  intent.executionKey = actionExecutionKey(
+    intent.actionFamily,
+    intent.targetRef,
+    intent.payloadDigest,
+    intent.policyRevision,
+    intent.businessActionRef,
+  );
+  await ledger.executeActionIntent(
+    'owner',
+    'event:browser-click',
+    intent,
+    {
+      ownerAuthenticated: true,
+      exactTarget: true,
+      lowRisk: false,
+      reversible: false,
+    },
+    undefined,
+    async () => ({
+      outcome: 'confirmed',
+      completionScope: 'interaction',
+      businessOutcome: 'unverified',
+    }),
+  );
+
+  assert.equal(await ledger.isConfirmedActionIntent(intent.executionKey, 'owner'), true);
+  assert.equal(
+    await ledger.isConfirmedExternalReceipt(`action-intent:${intent.executionKey}`, 'owner'),
+    false,
+  );
 });
 
 test('daemon semantic call ids replay consecutive duplicate effects and distinguish them after another effect', async () => {

@@ -3,6 +3,7 @@ export const TOOL_LEDGER_ARGUMENTS = Symbol('mimi.toolLedgerArguments');
 export interface ToolActionIntentMetadata {
   actionFamily: string;
   targetRef: string;
+  businessActionRef?: string;
   payload: unknown;
   selectedRoute: string;
   effect?: 'read' | 'write' | 'unknown';

@@ -183,6 +183,7 @@ export interface ConnectorActionRequest {
   action: string;
   target: string;
   payload: unknown;
+  operationRef?: string;
 }
 
 export interface ConnectorCapabilityRequest {

@@ -351,22 +351,31 @@ export function createInvokeCapabilityTool(
 ): Tool {
   const capabilityTool = tool({
     name: 'invoke_capability',
-    description: '按当前 Effective Capability Snapshot 中的稳定 capability 和 action 执行唯一已就绪 Connector 路线。无需猜 Connector ID，也不要先启停 Connector。能力未就绪、重复 route 或结果不确定时停止，不得改走 Shell、Computer 或其他 Connector。',
+    description: '按当前 Effective Capability Snapshot 中的稳定 capability 和 action 执行唯一已就绪 Connector 路线。write/unknown 动作必须提供稳定 operationRef，绑定同一业务操作的系统、环境和资源；切换页面、临时会话或执行路线时仍复用它，confirmed 使用原回执，uncertain 停止。无需猜 Connector ID，也不要先启停 Connector；不得改走 Shell、Computer 或其他 Connector。',
     parameters: z.object({
       capability: z.string()
         .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)
         .max(120),
       action: identifier.describe('能力目录中返回的精确 action 名称'),
       target: z.string().min(1).max(2_000),
+      operationRef: z.string().trim().min(1).max(300).optional()
+        .describe('write/unknown 必填的稳定业务操作引用；包含系统、环境和资源，不得使用 sessionRef、窗口 ID 等临时目标'),
       payloadJson: z.string().min(1).max(50_000),
     }).strict(),
     errorFunction: (_context, error) => connectorActionErrorResult(error),
-    execute: async ({ capability, action, target, payloadJson }, _context, details) => {
+    execute: async ({ capability, action, target, operationRef, payloadJson }, _context, details) => {
       let payload: unknown;
       try {
         payload = JSON.parse(payloadJson) as unknown;
       } catch {
         throw new ActionFailedSafeError('payloadJson 不是有效 JSON');
+      }
+      const declarations = connectors.listCapabilities().flatMap((connector) => connector.actions
+        .filter((candidate) => candidate.name === action && candidate.capability === capability));
+      if (declarations.some((declaration) => declaration.effect !== 'read') && !operationRef) {
+        throw new ActionFailedSafeError(
+          'write/unknown Connector 动作缺少 operationRef；请用稳定的系统、环境和业务资源标识绑定本次操作，不能使用临时 sessionRef',
+        );
       }
       const selected = await connectors.executeCapability({
         capability,
@@ -379,6 +388,7 @@ export function createInvokeCapabilityTool(
         action,
         target,
         payload,
+        ...(operationRef ? { operationRef } : {}),
       };
       const receipt = connectorReceipt(
         'invoke_capability',
@@ -397,16 +407,21 @@ export function createInvokeCapabilityTool(
     const capability = String(input.capability ?? '');
     const action = String(input.action ?? '');
     const target = String(input.target ?? '');
+    const operationRef = typeof input.operationRef === 'string'
+      ? input.operationRef.trim()
+      : '';
     const declarations = connectors.listCapabilities().flatMap((connector) => connector.actions
       .filter((candidate) => candidate.name === action && candidate.capability === capability));
     const effect = declarations.length === 1 ? declarations[0]!.effect : 'unknown';
     return {
       actionFamily: `connector.${capability}.${action}`,
-      targetRef: target,
+      targetRef: operationRef || target,
+      ...(operationRef ? { businessActionRef: operationRef } : {}),
       payload: {
         capability,
         action,
         target,
+        ...(operationRef ? { operationRef } : {}),
         payloadJson: String(input.payloadJson ?? ''),
       },
       selectedRoute: 'capability-router',

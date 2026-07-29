@@ -364,13 +364,14 @@ function browserArgs(session, command) {
   return ['browser', session.opencliSession, ...command];
 }
 
-function newObservation(session) {
+function newObservation(session, source) {
   const observationId = randomUUID();
   session.observationId = observationId;
+  session.observationSource = source;
   return observationId;
 }
 
-function requireObservation(session, payload) {
+function requireObservation(session, payload, requiredSource) {
   const observationId = boundedString(
     payload.observationId,
     'payload.observationId',
@@ -380,7 +381,13 @@ function requireObservation(session, payload) {
   if (!session.observationId || observationId !== session.observationId) {
     throw new Error('observationId is stale; call snapshot, find, or list_tabs again');
   }
+  if (requiredSource && session.observationSource !== requiredSource) {
+    throw new Error(
+      `${requiredSource} observation is required before this action; call ${requiredSource} first`,
+    );
+  }
   session.observationId = undefined;
+  session.observationSource = undefined;
 }
 
 function sanitizeWriteResult(action, result, payload) {
@@ -509,6 +516,38 @@ async function closeSession(target) {
   return { ...result, closed: true, outcome: 'confirmed' };
 }
 
+async function readUrl(target, payload) {
+  const requestedUrl = url(target, 'target');
+  const temporarySession = {
+    ref: `browser:${randomUUID()}`,
+    opencliSession: `mimi-read-${randomUUID().slice(0, 8)}`,
+    kind: 'owned',
+    observationId: undefined,
+    observationSource: undefined,
+  };
+  await runOpenCli([
+    'browser',
+    temporarySession.opencliSession,
+    'open',
+    requestedUrl,
+    '--window',
+    'background',
+  ], { uncertainOnFailure: true });
+  try {
+    const result = await executeReadAction('extract', temporarySession, payload);
+    return {
+      requestedUrl,
+      ...result,
+      sessionReleased: true,
+    };
+  } finally {
+    await runOpenCli(
+      browserArgs(temporarySession, ['close']),
+      { uncertainOnFailure: true },
+    );
+  }
+}
+
 async function executeReadAction(action, session, payload) {
   let command;
   if (action === 'list_tabs') command = ['tab', 'list'];
@@ -615,7 +654,7 @@ async function executeReadAction(action, session, payload) {
       ? safeResult
       : { value: safeResult };
   const observationId = OBSERVATION_ACTIONS.has(action)
-    ? newObservation(session)
+    ? newObservation(session, action)
     : session.observationId;
   return {
     ...normalized,
@@ -730,7 +769,7 @@ async function executeWriteAction(action, session, payload) {
   // Consume the observation only after every payload field has been validated.
   // A rejected command never reaches Chrome and must remain safely correctable
   // with the same snapshot.
-  if (action !== 'execute_javascript') requireObservation(session, payload);
+  requireObservation(session, payload, action === 'execute_javascript' ? 'snapshot' : undefined);
   const result = await runOpenCli(
     browserArgs(session, command),
     { uncertainOnFailure: true },
@@ -738,7 +777,9 @@ async function executeWriteAction(action, session, payload) {
   return {
     ...sanitizeWriteResult(action, result, payload),
     outcome: 'confirmed',
-    observationInvalidated: action !== 'execute_javascript',
+    completionScope: 'interaction',
+    businessOutcome: 'unverified',
+    observationInvalidated: true,
     nextRead: action === 'click' || action === 'double_click'
       ? {
           action: 'list_tabs',

@@ -552,6 +552,10 @@ digest 和 policy revision 建立 at-most-once fence。同一业务引用跨 Too
 - `confirmed` 跨 Tool、Provider、Connector/Computer route 只返回既有回执。
 - `started/uncertain` 永久禁止自动换路重放。
 - 只有 `failed_safe` 可以在新 route 重新尝试。
+- Connector `write/unknown` 动作携带稳定 `operationRef` 作为业务操作引用；同一引用和
+  action family 已 confirmed 时跨 Browser `sessionRef`、target、payload 或 route 复用
+  原回执，started/uncertain 时保持冻结；只有 failed-safe 才允许换路。临时页面/窗口
+  标识不是业务目标。
 - Full Owner 的精确目标动作不再要求第二次一次性审批；Observation 新鲜度、窗口漂移、
   控制面保护、应用 allowlist、动作预算和前后台状态仍由 ComputerManager 在真正执行前
   自动校验，这些是机械安全约束，不能扩大 Security。
@@ -566,6 +570,13 @@ ExecutionLedger 验证的 receipt refs；completed step 不能由后续模型静
 替换证据。后台委派同样要求显式 `requiredCapabilities`，Host 在入队前与 executor、
 workspaceAccess 和实时 Connector capability 取交集；后台 Computer 固定为 none，
 委派不能成为能力升级路径。
+
+Browser 的导航、元素操作和页面脚本是交互层动作：成功回执额外声明
+`completionScope=interaction` 与 `businessOutcome=unverified`，不能单独证明网页中的
+配置或事务完成。`execute_javascript` 与结构化写动作一样必须消费新鲜 Observation，
+且只接受最新 snapshot；所有写动作之后都必须重新观察。外部系统变更在提交前绑定系统、
+环境/账号、稳定业务对象和期望旧值/新值，提交后回读同一对象才能晋级为业务完成；
+Completion Gate 也拒绝把 interaction-only ActionIntent 回执当作外部事务完成证据。
 
 Tool 或 ActionIntent 已成功执行但结果超过账本上限时，`ExecutionLedger` 不再把动作误记
 为失败。它丢弃超限正文并原子提交一个包含 `output_truncated`、原始字节数和 SHA-256 的

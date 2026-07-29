@@ -239,8 +239,41 @@ export class ExecutionLedger {
     }
     const authorizationDecision = evaluateActionAuthorization(intent, context, authorization);
     if (!authorizationDecision.allowed) throw new Error(authorizationDecision.reason);
+    const businessActionRef = 'businessActionRef' in intent
+      ? intent.businessActionRef
+      : undefined;
     const decision = await this.state.updateWhen<{ replay?: ActionIntentReceipt<T> }>((ledger) => {
       const existing = ledger.actionIntents[intent.executionKey];
+      const matchingBusinessAttempts = businessActionRef
+        ? Object.entries(ledger.actionIntents).filter(([executionKey, entry]) => (
+            executionKey !== intent.executionKey
+            && entry.sessionId === sessionId
+            && 'businessActionRef' in entry.intent
+            && entry.intent.businessActionRef === businessActionRef
+            && entry.intent.actionFamily === intent.actionFamily
+          ))
+        : [];
+      const uncertainBusinessAttempt = matchingBusinessAttempts.find(([, entry]) =>
+        entry.status === 'started' || entry.status === 'uncertain');
+      if (uncertainBusinessAttempt) {
+        throw new ActionIntentUncertainError(
+          `业务操作 ${businessActionRef} 的 ${intent.actionFamily} 之前处于`
+          + ` ${uncertainBusinessAttempt[1].status} 状态；即使更换临时目标、载荷或会话也禁止自动重放`,
+        );
+      }
+      const confirmedBusinessAttempt = matchingBusinessAttempts.find(([, entry]) =>
+        entry.status === 'confirmed');
+      if (confirmedBusinessAttempt) {
+        if (!confirmedBusinessAttempt[1].resultJson) {
+          throw new Error('ActionIntent confirmed 回执缺少结果');
+        }
+        return {
+          result: {
+            replay: deserializeOutput<ActionIntentReceipt<T>>(confirmedBusinessAttempt[1].resultJson),
+          },
+          changed: false,
+        };
+      }
       if (authorizationDecision.authorizationId) {
         const consumedBy = Object.entries(ledger.actionIntents).find(([, entry]) =>
           entry.authorizationIds.includes(authorizationDecision.authorizationId!));
@@ -350,7 +383,17 @@ export class ExecutionLedger {
 
   async isConfirmedExternalReceipt(reference: string, sessionId: string): Promise<boolean> {
     if (reference.startsWith('action-intent:')) {
-      return this.isConfirmedActionIntent(reference.slice('action-intent:'.length), sessionId);
+      const executionKeyValue = reference.slice('action-intent:'.length);
+      if (!await this.isConfirmedActionIntent(executionKeyValue, sessionId)) return false;
+      const receipt = await this.getActionIntent(executionKeyValue);
+      const result = receipt?.result;
+      if (result !== null && typeof result === 'object' && !Array.isArray(result)) {
+        const value = result as Record<string, unknown>;
+        if (value.completionScope === 'interaction' || value.businessOutcome === 'unverified') {
+          return false;
+        }
+      }
+      return true;
     }
     if (!reference.startsWith('execution:')) return false;
     const entry = (await this.state.read()).entries[reference.slice('execution:'.length)];

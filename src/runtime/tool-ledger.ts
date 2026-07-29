@@ -229,7 +229,7 @@ export function withExecutionLedger(
         if (action) {
           const payloadDigest = actionPayloadDigest(action.payload);
           const policyRevision = run.policyRevision ?? 'guarded:v1';
-          const businessActionRef = `${run.runId}:${callId}`;
+          const businessActionRef = action.businessActionRef ?? `${run.runId}:${callId}`;
           const executionKeyValue = actionExecutionKey(
             action.actionFamily,
             action.targetRef,
