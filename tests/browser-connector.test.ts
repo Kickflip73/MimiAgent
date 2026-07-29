@@ -141,6 +141,14 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     assert.match(String(snapshot.result?.text), /button "Save"/);
     const observationId = String(snapshot.result?.observationId);
 
+    const rejected = await call('rejected-click', 'click', sessionRef, {
+      observationId,
+      ref: 7,
+      element: '7',
+    });
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.error ?? '', /use only one of payload\.ref.*payload\.element/);
+
     const clicked = await call('click', 'click', sessionRef, {
       observationId,
       ref: 7,
@@ -148,6 +156,11 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     assert.equal(clicked.ok, true, clicked.error);
     assert.equal(clicked.result?.outcome, 'confirmed');
     assert.equal(clicked.result?.clicked, true);
+    assert.equal(clicked.result?.observationInvalidated, true);
+    assert.deepEqual(clicked.result?.nextRead, {
+      action: 'list_tabs',
+      reason: '点击可能打开或选择新标签页；先重新列出 page，再读取目标 page',
+    });
 
     const evaluated = await call('eval', 'execute_javascript', sessionRef, {
       code: 'document.title',

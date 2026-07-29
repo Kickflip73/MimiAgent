@@ -116,13 +116,35 @@ function withExecutionEvidence(result: unknown, ref: string): unknown {
     : { result, mimiExecutionReceipt: evidence };
 }
 
-function uncertainActionFenceResult(error: ActionIntentUncertainError): Record<string, unknown> {
+function uncertainActionFenceResult(
+  error: ActionIntentUncertainError,
+  scope?: Pick<UncertainActionFence, 'actionFamily' | 'targetRef'>,
+): Record<string, unknown> {
   return {
     mimiStatus: 'action_uncertain',
     retryable: false,
     sideEffectsFrozen: true,
-    message: `${error.message}。本轮后续 ActionIntent 已冻结；仍可继续只读检查并向用户报告，不得重放或换路。`,
+    sideEffectFenceScope: 'matching_action_family_and_target',
+    ...(scope ? {
+      frozenActionFamily: scope.actionFamily,
+      frozenTargetRef: scope.targetRef,
+    } : {}),
+    message: `${error.message}。同一 action family 和目标的后续 ActionIntent 已冻结；仍可继续只读检查、执行不相关的恢复动作并向用户报告，不得重放或换路。`,
   };
+}
+
+interface UncertainActionFence {
+  error: ActionIntentUncertainError;
+  actionFamily: string;
+  targetRef: string;
+}
+
+function matchesUncertainActionFence(
+  fence: UncertainActionFence,
+  action: ToolActionIntentMetadata,
+): boolean {
+  return fence.actionFamily === action.actionFamily
+    && fence.targetRef === action.targetRef;
 }
 
 function failedSafeMessage(result: unknown): string {
@@ -151,7 +173,7 @@ export function withExecutionLedger(
 ): Tool[] {
   const semanticOccurrences = new Map<string, number>();
   let previousSemanticKey: string | undefined;
-  let uncertainActionFence: ActionIntentUncertainError | undefined;
+  let uncertainActionFence: UncertainActionFence | undefined;
   return tools.map((tool) => {
     if (!isInvokable(tool)) return tool;
     const sideEffect = isSideEffectTool(tool.name);
@@ -179,8 +201,8 @@ export function withExecutionLedger(
         };
         const action = (tool as LedgerAwareTool)[TOOL_ACTION_INTENT]?.(input);
         if (!sideEffect || action?.effect === 'read') return invokeSanitized();
-        if (action && uncertainActionFence) {
-          return uncertainActionFenceResult(uncertainActionFence);
+        if (action && uncertainActionFence && matchesUncertainActionFence(uncertainActionFence, action)) {
+          return uncertainActionFenceResult(uncertainActionFence.error, uncertainActionFence);
         }
         const sdkCallId = details?.toolCall?.callId;
         const ledgerInput = (tool as LedgerAwareTool)[TOOL_LEDGER_ARGUMENTS]?.(input) ?? input;
@@ -267,8 +289,12 @@ export function withExecutionLedger(
             return withActionIntentEvidence(receipt);
           } catch (error) {
             if (!(error instanceof ActionIntentUncertainError)) throw error;
-            uncertainActionFence = error;
-            return uncertainActionFenceResult(error);
+            uncertainActionFence = {
+              error,
+              actionFamily: action.actionFamily,
+              targetRef: action.targetRef,
+            };
+            return uncertainActionFenceResult(error, uncertainActionFence);
           }
         }
         const call = {

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- validate Browser write payloads before consuming their Observation, return an
+  explicit post-write `nextRead` so newly opened pages are discovered, and
+  scope uncertain ActionIntent fences to the matching action family and target
+  instead of blocking unrelated recovery actions
 - fuse compiled Wiki and owner Session episodes before applying Memory search
   limits, require bounded query reformulation for irrelevant recall, and support
   an independent OpenAI-compatible Embedding endpoint instead of coupling

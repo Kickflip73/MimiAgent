@@ -655,18 +655,20 @@ test('daemon retries replay native MCP calls through the execution ledger', asyn
   assert.equal(executions, 2);
 });
 
-test('uncertain ActionIntent freezes later actions but keeps the Run available for reads', async () => {
+test('uncertain ActionIntent freezes its action scope while preserving reads and unrelated recovery', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-uncertain-fence-'));
   const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
   let rejectedExecutions = 0;
   let firstExecutions = 0;
   let fallbackExecutions = 0;
+  let recoveryExecutions = 0;
   let readExecutions = 0;
   const actionTool = (
     name: 'computer_act' | 'invoke_capability',
     execute: () => Promise<unknown>,
     route: string,
     outcome: 'confirmed' | 'uncertain' = 'confirmed',
+    actionFamily = 'desktop.apps.activate',
   ) => {
     const value = tool({
       name,
@@ -685,7 +687,7 @@ test('uncertain ActionIntent freezes later actions but keeps the Run available f
       };
     };
     value[TOOL_ACTION_INTENT] = (rawInput) => ({
-      actionFamily: 'desktop.apps.activate',
+      actionFamily,
       targetRef: JSON.parse(rawInput).target as string,
       payload: rawInput,
       selectedRoute: route,
@@ -706,6 +708,10 @@ test('uncertain ActionIntent freezes later actions but keeps the Run available f
     fallbackExecutions += 1;
     return { outcome: 'confirmed' };
   }, 'connector');
+  const recovery = actionTool('invoke_capability', async () => {
+    recoveryExecutions += 1;
+    return { outcome: 'confirmed' };
+  }, 'connector', 'confirmed', 'browser.session.close');
   const read = tool({
     name: 'read_file',
     description: 'fixture read',
@@ -715,7 +721,7 @@ test('uncertain ActionIntent freezes later actions but keeps the Run available f
       return 'bounded evidence';
     },
   });
-  const wrapped = withExecutionLedger([rejected, first, fallback, read], ledger, () => ({
+  const wrapped = withExecutionLedger([rejected, first, fallback, recovery, read], ledger, () => ({
     sessionId: 'owner',
     runId: 'event:uncertain-fence',
     semanticCallIds: true,
@@ -746,11 +752,19 @@ test('uncertain ActionIntent freezes later actions but keeps the Run available f
   assert.equal(uncertain.mimiStatus, 'action_uncertain');
   assert.equal(uncertain.retryable, false);
   assert.equal(uncertain.sideEffectsFrozen, true);
+  assert.equal(uncertain.sideEffectFenceScope, 'matching_action_family_and_target');
+  assert.equal(uncertain.frozenActionFamily, 'desktop.apps.activate');
+  assert.equal(uncertain.frozenTargetRef, 'com.example.app');
 
   const fenced = await invoke(2, { target: 'com.example.app' }, 'fallback') as Record<string, unknown>;
   assert.equal(fenced.mimiStatus, 'action_uncertain');
   assert.equal(fallbackExecutions, 0);
-  assert.equal(await invoke(3, { path: 'README.md' }, 'read'), 'bounded evidence');
+  const recovered = await invoke(3, { target: 'com.example.app' }, 'recover') as {
+    mimiActionIntent?: { outcome?: string };
+  };
+  assert.equal(recovered.mimiActionIntent?.outcome, 'confirmed');
+  assert.equal(recoveryExecutions, 1);
+  assert.equal(await invoke(4, { path: 'README.md' }, 'read'), 'bounded evidence');
   assert.equal(firstExecutions, 1);
   assert.equal(readExecutions, 1);
 });

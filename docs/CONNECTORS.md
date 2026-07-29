@@ -556,7 +556,7 @@ Connector 默认先查找与当前 Node 可执行文件同目录的 `opencli`，
 - `frames`、`wait`：读取 iframe 目录，或有界等待 selector、text、XHR、download。
 - `network`：只返回响应 shape 目录；Connector 删除 URL query/hash，并递归裁剪 authorization、cookie、token、secret、password、body 等字段，不开放 raw body。
 
-页面写动作包括 `navigate/back/click/type/fill/select/check/uncheck/hover/focus/double_click/keys/scroll/upload/drag/dialog`。除建立/释放会话外，每个写动作都必须携带最近一次 `snapshot`、`find` 或 `list_tabs` 返回的 `observationId`。Connector 在投递动作前立即消费该 ID；无论后续成功、失败还是超时，都必须重新观察后才能继续，避免复用过期 DOM ref 或重放不确定副作用。
+页面写动作包括 `navigate/back/click/type/fill/select/check/uncheck/hover/focus/double_click/keys/scroll/upload/drag/dialog`。除建立/释放会话外，每个写动作都必须携带最近一次 `snapshot`、`find` 或 `list_tabs` 返回的 `observationId`。Connector 先完成全部参数和本地前置条件校验，只在即将投递动作时消费该 ID；明确拒绝且未投递的参数错误可使用同一 Observation 修正，已投递后的成功、失败或超时都必须重新观察。写回执包含 `observationInvalidated` 和 `nextRead`；点击或双击后先 `list_tabs`，发现新 page 后按精确 page 读取，避免页面实际已打开但 Agent 仍反复读取旧 page。
 
 OpenCLI 命令使用固定 argv 数组启动，不拼接 Shell。Connector 为每个逻辑任务生成 `mimi-*` 内部 session 名，不能接管 owner 直接创建的 OpenCLI session；所有 action 串行执行。命令默认 30 秒超时，可用 `OPENCLI_BROWSER_COMMAND_TIMEOUT_MS=1000..300000` 调整；stdout 默认上限 1MB，可用 `OPENCLI_BROWSER_MAX_OUTPUT_BYTES=32000..8000000` 调整。Host 的 `actionTimeoutMs` 必须不小于命令超时。
 

@@ -318,7 +318,7 @@
         "wait": { "description": "有界等待 selector、text、XHR 或 download；target 为 sessionRef，payload 含 kind、value、timeoutMs 和可选 page", "capability": "browser.page.wait", "effect": "read" },
         "navigate": { "description": "导航当前或指定 page；target 为 sessionRef，payload 含 observationId、http/https url 和可选 page", "capability": "browser.navigation.write", "effect": "write" },
         "back": { "description": "当前或指定 page 后退；target 为 sessionRef，payload 含 observationId 和可选 page", "capability": "browser.navigation.write", "effect": "write" },
-        "click": { "description": "按新鲜 payload.ref、payload.locator、payload.element（均可使用快照数字 ref）、CSS 或语义 locator 单击唯一元素；target 为 sessionRef，payload 必须含 observationId", "capability": "browser.element.write", "effect": "write" },
+        "click": { "description": "按新鲜 payload.ref、payload.locator、payload.element（均可使用快照数字 ref）、CSS 或语义 locator 单击唯一元素；target 为 sessionRef，payload 必须含 observationId；成功后按回执 nextRead 先 list_tabs，以发现新打开或切换的 page", "capability": "browser.element.write", "effect": "write" },
         "type": { "description": "按新鲜 locator 点击后键入文本；target 为 sessionRef，payload 含 observationId、value；回执不持久化明文", "capability": "browser.element.write", "effect": "write" },
         "fill": { "description": "精确替换并核验输入框内容；target 为 sessionRef，payload 含 observationId、value；回执不持久化明文", "capability": "browser.element.write", "effect": "write" },
         "select": { "description": "选择原生 select 选项；target 为 sessionRef，payload 含 observationId、value 和元素 locator", "capability": "browser.element.write", "effect": "write" },

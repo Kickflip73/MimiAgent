@@ -625,7 +625,6 @@ async function executeReadAction(action, session, payload) {
 }
 
 async function executeWriteAction(action, session, payload) {
-  if (action !== 'execute_javascript') requireObservation(session, payload);
   let command;
   if (action === 'new_tab') {
     command = ['tab', 'new', ...(payload.url === undefined ? [] : [url(payload.url)])];
@@ -728,6 +727,10 @@ async function executeWriteAction(action, session, payload) {
     ];
   } else throw new Error(`unsupported write action: ${action}`);
 
+  // Consume the observation only after every payload field has been validated.
+  // A rejected command never reaches Chrome and must remain safely correctable
+  // with the same snapshot.
+  if (action !== 'execute_javascript') requireObservation(session, payload);
   const result = await runOpenCli(
     browserArgs(session, command),
     { uncertainOnFailure: true },
@@ -735,6 +738,16 @@ async function executeWriteAction(action, session, payload) {
   return {
     ...sanitizeWriteResult(action, result, payload),
     outcome: 'confirmed',
+    observationInvalidated: action !== 'execute_javascript',
+    nextRead: action === 'click' || action === 'double_click'
+      ? {
+          action: 'list_tabs',
+          reason: '点击可能打开或选择新标签页；先重新列出 page，再读取目标 page',
+        }
+      : {
+          action: 'snapshot',
+          reason: '写动作后重新观察页面，不能复用旧 observationId 或元素 ref',
+        },
     untrusted: true,
   };
 }
