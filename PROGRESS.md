@@ -27,6 +27,10 @@
    `2026-07-29T04:13:40.408Z` 再次重启为 `0.12.0+27e9a5182037`。运行面虽已
    idle，但工作区仍有未提交的 Daemon/Dispatcher 改动，既不匹配旧目标构建，也
    不能作为新的冻结基线；本轮继续 blocked，未执行 canary。
+8. `2026-07-29T08:24:41.809Z` 观察到 Daemon 已于
+   `2026-07-29T08:01:23.578Z` 重启为 `0.12.0+9ea51be56887`，并有 2 个 active
+   Event；工作区还有大范围未提交运行时改动。精确构建和 idle 门禁均失败，本轮
+   继续 blocked，未执行 canary、重启或抢占。
 
 ## 2026-07-28 M1 final runtime soak after owner-sensitive fix
 
