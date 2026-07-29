@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import {
+  runFinalizationRecordSchema,
+  type RunFinalizationRecord,
+} from './run-finalization.js';
 import { AtomicJsonStore } from './state-file.js';
 
 export type RunCommitPhase =
@@ -20,6 +24,7 @@ export interface RunCommitJournalEntry {
   answerDigest: string;
   completionDecision?: 'pass' | 'continue' | 'blocked' | 'uncertain';
   runtimeActions: Array<Record<string, unknown>>;
+  finalization?: RunFinalizationRecord;
   updatedAt: string;
 }
 
@@ -46,6 +51,7 @@ const entrySchema = z.object({
   answerDigest: z.string().regex(/^[a-f0-9]{64}$/u),
   completionDecision: z.enum(['pass', 'continue', 'blocked', 'uncertain']).optional(),
   runtimeActions: z.array(z.record(z.string(), z.unknown())),
+  finalization: runFinalizationRecordSchema.optional(),
   updatedAt: z.string(),
 });
 const journalSchema = z.object({
@@ -101,7 +107,8 @@ export class RunCommitJournal {
       if (existing) {
         if (existing.answerDigest !== input.answerDigest
           || existing.executionKey !== input.executionKey
-          || JSON.stringify(existing.runtimeActions) !== JSON.stringify(input.runtimeActions)) {
+          || JSON.stringify(existing.runtimeActions) !== JSON.stringify(input.runtimeActions)
+          || JSON.stringify(existing.finalization) !== JSON.stringify(input.finalization)) {
           throw new Error(`Run ${input.runId} 已存在不同的提交计划，拒绝覆盖`);
         }
         return { ...existing };
@@ -167,7 +174,7 @@ export class RunCommitJournal {
 
   async get(sessionId: string, runId: string): Promise<RunCommitJournalEntry | undefined> {
     const entry = (await this.state.read()).entries[runCommitJournalId(sessionId, runId)];
-    return entry ? { ...entry, runtimeActions: entry.runtimeActions.map((action) => ({ ...action })) } : undefined;
+    return entry ? this.cloneEntry(entry) : undefined;
   }
 
   async findByExecutionKey(
@@ -176,13 +183,26 @@ export class RunCommitJournal {
   ): Promise<RunCommitJournalEntry | undefined> {
     const entry = Object.values((await this.state.read()).entries).find((candidate) =>
       candidate.sessionId === sessionId && candidate.executionKey === executionKey);
-    return entry ? { ...entry, runtimeActions: entry.runtimeActions.map((action) => ({ ...action })) } : undefined;
+    return entry ? this.cloneEntry(entry) : undefined;
   }
 
   async recoverable(): Promise<RunCommitJournalEntry[]> {
     return Object.values((await this.state.read()).entries)
       .filter((entry) => entry.phase !== 'finalized')
       .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))
-      .map((entry) => ({ ...entry, runtimeActions: entry.runtimeActions.map((action) => ({ ...action })) }));
+      .map((entry) => this.cloneEntry(entry));
+  }
+
+  private cloneEntry(entry: RunCommitJournalEntry): RunCommitJournalEntry {
+    return {
+      ...entry,
+      runtimeActions: entry.runtimeActions.map((action) => ({ ...action })),
+      ...(entry.finalization ? {
+        finalization: {
+          ...entry.finalization,
+          toolManifest: entry.finalization.toolManifest.map((call) => ({ ...call })),
+        },
+      } : {}),
+    };
   }
 }

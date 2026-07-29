@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -115,6 +115,18 @@ test('defers model and mode changes and restores them from a completion receipt 
     { type: 'switch_model', model: 'runtime-action-test-model' },
     { type: 'switch_mode', mode: targetMode },
   ]);
+  assert.deepEqual(receipt?.finalization, pendingCommit?.finalization);
+  const traceLines = (await readFile(
+    path.join(root, '.mimi-agent', 'traces', 'owner.jsonl'),
+    'utf8',
+  )).trim().split('\n').map((line) => JSON.parse(line) as {
+    type: string;
+    data: unknown;
+  });
+  assert.deepEqual(
+    traceLines.find((line) => line.type === 'run_finalization')?.data,
+    receipt?.finalization,
+  );
   await first.close();
 
   const reopened = await createAgent(root, 'owner');
@@ -370,6 +382,24 @@ test('rejects an invalid persisted RuntimeAction before applying it', async () =
     });
     await assert.rejects(agent.completedExecution('owner', 'event:invalid'), /会话 ID|RuntimeAction|invalid/i);
     assert.equal(agent.currentSessionId, 'owner');
+  } finally {
+    await agent.close();
+  }
+});
+
+test('recovers a pre-manifest completion receipt without replaying work', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-runtime-actions-legacy-receipt-'));
+  const agent = await createAgent(root, 'owner');
+  try {
+    await (agent as unknown as AgentInternals).ledger.commitReceipt('owner', 'event:legacy', {
+      runId: 'legacy-run',
+      answer: 'legacy answer',
+      actions: [],
+    });
+    const recovered = await agent.completedExecution('owner', 'event:legacy');
+    assert.equal(recovered?.answer, 'legacy answer');
+    assert.equal(recovered?.finalization.runId, 'legacy-run');
+    assert.deepEqual(recovered?.finalization.toolManifest, []);
   } finally {
     await agent.close();
   }

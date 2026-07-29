@@ -1,5 +1,6 @@
 import type { AgentInputItem, RunStreamEvent } from '@openai/agents';
 import type { ModelProvider } from '../config.js';
+import type { RunFinalizationRecord } from '../core/run-finalization.js';
 import type { RuntimeEffect } from './control.js';
 import type { RuntimeEvent } from './hooks.js';
 import type {
@@ -28,6 +29,11 @@ export interface AgentRunRequest {
 export interface AgentRunResult {
   answer: string;
   effects: RuntimeEffect[];
+  /**
+   * Present for MimiAgent executions. Optional only for compatibility with
+   * third-party HostedRunExecutor implementations.
+   */
+  finalization?: RunFinalizationRecord;
   usage?: ContextUsageSnapshot;
   delivery?: CompletionDeliveryDisposition;
 }
@@ -244,6 +250,9 @@ export class AgentRunService {
       const result = {
         answer: committedAnswer,
         effects,
+        ...(this.agent.completedRunFinalization
+          ? { finalization: this.agent.completedRunFinalization }
+          : {}),
         usage,
         delivery: await request.options?.completionDelivery?.(),
       } satisfies AgentRunResult;

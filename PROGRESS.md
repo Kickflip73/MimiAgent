@@ -35,6 +35,12 @@
 - Green: conflict-create/stale-update and continue/cancel scenarios passed 2/2; expanded Goal/Completion/core/run suite passed 113/113 and `npm run check` passed.
 - Result: prepared Contract + Goal setup is one PlanStore commit; active Goals cannot be overwritten, mutations require goalId/revision, cancel is explicit/idempotent, and free-text equality no longer grants resume ownership.
 
+## 2026-07-30 R4 canonical finalization and Tool manifest
+- Red: both file-mutation and shell/external-effect scenarios failed to load because no finalization projection existed.
+- Green: finalization/journal/run-service/recovery/dispatcher focused suite passed 29/29 and `npm run check` passed.
+- Result: ExecutionLedger remains the raw Tool fact source; one payload-free digest manifest and answer digest are persisted identically in the commit journal, completion receipt, trace, Agent result, and durable Task result.
+- Recovery rejects receipt/journal drift; tests prove file/edit and shell/uncertain variants, receipt-to-trace equality, and Task propagation without copying raw arguments, outputs, or errors.
+
 ## 2026-07-28 M1 heartbeat blocked by runtime drift
 
 1. `2026-07-28T12:22:34.171Z` heartbeat 观察到 Daemon 已从目标构建

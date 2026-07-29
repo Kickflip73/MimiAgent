@@ -662,6 +662,7 @@ export class MimiDispatcher {
         answer: result.answer,
         sessionId: sessionEffect?.type === 'session_changed' ? sessionEffect.sessionId : decision.sessionId,
         effects: result.effects,
+        finalization: result.finalization,
         usage: result.usage,
         ...(deliveryControl.suppressed ? {
           delivery: { suppressed: true, reason: deliveryControl.reason },

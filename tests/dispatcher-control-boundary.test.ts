@@ -6,6 +6,7 @@ import test from 'node:test';
 import { MimiDispatcher } from '../src/daemon/dispatcher.js';
 import { AttentionEngine } from '../src/daemon/attention.js';
 import { MimiStore } from '../src/daemon/store.js';
+import { createRunFinalization } from '../src/core/run-finalization.js';
 import { MimiHost } from '../src/runtime/mimi-host.js';
 import type { MimiAgent } from '../src/runtime/mimi-agent.js';
 
@@ -108,10 +109,14 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
     reopenExecutionLedger: async () => undefined,
   } as unknown as MimiAgent;
   const host = new MimiHost(agent, {
-    execute: async () => ({
-      answer: 'provider switch scheduled',
-      effects: [{ type: 'provider_change_requested', provider: 'openai-compatible' }],
-    }),
+    execute: async () => {
+      const answer = 'provider switch scheduled';
+      return {
+        answer,
+        effects: [{ type: 'provider_change_requested', provider: 'openai-compatible' }],
+        finalization: createRunFinalization({ runId: 'run-provider', answer, calls: [] }),
+      };
+    },
   });
   const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
   const dispatcher = new MimiDispatcher(store, host, attention);
@@ -141,6 +146,11 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
     releaseFinalization();
     assert.equal(await processing, true);
     assert.equal(store.getTask(routed.task.id)?.status, 'completed');
+    assert.equal(
+      (store.getTask(routed.task.id)?.result as { finalization?: { runId?: string } })
+        .finalization?.runId,
+      'run-provider',
+    );
     assert.equal(dispatcher.status().activeEventCount, 0);
   } finally {
     releaseFinalization();

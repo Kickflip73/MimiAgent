@@ -42,6 +42,11 @@ import {
   type SourceRef,
 } from '../core/memory.js';
 import { PlanStore, type PlanStep } from '../core/plan.js';
+import {
+  createRunFinalization,
+  runFinalizationRecordSchema,
+  type RunFinalizationRecord,
+} from '../core/run-finalization.js';
 import { runAnswerDigest, type RunCommitJournal } from '../core/run-commit-journal.js';
 import { FileChangeJournal } from '../core/file-change-journal.js';
 import { TeamTaskStore } from '../core/team.js';
@@ -168,6 +173,7 @@ export interface ContextUsageSnapshot {
 export interface CompletedExecutionReceipt {
   runId: string;
   answer: string;
+  finalization: RunFinalizationRecord;
   usage?: ContextUsageSnapshot;
   actions?: RuntimeAction[];
   effects?: RuntimeEffect[];
@@ -190,6 +196,8 @@ const contextUsageSchema = z.object({
 const completedExecutionReceiptSchema = z.object({
   runId: z.string().min(1).max(200),
   answer: z.string(),
+  // Optional only when decoding receipts written before finalization manifests.
+  finalization: runFinalizationRecordSchema.optional(),
   usage: contextUsageSchema.optional(),
   actions: z.array(runtimeActionSchema).max(20).default([]),
   delivery: z.object({
@@ -369,6 +377,7 @@ export class MimiAgent {
   private modelProfile: ModelProfile;
   private lastUsage?: ContextUsageSnapshot;
   private lastCommittedAnswer?: string;
+  private lastFinalization?: RunFinalizationRecord;
   private readonly runtimeRoot = path.resolve(fileURLToPath(new URL('../../', import.meta.url)));
 
   private constructor(
@@ -579,6 +588,7 @@ export class MimiAgent {
     const textInput = inputText(input);
     if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
     this.lastCommittedAnswer = undefined;
+    this.lastFinalization = undefined;
     const routeConfig = options?.providerRoute
       ? { ...this.config, provider: options.providerRoute.provider }
       : this.config;
@@ -1941,6 +1951,16 @@ export class MimiAgent {
         executionKey,
         retainExecutionLedger: run.options?.retainExecutionLedger === true,
       });
+      const executionCalls = await this.ledger.listCalls(
+        run.sessionId,
+        executionKey ?? run.runId,
+      );
+      const finalization = createRunFinalization({
+        runId: run.runId,
+        answer: committedAnswer,
+        ...(gate ? { completionDecision: gate.decision } : {}),
+        calls: executionCalls,
+      });
       await this.runCommits.prepare({
         sessionId: run.sessionId,
         runId: run.runId,
@@ -1948,12 +1968,13 @@ export class MimiAgent {
         answerDigest: runAnswerDigest(committedAnswer),
         ...(gate ? { completionDecision: gate.decision } : {}),
         runtimeActions: actions.map((action) => ({ ...action })),
+        finalization,
       });
       if (run.options?.retainExecutionLedger && executionKey) {
-        const executionCalls = await this.ledger.listCalls(run.sessionId, executionKey);
         const receipt = {
           runId: run.runId,
           answer: committedAnswer,
+          finalization,
           usage: validUsage,
           actions,
           delivery: await run.options.completionDelivery?.(executionCalls),
@@ -1966,6 +1987,7 @@ export class MimiAgent {
         }
       }
       await this.runCommits.advance(run.sessionId, run.runId, 'receipt_committed');
+      await this.traces.record(run.sessionId, 'run_finalization', finalization);
       completed = await run.session.completeRun(committedAnswer, run.runId);
       if (completed?.runId !== run.runId || completed.status !== 'completed') {
         throw new Error(`Run ${run.runId} 已失效，拒绝用旧结果完成当前 Session`);
@@ -1998,6 +2020,7 @@ export class MimiAgent {
     this.lastUsage = validUsage;
     this.applyManifestActual(validUsage);
     this.lastCommittedAnswer = committedAnswer;
+    this.lastFinalization = (await this.runCommits.get(run.sessionId, run.runId))?.finalization;
     await this.computer?.endRun(run.runId);
     await this.hooks.emit({ type: 'run_end', sessionId: run.sessionId, answer: committedAnswer });
     if (!run.options?.retainExecutionLedger) {
@@ -2022,6 +2045,10 @@ export class MimiAgent {
 
   get completedRunAnswer(): string | undefined {
     return this.lastCommittedAnswer;
+  }
+
+  get completedRunFinalization(): RunFinalizationRecord | undefined {
+    return this.lastFinalization;
   }
 
   get activeRunHasEphemeralSensitiveAccess(): boolean {
@@ -2130,14 +2157,29 @@ export class MimiAgent {
   ): Promise<CompletedExecutionReceipt | undefined> {
     const stored = await this.ledger.getReceipt<unknown>(sessionId, executionKey);
     if (!stored) return undefined;
-    const receipt = completedExecutionReceiptSchema.parse(stored);
+    const legacyReceipt = completedExecutionReceiptSchema.parse(stored);
     const journal = await this.runCommits.findByExecutionKey(sessionId, executionKey);
+    const receipt: CompletedExecutionReceipt = {
+      ...legacyReceipt,
+      actions: legacyReceipt.actions ?? [],
+      finalization: legacyReceipt.finalization
+        ?? journal?.finalization
+        ?? createRunFinalization({
+          runId: legacyReceipt.runId,
+          answer: legacyReceipt.answer,
+          calls: await this.ledger.listCalls(sessionId, executionKey),
+        }),
+    };
     if (journal && journal.answerDigest !== runAnswerDigest(receipt.answer)) {
       throw new Error(`Execution ${executionKey} 的完成回执与提交日志摘要不一致`);
     }
+    if (journal?.finalization
+      && JSON.stringify(journal.finalization) !== JSON.stringify(receipt.finalization)) {
+      throw new Error(`Execution ${executionKey} 的工具事实与提交日志不一致`);
+    }
     await this.createSession(sessionId).reconcileCompletedRun(receipt.answer, receipt.runId);
     if (journal) await this.runCommits.advance(sessionId, receipt.runId, 'session_committed');
-    const effects = await this.runtimeActions.apply(receipt.actions, sessionId, executionKey);
+    const effects = await this.runtimeActions.apply(receipt.actions ?? [], sessionId, executionKey);
     if (journal) await this.runCommits.advance(sessionId, receipt.runId, 'effects_applied');
     return { ...receipt, effects };
   }
