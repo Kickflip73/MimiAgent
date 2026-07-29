@@ -192,10 +192,12 @@ unavailable 即重新停用并保留配置。恢复检查不得触发发送、�
 个人消息 Event 由 Host 结构化绑定为 `PersonalMessageScope`，不是根据 owner 文本或渠道
 关键词分类。该 Scope 只开放 Daxiang Connector 的有界读取/发送工具；`list_targets`
 从当前已验证账号的网页会话列表动态分页返回稳定 numeric sid，支持 `chat`、
-`groupchat`、`pubchat` 和 `collectchat`，按 `nextCursor` 继续读取直到为 `null`。
-它只枚举账号当前已有会话，不复制联系人目录。`get_context` 对其中唯一 sid 做有界读取，
-无需把所有会话提前写入配置。账号或会话候选验证失败时读取失败关闭；同一资源不能降级到
-Shell、Computer/CUA、Browser/Desktop 或其他 Connector。
+`groupchat`、`pubchat` 和 `collectchat`，顺序为最近活跃优先，默认仅返回最近一页。
+查看需注意消息时优先处理该页 unread/近期会话，不要求也不得无条件遍历全部会话；只有
+当前页信息不足或 owner 明确要求更早/全部时才按 `nextCursor` 继续。它只枚举账号当前
+已有会话，不复制联系人目录。`get_context` 对其中唯一 sid 做有界读取，无需把所有会话
+提前写入配置。账号或会话候选验证失败时读取失败关闭；同一资源不能降级到 Shell、
+Computer/CUA、Browser/Desktop 或其他 Connector。
 
 监听和发送仍只允许带 owner binding 的配置会话：
 

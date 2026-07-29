@@ -16,8 +16,8 @@
       "claimedComputerApps": ["com.google.Chrome", "cn.neixin.pc"],
       "actions": {
         "health_check": { "description": "只读检查大象个人账号、专用后台标签和页面兼容性；target=health，payloadJson={}", "capability": "personal-message.health.read", "effect": "read" },
-        "list_targets": { "description": "动态分页列出当前大象账号已有会话的稳定 numeric sid；target=all，先传 payloadJson={\"limit\":50}，再按 nextCursor 继续传 {\"limit\":50,\"cursor\":\"...\"} 直到 nextCursor=null", "capability": "personal-message.targets.read", "effect": "read" },
-        "get_context": { "description": "按 list_targets 返回的单个稳定 numeric sid 读取有界大象会话上下文；无需预配 read allowlist，target=* 或 all 无效；payloadJson 建议传 {\"limit\":15}", "capability": "personal-message.context.read", "effect": "read" },
+        "list_targets": { "description": "按最近活跃顺序动态列出当前大象账号已有会话的稳定 numeric sid；target=all，默认只取最近一页 payloadJson={\"limit\":20}。查看需注意消息时优先处理该页 unread/近期会话，不得强制遍历全部；仅当前页信息不足或 owner 明确要求更早/全部时才按 nextCursor 继续", "capability": "personal-message.targets.read", "effect": "read" },
+        "get_context": { "description": "按最近一页 list_targets 返回的具体 numeric sid 按需读取有界大象会话上下文；无需预配 read allowlist，target=* 或 all 无效；payloadJson 建议传 {\"limit\":15}", "capability": "personal-message.context.read", "effect": "read" },
         "send_message": { "description": "仅供 PersonalMessageHub 向已绑定 sid 发送一条文本", "capability": "personal-message.send", "effect": "write" }
       }
     },

@@ -631,10 +631,10 @@ export class DaxiangWebAdapter {
         targets: [],
         nextCursor: null,
         complete: false,
-        contextReadUsage: '先分页调用 list_targets，再逐个用 targets[].sid 调用 get_context；* 和 all 不能替代具体 sid',
+        contextReadUsage: '默认只检查 list_targets 返回的最近一页；仅在当前页信息不足或 owner 明确要求更早/全部会话时才使用 nextCursor 继续，再按需用 targets[].sid 调用 get_context',
       };
     }
-    const limit = integer(input.limit, 'limit', 1, 100, 50);
+    const limit = integer(input.limit, 'limit', 1, 100, 20);
     const rawCursor = input.cursor === undefined || input.cursor === null ? '0' : String(input.cursor);
     if (!/^\d+$/.test(rawCursor)) throw new Error('cursor must be a non-negative integer string');
     const offset = integer(Number(rawCursor), 'cursor', 0, 10_000, 0);
@@ -673,6 +673,8 @@ export class DaxiangWebAdapter {
     return {
       channel: 'daxiang',
       dynamicDiscovery: true,
+      order: 'recent_activity_desc',
+      scope: offset === 0 ? 'recent' : 'older',
       accountVerified: true,
       coverage: health.coverage,
       cursor: String(offset),
@@ -681,7 +683,7 @@ export class DaxiangWebAdapter {
       targets,
       nextCursor: hasMore && targets.length > 0 ? String(nextOffset) : null,
       complete: !hasMore,
-      contextReadUsage: '持续分页调用 list_targets 直到 nextCursor=null，再逐个用 targets[].sid 调用 get_context；* 和 all 不能替代具体 sid',
+      contextReadUsage: '默认只检查最近一页并优先处理 unread/近期会话；nextCursor 仅供当前页信息不足或 owner 明确要求更早/全部会话时继续，get_context 仍需具体 targets[].sid',
     };
   }
 

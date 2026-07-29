@@ -267,8 +267,9 @@ owner 明确绑定的稳定 sid，
 配置槽位无 action 且默认关闭。腾讯官方 `openclaw-weixin` 仍是独立 iLink Bot，QQ
 `qq-messenger-skill` 仍是当次 CUA 兜底，两者都不会冒充个人消息 Connector。
 owner 查询大象消息时通过 `query=大象` 发现完整 `personal-daxiang` ID，再使用
-`list_targets/get_context`；`list_targets` 按 `nextCursor` 分页直到为空。该查询不会因
-ID 猜错或 bounded coverage
+`list_targets/get_context`；`list_targets` 默认只返回最近活跃的一页，查看需注意消息时
+优先处理该页的 unread/近期会话。只有当前页信息不足或 owner 明确要求更早/全部会话时，
+才按 `nextCursor` 继续分页。该查询不会因 ID 猜错或 bounded coverage
 自动降级到 CUA、Browser、桌面或 Shell。
 更完整的范围见 [Connector 文档](docs/CONNECTORS.md)。
 

@@ -279,7 +279,9 @@ test('Daxiang dynamically paginates all current session types and reads an uncon
   assert.deepEqual(listed.targets.map((target) => target.type), ['chat', 'groupchat']);
   assert.equal(listed.nextCursor, '2');
   assert.equal(listed.complete, false);
-  assert.match(listed.contextReadUsage, /nextCursor=null/);
+  assert.match(listed.contextReadUsage, /默认只检查最近一页/);
+  assert.match(listed.contextReadUsage, /owner 明确要求更早\/全部/);
+  assert.doesNotMatch(listed.contextReadUsage, /直到 nextCursor=null/);
 
   const second = await (adapter as unknown as {
     listTargets(input: Record<string, unknown>): Promise<{
@@ -307,6 +309,41 @@ test('Daxiang dynamically paginates all current session types and reads an uncon
     text: 'must remain write-bound',
     latestFingerprint: context.latestFingerprint,
   }), /configured allowlist/);
+});
+
+test('Daxiang defaults to one recent page and leaves older pagination optional', async () => {
+  const driver = new FakeDriver();
+  driver.sessions = Array.from({ length: 25 }, (_, index) => ({
+    sid: String(1_000 + index),
+    type: index % 2 === 0 ? 'chat' as const : 'groupchat' as const,
+    label: `session-${index}`,
+  }));
+  driver.sessions[0] = { sid: '123', type: 'chat', label: 'Owner Self' };
+  driver.loadedSessionCount = driver.sessions.length;
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-recent-default-${Date.now()}.json`),
+  });
+  await adapter.health({ probe: true });
+
+  const listed = await (adapter as unknown as {
+    listTargets(): Promise<{
+      order: string;
+      scope: string;
+      returnedTargetCount: number;
+      nextCursor: string | null;
+      contextReadUsage: string;
+    }>;
+  }).listTargets();
+
+  assert.equal(listed.order, 'recent_activity_desc');
+  assert.equal(listed.scope, 'recent');
+  assert.equal(listed.returnedTargetCount, 20);
+  assert.equal(listed.nextCursor, '20');
+  assert.match(listed.contextReadUsage, /仅供当前页信息不足/);
+  assert.doesNotMatch(listed.contextReadUsage, /持续分页|直到.*null/);
 });
 
 function config() {
