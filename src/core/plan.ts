@@ -8,7 +8,7 @@ import {
   type CompletionContract,
   type CompletionCriterion,
 } from './completion.js';
-import { RunFailureError } from '../runtime/run-failure.js';
+import { RunFailureError } from './run-failure.js';
 
 export interface PlanStep {
   id: string;

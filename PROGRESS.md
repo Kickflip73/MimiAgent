@@ -45,6 +45,12 @@
 - The post-eval source already constructs both the model request and status snapshot from the same final Tool array; no production branch was needed.
 - Added two architecture scenarios (general Workstation and Plan Full Owner) proving status Tool IDs equal the actual model-facing request and available Tool items.
 
+## 2026-07-30 release verification
+- `npm test` passed 745/745 with skip/todo=0; standalone `npm run build` passed.
+- First `npm run ci` stopped at dependency direction because Goal core imported the runtime failure contract.
+- Moved the typed failure disposition to core with a runtime compatibility export; repository hygiene, release consistency, dependency direction, asset boundaries, typecheck, and the 10 affected focused tests now pass.
+- Final CI rerun remains pending.
+
 ## 2026-07-28 M1 heartbeat blocked by runtime drift
 
 1. `2026-07-28T12:22:34.171Z` heartbeat 观察到 Daemon 已从目标构建
