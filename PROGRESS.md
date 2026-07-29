@@ -51,6 +51,13 @@
 - Moved the typed failure disposition to core with a runtime compatibility export; repository hygiene, release consistency, dependency direction, asset boundaries, typecheck, and the 10 affected focused tests now pass.
 - Final CI rerun remains pending.
 
+## 2026-07-30 final verification and handoff
+- Final `npm run ci` passed: repository/release/dependency/asset checks, typecheck, 747/747 coverage tests with skip/todo=0, 86.70% lines / 76.95% branches / 83.68% functions, build, and package smoke.
+- Standalone evidence also passed: focused R1 30/30, R2 31/31, R3 113/113, R4 29/29, capability contract 2/2, `npm test` 745/745, and `npm run build`.
+- No Daemon install/restart or real account/message/UI mutation was performed. Temporary-root MimiAgent recovery tests exercised durable receipts and restart recovery locally; this is not presented as a live-provider eval.
+- Remaining planned roots are Memory blob/provenance atomicity, bounded runtime status/context cost, and broader Computer focus semantics; R5 required no production change because current source already shares the final Tool array.
+- Task-owned commits: `12cf9f9`, `00375f6`, `b796cfa`, `696cb00`, `410f1a5`, `5eb2ead`, `b9c5ea6`, plus this final documentation commit.
+
 ## 2026-07-28 M1 heartbeat blocked by runtime drift
 
 1. `2026-07-28T12:22:34.171Z` heartbeat 观察到 Daemon 已从目标构建
