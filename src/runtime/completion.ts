@@ -16,7 +16,7 @@ export function createCompletionTools(callbacks: {
   return [
     tool({
       name: 'prepare_task',
-      description: '仅为已经存在或刚由 set_goal 创建的持久 Goal 建立 Completion Contract。普通问答和短操作禁止调用。Goal 创建后、执行副作用前给出 1-8 条可验证验收条件。',
+      description: '为将要创建或已经恢复的持久 Goal 冻结 Completion Contract。新 Goal 必须先调用本工具，再用 set_goal 将目标和 Contract 一次提交；普通问答和短操作禁止调用。',
       parameters: completionContractSchema,
       execute: async (contract) => {
         await callbacks.prepare(contract);

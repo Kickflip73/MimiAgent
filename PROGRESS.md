@@ -30,6 +30,11 @@
 - Green: typed state-conflict/unsupported and structured transient scenarios passed; focused retry/recovery/provider/run-service suite passed 31/31 and `npm run check` passed.
 - Result: retry now consumes phase/kind/retryable/dispatchStarted, typed facts outrank transport status, unclassified errors execute once, and natural-language error text no longer routes retries.
 
+## 2026-07-30 R3 atomic revisioned Goal
+- Red: both aggregate scenarios failed because `createGoal`/revision CAS did not exist.
+- Green: conflict-create/stale-update and continue/cancel scenarios passed 2/2; expanded Goal/Completion/core/run suite passed 113/113 and `npm run check` passed.
+- Result: prepared Contract + Goal setup is one PlanStore commit; active Goals cannot be overwritten, mutations require goalId/revision, cancel is explicit/idempotent, and free-text equality no longer grants resume ownership.
+
 ## 2026-07-28 M1 heartbeat blocked by runtime drift
 
 1. `2026-07-28T12:22:34.171Z` heartbeat 观察到 Daemon 已从目标构建

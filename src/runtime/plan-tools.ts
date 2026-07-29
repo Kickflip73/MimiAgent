@@ -5,6 +5,7 @@ import {
   type CompletionContract,
 } from '../core/completion.js';
 import type { Goal, PlanStore } from '../core/plan.js';
+import { RunFailureError } from './run-failure.js';
 
 export interface PlanToolOptions {
   beforeGoalSet?: () => void | Promise<void>;
@@ -77,35 +78,64 @@ export function createPlanTools(store: PlanStore, options: PlanToolOptions = {})
     }),
     tool({
       name: 'set_goal',
-      description: '为需要跨多轮或跨重启继续的长任务设置持久 Goal，并在开始执行前给出可验证验收条件。',
+      description: '在 prepare_task 已冻结 Completion Contract 后，一次性创建需要跨多轮或跨重启继续的持久 Goal。已有未完成 Goal 时拒绝覆盖。',
       parameters: z.object({
         objective: z.string().min(1).max(2_000),
         acceptanceCriteria: z.array(completionCriterionSchema).min(1).max(8),
       }),
       execute: async ({ objective, acceptanceCriteria }) => {
+        const contract = options.completionContract?.();
+        if (!contract) {
+          throw new RunFailureError(
+            'goal_contract_missing',
+            '创建 Goal 前必须先调用 prepare_task 冻结 Completion Contract',
+            {
+              phase: 'pre_dispatch',
+              kind: 'state_conflict',
+              retryable: false,
+              dispatchStarted: false,
+            },
+          );
+        }
+        if (JSON.stringify(contract.criteria) !== JSON.stringify(acceptanceCriteria)) {
+          throw new RunFailureError(
+            'goal_acceptance_mismatch',
+            'set_goal 的 acceptanceCriteria 必须等于已冻结 Completion Contract criteria',
+            {
+              phase: 'pre_dispatch',
+              kind: 'validation',
+              retryable: false,
+              dispatchStarted: false,
+            },
+          );
+        }
         await options.beforeGoalSet?.();
-        const goal = await store.setGoal(
+        const goal = await store.createGoal({
           objective,
-          acceptanceCriteria,
-          options.completionContract?.(),
-        );
+          completionContract: contract,
+        });
         await options.onGoalSet?.(goal);
         return goal;
       },
     }),
     tool({
       name: 'update_goal',
-      description: '保存长期 Goal 的状态、下一步和简短检查点，供之后 /resume 恢复。',
+      description: '使用 goalId + expectedRevision CAS 保存长期 Goal 状态、下一步和检查点；cancelled 是明确终态。',
       parameters: z.object({
-        status: z.enum(['active', 'paused', 'completed', 'failed']).optional(),
+        goalId: z.string().min(1),
+        expectedRevision: z.number().int().positive(),
+        status: z.enum(['active', 'paused', 'completed', 'failed', 'cancelled']).optional(),
         nextAction: z.string().max(2_000).optional(),
         checkpoint: z.string().max(8_000).optional(),
       }),
-      execute: async (update) => {
+      execute: async ({ goalId, expectedRevision, ...update }) => {
         if (update.status === 'completed') {
           throw new Error('Goal 不能由模型直接标记 completed；请调用 finish_task 通过 Completion Gate');
         }
-        return store.checkpoint(update);
+        if (update.status === 'cancelled') {
+          return store.cancelGoal({ goalId, expectedRevision, checkpoint: update.checkpoint });
+        }
+        return store.checkpoint(update, { goalId, expectedRevision });
       },
     }),
     tool({

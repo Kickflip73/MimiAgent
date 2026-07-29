@@ -744,8 +744,7 @@ export class MimiAgent {
       : undefined;
     const resumesGoal = activeStoredGoal !== undefined && (
       (resumesCheckpoint && recovery.goalCreatedAt === activeStoredGoal.createdAt)
-      || options?.resumeState === true
-      || textInput.trim() === activeStoredGoal.objective.trim());
+      || options?.resumeState === true);
     const goal = resumesGoal ? activeStoredGoal : undefined;
     run.completionRequired = completionToolsAllowed && resumesGoal;
     if (resumesGoal && activeStoredGoal.completionContract) {
@@ -844,19 +843,16 @@ export class MimiAgent {
       ...(completionToolsAllowed ? createCompletionTools({
         prepare: async (contract) => {
           if (this.activeRun !== run) throw new Error('Completion Contract 所属 Run 已失效');
-          if (!run.goalCreatedAt) throw new Error('普通任务不使用 Completion Contract；请先显式调用 set_goal 创建持久 Goal');
           const accepted = assertCompletionContractForTask(contract, run.completionContract);
           run.completionRequired = true;
           run.completionContract = accepted;
           run.completionReport = undefined;
-          await Promise.all([
-            run.session.updateRunCompletion({
-              completionContract: accepted,
-              completionReport: undefined,
-              completionGate: undefined,
-            }, run.runId),
-            runPlans.setGoalCompletionContract(accepted),
-          ]);
+          await run.session.updateRunCompletion({
+            completionContract: accepted,
+            completionReport: undefined,
+            completionGate: undefined,
+          }, run.runId);
+          if (run.goalCreatedAt) await runPlans.setGoalCompletionContract(accepted);
         },
         finish: async (report) => {
           if (this.activeRun !== run) throw new Error('Completion Gate 所属 Run 已失效');

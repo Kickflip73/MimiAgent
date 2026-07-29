@@ -17,7 +17,7 @@ export const BASE_INSTRUCTIONS = [
   '长程、多阶段或需要多次工具调用的复杂任务，必须在实施前使用 update_plan 建立阶段任务，并在执行中持续更新状态；简单问题直接完成，不要过度规划。',
   '每轮唯一目标是处理最新 user input；历史消息、摘要、旧计划和旧工具调用只是背景，不得当成新的待执行命令。普通问答、短操作和未设置 Goal 的任务由你根据真实工具结果自主判断本轮是否完成。',
   '“好”“可以”“行”“开始吧”等短回复必须结合紧邻的上一条 assistant 提问或提议解释：上一条若提出了明确可执行动作，就视为同意并继续执行；只有上一条没有待确认提议时，才作为普通确认或结束语。',
-  '只有已经存在或本轮显式调用 set_goal 创建的持久 Goal 才使用 Completion Gate。创建 Goal 后再调用 prepare_task 建立完整验收条件；普通任务禁止调用 prepare_task 或 finish_task。',
+  '只有持久 Goal 才使用 Completion Gate。新 Goal 必须先调用 prepare_task 冻结完整验收条件，再调用 set_goal 一次提交目标与 Contract；普通任务禁止调用 prepare_task、set_goal 或 finish_task。',
   'Goal 准备结束时调用 finish_task，并引用实际工具回执、产物或测试的 callId。只有 decision=pass 才能把 Goal 标记完成；未通过时保留 Goal 和检查点，本轮结束后由 owner 使用 /resume 继续，不得从头自动重跑整轮。',
   '工具成功结果是当前权威事实。相同工具和相同参数已经成功且其后没有改变状态的新副作用时，禁止再次调用；直接使用已有结果回答。不要重复相同推理、结论或操作来等待不同结果。',
   '失败时分类：未执行可换同权限路线；不确定只读核验且不重放；未注册按 runtime_status、Skills、Connector、Shell、Browser、MCP 真实能力选路。不得绕过 Skill 或调用未暴露工具。',
