@@ -69,6 +69,11 @@ import {
   type DiagnosticStorageSnapshot,
 } from './diagnostics.js';
 import { rotateDaemonLogs } from './log-maintenance.js';
+import {
+  DaemonLifecycleStore,
+  type DaemonLifecycleEpoch,
+  type DaemonLifecycleStopReason,
+} from './lifecycle.js';
 import { classifyReadinessUnknown } from './operational-classification.js';
 import {
   BACKGROUND_DEFAULTS_VERSION,
@@ -1282,6 +1287,7 @@ export function launchAgentPlist(config: AppConfig, entry = process.argv[1], exe
   const paths = mimiPaths(config);
   const argumentsXml = [process.execPath, ...execArgs, entry, 'daemon', 'run'].map(plistString).join('\n');
   const environment = daemonLaunchEnvironment(config);
+  environment.MIMI_DAEMON_SUPERVISOR = 'launchd';
   const environmentXml = Object.entries(environment)
     .map(([key, value]) => `      <key>${xml(key)}</key>\n      <string>${xml(value)}</string>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -1359,6 +1365,19 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
   const controlToken = await readControlToken(paths.socket);
   if (!controlToken) throw new Error('MimiAgent IPC 控制令牌缺失');
   const store = new MimiStore(paths.database);
+  const workerId = `${process.pid}-${randomUUID().slice(0, 8)}`;
+  const lifecycle = new DaemonLifecycleStore(paths.lifecycle);
+  let lifecycleEpoch: DaemonLifecycleEpoch = await lifecycle.begin({
+    buildVersion: MIMI_BUILD_VERSION,
+    pid: process.pid,
+    workerId,
+    workspaceRoot: config.workspaceRoot,
+    supervisor: process.env.MIMI_DAEMON_SUPERVISOR === 'launchd'
+      ? 'launchd'
+      : process.env.MIMI_DAEMON_SUPERVISOR === 'detached'
+        ? 'detached'
+        : 'foreground',
+  });
   let host: MimiHost | undefined;
   let connectors: ConnectorManager | undefined;
   let webhook: MimiWebhookServer | undefined;
@@ -1371,13 +1390,30 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
   const stopping = new AbortController();
   const mutationGate = new DaemonMutationGate();
   const ephemeralSecrets = new EphemeralSecretBroker();
-  const stop = () => {
+  let stopRequest: {
+    reason: DaemonLifecycleStopReason;
+    signal?: DaemonLifecycleEpoch['signal'];
+    exitCode: number;
+  } | undefined;
+  const stop = async (
+    reason: DaemonLifecycleStopReason,
+    signal?: DaemonLifecycleEpoch['signal'],
+    exitCode = 0,
+  ) => {
+    if (stopRequest) return;
+    stopRequest = { reason, ...(signal ? { signal } : {}), exitCode };
+    lifecycleEpoch = await lifecycle.transition(lifecycleEpoch.epochId, 'stopping', {
+      reason,
+      ...(signal ? { signal } : {}),
+    });
     if (!stopping.signal.aborted) stopping.abort();
   };
-  const onSignal = () => {
-    void mutationGate.closeAndWait().then(stop);
+  const onSignal = (signal: 'SIGINT' | 'SIGTERM') => {
+    process.exitCode = 1;
+    void mutationGate.closeAndWait().then(() => stop('signal', signal, 1));
   };
   let signalsRegistered = false;
+  let runtimeFailure: unknown;
   try {
     const runtimeConfig = (workspaceRoot?: string): AppConfig => workspaceRoot
       ? adoptRuntimeWorkspaceConfig(config, workspaceRoot)
@@ -1448,6 +1484,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       }
     };
     dispatcher = new MimiDispatcher(store, host, attention, notifier, connectors, {
+      workerId,
       maxConcurrentTasks: config.sessionMaxConcurrency ?? 4,
       claimTaskTypes: ['conversation'],
       onStreamEvent: (eventId, event) => {
@@ -1511,6 +1548,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       const computer = computerLifecycle?.status();
       return {
         ...status,
+        lifecycle: lifecycleEpoch,
         ...(providerHealth ? { providerHealth } : {}),
         ...(providerHealthRoutes?.length ? { providerHealthRoutes } : {}),
         ...(effectiveCapability ? {
@@ -2019,7 +2057,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         if (!mutationGate.beginShutdown()) {
           throw new Error('MimiAgent 仍有活动管理事务；为避免竞态，当前拒绝关闭。');
         }
-        setImmediate(stop);
+        setImmediate(() => { void stop('owner_shutdown'); });
         return { accepted: true };
       }
       throw new Error(`未知 MimiAgent RPC 方法：${method}`);
@@ -2033,21 +2071,68 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
     connectors.start();
     dispatcher.start();
     taskSupervisor.start();
+    lifecycleEpoch = await lifecycle.transition(lifecycleEpoch.epochId, 'online');
     await waitForAbort(stopping.signal);
+  } catch (error) {
+    runtimeFailure = error;
+    process.exitCode = 1;
+    if (lifecycleEpoch.phase !== 'failed') {
+      lifecycleEpoch = await lifecycle.transition(lifecycleEpoch.epochId, 'failed', {
+        reason: 'runtime_failure',
+        exitCode: 1,
+        error: error instanceof Error ? error.message : String(error),
+      }).catch(() => lifecycleEpoch);
+    }
+    throw error;
   } finally {
     if (signalsRegistered) {
       process.removeListener('SIGINT', onSignal);
       process.removeListener('SIGTERM', onSignal);
     }
-    await webhook?.close().catch(() => undefined);
-    await runtimeHttp?.close().catch(() => undefined);
-    await taskSupervisor?.stop().catch(() => undefined);
-    await dispatcher?.stop().catch(() => undefined);
-    await connectors?.stop().catch(() => undefined);
-    await server?.close().catch(() => undefined);
-    await host?.close().catch(() => undefined);
-    computerLifecycle?.stop();
-    store.close();
+    const cleanupErrors: string[] = [];
+    const cleanup = async (operation: (() => void | Promise<void>) | undefined) => {
+      if (!operation) return;
+      try {
+        await operation();
+      } catch (error) {
+        cleanupErrors.push(error instanceof Error ? error.message : String(error));
+      }
+    };
+    const finalWebhook = webhook;
+    const finalRuntimeHttp = runtimeHttp;
+    const finalTaskSupervisor = taskSupervisor;
+    const finalDispatcher = dispatcher;
+    const finalConnectors = connectors;
+    const finalServer = server;
+    const finalHost = host;
+    const finalComputerLifecycle = computerLifecycle;
+    await cleanup(finalWebhook ? () => finalWebhook.close() : undefined);
+    await cleanup(finalRuntimeHttp ? () => finalRuntimeHttp.close() : undefined);
+    await cleanup(finalTaskSupervisor ? () => finalTaskSupervisor.stop() : undefined);
+    await cleanup(finalDispatcher ? () => finalDispatcher.stop() : undefined);
+    await cleanup(finalConnectors ? () => finalConnectors.stop() : undefined);
+    await cleanup(finalServer ? () => finalServer.close() : undefined);
+    await cleanup(finalHost ? () => finalHost.close() : undefined);
+    await cleanup(finalComputerLifecycle ? () => finalComputerLifecycle.stop() : undefined);
+    await cleanup(() => store.close());
+    if (!runtimeFailure && cleanupErrors.length > 0) {
+      process.exitCode = 1;
+      lifecycleEpoch = await lifecycle.transition(lifecycleEpoch.epochId, 'failed', {
+        reason: 'cleanup_failure',
+        exitCode: 1,
+        error: cleanupErrors.join('; '),
+      }).catch(() => lifecycleEpoch);
+    } else if (!runtimeFailure && stopRequest) {
+      lifecycleEpoch = await lifecycle.transition(
+        lifecycleEpoch.epochId,
+        stopRequest.reason === 'owner_shutdown' ? 'stopped' : 'failed',
+        {
+          reason: stopRequest.reason,
+          ...(stopRequest.signal ? { signal: stopRequest.signal } : {}),
+          exitCode: stopRequest.exitCode,
+        },
+      ).catch(() => lifecycleEpoch);
+    }
   }
 }
 
@@ -2136,6 +2221,7 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
         env: {
           ...process.env,
           ...daemonLaunchEnvironment(config),
+          MIMI_DAEMON_SUPERVISOR: 'detached',
         },
       });
       child.unref();
