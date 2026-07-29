@@ -9,7 +9,6 @@ import {
   type ModelTarget,
 } from './core/model-routing.js';
 import type { SessionSummary } from './core/session.js';
-import type { ConfiguredProvider } from './provider-config.js';
 import { OUTPUT_LEVELS, type OutputLevel } from './terminal.js';
 
 export type CommandResult = 'handled' | 'exit' | 'pass';
@@ -108,7 +107,7 @@ export interface CommandRunOptions {
 }
 
 export interface ModelChoice {
-  provider: ModelProvider;
+  provider: string;
   providerLabel: string;
   model: string;
 }
@@ -275,31 +274,49 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   archived: '已归档',
 };
 
-function globalModelChoices(
-  providers: readonly ConfiguredProvider[] | undefined,
-  currentProvider: ModelProvider,
-  currentModels: readonly string[],
-): ModelChoice[] {
-  const configured = providers?.length
-    ? providers
-    : [{
-        id: currentProvider,
-        label: currentProvider,
-        model: currentModels[0] ?? '',
-        models: [...currentModels],
-      }];
-  return configured.flatMap((provider) => provider.models.map((model) => ({
-    provider: provider.id,
-    providerLabel: provider.label,
-    model,
-  })));
+function modelControlChoices(value: unknown): ModelChoice[] {
+  if (!Array.isArray(value)) throw new Error('模型控制面返回了无效列表');
+  return value.flatMap((item): ModelChoice[] => {
+    if (!item || typeof item !== 'object') return [];
+    const record = item as {
+      kind?: unknown;
+      target?: unknown;
+      provider?: unknown;
+    };
+    if (record.kind !== 'agent') return [];
+    const target = modelTargetSchema.safeParse(record.target);
+    if (!target.success) return [];
+    const provider = record.provider && typeof record.provider === 'object'
+      ? record.provider as { label?: unknown }
+      : undefined;
+    return [{
+      provider: target.data.providerId,
+      providerLabel: typeof provider?.label === 'string'
+        ? provider.label
+        : target.data.providerId,
+      model: target.data.modelId,
+    }];
+  });
+}
+
+function currentModelTarget(value: unknown): ModelTarget | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as { next?: unknown; sessionTarget?: unknown };
+  if (record.next && typeof record.next === 'object') {
+    const next = modelTargetSchema.safeParse((record.next as { target?: unknown }).target);
+    if (next.success) return next.data;
+  }
+  const sessionTarget = modelTargetSchema.safeParse(record.sessionTarget);
+  return sessionTarget.success ? sessionTarget.data : undefined;
 }
 
 function resolveModelChoice(
   model: string,
   choices: readonly ModelChoice[],
-  currentProvider: ModelProvider,
+  currentProvider: string,
 ): ModelChoice {
+  const exact = choices.find((choice) => `${choice.provider}/${choice.model}` === model);
+  if (exact) return exact;
   const matches = choices.filter((choice) => choice.model === model);
   const selected = matches.find((choice) => choice.provider === currentProvider) ?? matches[0];
   if (!selected) {
@@ -535,23 +552,27 @@ export class CommandHandler {
       if (controlRequest) {
         return this.handled(taskValue(await this.agent.modelControl(controlRequest), 12_000));
       }
-      const [info, currentModels] = await Promise.all([
+      const [info, listedModels, currentModel] = await Promise.all([
         this.agent.runtimeInfo(),
-        this.agent.availableModels(),
+        this.agent.modelControl({ action: 'list' }),
+        this.agent.modelControl({ action: 'current' }),
       ]);
-      const choices = globalModelChoices(info.configuredProviders, info.provider, currentModels);
+      const choices = modelControlChoices(listedModels);
+      const currentTarget = currentModelTarget(currentModel) ?? {
+        providerId: info.provider,
+        modelId: info.model,
+      };
       const selected = argument
-        ? resolveModelChoice(argument, choices, info.provider)
-        : await this.ui.selectModel?.(choices, { provider: info.provider, model: info.model });
+        ? resolveModelChoice(argument, choices, currentTarget.providerId)
+        : await this.ui.selectModel?.(choices, {
+            provider: currentTarget.providerId,
+            model: currentTarget.modelId,
+          });
       if (!selected) return this.ui.selectModel ? 'handled' : this.handled(`当前模型：${info.model}`);
-      if (selected.provider === info.provider) {
-        await this.agent.switchModel(selected.model);
-        return this.handled(`已切换模型：${selected.model}`);
-      }
-      if (!this.ui.switchProvider) {
-        throw new Error(`模型 ${selected.model} 属于 ${selected.provider} Provider，当前界面不支持跨 Provider 切换`);
-      }
-      await this.ui.switchProvider(selected.provider, selected.model);
+      await this.agent.modelControl({
+        action: 'use',
+        target: { providerId: selected.provider, modelId: selected.model },
+      });
       return this.handled(`已切换模型：${selected.model}（${selected.provider}）`);
     }
     if (command === '/mode') {
