@@ -406,8 +406,8 @@ export class DaxiangWebAdapter {
     try {
       await this.driver.locate(this.config.tabMarker, probe);
       const inspect = await this.#bridgeCall('inspect', { selfSid: this.config.selfConversation.sid }, probe);
-      const accountFingerprint = inspect.selfRowCount === 1 && inspect.selfRowLabel
-        ? sha256(`daxiang-web-v1\0${ORIGIN}\0${this.config.selfConversation.sid}\0${sha256(inspect.selfRowLabel)}`)
+      const accountFingerprint = inspect.selfIdentityUnique === true && inspect.selfIdentityLabel
+        ? sha256(`daxiang-web-v1\0${ORIGIN}\0${this.config.selfConversation.sid}\0${sha256(inspect.selfIdentityLabel)}`)
         : undefined;
       const pageFingerprint = pageFingerprintFor(inspect.pageShape);
       const accountVerified = Boolean(

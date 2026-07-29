@@ -3,6 +3,7 @@ import { chmod, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import { z } from 'zod';
+import { ActionFailedSafeError } from '../core/action-intent.js';
 import { derivedSessionId } from './policy.js';
 import {
   PermanentDeliveryError,
@@ -906,7 +907,7 @@ export class ConnectorManager {
       .filter((action) => action.name === request.action && action.capability === request.capability)
       .map((action) => ({ connector, action })));
     if (declared.length === 0) {
-      throw new Error(
+      throw new ActionFailedSafeError(
         `capability_unavailable：没有 Connector 声明 ${request.capability}/${request.action}`,
       );
     }
@@ -920,10 +921,12 @@ export class ConnectorManager {
           : !connector.online ? 'offline'
             : connector.readiness.stale === true ? 'stale' : 'not_ready'}`
       )).join(',');
-      throw new Error(`capability_unavailable：${request.capability}/${request.action} 当前不可执行（${reasons}）`);
+      throw new ActionFailedSafeError(
+        `capability_unavailable：${request.capability}/${request.action} 当前不可执行（${reasons}）`,
+      );
     }
     if (ready.length > 1) {
-      throw new Error(
+      throw new ActionFailedSafeError(
         `capability_ambiguous：${request.capability}/${request.action} 同时由 ${ready
           .map(({ connector }) => connector.id).join('、')} 提供`,
       );
@@ -1008,7 +1011,27 @@ export class ConnectorManager {
 
   private executeRegisteredAction(request: ConnectorActionRequest): Promise<unknown> {
     const connector = this.connectors.get(request.connector);
-    if (!connector) throw new Error(`未找到 Connector ${request.connector}`);
+    if (!connector) throw new ActionFailedSafeError(`未找到 Connector ${request.connector}`);
+    const capability = connector.capability();
+    const action = capability.actions.find((candidate) => candidate.name === request.action);
+    if (!action) {
+      throw new ActionFailedSafeError(
+        `Connector ${request.connector} 未声明 action ${request.action}`,
+      );
+    }
+    if (action.capability.startsWith('desktop.')) {
+      const claimedBy = this.listCapabilities().find((candidate) => (
+        candidate.id !== request.connector
+        && candidate.enabled
+        && candidate.claimedComputerApps.includes(request.target)
+      ));
+      if (claimedBy) {
+        throw new ActionFailedSafeError(
+          `route_owner_conflict：资源 ${request.target} 已由 ${claimedBy.id} 声明，`
+          + `${request.connector} 不得跨执行面接管`,
+        );
+      }
+    }
     if (!request.connector.startsWith('personal-')) {
       return connector.executeAction(request.action, request.target, request.payload);
     }

@@ -655,6 +655,94 @@ test('daemon retries replay native MCP calls through the execution ledger', asyn
   assert.equal(executions, 2);
 });
 
+test('uncertain ActionIntent freezes later actions but keeps the Run available for reads', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ledger-uncertain-fence-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  let firstExecutions = 0;
+  let fallbackExecutions = 0;
+  let readExecutions = 0;
+  const actionTool = (
+    name: 'computer_act' | 'invoke_capability',
+    execute: () => Promise<unknown>,
+    route: string,
+    outcome: 'confirmed' | 'uncertain' = 'confirmed',
+  ) => {
+    const value = tool({
+      name,
+      description: 'fixture action',
+      parameters: z.object({ target: z.string() }),
+      execute,
+    }) as ReturnType<typeof tool> & {
+      [TOOL_ACTION_INTENT]?: (rawInput: string) => {
+        actionFamily: string;
+        targetRef: string;
+        payload: unknown;
+        selectedRoute: string;
+        effect: 'write';
+        outcome: () => 'confirmed' | 'uncertain';
+      };
+    };
+    value[TOOL_ACTION_INTENT] = (rawInput) => ({
+      actionFamily: 'desktop.apps.activate',
+      targetRef: JSON.parse(rawInput).target as string,
+      payload: rawInput,
+      selectedRoute: route,
+      effect: 'write',
+      outcome: () => outcome,
+    });
+    return value;
+  };
+  const first = actionTool('computer_act', async () => {
+    firstExecutions += 1;
+    throw new Error('connection ended after dispatch');
+  }, 'computer', 'uncertain');
+  const fallback = actionTool('invoke_capability', async () => {
+    fallbackExecutions += 1;
+    return { outcome: 'confirmed' };
+  }, 'connector');
+  const read = tool({
+    name: 'read_file',
+    description: 'fixture read',
+    parameters: z.object({ path: z.string() }),
+    execute: async () => {
+      readExecutions += 1;
+      return 'bounded evidence';
+    },
+  });
+  const wrapped = withExecutionLedger([first, fallback, read], ledger, () => ({
+    sessionId: 'owner',
+    runId: 'event:uncertain-fence',
+    semanticCallIds: true,
+    guardedActionContext: {
+      ownerAuthenticated: true,
+      exactTarget: true,
+      lowRisk: true,
+      reversible: true,
+    },
+  }));
+  const invoke = (index: number, input: unknown, callId: string) => {
+    const selected = wrapped[index];
+    assert.ok(selected && 'invoke' in selected);
+    return selected.invoke(
+      new RunContext({}),
+      JSON.stringify(input),
+      { toolCall: { callId } } as never,
+    );
+  };
+
+  const uncertain = await invoke(0, { target: 'com.example.app' }, 'first') as Record<string, unknown>;
+  assert.equal(uncertain.mimiStatus, 'action_uncertain');
+  assert.equal(uncertain.retryable, false);
+  assert.equal(uncertain.sideEffectsFrozen, true);
+
+  const fenced = await invoke(1, { target: 'com.example.app' }, 'fallback') as Record<string, unknown>;
+  assert.equal(fenced.mimiStatus, 'action_uncertain');
+  assert.equal(fallbackExecutions, 0);
+  assert.equal(await invoke(2, { path: 'README.md' }, 'read'), 'bounded evidence');
+  assert.equal(firstExecutions, 1);
+  assert.equal(readExecutions, 1);
+});
+
 test('native MCP calls with an uncertain result are never executed again automatically', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-mcp-ledger-failure-'));
   const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));

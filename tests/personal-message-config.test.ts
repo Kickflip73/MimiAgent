@@ -91,3 +91,58 @@ test('generic connector_action cannot reach personal-message send_message', asyn
     store.close();
   }
 });
+
+test('desktop connector cannot take over a resource claimed by another enabled route owner', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'connector-route-owner-'));
+  const configFile = path.join(root, 'connectors.json');
+  await writeFile(configFile, `${JSON.stringify({
+    backgroundDefaultsVersion: 2,
+    connectors: {
+      'personal-channel': {
+        enabled: true,
+        command: process.execPath,
+        args: [],
+        source: 'personal-message:fixture',
+        trust: 'external',
+        profileId: 'owner',
+        restart: false,
+        claimedComputerApps: ['com.example.personal'],
+        actions: {
+          get_context: {
+            description: 'read context',
+            capability: 'personal-message.context.read',
+            effect: 'read',
+          },
+        },
+      },
+      'desktop-control': {
+        enabled: true,
+        command: process.execPath,
+        args: [],
+        source: 'desktop:fixture',
+        trust: 'owner',
+        profileId: 'owner',
+        restart: false,
+        actions: {
+          activate_app: {
+            description: 'activate app',
+            capability: 'desktop.apps.activate',
+            effect: 'write',
+          },
+        },
+      },
+    },
+  })}\n`);
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  try {
+    const manager = await ConnectorManager.load(configFile, store, new NotifierRegistry());
+    await assert.rejects(() => manager.executeAction({
+      connector: 'desktop-control',
+      action: 'activate_app',
+      target: 'com.example.personal',
+      payload: {},
+    }), /route_owner_conflict|不得跨执行面接管/);
+  } finally {
+    store.close();
+  }
+});

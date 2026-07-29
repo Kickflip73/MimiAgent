@@ -115,6 +115,20 @@
     const selfLabelElement = selfRows.length === 1
       ? selfRows[0].querySelector('.session-name, .comp-session-name, .nickname, [data-session-name]')
       : null;
+    const identityLabels = Array.from(document.querySelectorAll(`[uid="${selfSid}"]`))
+      .map((element) => normalizeText(element.closest('[data-title]')?.getAttribute('data-title')))
+      .filter(Boolean);
+    const uniqueIdentityLabels = [...new Set(identityLabels)];
+    const rowLabel = selfRows.length === 1
+      ? normalizeText(
+          selfRows[0].getAttribute('data-session-name')
+          || selfLabelElement?.innerText
+          || selfLabelElement?.textContent
+          || selfRows[0].getAttribute('title'),
+        )
+      : null;
+    const identityLabel = rowLabel
+      || (uniqueIdentityLabels.length === 1 ? uniqueIdentityLabels[0] : null);
     const shape = pageShape();
     return {
       version: VERSION,
@@ -123,15 +137,10 @@
       selected: selectedSession(),
       pageShape: shape,
       selfRowCount: selfRows.length,
-      selfRowLabel: selfRows.length === 1
-        ? normalizeText(
-            selfRows[0].getAttribute('data-session-name')
-            || selfLabelElement?.innerText
-            || selfLabelElement?.textContent
-            || selfRows[0].getAttribute('title'),
-          )
-        : null,
-      readable: shape.stableSessionCount > 0 && shape.inputCount === 1,
+      selfRowLabel: rowLabel,
+      selfIdentityLabel: identityLabel,
+      selfIdentityUnique: Boolean(identityLabel),
+      readable: shape.stableSessionCount > 0,
       sendStructureReady: shape.inputCount === 1 && shape.inputTag === 'TEXTAREA'
         && shape.sendButtonCount === 1,
     };

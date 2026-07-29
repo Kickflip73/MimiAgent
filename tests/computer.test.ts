@@ -267,6 +267,7 @@ test('protects control-plane apps and Connector-owned apps from Computer takeove
   );
 
   setTarget('com.google.Chrome');
+  assert.deepEqual(await manager.observe(authority, { scope: 'targets', limit: 50 }), { targets: [] });
   await assert.rejects(
     () => manager.observe(authority, {
       scope: 'window',

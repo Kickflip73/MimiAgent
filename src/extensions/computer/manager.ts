@@ -124,7 +124,14 @@ export class ComputerManager {
       && authority.supportsImageInput === false) {
       throw new Error('vision_unavailable：当前模型未声明图像输入能力');
     }
-    if (input.scope === 'targets') return { targets: await this.backend.listTargets(input, signal) };
+    if (input.scope === 'targets') {
+      const targets = await this.backend.listTargets(input, signal);
+      return {
+        targets: authority.deniedApps?.length
+          ? targets.filter((target) => !authority.deniedApps!.includes(target.bundleId))
+          : targets,
+      };
+    }
     const run = await this.run(authority.runId, signal);
     if (((input.scope === 'window' || input.scope === 'desktop') && input.includeScreenshot) || input.scope === 'region') {
       if (run.screenshots >= this.config.maxScreenshotsPerRun) throw new Error(`当前 Run 已达到 ${this.config.maxScreenshotsPerRun} 张截图上限`);

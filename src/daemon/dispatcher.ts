@@ -413,6 +413,11 @@ export class MimiDispatcher {
       const personalMessage = decision.personalMessage
         ? this.personalMessageScope(decision.personalMessage)
         : undefined;
+      const computerDeniedApps = this.connectors
+        ? [...new Set(this.connectors.listCapabilities()
+          .filter((connector) => connector.enabled)
+          .flatMap((connector) => connector.claimedComputerApps))]
+        : [];
       let completionDelivery: { suppressed: true; reason?: string } | undefined;
       const checkPreemption = () => {
         if (!this.options.claimTaskTypes?.includes('conversation')) return;
@@ -478,6 +483,7 @@ export class MimiDispatcher {
         options: {
           ...decision.options,
           ...(ephemeralOwnerInput ? { ephemeralOwnerInput } : {}),
+          ...(computerDeniedApps.length ? { computerDeniedApps } : {}),
           capabilityItems: this.connectors
             ? connectorEffectiveCapabilityItems(this.connectors)
             : [],

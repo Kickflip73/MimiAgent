@@ -116,6 +116,15 @@ function withExecutionEvidence(result: unknown, ref: string): unknown {
     : { result, mimiExecutionReceipt: evidence };
 }
 
+function uncertainActionFenceResult(error: ActionIntentUncertainError): Record<string, unknown> {
+  return {
+    mimiStatus: 'action_uncertain',
+    retryable: false,
+    sideEffectsFrozen: true,
+    message: `${error.message}。本轮后续 ActionIntent 已冻结；仍可继续只读检查并向用户报告，不得重放或换路。`,
+  };
+}
+
 export function withExecutionLedger(
   tools: Tool[],
   ledger: ExecutionLedger,
@@ -123,6 +132,7 @@ export function withExecutionLedger(
 ): Tool[] {
   const semanticOccurrences = new Map<string, number>();
   let previousSemanticKey: string | undefined;
+  let uncertainActionFence: ActionIntentUncertainError | undefined;
   return tools.map((tool) => {
     if (!isInvokable(tool)) return tool;
     const sideEffect = isSideEffectTool(tool.name);
@@ -150,6 +160,9 @@ export function withExecutionLedger(
         };
         const action = (tool as LedgerAwareTool)[TOOL_ACTION_INTENT]?.(input);
         if (!sideEffect || action?.effect === 'read') return invokeSanitized();
+        if (action && uncertainActionFence) {
+          return uncertainActionFenceResult(uncertainActionFence);
+        }
         const sdkCallId = details?.toolCall?.callId;
         const ledgerInput = (tool as LedgerAwareTool)[TOOL_LEDGER_ARGUMENTS]?.(input) ?? input;
         const argumentsJson = run?.semanticCallIds ? semanticArguments(ledgerInput) : ledgerInput;
@@ -196,40 +209,46 @@ export function withExecutionLedger(
             policyRevision,
             status: 'not_started' as const,
           };
-          const receipt = await ledger.executeActionIntent(
-            run.sessionId,
-            run.runId,
-            intent,
-            action.guarded
-              ? {
-                  ownerAuthenticated: run.guardedActionContext?.ownerAuthenticated === true,
-                  ...action.guarded,
-                  boundedLocal: action.guarded.boundedLocal === true
-                    && run.guardedActionContext?.boundedLocal === true,
-                }
-              : run.guardedActionContext ?? {
-                  ownerAuthenticated: false,
-                  exactTarget: false,
-                  lowRisk: false,
-                  reversible: false,
-                },
-            undefined,
-            async () => {
-              const output = await ledger.executeOnce({
-                sessionId: run.sessionId,
-                runId: run.runId,
-                toolName: tool.name,
-                callId,
-                ...(sdkCallId && sdkCallId !== callId ? { modelCallId: sdkCallId } : {}),
-                argumentsJson,
-              }, invokeAuthorized);
-              const outcome = action.outcome?.(output) ?? 'confirmed';
-              if (outcome === 'failed_safe') throw new ActionFailedSafeError('动作明确未执行，可安全换路');
-              if (outcome === 'uncertain') throw new ActionIntentUncertainError('动作结果不确定');
-              return output;
-            },
-          );
-          return withActionIntentEvidence(receipt);
+          try {
+            const receipt = await ledger.executeActionIntent(
+              run.sessionId,
+              run.runId,
+              intent,
+              action.guarded
+                ? {
+                    ownerAuthenticated: run.guardedActionContext?.ownerAuthenticated === true,
+                    ...action.guarded,
+                    boundedLocal: action.guarded.boundedLocal === true
+                      && run.guardedActionContext?.boundedLocal === true,
+                  }
+                : run.guardedActionContext ?? {
+                    ownerAuthenticated: false,
+                    exactTarget: false,
+                    lowRisk: false,
+                    reversible: false,
+                  },
+              undefined,
+              async () => {
+                const output = await ledger.executeOnce({
+                  sessionId: run.sessionId,
+                  runId: run.runId,
+                  toolName: tool.name,
+                  callId,
+                  ...(sdkCallId && sdkCallId !== callId ? { modelCallId: sdkCallId } : {}),
+                  argumentsJson,
+                }, invokeAuthorized);
+                const outcome = action.outcome?.(output) ?? 'confirmed';
+                if (outcome === 'failed_safe') throw new ActionFailedSafeError('动作明确未执行，可安全换路');
+                if (outcome === 'uncertain') throw new ActionIntentUncertainError('动作结果不确定');
+                return output;
+              },
+            );
+            return withActionIntentEvidence(receipt);
+          } catch (error) {
+            if (!(error instanceof ActionIntentUncertainError)) throw error;
+            uncertainActionFence = error;
+            return uncertainActionFenceResult(error);
+          }
         }
         const call = {
           sessionId: run.sessionId,

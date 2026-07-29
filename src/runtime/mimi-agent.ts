@@ -498,6 +498,9 @@ export class MimiAgent {
         ...((active.options?.computerApps ?? policy?.computerApps)
           ? { allowedApps: active.options?.computerApps ?? policy?.computerApps }
           : {}),
+        ...(active.options?.computerDeniedApps?.length
+          ? { deniedApps: active.options.computerDeniedApps }
+          : {}),
         supportsImageInput: this.modelProfile.supportsImageInput,
       };
     }) : [];

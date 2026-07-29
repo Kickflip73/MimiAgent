@@ -13,7 +13,7 @@
       "healthStabilityMs": 5000,
       "deliveryTimeoutMs": 30000,
       "actionTimeoutMs": 30000,
-      "claimedComputerApps": ["com.google.Chrome"],
+      "claimedComputerApps": ["com.google.Chrome", "cn.neixin.pc"],
       "actions": {
         "health_check": { "description": "只读检查大象个人账号、专用后台标签和页面兼容性；target=health，payloadJson={}", "capability": "personal-message.health.read", "effect": "read" },
         "list_targets": { "description": "列出配置允许且当前页面存在唯一候选的本人和 watch 稳定 sid，并报告 unavailableTargetCount；target=all，payloadJson={}", "capability": "personal-message.targets.read", "effect": "read" },

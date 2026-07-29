@@ -61,6 +61,21 @@ class FakeDriver {
     occurredAt: '2026-07-27T10:00:00.000Z',
     receipt: null,
   }];
+  selfRowCount = 1;
+  selfIdentityLabel = selfLabel;
+  inspectPageShape: {
+    bridgeMajor: number;
+    origin: string;
+    sessionTag: string;
+    stableSessionCount: number;
+    messageTag: string;
+    stableMessageCount: number;
+    inputCount: number;
+    inputTag: string | null;
+    sendButtonCount: number;
+    sendButtonTag: string | null;
+  } = pageShape;
+  readable = true;
 
   async locate(_marker?: string, _allowBind = false): Promise<Record<string, unknown>> {
     return { tab: { active: false } };
@@ -75,11 +90,13 @@ class FakeDriver {
     if (method === 'inspect') {
       result = {
         version: '1.0.0',
-        selfRowCount: 1,
-        selfRowLabel: selfLabel,
-        pageShape,
-        readable: true,
-        sendStructureReady: true,
+        selfRowCount: this.selfRowCount,
+        selfRowLabel: this.selfRowCount === 1 ? selfLabel : null,
+        selfIdentityLabel: this.selfIdentityLabel,
+        selfIdentityUnique: Boolean(this.selfIdentityLabel),
+        pageShape: this.inspectPageShape,
+        readable: this.readable,
+        sendStructureReady: this.inspectPageShape.inputCount === 1,
         selected: { sid: this.selectedSid, type: this.selectedType },
       };
     } else if (method === 'installObserver') result = { installed: true };
@@ -343,6 +360,32 @@ test('Daxiang account and page changes fail closed without losing honest bounded
   assert.equal(pageHealth.contextRead, 'bounded');
   assert.equal(pageHealth.coverage, 'bounded');
   assert.equal(pageHealth.outbound, 'unavailable');
+});
+
+test('Daxiang keeps bounded reads available on the session list before a composer is open', async () => {
+  const driver = new FakeDriver();
+  driver.selfRowCount = 0;
+  driver.inspectPageShape = {
+    ...pageShape,
+    inputCount: 0,
+    inputTag: null,
+    sendButtonCount: 0,
+    sendButtonTag: null,
+  };
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-session-list-${Date.now()}.json`),
+  });
+
+  const health = await adapter.health({ probe: true });
+  assert.equal(health.accountVerified, true);
+  assert.equal(health.targetBound, true);
+  assert.equal(health.coverage, 'bounded');
+  assert.equal(health.contextRead, 'bounded');
+  assert.equal(health.inbound, 'ready');
+  assert.equal(health.outbound, 'unavailable');
 });
 
 test('Daxiang rejects a configured binding that is absent or type-mismatched on the current page', async () => {
