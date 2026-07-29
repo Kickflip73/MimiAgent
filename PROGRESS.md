@@ -20,6 +20,9 @@
    idle，但运行构建仍为 `0.12.0+376bb1fbacc9`，不等于 heartbeat 锁定构建
    `0.12.0+9bf15be88f93`。本轮因精确构建门禁失败继续 blocked，未执行 canary；
    idle 不能弥补构建连续性中断。
+6. `2026-07-29T00:24:05.735Z` 观察时运行面继续 idle，Daemon 仍为
+   `0.12.0+376bb1fbacc9`，没有新的冻结部署或 T0 证据。本轮继续因精确构建门禁
+   blocked，未执行 canary，也未将旧 T0 或当前运行时计入 24h。
 
 ## 2026-07-28 M1 final runtime soak after owner-sensitive fix
 
