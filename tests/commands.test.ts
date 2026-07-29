@@ -345,6 +345,50 @@ test('lists models from every configured Provider and switches across Providers'
   assert.deepEqual(providerSwitches, [{ provider: 'openai-compatible', model: 'kimi-k3' }]);
 });
 
+test('supports structured multi-Provider model slash commands without restarting the Daemon', async () => {
+  const agent = fakeAgent();
+  const calls: unknown[] = [];
+  (agent as unknown as {
+    modelControl: (request: unknown) => Promise<unknown>;
+  }).modelControl = async (request) => {
+    calls.push(request);
+    return { request, daemonRestarted: false };
+  };
+  const output: string[] = [];
+  const handler = new CommandHandler(agent, async () => undefined, {
+    write: (text) => output.push(text),
+  });
+
+  assert.equal(await handler.execute('/models'), 'handled');
+  assert.equal(await handler.execute('/model current'), 'handled');
+  assert.equal(await handler.execute('/model inspect left/model-a'), 'handled');
+  assert.equal(await handler.execute('/model use right/model-b'), 'handled');
+  assert.equal(await handler.execute('/model auto'), 'handled');
+  assert.equal(await handler.execute('/model routes'), 'handled');
+  assert.equal(await handler.execute('/model route team.hard right/model-b'), 'handled');
+  assert.equal(await handler.execute('/model route team.simple auto'), 'handled');
+  assert.equal(await handler.execute('/model doctor'), 'handled');
+  assert.equal(await handler.execute('/model doctor left/model-a'), 'handled');
+
+  assert.deepEqual(calls, [
+    { action: 'list' },
+    { action: 'current' },
+    { action: 'inspect', target: { providerId: 'left', modelId: 'model-a' } },
+    { action: 'use', target: { providerId: 'right', modelId: 'model-b' } },
+    { action: 'auto' },
+    { action: 'routes' },
+    {
+      action: 'route',
+      scenario: 'team.hard',
+      target: { providerId: 'right', modelId: 'model-b' },
+    },
+    { action: 'route', scenario: 'team.simple', routeAuto: true },
+    { action: 'doctor' },
+    { action: 'doctor', target: { providerId: 'left', modelId: 'model-a' } },
+  ]);
+  assert.match(output.join('\n'), /daemonRestarted/);
+});
+
 test('allows runtime commands before the draft Session receives its first message', async () => {
   const switched: string[] = [];
   const modes: string[] = [];

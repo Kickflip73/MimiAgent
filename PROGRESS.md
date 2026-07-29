@@ -1,5 +1,31 @@
 # Progress
 
+## 2026-07-29 多 Provider、多模型分层路由
+
+1. 目标：按最终规格实现同一 Daemon 内 Session、场景、SubAgent、TeamTask 与 Media WorkUnit 独立冻结模型。
+2. 顺序：先恢复并复验 726 基线，再做 Gateway/Resolver，随后 Session 控制面、Team/SubAgent/后台/媒体，最后文档与总验收。
+3. 初始安全边界：不提交、推送、部署或重启真实 Daemon；owner 后续明确授权真实部署、重启和 Provider 验收，started/uncertain 仍不重放。
+4. 兼容边界：缺少新配置时合成 legacy target，旧 Session/Team JSON 继续可读，未知能力一律失败关闭。
+5. 最大风险：保留既有脏改动；owner 后续明确要求解除斜杠阻塞，仅增量放开 `commands.ts` 及必需的 `daemon/chat-client.ts`、`daemon/service.ts` 命令链。
+6. 环境差异：本地依赖未安装导致 `tsc` 不存在；detached HEAD 已核实为独立 worktree 预期状态，不做分支切换。
+7. 任务 0：`npm run check` 通过；全量首跑 720/726，六项 Cua/QQ 环境争用聚焦复跑 40/40 通过，证据已写 BLOCKED。
+8. 任务 1：Gateway/Resolver 缺失先红 0/3；route fallback reason 先红 0/1 后绿 1/1；配置原子性、四类 adapter、显式 client、capability fail-closed 均绿。
+9. 任务 2/3：Session/Team/后台冻结均红→绿；斜杠命令先把 `current` 误作模型名红 0/1，随后 parser/IPC/runtime/schema 聚焦 166/166 绿且不重启。
+10. 任务 4：文档已同步；最终 `752/752`、skip/todo 0，check:repo/check/build/test:package/diff-check 全绿；scope/secret 无未授权新增越界或真实凭据，多模型任务无 blocker。
+
+## 2026-07-29 多模型真实 Daemon 验收
+
+1. 重启前等待 Event/Task/Outbox/host mutation 全部归零；安装包与 Daemon 数据备份在 `/tmp/mimi-multimodel-live-20260729.xIc4QN`，数据库 integrity=ok。
+2. 两个真实 OpenAI-compatible 端点的裸 API 分别返回 `FRIDAY_ROUTE_OK`、`DEEPSEEK_ROUTE_OK`；私有 `models.json` 仅引用 credential 环境变量名，权限 `0600`。
+3. 首轮暴露 Conversation 带 cause 被误路由为 `background.default`：真实 Session B target=DeepSeek、实际 binding=Friday；新增策略红测 0/1 后按持久 Task kind 指定 scenario，绿 1/1。
+4. 修复部署后并发 Session C/D 分别返回 `SESSION_C_FRIDAY_OK`、`SESSION_D_DEEPSEEK_OK`，binding 均为 `conversation.default/session-preference` 且 target 不串。
+5. 运行中切换观察到第一 Run 保持 Friday，控制回执 `effective=next_run/daemonRestarted=false`，第二 Run 冻结 DeepSeek。
+6. 同一 Team wave 的 simple/hard task 均 completed，分别冻结 DeepSeek/Friday；SubAgent researcher 独立命中 DeepSeek 并返回 `SUBAGENT_DEEPSEEK_OK`。
+7. Friday 聊天成功但 Doctor 因可选 `/models/{id}` 返回 404 误报 unhealthy；adapter 红测 0/1 后改用通用 `/models`，两 Provider 的真实 `/models` 和 `/model doctor` 均 healthy。
+8. 当前没有 imageOutput 注册，真实已安装 Media Runtime 在 Provider 调用前明确 blocked；未把视觉理解或普通 Agent 模型当作生图模型。
+9. `/model route` 实机写入再恢复 auto，routeVersion 1→2→3，Daemon PID 始终 `81567`，证明普通路由修改不重启。
+10. 最终运行构建 `0.12.0+bc01c6e46deb`；未提交、未推送，真实多模型验收无 blocker。
+
 ## 2026-07-28 M1 heartbeat blocked by runtime drift
 
 1. `2026-07-28T12:22:34.171Z` heartbeat 观察到 Daemon 已从目标构建

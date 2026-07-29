@@ -69,6 +69,7 @@ export interface AppConfig {
   providerBaseUrl?: string;
   defaultModel?: string;
   availableModels?: string[];
+  modelsConfig?: string;
   workspaceRoot: string;
   dataRoot: string;
   daemonDataRoot?: string;
@@ -499,6 +500,7 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
   }
   const skillsRoot = preferredEnvironmentValue('MIMI_SKILLS_DIR', 'AGENT_SKILLS_DIR');
   const mcpConfig = preferredEnvironmentValue('MIMI_MCP_CONFIG', 'MCP_CONFIG');
+  const configuredModelsFile = preferredEnvironmentValue('MIMI_MODELS_CONFIG');
   const selectedMaxTurns = environmentEntry('MIMI_MAX_TURNS', 'MAX_TURNS');
   const configVersion = configurationVersion();
   const requestedSecurityProfile = configuredSecurityProfile();
@@ -532,6 +534,9 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
     workspaceRoot,
     dataRoot,
     daemonDataRoot,
+    modelsConfig: configuredModelsFile
+      ? expandHome(configuredModelsFile, homeDirectory)
+      : path.join(homeDirectory, '.mimi-agent', 'models.json'),
     skillsRoot: resolvedSkillsRoot,
     // Daemon workers receive the derived workspace default through the environment.
     // Treat an identical path as the project-native source rather than pinning it

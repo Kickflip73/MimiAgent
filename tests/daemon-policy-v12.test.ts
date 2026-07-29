@@ -90,6 +90,39 @@ test('resume authorization comes from local owner metadata instead of prompt tex
   assert.equal(structured.options?.resumeState, true);
 });
 
+test('run scenario follows the durable task kind instead of treating every Daemon cause as background', () => {
+  const owner = event({
+    source: 'local-cli',
+    trust: 'owner',
+    sessionKey: 'owner-session',
+    payload: { prompt: 'session-scoped request' },
+  });
+  assert.equal(decideEvent(owner).options?.scenario, 'conversation.default');
+  assert.equal(
+    decideEvent(owner, [], undefined, undefined, false, task({
+      type: 'conversation',
+      executor: 'session_actor',
+    })).options?.scenario,
+    'conversation.default',
+  );
+  assert.equal(
+    decideEvent(owner, [], undefined, undefined, false, task()).options?.scenario,
+    'background.default',
+  );
+  assert.equal(
+    decideEvent(owner, [], undefined, undefined, false, task({
+      type: 'scheduled',
+    })).options?.scenario,
+    'scheduled.default',
+  );
+  assert.equal(
+    decideEvent(owner, [], undefined, undefined, false, task({
+      type: 'memory_maintenance',
+    })).options?.scenario,
+    'memory-maintenance.default',
+  );
+});
+
 test('reply and work source policies grant distinct bounded authority', () => {
   const person = { id: 'alice', displayName: 'Alice', context: ['APAC owner contact'] };
   const reply = decideEvent(event({ actor: { id: 'alice' } }), ['answer directly'], person, 'reply');

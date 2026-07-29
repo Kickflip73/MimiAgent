@@ -265,9 +265,10 @@ Connector、清空历史或把 unknown 改名为 ready 达标。
 
 全局 order 也可在 owner 对话中直接管理：`list_mimi_standing_orders` 列出规则，`add_mimi_standing_order` 幂等添加，`remove_mimi_standing_order` 幂等删除。定向规则由 `list_mimi_source_policies`、`upsert_mimi_source_policy`、`remove_mimi_source_policy` 按稳定 ID 完整管理。写入沿用 Daily Routine 的最新文件读取、完整 schema 校验、进程内串行和 `0600` 原子替换，成功后立即影响后续事件；当前 owner 的明确命令仍然优先。
 
-Standing Orders 是 owner 管理的本机可信配置，但当前 owner 的明确命令优先。它们与 `MIMI.md` 分工如下：
+Standing Orders 是 owner 管理的本机可信配置，但当前 owner 的明确命令优先。它们与用户级文档分工如下：
 
-- `MIMI.md`：CLI 与 Daemon 共用的全局 Agent 行为、团队或项目规范。
+- `MIMI.md`：Mimi 的身份、人格、价值观与表达风格。
+- `PREFERENCES.md`：只注入 direct-owner 对话的 Mimi-only 稳定行为偏好。
 - `assistant.json decisionPolicy`：只针对长期在线事件的替身处理原则，以及来源/人物/会话差异。
 
 外部 Event 正文仍被单独标记为来源数据，不会因为命中了 source policy 而变成系统指令，也不能扩大目标、收件人、权限或副作用范围。`reply` 档不开放 Shell、文件写入、`http_request`、`connector_action`、后台委派或 Team；回复由原 Event 的可靠 Outbox 自动送回，不需要发送工具。`work` 档保留静态工作工具集，但仍排除策略/人物/Runtime/Connector 配置控制、Memory 写入、任意既有后台任务管理和未知 MCP。Task worker 只从仍存在且确认为 conversation root 的来源 Event 与当前 policy 重新计算授权；root/parent 缺失或指向另一个 Task 时，即使 Task 自带 owner provenance 或命中通配 policy 也强制最小策略。已接受的 Task 是执行队列，不再被 snooze、静默时段或 Attention 运行预算转成 Digest；这些限制只决定 Conversation 阶段是否接受/委派任务。Schedule occurrence 还必须与数据库中的 schedule 和 immutable Event identity 一致；撤销 external work policy 后，一次性任务只受限收尾，interval/watch 只可停止当前计划，伪造 occurrence 没有停止工具。只有 owner conversation root 的 write Task 获得 `connector_action`；外部 source-policy work Task 在后台仍可完成本地工作，但不会看到必然被 Broker 拒绝的 action 工具，完成或失败结果继续由 Outbox 原路返回。进入 Task lane 后不再开放 `delegate_background_task`，写任务拆分只用当前 Task 内的 Ultra Team，读任务只用确定性只读工具和只读 SubAgent。它不改变执行账本或 Action Bridge 不重放语义。

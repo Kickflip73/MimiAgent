@@ -2,6 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { assertSessionId } from './session-id.js';
 import { AtomicJsonStore } from './state-file.js';
+import {
+  modelRequirementsSchema,
+  modelTargetSchema,
+  type ModelRequirements,
+  type ModelTarget,
+  type TaskComplexity,
+} from './model-routing.js';
 
 export type TeamRole = 'explorer' | 'architect' | 'builder' | 'tester' | 'reviewer';
 export type TeamTaskStatus = 'pending' | 'running' | 'completed' | 'failed';
@@ -13,6 +20,10 @@ export interface TeamTask {
   status: TeamTaskStatus;
   dependencies: string[];
   paths: string[];
+  complexity?: TaskComplexity;
+  modelRequirements?: ModelRequirements;
+  modelTarget?: ModelTarget;
+  routeVersion?: number;
   owner?: string;
   ownerPid?: number;
   claimId?: string;
@@ -23,7 +34,10 @@ export interface TeamTask {
   updatedAt: string;
 }
 
-export type TeamTaskInput = Pick<TeamTask, 'id' | 'description' | 'role' | 'dependencies' | 'paths'>;
+export type TeamTaskInput = Pick<
+  TeamTask,
+  'id' | 'description' | 'role' | 'dependencies' | 'paths'
+> & Partial<Pick<TeamTask, 'complexity' | 'modelRequirements' | 'modelTarget' | 'routeVersion'>>;
 type StoredTeams = Record<string, TeamTask[]>;
 const TEAM_LEASE_MS = 5 * 60_000;
 
@@ -34,6 +48,10 @@ const storedTeamsSchema = z.record(z.string(), z.array(z.object({
   status: z.enum(['pending', 'running', 'completed', 'failed']),
   dependencies: z.array(z.string()),
   paths: z.array(z.string()),
+  complexity: z.enum(['simple', 'normal', 'hard']).optional(),
+  modelRequirements: modelRequirementsSchema.optional(),
+  modelTarget: modelTargetSchema.optional(),
+  routeVersion: z.number().int().positive().optional(),
   owner: z.string().optional(),
   ownerPid: z.number().int().positive().optional(),
   claimId: z.string().optional(),
@@ -43,6 +61,12 @@ const storedTeamsSchema = z.record(z.string(), z.array(z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
 })));
+
+export function defaultTeamTaskComplexity(role: TeamRole): TaskComplexity {
+  if (role === 'explorer' || role === 'tester') return 'simple';
+  if (role === 'architect' || role === 'reviewer') return 'hard';
+  return 'normal';
+}
 
 export class TeamTaskStore {
   private readonly state: AtomicJsonStore<StoredTeams>;
@@ -96,6 +120,47 @@ export class TeamTaskStore {
     const tasks = await this.list();
     const completed = new Set(tasks.filter((task) => task.status === 'completed').map((task) => task.id));
     return tasks.filter((task) => task.status === 'pending' && task.dependencies.every((id) => completed.has(id)));
+  }
+
+  async freezeModelRoutes(
+    freeze: (task: TeamTaskInput) => TeamTaskInput,
+  ): Promise<TeamTask[]> {
+    const sessionId = this.sessionId;
+    return this.mutate((teams) => {
+      const tasks = teams[sessionId] ?? [];
+      const pendingFreeze = tasks.filter((task) => !task.modelTarget || !task.routeVersion);
+      if (!pendingFreeze.length) return tasks.map((task) => ({ ...task }));
+      if (tasks.some((task) => task.status === 'running')) {
+        throw new Error('Team 已有 running task，不能建立新的模型路由快照');
+      }
+      const now = new Date().toISOString();
+      for (const task of pendingFreeze) {
+        const frozen = freeze({
+          id: task.id,
+          description: task.description,
+          role: task.role,
+          dependencies: [...task.dependencies],
+          paths: [...task.paths],
+          ...(task.complexity ? { complexity: task.complexity } : {}),
+          ...(task.modelRequirements
+            ? { modelRequirements: structuredClone(task.modelRequirements) }
+            : {}),
+          ...(task.modelTarget ? { modelTarget: { ...task.modelTarget } } : {}),
+          ...(task.routeVersion ? { routeVersion: task.routeVersion } : {}),
+        });
+        if (!frozen.modelTarget || !frozen.routeVersion) {
+          throw new Error(`Team task ${task.id} 未冻结 modelTarget/routeVersion`);
+        }
+        task.complexity = frozen.complexity;
+        task.modelRequirements = frozen.modelRequirements
+          ? structuredClone(frozen.modelRequirements)
+          : undefined;
+        task.modelTarget = { ...frozen.modelTarget };
+        task.routeVersion = frozen.routeVersion;
+        task.updatedAt = now;
+      }
+      return tasks.map((task) => ({ ...task }));
+    });
   }
 
   async claim(id: string, owner: string): Promise<TeamTask> {

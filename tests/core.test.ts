@@ -18,12 +18,13 @@ import {
 } from '@openai/agents';
 import { ContextManager, estimateTokens } from '../src/core/context.js';
 import { ProjectGuidanceLoader, SoulLoader } from '../src/core/guidance.js';
+import { PreferenceStore } from '../src/core/preferences.js';
 import { PlanStore } from '../src/core/plan.js';
 import { FileSession, registerSessionRunOwner } from '../src/core/session.js';
 import { TeamTaskStore } from '../src/core/team.js';
 import { TraceStore } from '../src/core/trace.js';
 import { HookBus } from '../src/runtime/hooks.js';
-import { resolveUserSoulFile } from '../src/runtime/components.js';
+import { resolveUserPreferencesFile, resolveUserSoulFile } from '../src/runtime/components.js';
 import { createPlanTools } from '../src/runtime/plan-tools.js';
 import { TerminalRunInterruptedError } from '../src/runtime/run-outcome.js';
 import { decideEvent } from '../src/daemon/policy.js';
@@ -716,27 +717,66 @@ test('restores durable Session state while runtime access returns to startup con
   }
 });
 
-test('keeps Mimi Soul separate from AGENTS project guidance', async () => {
+test('keeps Mimi Soul and owner preferences separate from AGENTS project guidance', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-guidance-'));
   const userFile = path.join(root, 'home', 'MIMI.md');
+  const preferenceFile = path.join(root, 'home', 'PREFERENCES.md');
   await mkdir(path.dirname(userFile), { recursive: true });
   await writeFile(userFile, 'Use tabs.');
+  await writeFile(preferenceFile, '# Mimi Owner Preferences\n\n## Stable behavior preferences\n- Prefer dedicated tools.');
   await writeFile(path.join(root, 'AGENTS.md'), 'Run the current test suite.');
   const soul = await new SoulLoader(userFile).load();
+  const preferences = await new PreferenceStore(preferenceFile).load();
   const project = await new ProjectGuidanceLoader(root).load();
   assert.deepEqual(soul.files.map((file) => file.scope), ['soul']);
+  assert.deepEqual(preferences.files.map((file) => file.scope), ['preferences']);
   assert.deepEqual(project.files.map((file) => file.scope), ['project']);
   assert.match(soul.instructions, /Use tabs/);
+  assert.match(preferences.instructions, /Prefer dedicated tools/);
   assert.doesNotMatch(soul.instructions, /Run the current test suite/);
+  assert.doesNotMatch(preferences.instructions, /Run the current test suite/);
   assert.match(project.instructions, /Run the current test suite/);
   assert.doesNotMatch(project.instructions, /Use tabs/);
+  assert.doesNotMatch(project.instructions, /Prefer dedicated tools/);
 });
 
-test('keeps the canonical Mimi Soul in the user data directory', () => {
+test('keeps canonical Mimi Soul and preferences in the user data directory', () => {
   assert.equal(
     resolveUserSoulFile('/Users/owner'),
     path.join('/Users/owner', '.mimi-agent', 'MIMI.md'),
   );
+  assert.equal(
+    resolveUserPreferencesFile('/Users/owner'),
+    path.join('/Users/owner', '.mimi-agent', 'PREFERENCES.md'),
+  );
+});
+
+test('atomically manages owner behavior preferences as a private Markdown document', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-preferences-'));
+  const file = path.join(root, '.mimi-agent', 'PREFERENCES.md');
+  const first = new PreferenceStore(file);
+  const second = new PreferenceStore(file);
+  assert.deepEqual(await first.list(), []);
+
+  const [one, two] = await Promise.all([
+    first.add('Prefer dedicated tools before browser automation.'),
+    second.add('Verify the result before reporting completion.'),
+  ]);
+  assert.equal(one.changed, true);
+  assert.equal(two.changed, true);
+  assert.deepEqual((await first.list()).sort(), [
+    'Prefer dedicated tools before browser automation.',
+    'Verify the result before reporting completion.',
+  ]);
+  assert.equal((await first.add('Prefer dedicated tools before browser automation.')).changed, false);
+  assert.equal((await first.remove('Prefer dedicated tools before browser automation.')).changed, true);
+  assert.deepEqual(await first.list(), ['Verify the result before reporting completion.']);
+
+  const snapshot = await first.load();
+  assert.equal(snapshot.files[0]?.scope, 'preferences');
+  assert.match(snapshot.instructions, /direct-owner/);
+  assert.match(snapshot.instructions, /Verify the result/);
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
 });
 
 test('reads only the bounded prefix of oversized persistent guidance', async () => {
@@ -1194,6 +1234,47 @@ test('active skill instructions are never silently truncated', () => {
   }, 100), /完整正文超出 instruction budget/);
 });
 
+test('Soul leads the pinned owner context before core rules, preferences and task context', () => {
+  const manager = new ContextManager(40, 8_000);
+  const built = manager.buildInstructionsResult({
+    baseInstructions: 'base',
+    identity: 'soul identity',
+    behaviorPreferences: 'owner behavior',
+    runtimeContext: 'runtime facts',
+    activeSkills: '<active_skills>task procedure</active_skills>',
+    projectGuidance: 'project guidance',
+    historySummary: '',
+    skillCatalog: '',
+    memories: [],
+    plan: [],
+  }, 1_000);
+  assert.deepEqual(built.sections.slice(0, 5).map((section) => section.id), [
+    'soul',
+    'base-instructions',
+    'behavior-preferences',
+    'runtime-context',
+    'active-skills',
+  ]);
+  for (const id of [
+    'soul', 'base-instructions', 'behavior-preferences', 'runtime-context', 'active-skills',
+  ]) {
+    assert.equal(built.sections.find((section) => section.id === id)?.truncated, false);
+  }
+  assert.ok(built.text.indexOf('soul identity') < built.text.indexOf('base'));
+  assert.ok(built.text.indexOf('base') < built.text.indexOf('owner behavior'));
+  assert.ok(built.text.indexOf('owner behavior') < built.text.indexOf('runtime facts'));
+  assert.ok(built.text.indexOf('runtime facts') < built.text.indexOf('task procedure'));
+  assert.throws(() => manager.buildInstructionsResult({
+    baseInstructions: 'base',
+    identity: 'soul identity '.repeat(200),
+    behaviorPreferences: 'owner behavior '.repeat(200),
+    historySummary: '',
+    skillCatalog: '',
+    memories: [],
+    plan: [],
+  }, 100), /Soul.*Preferences.*instruction budget/);
+});
+
 test('budgets the complete model request including input, instructions, tools and output reserve', () => {
   const contextWindow = 4_000;
   const outputReserveTokens = 600;
@@ -1225,7 +1306,7 @@ test('budgets the complete model request including input, instructions, tools an
   const instructionBudget = Math.min(800, budget.inputBudget);
   const instructions = manager.buildInstructions({
     baseInstructions: 'base rules',
-    identity: `identity ${'规则'.repeat(2_000)}`,
+    identity: 'identity rules',
     historySummary: '',
     skillCatalog: '',
     memories: [],
@@ -1758,7 +1839,21 @@ test('emits lightweight runtime lifecycle hooks', async () => {
   const seen: string[] = [];
   bus.on((event) => { seen.push(event.type); });
   await bus.emit({ type: 'run_start', sessionId: 'demo', input: 'hello' });
-  assert.deepEqual(seen, ['run_start']);
+  await bus.emit({
+    type: 'model_binding_event',
+    sessionId: 'demo',
+    workUnitKind: 'conversation',
+    workUnitId: 'run-1',
+    binding: {
+      target: { providerId: 'fake', modelId: 'text' },
+      kind: 'agent',
+      reasoning: 'auto',
+      scenario: 'conversation.default',
+      reason: 'global-default',
+      routeVersion: 1,
+    },
+  });
+  assert.deepEqual(seen, ['run_start', 'model_binding_event']);
 });
 
 test('isolates hook failures from the Agent run lifecycle', async () => {

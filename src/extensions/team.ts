@@ -2,7 +2,18 @@ import path from 'node:path';
 import { realpathSync } from 'node:fs';
 import { Agent, Runner, tool, type Tool } from '@openai/agents';
 import { z } from 'zod';
-import type { TeamRole, TeamTask, TeamTaskStore } from '../core/team.js';
+import {
+  defaultTeamTaskComplexity,
+  type TeamRole,
+  type TeamTask,
+  type TeamTaskInput,
+  type TeamTaskStore,
+} from '../core/team.js';
+import {
+  modelRequirementsSchema,
+  modelTargetSchema,
+  type RunModelBinding,
+} from '../core/model-routing.js';
 import { teamRoleToolNames } from '../core/tool-role-policy.js';
 import type {
   WorkUnitDescriptor,
@@ -10,7 +21,12 @@ import type {
   WorkUnitResult,
 } from '../core/work-unit.js';
 import { sanitizeSensitiveText } from '../core/data-sanitizer.js';
-import type { AgentModel } from './model-port.js';
+import {
+  modelUsageRecord,
+  reasoningModelSettings,
+  type AgentModel,
+  type ModelUsageRecord,
+} from './model-port.js';
 
 const ROLE_INSTRUCTIONS: Record<TeamRole, string> = {
   explorer: '调查代码、资料与事实，给出证据、来源和明确结论；保持只读。',
@@ -26,6 +42,9 @@ export interface TeamWorkerResult extends WorkUnitResult {
   taskId: string;
   role: TeamRole;
   output: string;
+  modelBinding?: RunModelBinding;
+  usage?: ModelUsageRecord;
+  cost: 'unknown';
 }
 
 export interface TeamToolsOptions {
@@ -42,6 +61,10 @@ export interface TeamToolsOptions {
   onEvent?: (task: TeamTask, event: 'start' | 'end' | 'error') => void | Promise<void>;
   onWorkUnit?: (observation: WorkUnitObservation) => void | Promise<void>;
   runWorker?: (task: TeamTask, prompt: string, tools: Tool[], signal?: AbortSignal) => Promise<string>;
+  modelForTask?: (task: TeamTask, binding?: RunModelBinding) => AgentModel | Promise<AgentModel>;
+  onModelBinding?: (task: TeamTask, binding: RunModelBinding) => void | Promise<void>;
+  bindingForTask?: (task: TeamTask) => RunModelBinding | Promise<RunModelBinding>;
+  freezeTask?: (task: TeamTaskInput) => TeamTaskInput;
 }
 
 export function teamWorkerDescriptor(task: TeamTask, parentRunId: string): WorkUnitDescriptor {
@@ -63,6 +86,8 @@ function teamWorkerResult(
   task: TeamTask,
   status: 'completed' | 'failed',
   output: string,
+  binding?: RunModelBinding,
+  usage?: ModelUsageRecord,
 ): TeamWorkerResult {
   return {
     id: task.id,
@@ -84,6 +109,9 @@ function teamWorkerResult(
     ...(status === 'failed' ? { error: sanitizeSensitiveText(output) } : {}),
     startedAt: task.claimedAt ?? task.updatedAt,
     completedAt: task.updatedAt,
+    ...(binding ? { modelBinding: binding } : {}),
+    ...(usage ? { usage } : {}),
+    cost: 'unknown',
   };
 }
 
@@ -104,20 +132,28 @@ async function emitWorkUnit(
   }
 }
 
-export function createTeamTaskTools(store: TeamTaskStore): Tool[] {
+export function createTeamTaskTools(
+  store: TeamTaskStore,
+): Tool[] {
   const input = z.object({
     id: z.string().min(1).max(80),
     description: z.string().min(1).max(2_000),
     role: z.enum(['explorer', 'architect', 'builder', 'tester', 'reviewer']),
     dependencies: z.array(z.string().min(1).max(80)).max(10).default([]),
     paths: z.array(z.string().min(1).max(500)).max(30).default([]),
+    complexity: z.enum(['simple', 'normal', 'hard']).optional(),
+    modelRequirements: modelRequirementsSchema.optional(),
+    modelTarget: modelTargetSchema.optional(),
   });
   return [
     tool({
       name: 'set_team_tasks',
       description: '在 Ultra Team 模式创建 2～6 个有角色、依赖和路径边界的子任务；会替换当前 Team task list。',
       parameters: z.object({ tasks: z.array(input).min(2).max(6) }),
-      execute: async ({ tasks }) => store.set(tasks),
+      execute: async ({ tasks }) => store.set(tasks.map((task): TeamTaskInput => ({
+          ...task,
+          complexity: task.complexity ?? defaultTeamTaskComplexity(task.role),
+        }))),
     }),
     tool({
       name: 'show_team_tasks',
@@ -226,16 +262,26 @@ async function defaultWorker(
   task: TeamTask,
   prompt: string,
   workerTools: Tool[],
+  selectedModel: AgentModel,
   signal?: AbortSignal,
-): Promise<string> {
-  const agent = new Agent({ name: `Mimi ${task.role} · ${task.id}`, model: options.model, instructions: prompt, tools: workerTools });
+): Promise<{ output: string; usage: ModelUsageRecord }> {
+  const agent = new Agent({
+    name: `Mimi ${task.role} · ${task.id}`,
+    model: selectedModel,
+    modelSettings: reasoningModelSettings(task.modelRequirements?.reasoning),
+    instructions: prompt,
+    tools: workerTools,
+  });
   const runner = new Runner({ workflowName: `MimiAgent Ultra · ${task.role}`, tracingDisabled: true, traceIncludeSensitiveData: false });
   const result = await runner.run(agent, task.description, {
     maxTurns: null,
     signal,
     toolExecution: { maxFunctionToolConcurrency: task.role === 'builder' ? 1 : 2 },
   });
-  return completedWorkerOutput(result.finalOutput);
+  return {
+    output: completedWorkerOutput(result.finalOutput),
+    usage: modelUsageRecord(result.runContext.usage),
+  };
 }
 
 async function emitWorkerEvent(
@@ -251,6 +297,7 @@ async function emitWorkerEvent(
 }
 
 export async function runTeamWave(options: TeamToolsOptions, taskIds: string[]): Promise<TeamWorkerResult[]> {
+  if (options.freezeTask) await options.store.freezeModelRoutes(options.freezeTask);
   const allTasks = await options.store.list();
   const selected = taskIds.map((id) => {
     const task = allTasks.find((item) => item.id === id);
@@ -293,6 +340,8 @@ export async function runTeamWave(options: TeamToolsOptions, taskIds: string[]):
       const signals = [controller.signal, AbortSignal.timeout(10 * 60_000)];
       if (options.signal) signals.push(options.signal);
       const signal = AbortSignal.any(signals);
+      let binding: RunModelBinding | undefined;
+      let usage: ModelUsageRecord | undefined;
       try {
         signal.throwIfAborted();
         await emitWorkerEvent(options, task, 'start');
@@ -302,14 +351,21 @@ export async function runTeamWave(options: TeamToolsOptions, taskIds: string[]):
           availableTools,
           teamRoleToolNames(task.role, options.allowUnsandboxedShell === true),
         );
-        const output = (await (options.runWorker
-          ? options.runWorker(task, prompt, workerTools, signal)
-          : defaultWorker(options, task, prompt, workerTools, signal))).trim();
+        binding = await options.bindingForTask?.(task);
+        if (binding) await options.onModelBinding?.(task, binding);
+        const selectedModel = options.modelForTask
+          ? await options.modelForTask(task, binding)
+          : options.model;
+        const workerResult = options.runWorker
+          ? { output: await options.runWorker(task, prompt, workerTools, signal) }
+          : await defaultWorker(options, task, prompt, workerTools, selectedModel, signal);
+        const output = workerResult.output.trim();
+        usage = 'usage' in workerResult ? workerResult.usage : undefined;
         if (!output) throw new Error('Worker 未返回结果，任务未完成');
         signal.throwIfAborted();
         const completed = await options.store.update(task.id, 'completed', output, task.claimId);
         await emitWorkerEvent(options, completed, 'end');
-        results[index] = teamWorkerResult(completed, 'completed', output);
+        results[index] = teamWorkerResult(completed, 'completed', output, binding, usage);
         await emitWorkUnit(options, completed, results[index]!);
       } catch (error) {
         let output = error instanceof Error ? error.message : String(error);
@@ -323,7 +379,7 @@ export async function runTeamWave(options: TeamToolsOptions, taskIds: string[]):
             .find((item) => item.id === task.id) ?? task;
         }
         await emitWorkerEvent(options, failed, 'error');
-        results[index] = teamWorkerResult(failed, 'failed', output);
+        results[index] = teamWorkerResult(failed, 'failed', output, binding, usage);
         await emitWorkUnit(options, failed, results[index]!);
       } finally {
         workerControllers.delete(task.id);

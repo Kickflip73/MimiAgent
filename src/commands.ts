@@ -3,6 +3,11 @@ import type { MimiAgent } from './agent.js';
 import { SECURITY_PROFILES } from './config.js';
 import type { ModelProvider, SecurityProfile, SecurityProfileSummary } from './config.js';
 import type { MemoryRef, MemoryScope } from './core/memory.js';
+import {
+  modelTargetSchema,
+  type ModelControlRequest,
+  type ModelTarget,
+} from './core/model-routing.js';
 import type { SessionSummary } from './core/session.js';
 import type { ConfiguredProvider } from './provider-config.js';
 import { OUTPUT_LEVELS, type OutputLevel } from './terminal.js';
@@ -114,6 +119,7 @@ export interface CommandTarget {
   readonly toolNames: MaybePromise<string[]>;
   runtimeInfo(): ReturnType<MimiAgent['runtimeInfo']>;
   availableModels(): MaybePromise<ReturnType<MimiAgent['availableModels']>>;
+  modelControl(request: ModelControlRequest): ReturnType<MimiAgent['modelControl']>;
   switchModel(model: string): ReturnType<MimiAgent['switchModel']>;
   availableModes(): MaybePromise<ReturnType<MimiAgent['availableModes']>>;
   switchMode(mode: string): ReturnType<MimiAgent['switchMode']>;
@@ -164,6 +170,7 @@ export interface CommandTarget {
 export const COMMANDS = [
   { value: '/status', description: '查看运行状态' },
   { value: '/security', description: '查看或临时调整当前运行权限' },
+  { value: '/models', description: '列出全部已注册模型及硬能力' },
   { value: '/model', description: '查看或切换模型' },
   { value: '/mode', description: '查看或切换运行模式' },
   { value: '/output', description: '调整执行过程展示等级' },
@@ -195,7 +202,11 @@ export const COMMANDS = [
 const HELP = `内置命令：
   /status             查看模型、会话和扩展状态
   /security [profile] 查看或临时调整当前运行权限
-  /model [name]       查看或切换当前模型
+  /models             列出全部精确模型 target、能力和配置状态
+  /model [name]       使用兼容选择器查看或切换当前模型
+  /model current|inspect <target>|use <target>|auto
+  /model routes|route <scenario> <target|auto>|doctor [target]
+                      查看或调整当前 Session 与场景模型路由
   /mode [name]        查看或切换运行模式
   /output [level]     调整答案、思考、工具或详细事件展示
   /new [id]           新建并切换对话
@@ -298,6 +309,54 @@ function resolveModelChoice(
     throw new Error(`模型名称 ${model} 同时属于多个 Provider，请通过 /model 选择器切换`);
   }
   return selected;
+}
+
+function parseModelTarget(value: string): ModelTarget {
+  const slash = value.indexOf('/');
+  if (slash <= 0 || slash === value.length - 1) {
+    throw new Error(`模型 target 必须是 providerId/modelId：${value || '(empty)'}`);
+  }
+  return modelTargetSchema.parse({
+    providerId: value.slice(0, slash),
+    modelId: value.slice(slash + 1),
+  });
+}
+
+function exactArguments(
+  action: string,
+  values: readonly string[],
+  count: number,
+): void {
+  if (values.length !== count) {
+    throw new Error(`/model ${action} 参数数量无效`);
+  }
+}
+
+function modelSlashRequest(values: readonly string[]): ModelControlRequest | undefined {
+  const [action, ...arguments_] = values;
+  if (!action) return undefined;
+  if (action === 'current' || action === 'auto' || action === 'routes') {
+    exactArguments(action, arguments_, 0);
+    return { action };
+  }
+  if (action === 'inspect' || action === 'use') {
+    exactArguments(action, arguments_, 1);
+    return { action, target: parseModelTarget(arguments_[0]!) };
+  }
+  if (action === 'doctor') {
+    if (arguments_.length > 1) throw new Error('/model doctor 最多接受一个 target');
+    return {
+      action,
+      ...(arguments_[0] ? { target: parseModelTarget(arguments_[0]) } : {}),
+    };
+  }
+  if (action === 'route') {
+    exactArguments(action, arguments_, 2);
+    const [scenario, target] = arguments_;
+    if (target === 'auto') return { action, scenario: scenario!, routeAuto: true };
+    return { action, scenario: scenario!, target: parseModelTarget(target!) };
+  }
+  return undefined;
 }
 
 function taskStatus(status: string): string {
@@ -467,7 +526,15 @@ export class CommandHandler {
         '如需临时收紧，可使用 /security safe 或 /security workstation；恢复使用 /security full-owner。',
       ].join('\n'));
     }
+    if (command === '/models') {
+      if (rest.length) throw new Error('/models 不接受参数');
+      return this.handled(taskValue(await this.agent.modelControl({ action: 'list' }), 12_000));
+    }
     if (command === '/model') {
+      const controlRequest = modelSlashRequest(rest);
+      if (controlRequest) {
+        return this.handled(taskValue(await this.agent.modelControl(controlRequest), 12_000));
+      }
       const [info, currentModels] = await Promise.all([
         this.agent.runtimeInfo(),
         this.agent.availableModels(),
@@ -659,9 +726,15 @@ export class CommandHandler {
     }
     if (command === '/instructions') {
       const guidance = await this.agent.guidanceInfo();
-      if (!guidance.files.length) return this.handled('未找到 Soul 或项目指令。Soul：~/.mimi-agent/MIMI.md · 项目：AGENTS.md / CLAUDE.md');
+      if (!guidance.files.length) {
+        return this.handled(
+          '未找到 Soul、Preferences 或项目指令。'
+          + 'Soul：~/.mimi-agent/MIMI.md · Preferences：~/.mimi-agent/PREFERENCES.md · 项目：AGENTS.md / CLAUDE.md',
+        );
+      }
       return this.handled(guidance.files.map((file) =>
-        `${file.scope === 'project' ? '项目' : 'Soul'}  ${file.path}${file.truncated ? '（已截断）' : ''}`,
+        `${file.scope === 'project' ? '项目' : file.scope === 'preferences' ? 'Preferences' : 'Soul'}  `
+        + `${file.path}${file.truncated ? '（已截断）' : ''}`,
       ).join('\n'));
     }
     if (command === '/memory') {

@@ -13,6 +13,7 @@ export interface RunStateLoaderDependencies {
   loadTeamSummary: () => Promise<string>;
   loadHistory: () => Promise<AgentInputItem[]>;
   loadSoul: () => Promise<GuidanceSnapshot>;
+  loadPreferences: () => Promise<GuidanceSnapshot>;
   loadProjectGuidance: () => Promise<GuidanceSnapshot>;
   loadArchive: () => Promise<ContextArchive | undefined>;
   loadActiveSkills: () => Promise<ActivatedSkill[]>;
@@ -25,6 +26,7 @@ export interface RunStateSnapshot {
   readonly teamSummary: string;
   readonly history: readonly AgentInputItem[];
   readonly soul: Readonly<GuidanceSnapshot>;
+  readonly preferences: Readonly<GuidanceSnapshot>;
   readonly projectGuidance: Readonly<GuidanceSnapshot>;
   readonly storedArchive?: Readonly<ContextArchive>;
   readonly activeSkills: readonly Readonly<ActivatedSkill>[];
@@ -37,6 +39,7 @@ export class RunStateLoader {
 
   async load(
     capabilities: ResolvedCapabilities,
+    options: { loadOwnerSoul?: boolean; loadOwnerPreferences?: boolean } = {},
   ): Promise<RunStateSnapshot> {
     const [
       hotProfile,
@@ -46,6 +49,7 @@ export class RunStateLoader {
       teamSummary,
       history,
       soul,
+      preferences,
       projectGuidance,
       storedArchive,
       activeSkills,
@@ -56,7 +60,12 @@ export class RunStateLoader {
       capabilities.canReadState ? this.dependencies.loadGoal() : Promise.resolve(undefined),
       capabilities.canReadState ? this.dependencies.loadTeamSummary() : Promise.resolve(''),
       capabilities.canReadSessionContext ? this.dependencies.loadHistory() : Promise.resolve([]),
-      capabilities.canReadLocal ? this.dependencies.loadSoul() : Promise.resolve(EMPTY_GUIDANCE),
+      capabilities.canReadLocal || options.loadOwnerSoul === true
+        ? this.dependencies.loadSoul()
+        : Promise.resolve(EMPTY_GUIDANCE),
+      options.loadOwnerPreferences === true
+        ? this.dependencies.loadPreferences()
+        : Promise.resolve(EMPTY_GUIDANCE),
       capabilities.canReadLocal
         ? this.dependencies.loadProjectGuidance()
         : Promise.resolve(EMPTY_GUIDANCE),
@@ -75,6 +84,7 @@ export class RunStateLoader {
       teamSummary,
       history: Object.freeze(history),
       soul: Object.freeze(soul),
+      preferences: Object.freeze(preferences),
       projectGuidance: Object.freeze(projectGuidance),
       storedArchive: storedArchive ? Object.freeze({ ...storedArchive }) : undefined,
       activeSkills: Object.freeze(activeSkills.map((skill) => Object.freeze({ ...skill }))),

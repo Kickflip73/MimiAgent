@@ -1,5 +1,19 @@
 # Blocked
 
+- **2026-07-29 多模型分层路由实现及真实 Daemon 验收：无。**
+- **2026-07-29 多模型任务 0 环境差异（非实施阻塞）**：
+  `git branch --show-current` 为空，但补充核实这是
+  `create_thread(startingState=working-tree)` 独立 worktree 的预期状态；`HEAD`、本地
+  `codex/mimiagent-integrated` 与 `origin/codex/mimiagent-integrated` 均为
+  `cc362de19453a03230c19c118a775171e154eea2`。不切分支、不提交或推送，并保留继承
+  的脏改动。首次 `npm run check` exit 127，
+  原始错误为 `sh: tsc: command not found`，说明此 worktree 尚未安装本地依赖；
+  `npm ci` 后 `npm run check` 已通过。首次 `npm test` 实际为
+  `tests 726 / pass 720 / fail 6 / skipped 0`，不等于规格记录的 726/726：
+  `tests/computer.test.ts` 一项 fake Cua `--version` 进程被 SIGTERM，
+  `tests/qq-messenger-skill.test.ts` 五项观察到共享 QQ 后台通道忙。两组都在本任务
+  实现白名单之外；随后聚焦复跑实际为 `tests 40 / pass 40 / fail 0 / skipped 0`，
+  确认为一次性环境争用，不会为通过基线修改越界代码。
 - **M1.1 等待运行时重新冻结并重启 24h 日历 soak**：历史正式实机已累计 129/129
   成功；构建 `0.12.0+9bf15be88f93` 的首轮正式 canary 完成 20/20，
   Browser/Computer/Screen/Shortcuts 各 5/5，blocked/failed/uncertain=0，

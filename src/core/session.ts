@@ -11,6 +11,7 @@ import {
 } from './completion.js';
 import { assertSessionId } from './session-id.js';
 import { AtomicJsonStore, StateFileCorruptError } from './state-file.js';
+import { modelTargetSchema, type ModelTarget } from './model-routing.js';
 
 export type RunStatus = 'running' | 'completed' | 'interrupted' | 'failed';
 
@@ -87,6 +88,7 @@ export interface SessionPreferences {
   mode?: string;
   provider?: 'openai' | 'deepseek' | 'openai-compatible';
   model?: string;
+  modelTarget?: ModelTarget;
   outputLevel?: string;
   securityProfile?: 'safe' | 'workstation' | 'full-owner';
 }
@@ -182,6 +184,7 @@ const sessionFileSchema = z.object({
     mode: z.string().optional(),
     provider: z.enum(['openai', 'deepseek', 'openai-compatible']).optional(),
     model: z.string().optional(),
+    modelTarget: modelTargetSchema.optional(),
     outputLevel: z.string().optional(),
     securityProfile: z.enum(['safe', 'workstation', 'full-owner']).optional(),
   }).optional(),

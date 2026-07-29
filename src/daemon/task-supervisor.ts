@@ -13,6 +13,17 @@ import {
   providerBackupRouteFromEnvironment,
   type ProviderBackupRoute,
 } from '../runtime/run-service.js';
+import {
+  legacyModelConfigurationForAppConfig,
+  loadModelConfiguration,
+  type ModelsConfig,
+} from '../runtime/model-config.js';
+import { WorkUnitModelResolver } from '../runtime/work-unit-model-resolver.js';
+import {
+  workUnitModelProfileSchema,
+  type ProviderDefinition,
+  type RunModelBinding,
+} from '../core/model-routing.js';
 import type { PendingMimiStreamEvent } from './live-events.js';
 import { MimiStore } from './store.js';
 import type { EventCancelResult } from './dispatcher.js';
@@ -23,6 +34,7 @@ import {
   taskWorkerOutputSchema,
   taskWorkerConfig,
   type TaskEmbeddingCredential,
+  type TaskLegacyProviderCredential,
   type TaskProviderCredential,
   type TaskWorkerControl,
   type TaskWorkerInit,
@@ -89,11 +101,82 @@ export function taskWorkerEnvironment(
 function taskProviderCredential(
   provider: AppConfig['provider'],
   source = process.env,
-): TaskProviderCredential {
+): TaskLegacyProviderCredential {
   const name = taskProviderEnvironmentName(provider);
   const apiKey = source[name]?.trim();
   if (!apiKey) throw new Error(`Task worker 缺少 ${name}`);
   return { provider, apiKey };
+}
+
+export function routedTaskProviderCredential(
+  provider: ProviderDefinition,
+  binding: RunModelBinding,
+  source = process.env,
+): TaskProviderCredential {
+  const apiKey = source[provider.apiKeyEnv]?.trim();
+  if (!apiKey) throw new Error(`Task worker 缺少 ${provider.apiKeyEnv}`);
+  return {
+    providerId: provider.id,
+    apiKeyEnv: provider.apiKeyEnv,
+    target: { ...binding.target },
+    apiKey,
+  };
+}
+
+export async function resolveTaskModel(
+  config: AppConfig,
+  task: ReturnType<MimiStore['getTask']>,
+): Promise<{
+  binding: RunModelBinding;
+  configuration: ModelsConfig;
+  provider: ProviderDefinition;
+}> {
+  const legacyConfiguration = legacyModelConfigurationForAppConfig(config);
+  const configuration = config.modelsConfig
+    ? await loadModelConfiguration(config.modelsConfig, process.env, legacyConfiguration)
+    : legacyConfiguration;
+  const payload = task?.objective && typeof task.objective === 'object' && !Array.isArray(task.objective)
+    ? task.objective as Record<string, unknown>
+    : {};
+  const parsedProfile = workUnitModelProfileSchema.safeParse(payload.modelProfile);
+  if (payload.modelProfile !== undefined && !parsedProfile.success) {
+    throw new Error(`后台任务 modelProfile 无效：${parsedProfile.error.issues[0]?.message ?? 'unknown'}`);
+  }
+  const scenario = task?.type === 'scheduled'
+    ? 'scheduled.default'
+    : task?.type === 'memory_maintenance'
+      ? 'memory-maintenance.default'
+      : 'background.default';
+  const resolver = new WorkUnitModelResolver({
+    providers: configuration.providers,
+    routing: configuration.routing,
+    isConfigured: (provider) => Boolean(process.env[provider.apiKeyEnv]?.trim()),
+  });
+  const binding = resolver.resolve({
+    scenario,
+    ...(parsedProfile?.success ? { profile: parsedProfile.data } : {}),
+    routeVersion: configuration.routeVersion,
+  });
+  const provider = configuration.providers.find((item) => item.id === binding.target.providerId);
+  if (!provider) throw new Error(`后台任务 Provider 未注册：${binding.target.providerId}`);
+  return {
+    binding,
+    provider,
+    configuration: {
+      version: 1,
+      routeVersion: binding.routeVersion,
+      providers: [{
+        ...provider,
+        models: provider.models.filter((model) => (
+          model.target.modelId === binding.target.modelId
+        )),
+      }],
+      routing: {
+        globalDefault: { ...binding.target },
+        scenarios: {},
+      },
+    },
+  };
 }
 
 export function taskEmbeddingCredential(
@@ -420,21 +503,26 @@ export class TaskProcessSupervisor {
     let child: ChildProcess;
     let providerCredential: TaskProviderCredential | undefined;
     let backupProvider: ProviderBackupRoute | undefined;
-    let backupProviderCredential: TaskProviderCredential | undefined;
+    let backupProviderCredential: TaskLegacyProviderCredential | undefined;
     let embeddingCredential: TaskEmbeddingCredential | undefined;
     let mcpEnvironment: Record<string, string>;
     let enableMcp: boolean;
     let mcpEnvironmentKeys: string[];
     let workerConfig: ReturnType<typeof taskWorkerConfig>;
+    let modelBinding: RunModelBinding | undefined;
+    let modelConfiguration: ModelsConfig | undefined;
     const task = this.store.getTask(taskId);
     const executor = task?.executor === 'codex' ? 'codex' as const : 'mimi' as const;
     try {
       const runtimeConfig = taskRuntimeConfig(this.config, task?.objective);
       workerConfig = taskWorkerConfig(runtimeConfig);
-      providerCredential = executor === 'mimi'
-        ? taskProviderCredential(runtimeConfig.provider)
-        : undefined;
-      backupProvider = executor === 'mimi'
+      if (executor === 'mimi') {
+        const routed = await resolveTaskModel(runtimeConfig, task);
+        modelBinding = routed.binding;
+        modelConfiguration = routed.configuration;
+        providerCredential = routedTaskProviderCredential(routed.provider, routed.binding);
+      }
+      backupProvider = executor === 'mimi' && !modelBinding
         ? providerBackupRouteFromEnvironment(runtimeConfig.provider)
         : undefined;
       backupProviderCredential = backupProvider
@@ -459,9 +547,9 @@ export class TaskProcessSupervisor {
         && workspaceAccess === 'write'
         && hasOwnerConversationRoot(this.store, taskId);
       mcpEnvironment = enableMcp ? declaredMcpEnvironment : {};
-      if (providerCredential) delete mcpEnvironment[taskProviderEnvironmentName(providerCredential.provider)];
+      if (providerCredential) delete mcpEnvironment[taskProviderEnvironmentName(providerCredential)];
       if (backupProviderCredential) {
-        delete mcpEnvironment[taskProviderEnvironmentName(backupProviderCredential.provider)];
+        delete mcpEnvironment[taskProviderEnvironmentName(backupProviderCredential)];
       }
       if (embeddingCredential) {
         delete mcpEnvironment.OPENAI_API_KEY;
@@ -566,6 +654,8 @@ export class TaskProcessSupervisor {
       embeddingCredential,
       mcpEnvironment,
       config: workerConfig,
+      modelBinding,
+      modelConfiguration,
     } satisfies TaskWorkerInit;
     child.send(init, (error) => {
       if (!error) return;

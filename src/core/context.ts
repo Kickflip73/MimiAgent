@@ -7,6 +7,8 @@ export interface ContextParts {
   baseInstructions: string;
   sessionState?: string;
   identity?: string;
+  behaviorPreferences?: string;
+  runtimeContext?: string;
   projectGuidance?: string;
   historySummary: string;
   skillCatalog: string;
@@ -30,6 +32,8 @@ export type ContextSectionId =
   | 'base-instructions'
   | 'session-state'
   | 'soul'
+  | 'behavior-preferences'
+  | 'runtime-context'
   | 'project-guidance'
   | 'goal-plan-team'
   | 'recovery'
@@ -268,23 +272,31 @@ export class ContextManager {
   }
 
   buildInstructionsResult(parts: ContextParts, tokenBudget = this.instructionTokenBudget): BuiltInstructions {
-    const required: Array<{ id: ContextSectionId; text: string; itemCount?: number }> = [
-      { id: 'base-instructions', text: parts.baseInstructions },
-    ];
+    const required: Array<{ id: ContextSectionId; text: string; itemCount?: number }> = [];
+    if (parts.identity) {
+      required.push({ id: 'soul', text: parts.identity });
+    }
+    required.push({ id: 'base-instructions', text: parts.baseInstructions });
+    if (parts.behaviorPreferences) {
+      required.push({ id: 'behavior-preferences', text: parts.behaviorPreferences });
+    }
+    if (parts.runtimeContext) {
+      required.push({ id: 'runtime-context', text: parts.runtimeContext });
+    }
     if (parts.activeSkills) {
       required.push({ id: 'active-skills', text: parts.activeSkills });
     }
     const requiredTokens = required.reduce((total, candidate) => total + estimateTokens(candidate.text), 0);
     if (requiredTokens > tokenBudget) {
       throw new ContextProtocolBudgetError(
-        '基础指令与 active-skills 完整正文超出 instruction budget；请停用 Skill、缩短 Skill 或使用更大上下文模型',
+        'Soul、基础指令、Preferences、Runtime Context 与 active-skills 完整正文超出 instruction budget；'
+        + '请精简 MIMI.md、用户级指令、停用 Skill、缩短 Skill 或使用更大上下文模型',
       );
     }
     const candidates: Array<{ id: ContextSectionId; text: string; itemCount?: number }> = [];
     if (parts.sessionState) {
       candidates.push({ id: 'session-state', text: `当前会话状态：\n${parts.sessionState}` });
     }
-    if (parts.identity) candidates.push({ id: 'soul', text: parts.identity });
     if (parts.projectGuidance) candidates.push({ id: 'project-guidance', text: parts.projectGuidance });
     if (parts.goal) {
       candidates.push({

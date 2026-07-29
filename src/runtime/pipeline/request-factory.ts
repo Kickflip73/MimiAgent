@@ -1,4 +1,5 @@
 import { Agent, type Tool } from '@openai/agents';
+import type { ReasoningIntent } from '../../core/model-routing.js';
 import type { MCPManager } from '../../extensions/mcp.js';
 import type { AgentModel } from '../model.js';
 
@@ -9,6 +10,7 @@ export interface AgentRequestInput {
   mcpServers: MCPManager['servers'];
   outputReserve: number;
   focusedOutputLimit?: number;
+  reasoning?: ReasoningIntent;
 }
 
 export interface PreparedAgentRequest {
@@ -25,7 +27,14 @@ export class AgentRequestFactory {
     const agent = new Agent({
       name: 'MimiAgent',
       model: input.model,
-      modelSettings: { maxTokens },
+      modelSettings: {
+        maxTokens,
+        ...(input.reasoning === 'high'
+          ? { reasoning: { effort: 'high' as const } }
+          : input.reasoning === 'off'
+            ? { reasoning: { effort: 'none' as const } }
+            : {}),
+      },
       instructions: input.instructions,
       tools: input.tools,
       mcpServers: input.mcpServers,

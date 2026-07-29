@@ -1,11 +1,13 @@
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { access } from 'node:fs/promises';
 import OpenAI from 'openai';
 import { preferredEnvironmentValue, type AppConfig } from '../config.js';
 import { ContextManager } from '../core/context.js';
 import { ProjectGuidanceLoader, SoulLoader } from '../core/guidance.js';
 import type { MemoryHub } from '../core/memory.js';
+import { PreferenceStore } from '../core/preferences.js';
 import { isMcpConfigurationTrusted, MCPManager } from '../extensions/mcp.js';
 import { createRoutedMemoryHub } from '../extensions/memory/hub.js';
 import { SkillLoader, type SkillSource } from '../extensions/skills.js';
@@ -13,13 +15,25 @@ import { SkillPreferenceStore } from '../extensions/skill-preferences.js';
 import { ComputerManager } from '../extensions/computer/manager.js';
 import { CuaDriverClient } from '../extensions/computer/cua-driver-client.js';
 import { sharedCuaDriverLifecycle } from '../extensions/computer/cua-driver-lifecycle.js';
-import { createModel, type ModelRuntime } from './model.js';
+import { createModel, resolveModelProfile, type ModelRuntime } from './model.js';
+import {
+  legacyModelConfigurationForAppConfig,
+  loadModelConfiguration,
+  type ModelsConfig,
+} from './model-config.js';
+import { ModelGateway } from './model-gateway.js';
+import { WorkUnitModelResolver } from './work-unit-model-resolver.js';
 import { createFileRuntimeStatePorts, type RuntimeStatePorts } from './state-ports.js';
 
 export interface RuntimeComponents {
   modelRuntime: ModelRuntime;
+  modelConfig: ModelsConfig;
+  modelGateway: ModelGateway;
+  modelResolver: WorkUnitModelResolver;
+  legacyModels: boolean;
   context: ContextManager;
   soul: SoulLoader;
+  preferences: PreferenceStore;
   projectGuidance: ProjectGuidanceLoader;
   memory: MemoryHub;
   skills: SkillLoader;
@@ -49,6 +63,10 @@ export function embeddingClientConfig(
 
 export function resolveUserSoulFile(homeDirectory = os.homedir()): string {
   return path.join(homeDirectory, '.mimi-agent', 'MIMI.md');
+}
+
+export function resolveUserPreferencesFile(homeDirectory = os.homedir()): string {
+  return path.join(homeDirectory, '.mimi-agent', 'PREFERENCES.md');
 }
 
 export function skillSources(config: AppConfig, homeDirectory = os.homedir()): SkillSource[] {
@@ -104,9 +122,40 @@ export async function createRuntimeComponents(
     mcpEnvironment?: Readonly<Record<string, string>>;
     enableMcp?: boolean;
     releaseMcpEnvironmentAfterConnect?: boolean;
+    modelConfiguration?: ModelsConfig;
   } = {},
 ): Promise<RuntimeComponents> {
-  const modelRuntime = createModel(config);
+  const hasExplicitModelConfig = options.modelConfiguration !== undefined
+    || Boolean(config.modelsConfig && await access(config.modelsConfig).then(() => true, () => false));
+  const modelConfig = options.modelConfiguration ?? (hasExplicitModelConfig && config.modelsConfig
+    ? await loadModelConfiguration(config.modelsConfig)
+    : legacyModelConfigurationForAppConfig(config));
+  const modelGateway = new ModelGateway({ providers: modelConfig.providers });
+  const modelResolver = new WorkUnitModelResolver({
+    providers: modelConfig.providers,
+    routing: modelConfig.routing,
+    ...(hasExplicitModelConfig ? {
+      isConfigured: (provider) => Boolean(process.env[provider.apiKeyEnv]?.trim()),
+    } : {}),
+  });
+  const defaultBinding = modelResolver.resolve({
+    scenario: 'conversation.default',
+    routeVersion: modelConfig.routeVersion,
+  });
+  const agentRuntime = hasExplicitModelConfig
+    ? modelGateway.createAgentRuntime(defaultBinding.target, defaultBinding.reasoning)
+    : undefined;
+  const resolvedProfile = resolveModelProfile(config, defaultBinding.target.modelId);
+  const modelRuntime: ModelRuntime = {
+    model: agentRuntime?.model ?? createModel(config, defaultBinding.target.modelId).model,
+    name: defaultBinding.target.modelId,
+    profile: {
+      ...resolvedProfile,
+      supportsImageInput: agentRuntime
+        ? agentRuntime.registration.capabilities.imageInput
+        : modelGateway.inspect(defaultBinding.target).capabilities.imageInput,
+    },
+  };
   const embeddingConfig = embeddingClientConfig();
   const embeddingClient = embeddingConfig
     ? new OpenAI({ ...embeddingConfig, fetch: globalThis.fetch })
@@ -148,6 +197,7 @@ export async function createRuntimeComponents(
   });
   const packagedSoulFile = fileURLToPath(new URL('../../MIMI.md', import.meta.url));
   const soul = new SoulLoader(resolveUserSoulFile(), packagedSoulFile);
+  const preferences = new PreferenceStore(resolveUserPreferencesFile());
   const state = createFileRuntimeStatePorts(config, sessionId);
   // Migrate side-effect state before MCP or any runtime executor can start.
   await state.executionLedger.store.initialize();
@@ -163,6 +213,10 @@ export async function createRuntimeComponents(
   if (options.releaseMcpEnvironmentAfterConnect) mcpSecrets.length = 0;
   return {
     modelRuntime,
+    modelConfig,
+    modelGateway,
+    modelResolver,
+    legacyModels: !hasExplicitModelConfig,
     context: new ContextManager(
       config.historyLimit,
       modelRuntime.profile.contextWindow,
@@ -170,6 +224,7 @@ export async function createRuntimeComponents(
       modelRuntime.profile.outputReserve,
     ),
     soul,
+    preferences,
     projectGuidance: new ProjectGuidanceLoader(config.workspaceRoot),
     memory,
     skills,

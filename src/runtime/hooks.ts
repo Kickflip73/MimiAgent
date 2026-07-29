@@ -1,4 +1,5 @@
 import type { PlanStep } from '../core/plan.js';
+import type { RunModelBinding } from '../core/model-routing.js';
 import type { WorkUnitObservation } from '../core/work-unit.js';
 
 export type RuntimeEvent =
@@ -6,6 +7,13 @@ export type RuntimeEvent =
   | { type: 'run_end'; sessionId: string; answer: string }
   | { type: 'run_error'; sessionId: string; error: string; interrupted?: boolean }
   | { type: 'subagent_event'; sessionId: string; agent: string; eventType: string }
+  | {
+      type: 'model_binding_event';
+      sessionId: string;
+      workUnitKind: 'conversation' | 'subagent' | 'team-worker' | 'background' | 'media';
+      workUnitId: string;
+      binding: RunModelBinding;
+    }
   | { type: 'work_unit_event'; sessionId: string; observation: WorkUnitObservation }
   | { type: 'plan_updated'; sessionId: string; steps: PlanStep[] }
   | {
