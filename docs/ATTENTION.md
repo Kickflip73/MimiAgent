@@ -275,12 +275,12 @@ Standing Orders 是 owner 管理的本机可信配置，但当前 owner 的明�
 个人消息 Event 永远不设置普通回复路由。`observe/digest` 不获得个人消息工具，
 `draft` 和尚未确认的 `confirm` 最多获得绑定当前 Event 的
 `get_personal_message_context`；owner 在同一 Session 使用
-`确认发送大象消息：<最终文本>` 时，最近十分钟内已经完成的 Confirm 草稿才获得
+`/confirm-send <最终文本>` 结构化命令时，最近十分钟内已经完成的 Confirm 草稿才获得
 一次精确正文发送能力。`auto` 也可能获得 `send_personal_message`。消息发送 Run
 的固定工具集不包含 Shell、通用
 `connector_action`、文件/网络写入或 Computer Use；账号、后台安全性、coverage、
-新鲜度或稳定 ID 不满足时，发送工具不会出现。高风险正文在 Host 侧再次拒绝自动
-发送，结果不确定的 token 永远不能重放。
+新鲜度或稳定 ID 不满足时，发送工具不会出现。`auto` 是 owner 配置的结构化来源策略，
+Host 不再按消息正文关键词猜测风险或改写授权；结果不确定的 token 永远不能重放。
 
 `source` 支持 `*` 通配符；规则按数组顺序匹配第一条。`action` 有四种：
 

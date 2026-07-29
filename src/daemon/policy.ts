@@ -359,6 +359,12 @@ export function decideEvent(
   const personalMessage = confirmedPersonalMessage ?? (messageMode
     ? personalMessageAuthorizationFor(event, messageMode)
     : undefined);
+  const resumeState = event.trust === 'owner'
+    && event.source === 'local-cli'
+    && event.payload !== null
+    && typeof event.payload === 'object'
+    && !Array.isArray(event.payload)
+    && (event.payload as Record<string, unknown>).resumeState === true;
   const personalConnectorOnly = personalMessage !== undefined;
   const trustedContext = [
     mayAct && standingOrders.length ? [
@@ -551,6 +557,7 @@ export function decideEvent(
         ...(ownerComputerApps ? { computerApps: ownerComputerApps } : {}),
       } : {}),
       ...(personalConnectorOnly ? { personalConnectorOnly: true } : {}),
+      ...(resumeState ? { resumeState: true } : {}),
       ...(policy ? { policy } : {}),
     },
   };

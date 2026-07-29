@@ -392,6 +392,65 @@ test('defers and coalesces input redraws outside the keypress callback for Apple
   terminal.close();
 });
 
+test('disables autonomous redraw animation in Apple Terminal IME-safe mode', async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const terminal = new InteractiveTerminal(
+    [],
+    input as never,
+    output as never,
+    {
+      imeSafeInput: true,
+      idleBlinkIntervalMs: 20,
+      idleBlinkDurationMs: 10,
+    },
+  );
+  terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
+  output.value = '';
+
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.equal(output.value, '', 'idle animation must not rewrite the screen while the IME may own marked text');
+
+  terminal.setBusy(true);
+  output.value = '';
+  terminal.createWriter(output as never).write('\r\x1b[2K\x1b[90m^._?^- 模型思考中\x1b[0m');
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(output.value, '', 'busy animation must not rewrite the screen while the IME may own marked text');
+  terminal.close();
+});
+
+test('defers terminal output until an Apple Terminal IME-safe draft is submitted', async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const lines: string[] = [];
+  const terminal = new InteractiveTerminal(
+    [],
+    input as never,
+    output as never,
+    {
+      imeSafeInput: true,
+      inputRedrawDelayMs: 10,
+      singleLineInputViewport: true,
+    },
+  );
+  terminal.start({ onLine: (line) => lines.push(line), onEscape: () => undefined, onExit: () => undefined });
+
+  input.emit('keypress', '第一行', { sequence: '第一行' });
+  input.emit('keypress', '', { name: 'return', shift: true });
+  input.emit('keypress', '第二行'.repeat(80), { sequence: '第二行'.repeat(80) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  output.value = '';
+
+  terminal.createWriter(output as never).write('任务在输入期间完成\n');
+  assert.equal(output.value, '', 'answer output must not disturb an active marked-text input area');
+
+  input.emit('keypress', '\r', { name: 'return' });
+
+  assert.deepEqual(lines, [`第一行\n${'第二行'.repeat(80)}`]);
+  assert.match(output.value, /任务在输入期间完成/);
+  terminal.close();
+});
+
 test('submits buffered input before a deferred redraw fires', () => {
   const input = new FakeInput();
   const output = new FakeOutput();

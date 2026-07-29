@@ -1153,7 +1153,10 @@ async function assertPublicHttpTarget(target: URL, allowPrivateNetwork: boolean)
     ? [{ address: hostname }]
     : await lookup(hostname, { all: true, verbatim: true });
   if (!addresses.length || addresses.some(({ address }) => !isPublicAddress(address))) {
-    throw new Error('HTTP 工具只允许访问公网地址；loopback、内网、link-local 和 metadata 地址已拒绝');
+    throw new Error(
+      'HTTP 工具只允许访问公网地址；loopback、内网、link-local 和 metadata 地址已拒绝。'
+      + '内网或需要登录态的网页请直接使用 browser.url.read/read_url',
+    );
   }
 }
 
@@ -1666,7 +1669,7 @@ export function createTools(
 
   const httpRequest = tool({
     name: 'http_request',
-    description: '发送 HTTP/HTTPS 请求并返回状态、响应头和正文；headers 使用 name/value 数组。',
+    description: '仅向公网发送 HTTP/HTTPS 请求并返回状态、响应头和正文；不适用于内网或浏览器登录态，后者使用 browser.url.read/read_url。headers 使用 name/value 数组。',
     parameters: z.object({
       url: z.string().min(1),
       method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']).default('GET'),
@@ -1687,7 +1690,7 @@ export function createTools(
 
   const httpGet = tool({
     name: 'http_get',
-    description: '以只读 GET 请求读取 HTTP/HTTPS 资源；headers 使用 name/value 数组。',
+    description: '仅以只读 GET 请求读取公网 HTTP/HTTPS 资源；内网或需要浏览器登录态的网页使用 browser.url.read/read_url。headers 使用 name/value 数组。',
     parameters: z.object({
       url: z.string().min(1),
       headers: httpHeaders,

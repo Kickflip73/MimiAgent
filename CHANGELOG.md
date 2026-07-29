@@ -9,10 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- prevent macOS Terminal.app IME crashes by disabling autonomous TUI animation
+  redraws there and deferring concurrent terminal output until an active
+  long-text or multiline draft reaches a safe submit/clear boundary
+- remove Host-side natural-language keyword routing for workspace selection,
+  Project Guidance, Session controls, Completion Contracts, Memory provenance,
+  personal-message auto sends, Session titles, and answer completion; use
+  trusted workspace/resume metadata, explicit tool fields, source policy,
+  schemas, execution receipts, and `/confirm-send` instead
+- publish a completed Daemon Task only after its execution ledger is finalized,
+  so the current conversation cannot reject its own deferred Provider restart;
+  report saved-but-not-active Provider configuration truthfully and reject
+  unsupported lifecycle flags instead of silently ignoring them
 - validate Browser write payloads before consuming their Observation, return an
   explicit post-write `nextRead` so newly opened pages are discovered, and
-  scope uncertain ActionIntent fences to the matching action family and target
-  instead of blocking unrelated recovery actions
+  label Browser success as interaction-only until post-write business
+  verification; require a fresh snapshot before arbitrary page JavaScript, bind
+  Connector writes to stable operation references, replay confirmed receipts
+  across temporary page/session/target changes, and preserve uncertain
+  ActionIntent fences without blocking unrelated recovery actions
 - fuse compiled Wiki and owner Session episodes before applying Memory search
   limits, require bounded query reformulation for irrelevant recall, and support
   an independent OpenAI-compatible Embedding endpoint instead of coupling

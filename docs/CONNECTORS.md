@@ -247,9 +247,11 @@ Bridge 不会重复点击已经选中的会话；切换会话后必须等待消�
 执行期间轮询暂停，避免后台切换会话破坏目标和回执观察。
 
 `messageMode=confirm` 的草稿只能在同一个人消息 Session 中由 owner 使用
-`确认发送大象消息：<最终文本>` 解锁。Host 只接受最近十分钟内已经完成的个人消息
+`/confirm-send <最终文本>` 结构化命令解锁。Host 只接受最近十分钟内已经完成的个人消息
 草稿 Event，重新读取最新上下文，并把正文锁为命令中的精确文本；普通“好”
 “发送一下”、跨 Session 命令、过期草稿或模型改写后的正文都不能触发写操作。
+`messageMode=auto` 的授权只来自 owner 配置、稳定目标、Capability Snapshot 和一次性
+token，不扫描正文中的业务词汇来猜测风险。
 
 轮询只扫描配置的 watch 会话。每个新 watch 会话的首轮只把当前可见稳定 `mid`
 写成私有基线，不把启用前的页面历史误报为新 Event；之后 Connector 等整批
@@ -541,6 +543,7 @@ Connector 默认先查找与当前 Node 可执行文件同目录的 `opencli`，
 
 会话动作：
 
+- `read_url`：通过 Chrome 当前 profile 和登录态在后台打开单个 URL，提取首个 Markdown 分块后自动释放临时会话；内网或需要 SSO 的只读页面优先使用这个单 action。
 - `open_session`：创建 Mimi 独占的 Chrome 会话，打开绝对 http/https URL；默认 `window=background`，返回不透明 `sessionRef`。
 - `bind_session`：绑定 owner 当前 Chrome 标签以复用人工完成的登录、SSO 或页面定位；绑定会话不会拥有或关闭用户标签。
 - `close_session`：独占会话执行 close，绑定会话只 unbind。Connector/Daemon 正常退出时也会尽力释放仍持有的会话。

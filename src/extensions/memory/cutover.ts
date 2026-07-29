@@ -47,18 +47,9 @@ async function writeMarker(file: string, report: MemoryCutoverReport): Promise<v
   await rename(temporary, file);
 }
 
-function legacySoulFacts(content: string): string[] {
-  const personal = /(?:用户|owner|我(?:的|是|叫|喜欢|偏好|希望|常用|住在)|姓名|称呼|时区|prefers?|likes?|owner['’]s)/i;
-  const projectOrPolicy = /(?:AGENTS\.md|CLAUDE\.md|架构|代码|项目|npm|pnpm|yarn|pytest|cargo|go test|tool|权限|安全|shell|MCP|runtime|workflow|测试|部署)/i;
-  return [...new Set(content.split(/\r?\n/)
-    .map((line) => line.replace(/^\s*[-*]\s+/, '').trim())
-    .filter((line) => line.length >= 4 && line.length <= 500 && personal.test(line) && !projectOrPolicy.test(line)))]
-    .slice(0, 20);
-}
-
 async function cutoverLegacySoul(
-  hub: MemoryHub,
-  context: RunMemoryContext,
+  _hub: MemoryHub,
+  _context: RunMemoryContext,
   backupDirectory: string,
   options: { userSoulFile?: string; packagedSoulFile?: string },
 ): Promise<Pick<MemoryCutoverReport, 'soulConverted' | 'soulReset' | 'soulCutoverAt'>> {
@@ -66,31 +57,16 @@ async function cutoverLegacySoul(
     return { soulConverted: 0, soulReset: false, soulCutoverAt: new Date().toISOString() };
   }
   const legacy = await readFile(options.userSoulFile, 'utf8');
-  const alreadySoul = /^# MimiAgent Soul\b/m.test(legacy)
-    && !/(?:npm run|runtime policy|工具权限|项目架构)/i.test(legacy);
+  const alreadySoul = legacy.trimStart().startsWith('# MimiAgent Soul\n');
   if (alreadySoul) return { soulConverted: 0, soulReset: false, soulCutoverAt: new Date().toISOString() };
   await copyFile(options.userSoulFile, path.join(backupDirectory, 'user-MIMI.md'));
   const timestamp = new Date().toISOString();
-  const facts = legacySoulFacts(legacy);
-  for (const [index, fact] of facts.entries()) {
-    await hub.remember({
-      title: `Legacy Soul owner fact ${index + 1}`,
-      content: fact,
-      kind: 'profile',
-      scope: 'private',
-      confidence: 'user-confirmed',
-      sourceRefs: [{
-        type: 'user-explicit', id: `legacy-soul:${index + 1}`,
-        digest: `sha256:${contentDigest(fact)}`, occurredAt: timestamp, trust: 'owner',
-      }],
-    }, context);
-  }
   const template = await readFile(options.packagedSoulFile, 'utf8');
   const temporary = `${options.userSoulFile}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporary, template.endsWith('\n') ? template : `${template}\n`, { flag: 'wx', mode: 0o600 });
   await rename(temporary, options.userSoulFile);
   await chmod(options.userSoulFile, 0o600);
-  return { soulConverted: facts.length, soulReset: true, soulCutoverAt: timestamp };
+  return { soulConverted: 0, soulReset: true, soulCutoverAt: timestamp };
 }
 
 async function verifyCutover(hub: MemoryHub, context: RunMemoryContext): Promise<void> {

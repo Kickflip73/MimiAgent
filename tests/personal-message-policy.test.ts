@@ -223,7 +223,10 @@ test('an exact owner confirmation in the same recent personal session unlocks on
       source: 'local-cli',
       type: 'command.received',
       trust: 'owner',
-      payload: { prompt: '确认发送大象消息：唯一确认文本' },
+      payload: {
+        prompt: '发送 owner 已通过结构化命令确认的个人消息。',
+        approvedPersonalMessageText: '唯一确认文本',
+      },
       profileId: 'owner',
       occurredAt: confirmedAt,
       receivedAt: confirmedAt,

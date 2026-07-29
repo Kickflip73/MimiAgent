@@ -37,7 +37,6 @@ export class RunStateLoader {
 
   async load(
     capabilities: ResolvedCapabilities,
-    developmentTask: boolean,
   ): Promise<RunStateSnapshot> {
     const [
       hotProfile,
@@ -58,7 +57,7 @@ export class RunStateLoader {
       capabilities.canReadState ? this.dependencies.loadTeamSummary() : Promise.resolve(''),
       capabilities.canReadSessionContext ? this.dependencies.loadHistory() : Promise.resolve([]),
       capabilities.canReadLocal ? this.dependencies.loadSoul() : Promise.resolve(EMPTY_GUIDANCE),
-      capabilities.canReadLocal && developmentTask
+      capabilities.canReadLocal
         ? this.dependencies.loadProjectGuidance()
         : Promise.resolve(EMPTY_GUIDANCE),
       capabilities.canReadSessionContext ? this.dependencies.loadArchive() : Promise.resolve(undefined),

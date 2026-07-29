@@ -3,7 +3,6 @@ import path from 'node:path';
 import type { MemoryScope, RememberInput, RunMemoryContext, SourceRef } from './types.js';
 
 const ID_PATTERN = /^[a-zA-Z0-9._-]{1,100}$/;
-const SECRET_PATTERN = /(?:api[_ -]?key|password|passwd|secret|token|authorization)\s*[:=]\s*\S+/i;
 
 export function validateRunMemoryContext(context: RunMemoryContext, workspaceRoot: string, profileId: string): void {
   if (!ID_PATTERN.test(context.profileId) || context.profileId !== profileId) throw new Error('Memory profile 不匹配');
@@ -14,7 +13,6 @@ export function validateRunMemoryContext(context: RunMemoryContext, workspaceRoo
 export function assertRememberAllowed(input: RememberInput, context: RunMemoryContext): void {
   const trust = context.cause?.trust ?? 'owner';
   if (trust === 'external' || trust === 'public') throw new Error('外部来源不能直接写入 active Memory');
-  if (SECRET_PATTERN.test(`${input.title}\n${input.content}`)) throw new Error('Memory 不能保存密码、token 或凭证');
   if (input.scope === 'workspace') {
     const fileSources = input.sourceRefs?.filter((source) => source.type === 'file') ?? [];
     if (fileSources.length === 0) throw new Error('workspace Memory 必须有明确的文件来源');

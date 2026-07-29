@@ -97,6 +97,11 @@ export type BackgroundTaskResumeResult =
   | { state: 'not_resumable' }
   | { state: 'not_found' };
 
+export interface CommandRunOptions {
+  resumeState?: boolean;
+  approvedPersonalMessageText?: string;
+}
+
 export interface ModelChoice {
   provider: ModelProvider;
   providerLabel: string;
@@ -180,6 +185,7 @@ export const COMMANDS = [
   { value: '/tasks', description: '查看后台任务' },
   { value: '/task', description: '查看、暂停、继续或取消后台任务' },
   { value: '/goal', description: '查看或设置长期目标' },
+  { value: '/confirm-send', description: '确认发送个人消息的精确正文' },
   { value: '/resume', description: '依据持久任务状态继续' },
   { value: '/retry', description: '重试上一条输入' },
   { value: '/help', description: '显示命令帮助' },
@@ -217,6 +223,8 @@ const HELP = `内置命令：
   /task pause <id>    暂停后台任务
   /task resume <id>   继续后台任务，可在 ID 后补充上下文
   /goal [objective]   查看或设置当前长期目标
+  /confirm-send <text>
+                      在当前个人消息 Session 中确认一次精确发送正文
   /resume             依据 Checkpoint / Goal / Plan / Team 尽力续跑
   /retry              重新执行上一条用户输入
   /help               显示帮助
@@ -375,7 +383,11 @@ export class CommandHandler {
 
   constructor(
     private readonly agent: CommandTarget,
-    private readonly runTask: (input: string, signal?: AbortSignal) => Promise<void>,
+    private readonly runTask: (
+      input: string,
+      signal?: AbortSignal,
+      options?: CommandRunOptions,
+    ) => Promise<void>,
     private readonly ui: CommandUI = {},
   ) {}
 
@@ -805,10 +817,18 @@ export class CommandHandler {
         goal.nextAction ? `下一步：${goal.nextAction}` : '',
       ].filter(Boolean).join('\n'));
     }
+    if (command === '/confirm-send') {
+      if (!argument) throw new Error('用法：/confirm-send <text>');
+      this.print('正在按结构化确认发送个人消息...');
+      await this.runTask('发送 owner 已通过结构化命令确认的个人消息。', signal, {
+        approvedPersonalMessageText: argument,
+      });
+      return 'handled';
+    }
     if (command === '/resume') {
       const prompt = await this.agent.resumePrompt();
       this.print('正在依据持久任务状态继续...');
-      await this.runTask(prompt, signal);
+      await this.runTask(prompt, signal, { resumeState: true });
       return 'handled';
     }
     if (command === '/retry') {

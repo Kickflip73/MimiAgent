@@ -29,6 +29,7 @@ const maxOutputBytes = numberEnv(
 );
 const ACTIONS = new Set([
   'doctor',
+  'read_url',
   'open_session',
   'bind_session',
   'close_session',
@@ -438,7 +439,13 @@ async function createSession(kind, target, payload) {
   const logicalLabel = label(target);
   const ref = `browser:${randomUUID()}`;
   const opencliSession = `mimi-${logicalLabel}-${randomUUID().slice(0, 8)}`;
-  const session = { ref, opencliSession, kind, observationId: undefined };
+  const session = {
+    ref,
+    opencliSession,
+    kind,
+    observationId: undefined,
+    observationSource: undefined,
+  };
   sessions.set(ref, session);
   if (kind === 'owned') {
     if (payload.window !== undefined
@@ -801,6 +808,10 @@ async function execute(message) {
   if (message.action === 'doctor') {
     const result = await runOpenCli(['doctor'], { timeoutMs: Math.min(commandTimeoutMs, 15_000) });
     return { type: 'action_result', id: message.id, ok: true, result: { ...result, ready: true } };
+  }
+  if (message.action === 'read_url') {
+    const result = await readUrl(message.target, payload);
+    return { type: 'action_result', id: message.id, ok: true, result };
   }
   if (message.action === 'open_session') {
     const result = await createSession('owned', message.target, payload);

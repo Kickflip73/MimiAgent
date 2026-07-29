@@ -146,13 +146,9 @@ export function personalMessageSource(channel: PersonalMessageChannel): string {
 }
 
 export function personalMessageConfirmationText(input: unknown): string | undefined {
-  const prompt = typeof input === 'string'
-    ? input
-    : input && typeof input === 'object' && !Array.isArray(input)
-      ? (input as Record<string, unknown>).prompt
-      : undefined;
-  if (typeof prompt !== 'string') return undefined;
-  const match = /^\s*确认发送(?:(大象|QQ|微信))?消息?[：:]\s*([\s\S]{1,4000}?)\s*$/u.exec(prompt);
-  const text = match?.[2]?.trim();
-  return text || undefined;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const text = (input as Record<string, unknown>).approvedPersonalMessageText;
+  if (typeof text !== 'string') return undefined;
+  const normalized = text.trim();
+  return normalized.length > 0 && normalized.length <= 4_000 ? normalized : undefined;
 }

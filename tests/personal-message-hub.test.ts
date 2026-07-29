@@ -112,17 +112,21 @@ test('confirm scopes send only the exact owner-approved text', async () => {
   assert.equal(sends, 1);
 });
 
-test('high-risk auto text is not executed', async () => {
+test('auto mode follows the structured owner policy instead of classifying message keywords', async () => {
   let sends = 0;
-  const tools = new PersonalMessageHub().createTools(scope({ send: async () => {
+  const tools = new PersonalMessageHub().createTools(scope({ send: async ({ text }) => {
     sends += 1;
-    throw new Error('must not execute');
+    assert.equal(text, '我承诺今天上线生产');
+    return {
+      status: 'accepted', route: 'connector', deliveryConfirmed: false,
+      accountVerified: true, targetVerified: true,
+    };
   } }), 'run-1') as Array<{ name: string; invoke: Function }>;
   const context = await call(tools.find((tool) => tool.name === 'get_personal_message_context')!, { limit: 1 }) as Record<string, unknown>;
   const result = await call(tools.find((tool) => tool.name === 'send_personal_message')!, {
     contextToken: context.contextToken,
     text: '我承诺今天上线生产',
   }) as Record<string, unknown>;
-  assert.equal(result.status, 'not_executed');
-  assert.equal(sends, 0);
+  assert.equal(result.status, 'accepted');
+  assert.equal(sends, 1);
 });

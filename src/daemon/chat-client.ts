@@ -231,6 +231,10 @@ export class MimiChatClient {
   async submit(
     input: string,
     sessionKey?: string,
+    options?: {
+      resumeState?: boolean;
+      approvedPersonalMessageText?: string;
+    },
   ): Promise<AcceptedMimiEvent> {
     const eventId = randomUUID();
     const parsed = parseAttachmentInput(input);
@@ -243,6 +247,10 @@ export class MimiChatClient {
       profileId: 'owner',
       sessionKey,
       workspaceRoot: this.config.workspaceRoot,
+      ...(options?.resumeState ? { resumeState: true } : {}),
+      ...(options?.approvedPersonalMessageText
+        ? { approvedPersonalMessageText: options.approvedPersonalMessageText }
+        : {}),
       eventId,
       externalId: `local-cli:${eventId}`,
     };

@@ -260,24 +260,7 @@ export function requiresPersistentGoal(input: string): boolean {
   return /^\/goal\b/u.test(normalized);
 }
 
-export function expectedCompletionKind(input: string): CompletionKind {
-  const normalized = input.trim().toLowerCase();
-  if (/(?:发送|发给|告诉|说我|通知|购买|预订|下单|支付|发布|上线|部署|提交到|推送|打开|关闭|关掉)/u.test(normalized)
-    || /\b(?:send|notify|purchase|book|pay|publish|deploy|commit|push|open|close|turn)\b/u.test(normalized)) {
-    return 'external_action';
-  }
-  if (/(?:修复|升级|实现|创建|生成|编写|修改|编辑|复制|移动|改名|开发|构建|迁移|改造|重构)/u.test(normalized)
-    || /\b(?:fix|build|create|write|edit|copy|move|rename|implement|develop|migrate|refactor)\b/u.test(normalized)) {
-    return 'artifact';
-  }
-  return /(?:长期|持续(?:任务|研究|跟进|监控|执行|处理)|跨轮|多阶段|完整项目|long[- ]?running|multi[- ]?step)/u.test(normalized)
-    || requiresPersistentGoal(normalized)
-    ? 'long_running'
-    : 'answer';
-}
-
 export function assertCompletionContractForTask(
-  input: string,
   proposed: CompletionContract,
   current?: CompletionContract,
 ): CompletionContract {
@@ -286,29 +269,6 @@ export function assertCompletionContractForTask(
       throw new Error('Completion Contract 已锁定；执行过程中不得重写或降低验收标准');
     }
     return current;
-  }
-  const expected = expectedCompletionKind(input);
-  if (proposed.kind !== expected) {
-    throw new Error(`任务类型必须为 ${expected}，不能用 ${proposed.kind} 降低验收证据要求`);
-  }
-  const requiredEvidence = new Set<CompletionEvidenceType>();
-  const normalized = input.toLowerCase();
-  if (/(?:修复|升级|实现|创建|生成|编写|修改|编辑|复制|移动|改名|开发|构建|迁移|改造|重构)/u.test(normalized)
-    || /\b(?:fix|build|create|write|edit|copy|move|rename|implement|develop|migrate|refactor)\b/u.test(normalized)) {
-    requiredEvidence.add('artifact');
-  }
-  if (/(?:发送|发给|告诉|说我|通知|购买|预订|下单|支付|发布|上线|部署|提交到|推送|打开|关闭|关掉)/u.test(normalized)
-    || /\b(?:send|notify|purchase|book|pay|publish|deploy|commit|push|open|close|turn)\b/u.test(normalized)) {
-    requiredEvidence.add('tool_receipt');
-  }
-  if (/(?:删除|清空|安装|运行|执行|导出|移动|改名)/u.test(normalized)
-    || /\b(?:delete|clear|install|run|execute|export|move|rename)\b/u.test(normalized)) {
-    requiredEvidence.add('tool_receipt');
-  }
-  const provided = new Set(proposed.criteria.map((criterion) => criterion.requiredEvidence));
-  const missing = [...requiredEvidence].filter((evidence) => !provided.has(evidence));
-  if (missing.length) {
-    throw new Error(`复合任务的 Completion Contract 缺少证据类型：${missing.join(', ')}`);
   }
   return proposed;
 }

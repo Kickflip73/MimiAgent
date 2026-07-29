@@ -43,10 +43,6 @@ export class RunContextBuilder {
       .join(' ');
   }
 
-  isDevelopmentTask(input: string): boolean {
-    return /(?:代码|仓库|项目|实现|修复|重构|构建|测试|编译|依赖|模块|函数|接口|组件|部署|code|repository|repo|project|implement|fix|refactor|build|test|compile|dependency|module|function|interface|component|deploy)/iu.test(input);
-  }
-
   forRun(run: MemoryRunIdentity, cause?: RunContextCause): RunMemoryContext {
     return {
       profileId: cause?.profileId ?? 'owner',

@@ -50,6 +50,30 @@ test('MemoryHub isolates private profiles and forget suppresses automatic resurr
   }, ownerContext), /已被 owner 遗忘/);
 });
 
+test('remember provenance is an explicit tool field instead of inferred from owner prose', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-provenance-'));
+  const hub = await createMemoryHub({
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    profileId: 'owner',
+  });
+  const ctx = context(root);
+  const remember = createMemoryTools(hub, () => ctx)
+    .find((tool) => tool.name === 'remember');
+  assert.ok(remember && 'invoke' in remember);
+
+  await remember.invoke(new RunContext({}), JSON.stringify({
+    title: 'Explicit preference',
+    content: 'Owner prefers concise answers.',
+    kind: 'profile',
+    scope: 'private',
+    provenance: 'owner-explicit',
+  }));
+  const [hit] = await hub.search('concise answers', ctx);
+  assert.equal(hit?.confidence, 'user-confirmed');
+  assert.equal(hit?.sourceRefs[0]?.type, 'user-explicit');
+});
+
 test('remember and maintenance capture resolve one canonical topic and compound its evidence', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-topic-resolver-'));
   const dataRoot = path.join(root, 'data');
@@ -474,12 +498,13 @@ test('MemoryHub rejects external writes and workspace private provenance', async
   await assert.rejects(hub.remember({
     title: 'Private workspace page', content: 'Owner phone is secret.', kind: 'fact', scope: 'workspace',
   }, context(root)), /workspace.*明确的文件来源/);
-  await assert.rejects(hub.capture({
+  const keywordLikeReceipt = await hub.capture({
     title: 'Credential', content: 'api_key=do-not-store-this', sourceRefs: [{
-      type: 'session', id: 'session-owner@run-owner', digest: 'sha256:test',
+      type: 'session', id: 'session-owner@run-owner', digest: `sha256:${'c'.repeat(64)}`,
       occurredAt: new Date().toISOString(), trust: 'owner',
     }],
-  }, context(root)), /密码、token 或凭证/);
+  }, context(root));
+  assert.equal(keywordLikeReceipt.status, 'applied');
 });
 
 test('MemoryHub preserves control tables when rebuilding derived indexes', async () => {
@@ -518,11 +543,11 @@ test('MemoryHub cutover backs up and converts only usable non-todo legacy memori
     converted: number; skipped: number; backupDirectory: string;
   };
   assert.deepEqual({ converted: marker.converted, skipped: marker.skipped }, { converted: 1, skipped: 2 });
-  assert.equal((marker as { soulConverted?: number }).soulConverted, 1);
+  assert.equal((marker as { soulConverted?: number }).soulConverted, 0);
   assert.match(await readFile(path.join(marker.backupDirectory, 'memories.json'), 'utf8'), /Legacy durable fact/);
   assert.match(await readFile(path.join(marker.backupDirectory, 'user-MIMI.md'), 'utf8'), /用户喜欢简洁回答/);
   assert.match(await readFile(userSoul, 'utf8'), /^# MimiAgent Soul/);
-  assert.equal(firstList.some((hit) => hit.summary.includes('用户喜欢简洁回答')), true);
+  assert.equal(firstList.some((hit) => hit.summary.includes('用户喜欢简洁回答')), false);
 
   const second = await createMemoryHub({
     workspaceRoot: root, dataRoot, profileId: 'owner', userSoulFile: userSoul, packagedSoulFile: packagedSoul,

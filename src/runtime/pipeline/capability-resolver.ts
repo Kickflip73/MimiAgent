@@ -15,8 +15,6 @@ export interface CapabilityResolverInput {
   policy?: CapabilityPolicy;
   requestedComputerAccess?: ComputerAccess;
   defaultComputerAccess?: ComputerAccess;
-  developmentTask: boolean;
-  expectedArtifactCompletion: boolean;
 }
 
 export interface ResolvedCapabilities {
@@ -24,7 +22,6 @@ export interface ResolvedCapabilities {
   canReadMemory: boolean;
   canReadState: boolean;
   canReadSessionContext: boolean;
-  canInitializeProjectGuidance: boolean;
   completionToolsAllowed: boolean;
   computerAccess: ComputerAccess;
 }
@@ -173,7 +170,7 @@ export class CapabilityResolver {
     const allowed = new Set(input.policy?.allowedCapabilities ?? []);
     const canReadLocal = !input.policy || allowed.has('read');
     const executableCompletion = input.scope.mode !== 'plan'
-      && !(input.scope.securityProfile === 'safe' && input.expectedArtifactCompletion);
+      && input.scope.securityProfile !== 'safe';
     const completionToolsAllowed = executableCompletion
       && (!input.policy || allowed.has('state-read'))
       && (!input.policy?.allowedTools
@@ -184,11 +181,6 @@ export class CapabilityResolver {
       canReadMemory: !input.policy || allowed.has('memory-read'),
       canReadState: !input.policy || allowed.has('state-read'),
       canReadSessionContext: input.policy?.allowSessionContext !== false,
-      canInitializeProjectGuidance: canReadLocal
-        && input.scope.mode !== 'plan'
-        && input.scope.securityProfile !== 'safe'
-        && (!input.policy || allowed.has('write'))
-        && input.developmentTask,
       completionToolsAllowed,
       computerAccess: input.scope.securityProfile === 'full-owner'
         && (!input.scope.cause || input.scope.cause.trust === 'owner')

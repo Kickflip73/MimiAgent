@@ -4,6 +4,7 @@ import {
   COMMANDS,
   CommandHandler,
   commandHelp,
+  type CommandRunOptions,
 } from './commands.js';
 import {
   MimiChatClient,
@@ -188,6 +189,7 @@ export async function runMimiCli(
     input: string,
     signal = activeAbort?.signal,
     acceptedEventId?: string,
+    submitOptions?: CommandRunOptions,
   ) => {
     const renderer = new TerminalRenderer(
       terminal.createWriter(process.stderr),
@@ -201,7 +203,7 @@ export async function runMimiCli(
         ? { eventId: acceptedEventId, inserted: true }
         : undefined;
       if (!accepted) {
-        const submission = client.submit(input, target.currentSessionId);
+        const submission = client.submit(input, target.currentSessionId, submitOptions);
         const settled = submission.then(() => undefined, () => undefined);
         activeSubmission = settled;
         try {
@@ -250,7 +252,8 @@ export async function runMimiCli(
     await refresh();
     terminal.clearScreen(renderBanner(version, snapshot));
   };
-  const commands = new CommandHandler(target, submitAndDisplay, {
+  const commands = new CommandHandler(target, (input, signal, options) =>
+    submitAndDisplay(input, signal, undefined, options), {
     write: (text) => terminal.notify(text),
     resetScreen: async () => {
       await resetSession();

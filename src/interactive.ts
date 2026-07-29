@@ -38,6 +38,7 @@ export interface QueuedInput {
 interface InteractiveTerminalOptions {
   inputRedrawDelayMs?: number;
   singleLineInputViewport?: boolean;
+  imeSafeInput?: boolean;
   idleBlinkIntervalMs?: number;
   idleBlinkDurationMs?: number;
 }
@@ -101,8 +102,10 @@ export class InteractiveTerminal {
   private inputRedrawTimer?: NodeJS.Timeout;
   private readonly inputRedrawDelayMs: number;
   private readonly singleLineInputViewport: boolean;
+  private readonly imeSafeInput: boolean;
   private readonly idleBlinkIntervalMs: number;
   private readonly idleBlinkDurationMs: number;
+  private deferredWrites: Array<{ chunk: string; stream: WriteStream }> = [];
   private selectState?: {
     items: SelectItem[];
     index: number;
@@ -116,8 +119,10 @@ export class InteractiveTerminal {
     private readonly output: WriteStream = process.stdout,
     options: InteractiveTerminalOptions = {},
   ) {
-    this.inputRedrawDelayMs = options.inputRedrawDelayMs ?? (isAppleTerminal() ? 24 : 0);
-    this.singleLineInputViewport = options.singleLineInputViewport ?? isAppleTerminal();
+    const appleTerminal = isAppleTerminal();
+    this.inputRedrawDelayMs = options.inputRedrawDelayMs ?? (appleTerminal ? 24 : 0);
+    this.singleLineInputViewport = options.singleLineInputViewport ?? appleTerminal;
+    this.imeSafeInput = options.imeSafeInput ?? appleTerminal;
     this.idleBlinkIntervalMs = options.idleBlinkIntervalMs ?? MIMI_IDLE_BLINK_INTERVAL_MS;
     this.idleBlinkDurationMs = options.idleBlinkDurationMs ?? MIMI_IDLE_BLINK_DURATION_MS;
   }
@@ -168,7 +173,8 @@ export class InteractiveTerminal {
           this.buffer = [];
           this.cursor = 0;
           this.completionIndex = 0;
-          this.redrawAfterInput();
+          this.cancelInputRedraw();
+          if (!this.flushDeferredWrites()) this.redrawAfterInput();
           return;
         }
         this.escapeTimer = setTimeout(() => {
@@ -202,7 +208,7 @@ export class InteractiveTerminal {
           this.history.push(line);
           this.historyIndex = this.history.length;
         }
-        this.draw();
+        if (!this.flushDeferredWrites()) this.draw();
         if (line) handlers.onLine(line, intent);
         return;
       }
@@ -258,9 +264,17 @@ export class InteractiveTerminal {
     if (chunk.startsWith(clearLine) && !chunk.includes('\n')) {
       const plain = chunk.slice(clearLine.length).replace(/\x1b\[[0-9;]*m/g, '').trim();
       this.transient = chunk === clearLine ? '' : plain;
-      this.redraw();
+      if (!this.imeSafeInput) this.redraw();
       return;
     }
+    if (this.imeSafeInput && this.buffer.length > 0) {
+      this.deferredWrites.push({ chunk, stream });
+      return;
+    }
+    this.writeNow(chunk, stream);
+  }
+
+  private writeNow(chunk: string, stream: WriteStream): void {
     this.eraseUi();
     const wasOpen = this.outputOpen;
     if (wasOpen) {
@@ -322,7 +336,7 @@ export class InteractiveTerminal {
     this.cursor = 0;
     this.completionIndex = 0;
     this.cancelInputRedraw();
-    this.redraw();
+    if (!this.flushDeferredWrites()) this.redraw();
   }
 
   setQueue(items: QueuedInput[]): void {
@@ -515,23 +529,29 @@ export class InteractiveTerminal {
     this.redrawAfterInput();
   }
 
-  private redraw(): void {
+  private redraw(inputSafePoint = false): void {
     if (this.closed || !this.started) return;
     if (this.inputRedrawTimer) return;
+    if (this.imeSafeInput && this.buffer.length > 0 && !inputSafePoint) return;
     this.eraseUi();
     this.draw();
   }
 
   private redrawAfterInput(): void {
     if (this.closed || !this.started) return;
+    if (this.imeSafeInput && this.buffer.length === 0 && this.deferredWrites.length > 0) {
+      this.cancelInputRedraw();
+      this.flushDeferredWrites();
+      return;
+    }
     if (this.inputRedrawDelayMs <= 0) {
-      this.redraw();
+      this.redraw(true);
       return;
     }
     this.cancelInputRedraw();
     this.inputRedrawTimer = setTimeout(() => {
       this.inputRedrawTimer = undefined;
-      this.redraw();
+      this.redraw(true);
     }, this.inputRedrawDelayMs);
     this.inputRedrawTimer.unref();
   }
@@ -539,6 +559,14 @@ export class InteractiveTerminal {
   private cancelInputRedraw(): void {
     if (this.inputRedrawTimer) clearTimeout(this.inputRedrawTimer);
     this.inputRedrawTimer = undefined;
+  }
+
+  private flushDeferredWrites(): boolean {
+    if (!this.deferredWrites.length) return false;
+    const writes = this.deferredWrites;
+    this.deferredWrites = [];
+    for (const { chunk, stream } of writes) this.writeNow(chunk, stream);
+    return true;
   }
 
   private eraseUi(): void {
@@ -760,6 +788,7 @@ export class InteractiveTerminal {
   }
 
   private scheduleBusyRedraw(): void {
+    if (this.imeSafeInput) return;
     this.busyTimer = setTimeout(() => {
       if (!this.busy) return;
       this.busyFrame += 1;
@@ -770,7 +799,7 @@ export class InteractiveTerminal {
   }
 
   private scheduleIdleBlink(): void {
-    if (this.busy || this.closed || this.idleBlinkTimer) return;
+    if (this.imeSafeInput || this.busy || this.closed || this.idleBlinkTimer) return;
     this.idleBlinkTimer = setTimeout(() => {
       this.idleBlinkTimer = undefined;
       if (this.busy || this.closed) return;

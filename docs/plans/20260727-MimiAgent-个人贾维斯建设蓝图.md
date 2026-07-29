@@ -2,10 +2,10 @@
 
 日期：2026-07-27
 
-状态：可实施基线 v1.1
+状态：可实施基线 v1.2（2026-07-29 简化安全规划）
 
 目标：把 MimiAgent 从“很强的本地执行 Agent”建设成一个长期在线、真正了解
-owner、能可靠托管电脑/工作/生活事务，并且可以放心逐步放权的个人 AI 助手。
+owner、能在三档 Security 边界内可靠托管电脑/工作/生活事务的个人 AI 助手。
 
 适用范围：
 
@@ -38,10 +38,10 @@ MimiAgent 已经有了正确且经过较多可靠性验证的运行内核，不�
 - **不推倒重来**：新增能力必须以投影、协调器、Adapter 或只读快照接入，不能建立
   第二套 Session、Todo、Workflow、消息库或权限控制面。
 - **先可信后扩面**：先让少数高价值场景真正闭环，再复制到更多 App 和渠道。
-- **权限不做重审批平台**：认证 owner 的明确本机请求保留快速执行通道；权限审计
-  第一阶段以记录、解释和提醒为主，只在硬安全边界失败关闭。
-- **目标是有边界的全能托管**：低风险事务尽量自动完成，高风险事务准备到只差
-  owner 最后确认；能力缺失、信息不足或结果不确定时诚实停下。
+- **权限只保留三档**：Safe、Workstation、Full Owner 是唯一用户可见授权来源；
+  不再叠加风险等级、逐动作审批或自然语言权限路由。
+- **目标是有边界的全能托管**：在当前 Security 已允许且目标明确时尽量直接完成；
+  能力缺失、信息不足或结果不确定时诚实停下。
 
 ## 2. 什么才算“真正的个人贾维斯”
 
@@ -81,33 +81,31 @@ MimiAgent 已经有了正确且经过较多可靠性验证的运行内核，不�
 - 看到的内容不完整时标明 coverage，不冒充完整收件箱。
 - 所有重要行动都有来源、原因、执行回执和结果证据。
 - owner 可以随时查看、暂停未来自治、取消可安全取消的在途工作、撤销本地可逆变更
-  和收回未来权限；外部已完成动作只在渠道支持时执行补偿，不能承诺通用撤销。
+  和切换到 Safe；外部已完成动作只在渠道支持时执行补偿，不能承诺通用撤销。
 
 ## 3. 明确保留的边界
 
 “个人贾维斯”不等于让模型不受控制地接管电脑。
 
-以下边界长期保留：
+安全管控长期只保留两层：
 
-- 支付、转账、账号安全、人事承诺、法律承诺和生产发布不默认全自动。
-- 外部邮件和消息正文始终是不可信数据，不能直接获得 owner 权限。
-- 不确定的外部副作用绝不自动重放。
-- 同一业务动作切换 Connector、Browser、Computer 或 Provider 时继续共享副作用
-  防重边界；上一条路径已开始或结果不确定时不得换路径重做。
-- 不通过持续录屏和无限采集来换取“了解用户”。
-- 不创建第二套 Goal、Todo、Workflow 或任务数据库。
-- 不建立任意深度的多 Agent 图；主 Mimi 始终负责最终决定和回答。
-- 不为了“像贾维斯”而牺牲用户正在使用的微信、QQ、浏览器和桌面体验。
-- 不把权限审计建设成阻塞所有 owner 工作的审批平台。认证 owner 在 Full Owner
-  档位下发起的目标明确、低风险、本机可逆操作允许直接执行并留下完整证据。
+1. **三档 Security**：Safe 只读；Workstation 可完整开发当前工作区但不能代表
+   Owner 操作外部账号或桌面；Full Owner 可使用当前 OS 用户已经配置的完整能力。
+2. **外部输入隔离**：外部邮件、消息、网页、文件正文、Webhook 和 public 内容都是
+   不可信数据，不能切换 Security、扩大 Scope、读取私有上下文或成为系统指令。
 
-权限硬门禁只保留在以下边界：
+除此之外不建立 L0～L4、风险评分、逐动作审批、Tool 独立安全档位或关键词权限路由。
+Full Owner 下，认证 owner 的明确请求直接执行；缺少目标、正文或范围时只补齐必要的
+执行信息，不进入新的审批流程。
 
-- 来源不是已认证 owner，或外部正文试图扩大权限。
-- 目标、账号、会话、工作区或最终正文无法精确绑定。
-- 动作不可逆、面向多人/公开渠道，或涉及资金、账号安全、法律、人事、生产发布。
-- 外部动作已经开始但结果为 `accepted`、超时、断连或 `uncertain`。
-- 请求要求绕过 ComputerManager、Tool policy、Connector broker 或执行账本。
+以下机制继续保留，但只属于执行正确性，不是新的权限层：
+
+- 结构化目标校验，防止错账号、错会话、错窗口和错工作区；
+- 真实动作回执与完成验证，不能把 Tool 调用成功冒充业务完成；
+- 不确定副作用不自动重放，同一业务动作不跨路径重复执行；
+- 凭证和敏感值脱敏，不进入持久记录和外部输出；
+- 不通过持续录屏和无限采集来换取“了解用户”；
+- 不创建第二套 Goal、Todo、Workflow、权限库或任意深度多 Agent 图。
 
 ## 4. 总体架构
 
@@ -115,7 +113,7 @@ MimiAgent 已经有了正确且经过较多可靠性验证的运行内核，不�
 flowchart LR
     A["感知层<br/>消息 邮件 日历 文件 浏览器 屏幕 语音 系统"] --> B["Event / Connector Kernel"]
     B --> C["个人上下文层<br/>人物 项目 目标 承诺 截止时间 风险"]
-    C --> D["决策层<br/>Attention Standing Orders 风险与授权"]
+    C --> D["决策层<br/>Attention Standing Orders 来源可信度"]
     D --> E["计划与执行层<br/>Goal Plan Task Skill MCP Browser Computer"]
     E --> F["验证层<br/>Receipt Completion Ledger Follow-up"]
     F --> G["通知与交互层<br/>CLI 微信 语音 桌面 手机"]
@@ -145,10 +143,12 @@ flowchart LR
   给模型、`/status`、Doctor、Skill availability 和控制面，避免出现多份能力真相。
 - **Personal Context Assembler**：把现有 Memory、People、Goal、Event 和 Schedule
   组装成带来源的当前视图；它只生成投影，不拥有事实正文和任务状态。
-- **Action Policy Evaluator**：基于静态风险登记、owner 授权和当前 Run 权限计算动作
-  上限；模型的风险判断只能降级，不能扩大权限。
-- **Action Intent Fence**：给同一业务动作跨 Connector、Browser、Computer 和
-  Provider 的执行路径提供共同防重身份。
+- **Security Profile Gate**：只按 Safe、Workstation、Full Owner 三档表生成本轮
+  最终工具集；来源只能缩小 Scope，不能形成新的权限策略。
+- **External Input Boundary**：由 Host 提供结构化 provenance，把外部正文固定作为
+  不可信数据，防止 Prompt Injection 扩大权限或改变宿主指令。
+- **Effect Ledger**：给同一业务动作跨 Connector、Browser、Computer 和 Provider
+  提供共同防重身份；它只保证执行可靠性，不参与权限判断。
 - **Closed-loop Coordinator**：用现有 Event correlation、Task、Goal、Schedule、
   Watch 和 Completion 把“发现问题”推进到“执行、验证、跟踪完成”；不建立队列或
   Workflow 数据库。
@@ -158,11 +158,11 @@ flowchart LR
 
 | 契约 | 权威所有者 | 允许的实现形态 | 禁止 |
 |---|---|---|---|
-| 有效能力 | Runtime pipeline + Tool policy | 纯计算 + bounded snapshot | 独立 Broker 服务或第二份权限库 |
+| 有效能力 | Runtime pipeline + 三档 Security | 纯计算 + bounded snapshot | 独立 Broker 服务、第二份权限库或逐动作审批 |
 | 外部渠道状态 | Connector Manager | Adapter readiness/cursor/action catalog | Runtime 保存渠道凭证或复制 cursor |
 | 个人事实 | MemoryHub + 原始 Evidence | typed semantic page + 可重建索引 | 第二套人物/项目/承诺数据库 |
 | 当前执行 | Goal/Plan/Task/Schedule | 现有状态扩展和引用 | 新 Todo/Workflow 引擎 |
-| 副作用 | Execution Ledger + Action Intent | 语义 fence + 结构化 receipt | 按 Tool 名各自重试 |
+| 副作用 | Execution Ledger | effect key + 结构化 receipt | 按 Tool 名各自重试或把 Ledger 当授权层 |
 | 闭环完成 | Completion + Event correlation | expected state + terminal evidence | 模型自行宣布完成 |
 
 ## 5. 七条建设主线
@@ -202,45 +202,43 @@ flowchart LR
 ### 5.2 主线 B：统一能力与电脑控制
 
 目标：模型只能通过一个正式能力面操作电脑和外部系统，同时不让普通 owner 工作
-被额外审批流程拖慢。
+被额外审批流程拖慢。权限只由三档 Security 决定。
 
 需要实现：
 
 - 扩展现有 Effective Capability Resolver，合并：
-  - 安全档位和 Run policy；
+  - 当前 Run 的三档 Security；
   - 当前最终 Tool 集；
   - Skill `required-tools`；
   - Connector enabled/online/readiness/action catalog；
-  - MCP trust 和连接状态；
-  - Computer Use 配置、应用白名单和动作档位。
+  - MCP 和 Computer Use 的配置与就绪状态。
 - 每轮生成不可变 `EffectiveCapabilitySnapshot`，至少包含：
-  - `runId`、`policyRevision`、`toolSetDigest`、`observedAt`；
-  - 每项能力的 availability、readiness、freshness、coverage 和 permission source；
-  - 当前选择路径和可安全 fallback 的前置条件。
+  - `runId`、`securityProfile`、`toolSetDigest`、`observedAt`；
+  - 每项能力的 availability、readiness、freshness、coverage 和 route；
+  - 能力不可用时的真实原因。
 - 禁止 Skill 或模型通过通用 Shell 绕过 ComputerManager 直接操作 GUI。
 - 正式启用后台优先的 `computer_observe` / `computer_act`。
 - 统一 Browser、Desktop Connector 和 Computer Use 的选择规则。
 - GUI 坚持“观察 → 一个动作 → 再观察”。
-- 所有可能产生外部业务结果的动作先创建 `ActionIntent`：
-  - `intentId`、`actionFamily`、`targetRef`、`payloadDigest`；
-  - `selectedRoute`、`executionKey`、`policyRevision`；
-  - `not_started | started | confirmed | failed_safe | uncertain`。
-- 只有 `not_started` 或明确的 `failed_safe` 才允许换执行路径；`started` 和
-  `uncertain` 一律停止并请求只读核对或 owner 决定。
+- 所有可能产生外部业务结果的动作进入统一 Effect Ledger，记录稳定 effect key 和
+  `started | confirmed | failed_safe | uncertain`；Ledger 只防重复，不再次判断权限。
+- 只有明确的 `failed_safe` 才允许重新执行；`started` 和 `uncertain` 一律停止并
+  请求只读核对。
 - 每个能力明确显示：
   - `available`：现在可以执行；
   - `degraded`：只能部分执行；
   - `unavailable`：当前不能执行；
   - `coverage`：看到的是完整数据还是有界快照。
 
-默认执行顺序：
+执行时由 capability 选择唯一 ready route，不让模型依次跨 Shell、Computer、
+Connector 试错。推荐路径优先级是：
 
 ```text
 正式 API / Connector
   → Shortcuts / 确定性 CLI
   → Browser 语义操作
   → 后台 Computer Use
-  → 明确批准的短暂前台操作
+  → Full Owner 下必要的短暂前台操作
   → 请求用户接管
 ```
 
@@ -252,7 +250,7 @@ flowchart LR
 - 后台操作不会抢焦点或影响用户输入。
 - 目标歧义、非空草稿和用户正在操作时自动停止。
 - 所有电脑动作都有观察证据和动作后验证。
-- owner 明确发起的低风险、本机可逆操作不会因审计缺少人工批准而阻塞。
+- Full Owner 下 owner 明确发起的操作不会被第二套审批或风险等级阻塞。
 
 ### 5.3 主线 C：有界而诚实的全面感知
 
@@ -292,8 +290,8 @@ flowchart LR
 - 24 小时只读 soak 无错会话、无重复 Event。
 - 72 小时发送 soak 无错联系人、无重复发送、无草稿破坏。
 - 不把 Bot 通道冒充 owner 的个人账号。
-- 只有能产生 `confirmed` 业务回执的渠道才可晋升 Auto；只能返回 `observed` 或
-  `accepted` 的渠道最高停在 Draft/Confirm，并在执行后要求只读核对。
+- 只有能产生 `confirmed` 业务回执的渠道才允许报告发送完成；只能返回
+  `observed/accepted` 的渠道必须继续只读核对，不得冒充完成。
 
 ### 5.4 主线 D：个人上下文与世界模型
 
@@ -370,7 +368,7 @@ Mimi 可以带来源回答：
 → 识别项目、人物和紧急程度
 → 合并重复信息
 → 忽略 / 摘要 / 建议回复 / 创建待跟踪事项
-→ 用户确认或自动回复
+→ 按当前 Security 和 owner 已配置规则回复
 → 检查是否收到后续结果
 ```
 
@@ -425,7 +423,7 @@ caseRef / correlationId
 → source Event
 → current Task 或 Goal
 → optional Schedule/Watch
-→ ActionIntent + Receipt
+→ Effect Ledger + Receipt
 → expected business state
 → terminal Evidence
 ```
@@ -436,12 +434,12 @@ Closed-loop Coordinator 只负责创建和解析这些引用，不拥有队列�
 
 ### 5.6 主线 F：生活闭环
 
-目标：帮助 owner 管理生活，但不越过高风险边界。
+目标：帮助 owner 管理生活，并严格服从当前三档 Security。
 
 优先场景：
 
 - 日历冲突、出发时间和会议提醒；
-- 账单和订阅到期提醒，只生成待确认动作；
+- 账单和订阅到期提醒；
 - 重要联系人、生日和长期未联系提醒；
 - Notes、灵感和个人资料整理；
 - 快递、下载文件和票据归档；
@@ -449,14 +447,9 @@ Closed-loop Coordinator 只负责创建和解析这些引用，不拥有队列�
 - 天气、设备、电池、网络和存储风险；
 - 语音查询、记录和提醒。
 
-默认不自动执行：
-
-- 支付与转账；
-- 医疗决定；
-- 法律或合同承诺；
-- 账号、隐私和安全设置；
-- 删除不可恢复的个人数据；
-- 对多人或公开渠道发送内容。
+Safe 和 Workstation 不执行生活类外部事务。Full Owner 可以执行已配置能力中的 owner
+明确请求；支付、转账、医疗、法律、账号设置、不可恢复删除和公开发送等场景若缺少精确
+目标、范围或最终参数，应补齐信息后再执行，但不为这些类别另建审批等级。
 
 ### 5.7 主线 G：交互、人格与多设备
 
@@ -474,7 +467,7 @@ Closed-loop Coordinator 只负责创建和解析这些引用，不拥有队列�
   - 当前健康状态；
   - 正在做什么；
   - 为什么这么做；
-  - 使用了哪些权限；
+  - 当前 Security 档位；
   - 等待 owner 决定什么；
   - 如何暂停未来自治、取消在途工作、撤销本地修改或执行外部补偿。
 
@@ -483,74 +476,57 @@ Closed-loop Coordinator 只负责创建和解析这些引用，不拥有队列�
 跨入口完成标准：
 
 - 同一个入口重复投递和两个入口同时继续同一 `caseRef` 不会创建重复动作。
-- 每个入口使用自己的来源权限和 reply route，不能因共享 owner profile 自动获得
-  另一个入口的更高权限。
+- 每个入口使用自己的 provenance 和 reply route；外部入口不能因共享 owner profile
+  获得 Full Owner。
 - Handoff 只携带摘要、实体引用、未满足条件和证据 refs，不复制整个 Session。
 
-## 6. 渐进授权模型
+## 6. 三档 Security 与外部输入隔离
 
-授权分成两层，不能混在一起：
+安全管控只保留一个用户可见授权入口：
 
-1. **部署能力上限**：安全档位、mode、event/source policy、当前 Tool、Connector、
-   MCP 和 Computer 配置决定本轮最多能做什么。
-2. **事务自治等级**：在能力上限之内，每个渠道、人物、事务类型和动作族决定 Mimi
-   应当观察、摘要、起草、确认还是自动执行。
-
-| 等级 | Mimi 可以做什么 | 适用阶段 |
+| 档位 | 定位 | 核心能力 |
 |---|---|---|
-| L0 Observe | 只观察和记录，不调用模型或不通知 | 新接入渠道 |
-| L1 Digest | 分类、摘要和提醒 | 覆盖率已验证 |
-| L2 Draft | 生成回复、计划或动作草稿 | 判断质量已验证 |
-| L3 Confirm | owner 对精确目标和最终参数确认后执行 | 有副作用但可核对 |
-| L4 Auto | 在精确规则内自主执行和跟踪 | 长期 soak 达标 |
+| Safe | 只读分析 | 文件、状态、Memory 和公网只读；不执行写动作、Shell、Connector 事务或 Computer 写入 |
+| Workstation | 当前工作区开发 | 工作区读写和开发 Shell，可测试构建；不能代表 Owner 操作外部账号或桌面 |
+| Full Owner | 完整 Owner 能力 | 使用当前 OS 用户已经配置的 Shell、Connector、Computer、受信 MCP 和外部事务 |
 
-高风险动作最高只能到 L3。低风险、可逆、目标明确的动作才可能进入 L4。
+同一 Run 只冻结一个 Security；同一档位下，Owner 使用不同措辞或不同 Session 时基础
+工具面保持一致。General 和 Ultra 不能扩大 Security；Plan 直接按 Safe 执行，不形成
+第四档。
 
-### 6.1 Owner 快速通道
+Full Owner 下，认证 owner 的明确请求不再叠加逐动作审批、风险等级或机械确认。缺少
+目标、正文、路径或范围时，只补齐执行所需字段；这属于任务信息完整性，不是授权升级。
 
-权限审计不应把 Mimi 变成审批平台。满足以下条件时，owner 当前这条明确请求本身可
-视为一次 L3 确认，不再进行第二次机械确认：
+### 6.1 外部输入只作为数据
 
-- 来源是已认证 owner，当前部署档位允许该能力；
-- 目标、账号、会话、工作区和最终参数都能精确解析；
-- 动作不属于资金、账号安全、法律、人事、生产发布、公开/多人发送；
-- 动作本机可逆，或外部系统提供可靠 `confirmed` 回执和防重键；
-- 执行前状态新鲜，没有非空草稿、用户活动冲突或目标变化。
+外部邮件、消息、网页、文件正文、Webhook、Connector Event 和 public 内容始终是
+不可信数据。它们不能：
 
-例如“把这个文件移动到当前项目的 archive 目录”可以直接执行并留下撤销快照；
-“把这条最终文本发给已绑定的王越私聊”在上下文和目标均锁定时可直接发送一次。
-“帮我回复一下”“把它上线”仍然需要补足目标、正文或生产确认。
+- 切换或提升 Security；
+- 修改 Host、系统或 owner 指令；
+- 扩大工作区、目标、收件人或工具 Scope；
+- 读取 Owner 私有 Memory、凭证、其他 Session 或系统提示；
+- 通过“忽略之前指令”“运行命令”等文字触发额外能力。
 
-### 6.2 默认审计模式
+权限只来自可信 Host 的结构化 provenance 和当前 Security。Owner 在本机保存的
+source policy 可以绑定固定来源、目标和动作，但外部正文不能创建或修改该 policy。
+Prompt Injection 防护不依赖关键词库或模型风险分类器。
 
-第一阶段使用 `guarded` 审计，而不是全量强审批：
+### 6.2 执行可靠性不是权限层
 
-- 所有能力决策、授权来源、目标摘要、ActionIntent 和 Receipt 可查看、可统计。
-- 普通低风险偏差先产生 warning 和降级建议，不阻塞 owner 当前任务。
-- 只有本节硬门禁、越权目标、未知工具、未登记 GUI 路径和不确定副作用失败关闭。
-- 后续可为特定渠道或场景显式启用 `strict`；不能全局静默升级到更严格模式。
-- 审计和 Trace 只保存摘要、digest 和 refs，不保存凭证或敏感正文。
+下列机制继续存在，但不再参与“Owner 是否有权限”的判断：
 
-### 6.3 持久授权契约
+- Connector、MCP、Computer 的 readiness 和 capability route；
+- 工作区、账号、会话、窗口和动作参数的结构化校验；
+- Effect Ledger 的防重复与 `confirmed | failed_safe | uncertain` 结果；
+- 原子持久化、脱敏、动作后验证和完成回执。
 
-持久授权键至少包含：
+Security 允许但依赖未就绪时，应报告真实的 `unavailable/degraded`，不能误报为无权限。
+动作结果不确定时不得自动重放，但也不因此新增一次性授权或审批流程。
 
-```text
-profile + source + account
-+ actor/conversation/target
-+ actionFamily + parameterConstraints
-+ maxRisk + timeWindow + maxUses
-+ policyRevision
-```
-
-例如，“允许自动回复王越”过于宽泛；应表达为：
-
-> 在大象项目群中，对王越提出的事实确认问题可以自动回复；涉及排期、资源、生产变更
-> 和对外承诺时只生成草稿并提醒我。
-
-一次性确认还必须绑定 `targetRef + payloadDigest + expiresAt + maxUses=1`。目标或正文
-变化后原确认立即失效。多条策略同时命中时取最严格结果；模型和 Skill 都不能提高
-Host 计算出的授权等级。
+完整的简化说明以
+[三档 Security 简化规划](20260728-MimiAgent三档Security轻量化管控改造计划.md)
+为准。
 
 ## 7. 分阶段路线图
 
@@ -560,7 +536,7 @@ Host 计算出的授权等级。
 ```text
 M-1 信任地基 → M0 绿色运行基线 → M1 可靠眼睛和双手
                        └──────→ M2 个人上下文
-M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 有限自治
+M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 持续运行
 ```
 
 ### M-1：信任地基和当前风险收敛
@@ -572,16 +548,16 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 有限自治
 - 清理当前凭证进入 Task/WorkUnit/管理列表的路径；增加写入前和展示前脱敏。
 - 对已经落盘的可疑凭证输出迁移报告，不在日志中复制原值，并提供轮换清单。
 - 明确 Event、Task、Run、Session、Trace、Memory、备份的 retention/export/delete。
-- 定义 `EffectiveCapabilitySnapshot`、`ActionIntent` 和一次性授权契约。
-- 建立 `guarded` 默认审计模式，证明普通 owner 低风险任务不会被新增审批阻塞。
+- 固化 Safe、Workstation、Full Owner 三档权限表和结构化 provenance。
+- 删除 owner 自由文本权限路由，证明外部内容不能切档、扩大 Scope 或成为 Host 指令。
 
 退出条件：
 
 - 新增 fixture 证明敏感值不会进入 objective summary、WorkUnit、Trace、Memory 和
   management API。
 - 现有数据扫描完成，已发现凭证均有处置状态。
-- 权限硬门禁与快速通道都有确定性测试。
-- 三份契约经过 schema、迁移和崩溃边界评审，未引入第二个状态所有者。
+- 三档权限矩阵和 Prompt Injection 边界都有确定性测试。
+- 相同 Security 下的基础工具面不受自然语言措辞影响，未引入第二个权限所有者。
 
 ### M0：恢复绿色运行基线
 
@@ -592,8 +568,8 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 有限自治
 - 清理和分类现有 dead letter、摘要积压和 readiness unknown。
 - Provider 熔断、余额告警、主备切换实现和故障注入。
 - 超大 Tool 输出治理。
-- Effective Capability Resolver/Snapshot 第一版和工具绕过清单。
-- ActionIntent Fence 第一版，先覆盖个人消息和 Computer 写动作。
+- Effective Capability Resolver/Snapshot 第一版，只反映三档 Security 和真实 readiness。
+- Effect Ledger 防重复第一版，先覆盖个人消息和 Computer 写动作。
 - 扩展现有 `/status`、Doctor、activity 和 diagnostics 为 Jarvis CLI 健康视图，不
   新建第二个监控系统。
 - 恢复 coverage 门槛并完成备份/恢复演练。
@@ -616,19 +592,19 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 有限自治
 
 - 正式启用 Computer Use 的窗口级观察和少量白名单后台动作。
 - 优先稳定 Browser、Screen、Shortcuts，再按收益启用 Notes、Contacts。
-- 大象个人账号先完成 bounded 只读和 Draft；发送必须满足真实回执门禁。
+- 大象个人账号完成 bounded 只读；Full Owner 明确请求发送时必须取得真实回执。
 - QQ 继续使用已选择的受控 CUA 路线并诚实标记 `bounded/visible`。
 - 微信只有在个人账号只读门禁真实通过后才进入此阶段，不用占位 Adapter 冒充能力。
 - 渠道 coverage、新鲜度和 kill switch。
-- 每个执行面接入 ActionIntent、目标预检、用户活动保护和动作后验证。
+- 每个执行面接入 Effect Ledger、目标预检、用户活动保护和动作后验证。
 
 退出条件：
 
 - 50 个 fixture/回归操作全部通过；至少 100 个分层实机低风险操作成功率不低于
   95%，并按 App、动作族和执行路径报告。
-- 严重错误为 0：错目标、重复发送、草稿覆盖、未经批准的前台干扰。
+- 严重错误为 0：错目标、重复发送、草稿覆盖、意外前台干扰。
 - 只读渠道完成 24h soak；进入发送的渠道完成 72h soak。
-- 只返回 `observed/accepted` 的路线不晋升 Auto。
+- 只返回 `observed/accepted` 的路线不得报告业务完成。
 
 ### M2：真正理解 owner
 
@@ -660,13 +636,12 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 有限自治
 - 第一批选择两个高价值闭环，建议“收件箱 + 研发”或“收件箱 + 会议”。
 - 首批通过后再增加告警和每日经营，不要求一次实现五个闭环。
 - Standing Orders 和 Source Policy 模板。
-- Draft/Confirm 授权等级。
 - 未闭环事项的自动 Watch 和 Follow-up。
-- `caseRef/correlationId → Task/Goal/Schedule → ActionIntent → terminal Evidence` 全链路。
+- `caseRef/correlationId → Task/Goal/Schedule → Effect Ledger → terminal Evidence` 全链路。
 
 退出条件：
 
-- 每个闭环至少 50 个 shadow/draft 案例和 50 个真实低风险案例；真实案例成功率不低于
+- 每个闭环至少 50 个 fixture/shadow 案例和 50 个真实案例；真实案例成功率不低于
   95%，并公开失败分母、重试和人工接管。
 - 所有写动作都有回执和业务结果验证。
 - 无重复副作用和无来源结论。
@@ -683,7 +658,7 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 有限自治
 - 语音 listener、TTS 和打断。
 - 手机或独立 companion 入口。
 - 天气、位置、出行和设备状态按需接入。
-- 高风险生活事务一律 Draft/Confirm。
+- 所有入口继续只使用三档 Security，外部语音或消息内容不能提升权限。
 
 退出条件：
 
@@ -692,16 +667,16 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 有限自治
 - 语音和消息入口不产生重复任务。
 - 手机和语音入口不得通过共享 profile 绕过原来源权限。
 
-### M5：有限自治的个人贾维斯
+### M5：持续运行的个人贾维斯
 
 参考周期：持续迭代。
 
 交付：
 
-- 少数低风险场景从 Confirm 晋升 Auto。
+- 在 Full Owner 下运行 owner 明确配置的 Routine、Schedule 和 source policy。
 - 模型路由、成本和延迟优化。
 - 30/90 天自治质量报告。
-- 权限定期复审和自动降级。
+- 三档 Security 配置和外部来源 Scope 定期复核。
 - 本地隐私模型和离线降级能力评估。
 
 退出条件：
@@ -709,7 +684,7 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 有限自治
 - 连续 30 天无严重动作错误。
 - 每个自动场景都能说明规则、来源、动作和结果。
 - owner 能一键暂停全部自治并保留只读观察。
-- 每个 L4 policy 有最近 30/90 天质量报告、到期时间和自动降级条件。
+- 每个长期任务有最近 30/90 天质量报告、有效范围和停止方式。
 - 离线或降级模式能够继续执行确定性只读健康检查、提醒和本地检索，不伪装成完整
   Agent 能力。
 
@@ -723,19 +698,19 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 有限自治
 |---|---|---|---|---|
 | JRV-001 | P0 | Secret 与数据生命周期治理 | `daemon/task-store.ts`、`task-tools.ts`、Trace、Memory、backup | 敏感 fixture 不进入持久摘要和管理 API；历史扫描与轮换清单完成 |
 | JRV-002 | P0 | Dead letter、Digest 和 CI 基线 | Daemon Store/health/CLI、coverage tests | Doctor ready；失败均已分类；coverage、Build、package、backup verify 通过 |
-| JRV-003 | P0 | Effective Capability Snapshot | `runtime/pipeline/capability-resolver.ts`、`tool-set-builder.ts`、status/Doctor | 模型 Tool、Skill availability、status 使用同一 snapshot digest |
-| JRV-004 | P0 | ActionIntent Fence | `core` 契约、ExecutionLedger adapter、Connector/Computer 写工具 | 同一业务动作跨 Tool/Provider 不重复；uncertain 禁止换路径 |
+| JRV-003 | P0 | 三档 Security 与能力快照 | `config.ts`、`runtime/pipeline/capability-resolver.ts`、`tool-set-builder.ts`、status/Doctor | 只有三档授权；模型 Tool、Skill availability、status 使用同一 snapshot digest |
+| JRV-004 | P0 | Effect Ledger | `core` 契约、ExecutionLedger adapter、Connector/Computer 写工具 | Ledger 不参与授权；同一业务动作跨 Tool/Provider 不重复，uncertain 禁止换路径 |
 | JRV-005 | P0 | Provider 熔断与主备 | bootstrap/model/run-service/worker protocol/health | 429、余额、网络、5xx 故障注入通过；已开始副作用不整轮重放 |
 | JRV-006 | P0 | Readiness/coverage 统一 | Connector schema、Manager、health、docs | readiness/freshness/coverage/availability 术语和状态一致 |
-| JRV-007 | P0 | GUI 绕过清单与门禁 | Tool policy、Shell policy、ComputerManager | AppleScript/JXA/Shortcuts/CLI 的 GUI 副作用均有明确 capability owner |
+| JRV-007 | P0 | 外部输入与 GUI 正式执行面 | provenance、Shell policy、ComputerManager | external/public 无法提升 Security；GUI 不通过通用 Shell 绕过正式能力 |
 | JRV-008 | P0 | 成本与资源 SLO | activity、health、diagnostics | 每日 Run/Token/费用/CPU/内存/磁盘趋势可查看并有预算告警 |
 | JRV-101 | P1 | Computer 白名单实机矩阵 | `extensions/computer`、App adapters、fixtures | 100 个分层实机动作达到门槛，无严重错误 |
-| JRV-102 | P1 | 首个个人消息闭环 | PersonalMessageHub + 大象 Adapter | bounded 只读、Draft、目标绑定、ActionIntent、真实回执和 72h soak |
+| JRV-102 | P1 | 首个个人消息闭环 | PersonalMessageHub + 大象 Adapter | bounded 只读、目标绑定、Full Owner 明确发送、真实回执和 72h soak |
 | JRV-103 | P1 | QQ/微信按能力门禁接入 | QQ CUA Skill、微信只读 Adapter | 不使用占位能力；未过账号/稳定 ID 门禁时保持 unavailable/degraded |
 | JRV-201 | P1 | Personal Context typed schema | Memory V2、Assembler、可重建索引 | People/Project/Commitment 稳定引用、来源、修订、冲突和过期可查询 |
 | JRV-202 | P1 | Commitment/Waiting 投影 | Memory + Event correlation + Schedule refs | 多承诺并存，不覆盖 Session Goal；每项能定位证据和下一次跟进 |
 | JRV-301 | P1 | Jarvis Eval 事件与报告 | WorkUnit/Trace/Eval scripts | 有固定 dataset、版本、分母、严重度、人工判定和 30/90 天报告 |
-| JRV-302 | P1 | 首批两个工作闭环 | Skill/Connector/Attention/Schedule/Completion | 两个闭环分别通过 shadow、Draft、Confirm 和真实 E2E 门禁 |
+| JRV-302 | P1 | 首批两个工作闭环 | Skill/Connector/Attention/Schedule/Completion | 两个闭环分别通过 fixture、shadow 和真实 E2E 门禁 |
 
 依赖顺序：
 
@@ -798,8 +773,10 @@ Manager/Tool policy 并收到动作结果；soak 另行累计时间窗。readine
 - 错联系人、重复发送、误删除、覆盖草稿必须为 0。
 - uncertain 结果不得自动重试。
 - 任务取消、Daemon 崩溃和 Provider 断连后不得重放成功动作。
-- 跨 Connector、Browser、Computer 和 Provider 的同一 ActionIntent 不得重复执行。
+- 跨 Connector、Browser、Computer 和 Provider 的同一 effect 不得重复执行。
 - 凭证和敏感正文不得出现在管理列表、Trace、Memory、诊断和 Eval 报告。
+- external/public Prompt Injection 不得切换 Security、扩大 Scope、读取 Owner 私有
+  上下文或触发未授权写动作。
 
 ### 9.4 个人理解
 
@@ -833,18 +810,18 @@ Mimi 可以被称为“个人贾维斯”前，至少满足：
 
 - 连续 30 天常驻运行，无任务静默丢失。
 - 至少两个工作闭环和一个生活闭环完成 30 天真实运行。
-- 按能力族分层的代表性低风险任务成功率稳定达到 95%，不能只报告混合平均数。
+- 按能力族分层的代表性任务成功率稳定达到 95%，不能只报告混合平均数。
 - 错联系人、重复发送和不确定副作用重放为 0。
-- S0/S1 严重事故为 0；出现后对应 L4 policy 自动降级并重新开始 soak。
-- 所有启用能力都能展示当前 readiness、freshness、coverage、权限来源和 snapshot
+- S0/S1 严重事故为 0；出现后停止对应长期任务并重新开始 soak。
+- 所有启用能力都能展示当前 readiness、freshness、coverage、Security 档位和 snapshot
   时间。
 - 重要结论、所有副作用和所有“已完成”结论都有可回读证据。
 - 凭证泄漏、越权来源升级和未登记 GUI 路径为 0。
 - 能持续维护人物、项目、承诺、等待项和截止时间。
-- 能正确选择 Observe、Digest、Draft、Confirm 或 Auto。
-- 高风险动作永远不会未经确认自动执行。
-- owner 可以一键暂停未来自治、取消可安全取消的任务、导出数据和收回授权。
-- owner 的明确低风险请求不会因审计流程产生无意义的重复确认。
+- 只使用 Safe、Workstation、Full Owner 三档，并能准确说明当前档位。
+- 外部内容永远不会被当作 Host 或 Owner 指令执行。
+- owner 可以一键切换到 Safe、暂停未来自治、取消可安全取消的任务和导出数据。
+- owner 的明确请求不会因审计流程产生无意义的重复确认。
 - Mimi 在没有重要事情时保持安静。
 - 30/90 天质量报告包含成本、资源、注意力和人工接管情况，而不仅是成功案例。
 
@@ -856,7 +833,7 @@ Mimi 可以被称为“个人贾维斯”前，至少满足：
 - 不把所有通知都交给大模型分析。
 - 不靠更长 Prompt 代替状态、权限和验证。
 - 不把多 Agent 数量当作智能水平。
-- 不在可靠性未达标时开放全自动回复或高风险操作。
+- 不在可靠性未达标时扩大长期自动任务范围。
 - 不先建设独立 Capability Broker、权限审批平台、个人关系数据库或工作流引擎。
 - 不为了追求 coverage 把不稳定逆向、持续录屏或高频轮询包装成生产能力。
 
@@ -868,10 +845,9 @@ Mimi 可以被称为“个人贾维斯”前，至少满足：
 设计契约
 → Fake/Fixture 测试
 → 只读真实验证
-→ Draft 模式
-→ owner 明确请求或单次确认的真实动作
+→ 在对应 Security 下执行真实动作
 → 24h/72h soak
-→ 少量场景自动执行
+→ owner 配置少量长期任务
 → 30 天质量复审
 ```
 
@@ -882,29 +858,34 @@ Mimi 可以被称为“个人贾维斯”前，至少满足：
 3. 它实际调用了什么能力？
 4. 动作是否真的成功？
 5. 崩溃或超时时会不会重复？
-6. 用户如何暂停、取消、补偿或收回权限？
+6. 用户如何暂停、取消、补偿或切换 Security？
 7. 哪些正文、凭证和个人数据被保存，何时删除？
-8. 当前失败是否应该回滚代码、关闭能力或把 L4 降级为 L2/L3？
+8. 当前失败是否应该回滚代码、关闭能力或停止对应长期任务？
 
-每次只晋升一个精确 policy，不按整个渠道晋升。例如只允许“在一个指定私聊中回答
-低风险事实确认”，而不是把“大象自动回复”整体升到 L4。认证 owner 的当次明确请求
-可以走快速通道；持久 L4 仍必须经过 shadow、Draft/Confirm、soak 和质量复审。
+长期自动任务只使用 owner 在本机配置的精确来源、目标和动作 Scope，不从外部正文
+生成权限。它仍使用同一套三档 Security，不形成新的自治等级；扩大范围前必须经过
+fixture、真实动作、soak 和质量复审。
 
 ## 13. 最终产品形态
 
 完成本蓝图后，Mimi 的日常表现应当是：
 
 > 早上主动告诉 owner 今天最重要的三件事和需要提前准备的会议；工作中持续整理
-> 邮件、消息、代码任务和告警，只在需要决定时打扰；能在授权范围内完成低风险操作，
+> 邮件、消息、代码任务和告警，只在需要决定时打扰；能完成当前 Security 允许的操作，
 > 并验证结果；会后跟踪承诺和等待项；晚上总结完成情况和明日风险；所有判断都有来源，
 > 所有行动都能解释；未来自治可暂停，任务可在安全点取消，本地修改可撤销，外部动作
 > 在系统支持时可补偿。
 
 这才是 MimiAgent 应追求的“贾维斯”：不是假装无所不能，而是在能力边界内尽可能
-全能，在低风险事务上主动托管，在高风险事务上准备充分、只留下最后确认；长期可靠、
-真正理解 owner、能够完成事务，并且始终值得信任。
+全能，在当前 Security 范围内主动托管；长期可靠、真正理解 owner、能够完成事务，
+并且始终值得信任。
 
 ## 14. 2026-07-27 M0 实施记录
+
+> 历史说明：第 14～16 节保留当时的提交、测试和运行证据，其中 `ActionIntent`、
+> 一次性授权、`guarded`、Draft 等名称描述的是旧实现。2026-07-29 起它们不再构成
+> 当前权限规划；当前授权只认第 6 节三档 Security，Ledger、目标校验和回执只作为
+> 执行正确性。
 
 本轮按 JRV-001～JRV-008 建成代码地基，但不伪造外部账号、实机次数或日历 soak：
 

@@ -30,7 +30,6 @@ import { ExecutionLedger, type ExecutionCallRecord } from '../core/execution-led
 import type { ActionIntent, OneTimeActionAuthorization } from '../core/action-intent.js';
 import {
   assertCompletionContractForTask,
-  expectedCompletionKind,
   type CompletionContract,
   type CompletionGateDecision,
   type CompletionReport,
@@ -119,10 +118,6 @@ import {
 } from './pipeline/tool-set-builder.js';
 import { AgentRequestFactory } from './pipeline/request-factory.js';
 import { PersonalMessageHub, type PersonalMessageScope } from './personal-message-hub.js';
-import {
-  explicitlyRequestsSessionAccess,
-  explicitlyRequestsSessionClear,
-} from '../core/user-intent.js';
 import {
   activateEphemeralOwnerInput,
   containsActiveEphemeralValue,
@@ -240,6 +235,7 @@ export interface MimiRunOptions {
   ) => Promise<OneTimeActionAuthorization | undefined>;
   requireCompletionGate?: boolean;
   completionContract?: CompletionContract;
+  resumeState?: boolean;
   computerAccess?: ComputerAccess;
   computerApps?: readonly string[];
   computerDeniedApps?: readonly string[];
@@ -535,8 +531,6 @@ export class MimiAgent {
           id, updatedAt, turns, recoverable,
         })),
         history: async (limit) => (await (this.activeRun?.session ?? this.session).getItems()).slice(-limit),
-        canAccessSessions: () => explicitlyRequestsSessionAccess(this.activeRun?.input ?? ''),
-        canClearSession: () => explicitlyRequestsSessionClear(this.activeRun?.input ?? ''),
         schedule: (action) => {
           if (!this.activeRun) throw new Error('当前没有可绑定的运行，无法调度操作');
           this.activeRun.pendingActions.push(action);
@@ -618,14 +612,11 @@ export class MimiAgent {
     const runOptions = options
       ? (({ ephemeralOwnerInput: _ephemeralOwnerInput, ...retained }) => retained)(options)
       : undefined;
-    const developmentTask = this.runContexts.isDevelopmentTask(textInput);
     const capabilities = this.capabilityResolver.resolve({
       scope,
       policy: options?.policy,
       requestedComputerAccess: options?.computerAccess,
       defaultComputerAccess: this.config.computer?.defaultAccess,
-      developmentTask,
-      expectedArtifactCompletion: expectedCompletionKind(textInput) === 'artifact',
     });
     const completionToolsAllowed = capabilities.completionToolsAllowed;
     const baseRunSession = options?.policy?.allowSessionContext === false
@@ -680,14 +671,6 @@ export class MimiAgent {
       canReadSessionContext,
     } = capabilities;
     run.canReadLocal = canReadLocal;
-    if (capabilities.canInitializeProjectGuidance) {
-      try {
-        await this.projectGuidance.ensureMinimal();
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'EACCES' && code !== 'EROFS' && code !== 'EPERM') throw error;
-      }
-    }
     const runComputerAccess = capabilities.computerAccess;
     const availableScopedTools = [
       ...this.registeredTools(securityProfile),
@@ -718,7 +701,7 @@ export class MimiAgent {
     began = true;
     const resumesCheckpoint = recovery !== undefined
       && recovery.status !== 'completed'
-      && (recovery.input.trim() === textInput.trim() || textInput.includes('恢复最近一次未完成运行：'));
+      && (recovery.input.trim() === textInput.trim() || options?.resumeState === true);
     await this.hooks.emit({ type: 'run_start', sessionId: run.sessionId, input: textInput });
     const memoryContext = this.runContexts.forRun(run, options?.cause);
     const state = await new RunStateLoader({
@@ -735,7 +718,7 @@ export class MimiAgent {
       loadProjectGuidance: () => this.projectGuidance.loadForDevelopment(),
       loadArchive: () => run.session.getContextArchive(),
       loadActiveSkills: () => run.session.getActiveSkills(),
-    }).load(capabilities, developmentTask);
+    }).load(capabilities);
     const {
       storedGoal,
       teamSummary,
@@ -748,10 +731,7 @@ export class MimiAgent {
     const plan = [...state.plan];
     const history = [...state.history];
     const persistentInstructions = [soul.instructions, projectGuidance.instructions].filter(Boolean).join('\n\n');
-    const memoryTools = createMemoryTools(this.memory, () => ({
-      ...memoryContext,
-      input: run.input,
-    }));
+    const memoryTools = createMemoryTools(this.memory, () => memoryContext);
     const delegatedMemoryTools = createMemoryTools(this.memory, () => memoryContext, { workspaceOnly: true });
     const delegatedTools = [
       ...scopedTools.filter((tool) => (
@@ -764,7 +744,7 @@ export class MimiAgent {
       : undefined;
     const resumesGoal = activeStoredGoal !== undefined && (
       (resumesCheckpoint && recovery.goalCreatedAt === activeStoredGoal.createdAt)
-      || textInput.includes('继续长期目标：')
+      || options?.resumeState === true
       || textInput.trim() === activeStoredGoal.objective.trim());
     const goal = resumesGoal ? activeStoredGoal : undefined;
     run.completionRequired = completionToolsAllowed && resumesGoal;
@@ -865,7 +845,7 @@ export class MimiAgent {
         prepare: async (contract) => {
           if (this.activeRun !== run) throw new Error('Completion Contract 所属 Run 已失效');
           if (!run.goalCreatedAt) throw new Error('普通任务不使用 Completion Contract；请先显式调用 set_goal 创建持久 Goal');
-          const accepted = assertCompletionContractForTask(run.input, contract, run.completionContract);
+          const accepted = assertCompletionContractForTask(contract, run.completionContract);
           run.completionRequired = true;
           run.completionContract = accepted;
           run.completionReport = undefined;
@@ -1639,8 +1619,6 @@ export class MimiAgent {
     const capabilities = this.capabilityResolver.resolve({
       scope,
       policy,
-      developmentTask: false,
-      expectedArtifactCompletion: false,
     });
     const tools = this.toolSetBuilder.scoped(
       [...hostTools],
@@ -1690,8 +1668,6 @@ export class MimiAgent {
       policy,
       requestedComputerAccess: 'observe',
       defaultComputerAccess: this.config.computer?.defaultAccess,
-      developmentTask: false,
-      expectedArtifactCompletion: false,
     });
     const tools = this.toolSetBuilder.scoped(
       this.registeredTools('full-owner'),

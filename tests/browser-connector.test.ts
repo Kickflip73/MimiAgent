@@ -65,6 +65,7 @@ else if (command === 'find') process.stdout.write(JSON.stringify({ matches_n: 1,
 else if (command === 'tab' && subcommand === 'list') process.stdout.write(JSON.stringify([{ page: 'page-1', url: 'https://example.com' }]));
 else if (command === 'get' && subcommand === 'html') process.stdout.write(JSON.stringify({ tag: 'body', text: 'Example' }));
 else if (command === 'get' && subcommand === 'text') process.stdout.write(JSON.stringify({ value: 'Save', matches_n: 1, match_level: 'exact' }));
+else if (command === 'extract') process.stdout.write(JSON.stringify({ url: 'https://internal.example.com/issues/1', content: '# Internal issue', next_start_char: null }));
 else if (command === 'network') process.stdout.write(JSON.stringify([{ url: 'https://example.com/api?token=secret', body: { token: 'secret' }, shape: ['items'] }]));
 else if (command === 'click') process.stdout.write(JSON.stringify({ clicked: true, target: subcommand, matches_n: 1, match_level: 'exact' }));
 else if (command === 'eval') process.stdout.write(JSON.stringify({ value: 'script-result', script: subcommand }));
@@ -123,6 +124,18 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
       coverage: 'bounded',
       backgroundSafe: true,
     });
+
+    const authenticatedPage = await call(
+      'read-url',
+      'read_url',
+      'https://internal.example.com/issues/1',
+      {},
+    );
+    assert.equal(authenticatedPage.ok, true, authenticatedPage.error);
+    assert.equal(authenticatedPage.result?.requestedUrl, 'https://internal.example.com/issues/1');
+    assert.equal(authenticatedPage.result?.content, '# Internal issue');
+    assert.equal(authenticatedPage.result?.sessionReleased, true);
+    assert.equal(authenticatedPage.result?.untrusted, true);
 
     const opened = await call('open', 'open_session', 'research', {
       url: 'https://example.com',
@@ -248,6 +261,9 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
       .split('\n')
       .map((line) => JSON.parse(line) as string[]);
     assert.ok(commands.some((args) => args[0] === 'doctor'));
+    assert.ok(commands.some((args) => args[1]?.startsWith('mimi-read-') && args[2] === 'open'));
+    assert.ok(commands.some((args) => args[1]?.startsWith('mimi-read-') && args[2] === 'extract'));
+    assert.ok(commands.some((args) => args[1]?.startsWith('mimi-read-') && args[2] === 'close'));
     assert.ok(commands.some((args) => args.includes('--window') && args.includes('background')));
     assert.ok(commands.every((args) => !args.some((arg) => /safari|osascript/i.test(arg))));
   } finally {

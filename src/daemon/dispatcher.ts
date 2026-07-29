@@ -61,7 +61,6 @@ export interface DispatcherOptions {
     references: readonly EphemeralSecretReference[],
   ) => EphemeralOwnerInputLease | undefined;
   resolveWorkspace?: (
-    input: string,
     event: ImmutableEvent,
     sessionId: string,
   ) => MaybePromise<string | undefined>;
@@ -376,7 +375,7 @@ export class MimiDispatcher {
         return;
       }
       const sessionId = decision.sessionId!;
-      const workspaceRoot = await this.options.resolveWorkspace?.(decision.input!, event, sessionId);
+      const workspaceRoot = await this.options.resolveWorkspace?.(event, sessionId);
       this.store.bindRunningTaskSession(task.id, this.workerId, sessionId);
       if (this.activeSessions.has(sessionId)) {
         this.store.requeueTask(task.id, this.workerId, `同 Session ${sessionId} 已有活动 Run，保持 FIFO 等待`);
@@ -651,6 +650,12 @@ export class MimiDispatcher {
         : undefined;
       const sessionEffect = [...result.effects].reverse()
         .find((effect) => effect.type === 'session_changed');
+      // Do not publish a terminal Task before the host has finished its
+      // bookkeeping. Clients use the terminal state as the safe boundary for
+      // follow-up runtime actions such as a Provider restart. Publishing first
+      // briefly made the just-completed conversation still appear in
+      // activeEventIds, so the restart rejected its own completed Run.
+      await this.host.finalizeExecutionLedger(decision.sessionId!, executionKey).catch(() => undefined);
       this.store.completeTask(task.id, this.workerId, {
         answer: result.answer,
         sessionId: sessionEffect?.type === 'session_changed' ? sessionEffect.sessionId : decision.sessionId,
@@ -660,7 +665,6 @@ export class MimiDispatcher {
           delivery: { suppressed: true, reason: deliveryControl.reason },
         } : {}),
       }, attempt.id, new Date(), delivery);
-      await this.host.finalizeExecutionLedger(decision.sessionId!, executionKey).catch(() => undefined);
     } catch (error) {
       this.synchronizeDurableTaskControl(active);
       const pendingCancellation = active.cancelRequested;

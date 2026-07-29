@@ -53,7 +53,15 @@ async function main(): Promise<void> {
       return;
     }
     const { restartMimiDaemon } = await import('./daemon/service.js');
-    const status = await restartMimiDaemon(config);
+    let status;
+    try {
+      status = await restartMimiDaemon(config);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Provider 配置已保存到 ${persisted.environmentFile}，但当前 MimiAgent 后台尚未切换：${message}`,
+      );
+    }
     console.log(
       `Provider 已切换为 ${persisted.provider}${persisted.model ? `/${persisted.model}` : ''}`
       + `，MimiAgent 后台已重启（PID ${status.pid}）。`,

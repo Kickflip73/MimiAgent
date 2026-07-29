@@ -89,12 +89,9 @@ test('capability resolver preserves provenance, mode, and completion boundaries'
   const resolver = new CapabilityResolver();
   const owner = resolver.resolve({
     scope: scope(),
-    developmentTask: true,
-    expectedArtifactCompletion: false,
     defaultComputerAccess: 'background',
   });
   assert.equal(owner.canReadLocal, true);
-  assert.equal(owner.canInitializeProjectGuidance, true);
   assert.equal(owner.computerAccess, 'none');
   assert.equal(owner.completionToolsAllowed, true);
 
@@ -105,15 +102,12 @@ test('capability resolver preserves provenance, mode, and completion boundaries'
       allowedTools: ['finish_mimi_silently'],
       allowSessionContext: false,
     },
-    developmentTask: true,
-    expectedArtifactCompletion: false,
   });
   assert.deepEqual(restricted, {
     canReadLocal: false,
     canReadMemory: false,
     canReadState: false,
     canReadSessionContext: false,
-    canInitializeProjectGuidance: false,
     completionToolsAllowed: false,
     computerAccess: 'none',
   });
@@ -291,10 +285,9 @@ test('state loader skips every unauthorized source', async () => {
     canReadMemory: false,
     canReadState: false,
     canReadSessionContext: false,
-    canInitializeProjectGuidance: false,
     completionToolsAllowed: false,
     computerAccess: 'none',
-  }, true);
+  });
   assert.deepEqual(state.memories, []);
   assert.deepEqual(state.history, []);
   assert.ok(Object.isFrozen(state));

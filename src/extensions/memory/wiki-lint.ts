@@ -46,9 +46,6 @@ export function lintWiki(
     if (page.stale && page.metadata.kind === 'source-summary') {
       issues.push({ code: 'stale-summary', severity: 'warning', ref: page.ref, message: '来源摘要已陈旧，需要重新编译' });
     }
-    if (/(?:\bTODO\b|\bunknown\b|待确认|未知|未解决)/i.test(page.body)) {
-      issues.push({ code: 'knowledge-gap', severity: 'warning', ref: page.ref, message: '页面包含明确的知识空洞或待确认结论' });
-    }
   }
   for (const [title, matches] of titles) {
     const distinct = new Set(matches.map((page) => key(page.ref)));

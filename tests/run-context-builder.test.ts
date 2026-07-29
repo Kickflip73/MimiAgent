@@ -38,14 +38,12 @@ test('run context builder keeps external provenance as data and bounds injected 
   });
 });
 
-test('run context builder derives owner inspection and development context deterministically', () => {
+test('run context builder derives owner inspection context deterministically', () => {
   let sessionId = 'session-a';
   const builder = new RunContextBuilder('/workspace', () => sessionId);
 
   assert.equal(builder.causeInstructions(), '');
   assert.equal(builder.memoryQuery('hello'), 'hello');
-  assert.equal(builder.isDevelopmentTask('请修复这个 repository 的测试'), true);
-  assert.equal(builder.isDevelopmentTask('提醒我下午喝水'), false);
   assert.deepEqual(builder.forRun({ sessionId: 'session-a', runId: 'run-a' }), {
     profileId: 'owner',
     workspaceRoot: '/workspace',

@@ -1,7 +1,6 @@
 import { tool } from '@openai/agents';
 import { z } from 'zod';
 import type { MemoryHub, RunMemoryContext } from '../../core/memory.js';
-import { explicitlyForbidsMemory, explicitlyRequestsMemory } from '../../core/user-intent.js';
 
 const refSchema = z.object({
   scope: z.enum(['private', 'workspace']),
@@ -9,9 +8,7 @@ const refSchema = z.object({
   profileId: z.string().optional(),
 });
 
-export interface MemoryToolContext extends RunMemoryContext {
-  input?: string;
-}
+export interface MemoryToolContext extends RunMemoryContext {}
 
 export function createMemoryTools(
   hub: MemoryHub,
@@ -69,11 +66,15 @@ export function createMemoryTools(
         tags: z.array(z.string().trim().min(1).max(100)).max(30).default([]),
         sourcePaths: z.array(z.string().trim().min(1)).max(15).default([]),
         supersedes: z.array(z.string().trim().min(1).max(100)).max(30).default([]),
+        provenance: z.enum(['owner-explicit', 'autonomous']).default('autonomous')
+          .describe('只有直接 owner 本轮明确要求保存或纠正该内容时选择 owner-explicit；其余为 autonomous'),
       }),
       execute: async (input) => {
-        const request = context();
-        if (request.input && explicitlyForbidsMemory(request.input)) throw new Error('owner 本轮明确要求不要保存 Memory');
-        return hub.remember({ ...input, autonomous: !request.input || !explicitlyRequestsMemory(request.input) }, request);
+        const { provenance, ...memory } = input;
+        return hub.remember(
+          { ...memory, autonomous: provenance !== 'owner-explicit' },
+          context(),
+        );
       },
     }),
     tool({

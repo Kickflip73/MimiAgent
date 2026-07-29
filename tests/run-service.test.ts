@@ -4,7 +4,6 @@ import type { MimiAgent } from '../src/runtime/mimi-agent.js';
 import { isTerminalRunInterruption, TerminalRunInterruptedError } from '../src/runtime/run-outcome.js';
 import {
   AgentRunService,
-  isPrematureProgressAnswer,
   providerBackupRouteFromEnvironment,
 } from '../src/runtime/run-service.js';
 import { ProviderCircuitBreaker } from '../src/runtime/provider-reliability.js';
@@ -97,7 +96,7 @@ test('shared run service streams visible deltas and records bounded progress eve
   ]);
 });
 
-test('shared run service rejects a progress promise after tools instead of committing it as completed', async () => {
+test('shared run service does not reinterpret model answers with keyword heuristics', async () => {
   const stream = {
     rawResponses: [],
     runContext: { usage: {} },
@@ -123,19 +122,10 @@ test('shared run service rejects a progress promise after tools instead of commi
     failRun: async () => { failed = true; },
   } as unknown as MimiAgent;
 
-  await assert.rejects(
-    new AgentRunService(agent).execute({ input: '查看大象待处理消息' }),
-    /尚未返回实际结果/,
-  );
-  assert.equal(completed, false);
-  assert.equal(failed, true);
-});
-
-test('progress-answer detection stays off without tool evidence or for a real terminal result', () => {
-  assert.equal(isPrematureProgressAnswer('先试试直接读取。', 0), false);
-  assert.equal(isPrematureProgressAnswer('读取失败：缺少登录，当前无法继续。', 1), false);
-  assert.equal(isPrematureProgressAnswer('已读取 3 条待处理消息。', 1), false);
-  assert.equal(isPrematureProgressAnswer('我尝试用安全模式重启 daemon。', 1), true);
+  const result = await new AgentRunService(agent).execute({ input: '查看大象待处理消息' });
+  assert.equal(result.answer, 'socket 还没有连上。先试试直接用现有 daemon 调用。');
+  assert.equal(completed, true);
+  assert.equal(failed, false);
 });
 
 test('ephemeral sensitive Runs suppress text streaming and redact final output and tool telemetry', async () => {

@@ -129,29 +129,29 @@ test('process inspection is a bounded read-only host capability outside the Shel
   }
 });
 
-test('does not expose another session unless the user requested session access', async () => {
+test('keeps Session tools on the uniform runtime capability surface', async () => {
   const tools = createRuntimeControlTools({
     status: () => ({}), models: () => [], providers: () => [], modes: () => [],
     listSessions: () => [{ id: 'private-session', preview: 'PRIVATE_SENTINEL' }],
-    history: async () => [], canAccessSessions: () => false,
+    history: async () => [],
     schedule: () => undefined,
   });
   const selected = tools.find((item) => item.name === 'list_sessions');
   assert.ok(selected && 'invoke' in selected);
-  assert.match(String(await selected.invoke(new RunContext({}), '{}')), /没有要求访问其他 Session/);
+  assert.match(JSON.stringify(await selected.invoke(new RunContext({}), '{}')), /private-session/);
 });
 
-test('does not let the model clear a Session without explicit user intent', async () => {
+test('routes Session clearing through the structured control tool and execution ledger', async () => {
   const actions: RuntimeAction[] = [];
   const tools = createRuntimeControlTools({
     status: () => ({}), models: () => [], providers: () => [], modes: () => [],
-    listSessions: () => [], history: async () => [], canClearSession: () => false,
+    listSessions: () => [], history: async () => [],
     schedule: (action) => actions.push(action),
   });
   const selected = tools.find((tool) => tool.name === 'clear_session');
   assert.ok(selected && 'invoke' in selected);
-  assert.match(String(await selected.invoke(new RunContext({}), '{}')), /没有明确要求清空/);
-  assert.deepEqual(actions, []);
+  await selected.invoke(new RunContext({}), '{}');
+  assert.deepEqual(actions, [{ type: 'clear_session' }]);
 });
 
 test('reads files using relative and absolute paths', async () => {
@@ -715,7 +715,7 @@ test('sends HTTP requests with the dedicated tool helper', async () => {
   try {
     await assert.rejects(
       requestUrl(`http://127.0.0.1:${address.port}/health`, 'GET', {}, undefined, 5),
-      /只允许访问公网地址/,
+      /只允许访问公网地址.*browser\.url\.read\/read_url/,
     );
     const result = await requestUrl(
       `http://127.0.0.1:${address.port}/health`, 'GET', {}, undefined, 5, undefined, true,

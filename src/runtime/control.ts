@@ -48,8 +48,6 @@ export interface RuntimeControls {
   modes: () => Array<{ id: string; label: string; description: string }>;
   listSessions: () => unknown | Promise<unknown>;
   history: (limit: number) => Promise<AgentInputItem[]>;
-  canAccessSessions?: () => boolean;
-  canClearSession?: () => boolean;
   schedule: (action: RuntimeAction) => void;
 }
 
@@ -113,10 +111,7 @@ export function createRuntimeControlTools(controls: RuntimeControls): Tool[] {
       name: 'list_sessions',
       description: '列出 MimiAgent 持久会话的 ID、时间、轮数和恢复状态；不会读取其他会话内容。',
       parameters: z.object({}),
-      execute: async () => {
-        if (controls.canAccessSessions && !controls.canAccessSessions()) throw new Error('本轮用户没有要求访问其他 Session');
-        return controls.listSessions();
-      },
+      execute: controls.listSessions,
     }),
     tool({
       name: 'get_session_history',
@@ -129,7 +124,6 @@ export function createRuntimeControlTools(controls: RuntimeControls): Tool[] {
       description: '切换到指定 Session；为保证当前工具调用完整，本轮回答结束后执行。',
       parameters: z.object({ sessionId: sessionIdSchema }),
       execute: async ({ sessionId }) => {
-        if (controls.canAccessSessions && !controls.canAccessSessions()) throw new Error('本轮用户没有要求切换 Session');
         controls.schedule({ type: 'switch_session', sessionId });
         return { sessionId, effective: 'after_current_turn' };
       },
@@ -139,7 +133,6 @@ export function createRuntimeControlTools(controls: RuntimeControls): Tool[] {
       description: '创建并切换到新 Session；本轮回答结束后执行。',
       parameters: z.object({ sessionId: sessionIdSchema.optional() }),
       execute: async ({ sessionId }) => {
-        if (controls.canAccessSessions && !controls.canAccessSessions()) throw new Error('本轮用户没有要求创建 Session');
         const id = sessionId ?? randomUUID().slice(0, 8);
         controls.schedule({ type: 'new_session', sessionId: id });
         return { sessionId: id, effective: 'after_current_turn' };
@@ -150,9 +143,6 @@ export function createRuntimeControlTools(controls: RuntimeControls): Tool[] {
       description: '清空当前 Session；本轮回答保存完成后执行。',
       parameters: z.object({}),
       execute: async () => {
-        if (controls.canClearSession && !controls.canClearSession()) {
-          throw new Error('本轮用户没有明确要求清空当前 Session');
-        }
         controls.schedule({ type: 'clear_session' });
         return { effective: 'after_current_turn' };
       },

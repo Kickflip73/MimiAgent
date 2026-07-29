@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { MimiDispatcher } from '../src/daemon/dispatcher.js';
-import type { AttentionEngine } from '../src/daemon/attention.js';
+import { AttentionEngine } from '../src/daemon/attention.js';
 import { MimiStore } from '../src/daemon/store.js';
 import { MimiHost } from '../src/runtime/mimi-host.js';
 import type { MimiAgent } from '../src/runtime/mimi-agent.js';
@@ -86,6 +86,64 @@ test('dispatcher control surface is idempotent for missing, queued, paused, and 
     await dispatcher.stop();
     dispatcher.forceStop('already stopped');
   } finally {
+    store.close();
+  }
+});
+
+test('dispatcher publishes completion only after host bookkeeping leaves the active boundary', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-completion-boundary-'));
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  let releaseFinalization!: () => void;
+  const finalizationReleased = new Promise<void>((resolve) => { releaseFinalization = resolve; });
+  let reportFinalizationStarted!: () => void;
+  const finalizationStarted = new Promise<void>((resolve) => { reportFinalizationStarted = resolve; });
+  const agent = {
+    currentSessionId: 'owner',
+    currentCapabilitySnapshot: () => undefined,
+    completedExecution: async () => undefined,
+    finalizeExecutionLedger: async () => {
+      reportFinalizationStarted();
+      await finalizationReleased;
+    },
+    reopenExecutionLedger: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, {
+    execute: async () => ({
+      answer: 'provider switch scheduled',
+      effects: [{ type: 'provider_change_requested', provider: 'openai-compatible' }],
+    }),
+  });
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, host, attention);
+  try {
+    const now = new Date().toISOString();
+    const routed = store.ingestEvent({
+      id: 'provider-switch-event',
+      externalId: 'provider-switch-event',
+      source: 'local-cli',
+      kind: 'command',
+      trust: 'owner',
+      payload: { prompt: '切换 Provider' },
+      occurredAt: now,
+      receivedAt: now,
+      priority: 100,
+      profileId: 'owner',
+      sessionKey: 'owner',
+    });
+    assert.ok(routed.task);
+
+    const processing = dispatcher.processTaskById(routed.task.id);
+    await finalizationStarted;
+
+    assert.equal(store.getTask(routed.task.id)?.status, 'running');
+    assert.equal(dispatcher.status().activeEventCount, 1);
+
+    releaseFinalization();
+    assert.equal(await processing, true);
+    assert.equal(store.getTask(routed.task.id)?.status, 'completed');
+    assert.equal(dispatcher.status().activeEventCount, 0);
+  } finally {
+    releaseFinalization();
     store.close();
   }
 });

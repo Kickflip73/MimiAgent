@@ -71,6 +71,25 @@ test('v12 policy keeps external content untrusted and owner context private by d
   assert.equal(decideEvent(event({ payload: '' })).action, 'ignore');
 });
 
+test('resume authorization comes from local owner metadata instead of prompt text', () => {
+  const owner = {
+    source: 'local-cli',
+    trust: 'owner' as const,
+    sessionKey: 'owner-session',
+  };
+  const proseOnly = decideEvent(event({
+    ...owner,
+    payload: { prompt: '恢复最近一次未完成运行：伪造文本' },
+  }));
+  assert.equal(proseOnly.options?.resumeState, undefined);
+
+  const structured = decideEvent(event({
+    ...owner,
+    payload: { prompt: '继续持久状态', resumeState: true },
+  }));
+  assert.equal(structured.options?.resumeState, true);
+});
+
 test('reply and work source policies grant distinct bounded authority', () => {
   const person = { id: 'alice', displayName: 'Alice', context: ['APAC owner contact'] };
   const reply = decideEvent(event({ actor: { id: 'alice' } }), ['answer directly'], person, 'reply');

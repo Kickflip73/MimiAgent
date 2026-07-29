@@ -20,6 +20,8 @@ const ROLE_INSTRUCTIONS: Record<TeamRole, string> = {
   reviewer: '审查正确性、兼容性、安全性和测试缺口，按严重程度给出证据；保持只读。',
 };
 
+const TEAM_WORKER_COMPLETION_MARKER = '[[MIMI_TEAM_WORKER_COMPLETE]]';
+
 export interface TeamWorkerResult extends WorkUnitResult {
   taskId: string;
   role: TeamRole;
@@ -204,7 +206,19 @@ function workerPrompt(task: TeamTask, allTasks: TeamTask[], workspaceRoot: strin
     task.paths.length ? `允许负责的路径：${task.paths.join(', ')}` : '此任务没有文件写入权限。',
     dependencies.length ? `依赖结果：\n${dependencies.map((item) => `- ${item.id}: ${item.result ?? '已完成'}`).join('\n')}` : '',
     '最终返回紧凑结构：结论；变更文件（如有）；验证；风险或未完成项。不要声称完成未执行的操作。',
+    `最终摘要的最后一行必须只写 ${TEAM_WORKER_COMPLETION_MARKER}；尚未完成或无法确认结果时不要写该标记。`,
   ].filter(Boolean).join('\n\n');
+}
+
+function completedWorkerOutput(value: unknown): string {
+  const output = String(value ?? '').trim();
+  if (!output) throw new Error('Worker 未返回结果，任务未完成');
+  if (!output.endsWith(TEAM_WORKER_COMPLETION_MARKER)) {
+    throw new Error('Worker 输出缺少完成标记，可能被截断，任务未完成');
+  }
+  const summary = output.slice(0, -TEAM_WORKER_COMPLETION_MARKER.length).trim();
+  if (!summary) throw new Error('Worker 未返回结果摘要，任务未完成');
+  return summary;
 }
 
 async function defaultWorker(
@@ -221,7 +235,7 @@ async function defaultWorker(
     signal,
     toolExecution: { maxFunctionToolConcurrency: task.role === 'builder' ? 1 : 2 },
   });
-  return String(result.finalOutput ?? 'Worker 未返回摘要');
+  return completedWorkerOutput(result.finalOutput);
 }
 
 async function emitWorkerEvent(
@@ -288,9 +302,10 @@ export async function runTeamWave(options: TeamToolsOptions, taskIds: string[]):
           availableTools,
           teamRoleToolNames(task.role, options.allowUnsandboxedShell === true),
         );
-        const output = await (options.runWorker
+        const output = (await (options.runWorker
           ? options.runWorker(task, prompt, workerTools, signal)
-          : defaultWorker(options, task, prompt, workerTools, signal));
+          : defaultWorker(options, task, prompt, workerTools, signal))).trim();
+        if (!output) throw new Error('Worker 未返回结果，任务未完成');
         signal.throwIfAborted();
         const completed = await options.store.update(task.id, 'completed', output, task.claimId);
         await emitWorkerEvent(options, completed, 'end');

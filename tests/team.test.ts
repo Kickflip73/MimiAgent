@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { RunContext, type Tool } from '@openai/agents';
+import { RunContext, Usage, type Model, type Tool } from '@openai/agents';
 import { TeamTaskStore } from '../src/core/team.js';
 import { assertParallelSafe, createTeamTools, runTeamWave } from '../src/extensions/team.js';
 import {
@@ -18,6 +18,25 @@ import { createTeamWorkerTools } from '../src/runtime/team-worker-tools.js';
 async function store(name = 'demo') {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-team-'));
   return new TeamTaskStore(path.join(root, 'teams.json'), name);
+}
+
+function finalTextModel(text: string): Model {
+  return {
+    async getResponse() {
+      return {
+        usage: new Usage(),
+        output: [{
+          type: 'message' as const,
+          role: 'assistant' as const,
+          status: 'completed' as const,
+          content: [{ type: 'output_text' as const, text }],
+        }],
+      };
+    },
+    async *getStreamedResponse() {
+      throw new Error('streaming is not used by Team workers');
+    },
+  };
 }
 
 test('validates dependencies and atomically claims a ready team task', async () => {
@@ -207,6 +226,68 @@ test('runs one ready Team task so dependency pipelines can advance', async () =>
   assert.equal((await team.list()).find((task) => task.id === 'inspect')?.status, 'completed');
   assert.deepEqual((await team.ready()).map((task) => task.id), ['review']);
   assert.match(prompt, /MimiAgent Ultra Team/);
+});
+
+test('marks empty custom Team worker output as failed', async () => {
+  const team = await store();
+  await team.set([
+    { id: 'empty', description: 'inspect', role: 'explorer', dependencies: [], paths: [] },
+    { id: 'other', description: 'review', role: 'reviewer', dependencies: [], paths: [] },
+  ]);
+
+  const result = await runTeamWave({
+    store: team,
+    model: 'gpt-5-mini',
+    tools: [],
+    workspaceRoot: '/tmp',
+    runWorker: async () => '   ',
+  }, ['empty']);
+
+  assert.equal(result[0]?.status, 'failed');
+  assert.match(result[0]?.output ?? '', /未返回结果/);
+  assert.equal((await team.list()).find((task) => task.id === 'empty')?.status, 'failed');
+});
+
+test('requires a completion marker from default Team workers and strips it from results', async () => {
+  const incomplete = await store('incomplete');
+  await incomplete.set([
+    { id: 'partial', description: 'inspect', role: 'explorer', dependencies: [], paths: [] },
+    { id: 'other', description: 'review', role: 'reviewer', dependencies: [], paths: [] },
+  ]);
+  const incompleteTools = createTeamTools({
+    store: incomplete,
+    model: finalTextModel('结论写到一半，混合分退化为'),
+    tools: [],
+    workspaceRoot: '/tmp',
+  });
+  const incompleteRun = incompleteTools.find((item) => item.name === 'run_team');
+  assert.ok(incompleteRun && 'invoke' in incompleteRun);
+
+  await incompleteRun.invoke(new RunContext({}), JSON.stringify({ taskIds: ['partial'] }));
+
+  const partial = (await incomplete.list()).find((task) => task.id === 'partial');
+  assert.equal(partial?.status, 'failed');
+  assert.match(partial?.result ?? '', /缺少完成标记/);
+
+  const complete = await store('complete');
+  await complete.set([
+    { id: 'done', description: 'inspect', role: 'explorer', dependencies: [], paths: [] },
+    { id: 'other', description: 'review', role: 'reviewer', dependencies: [], paths: [] },
+  ]);
+  const completeTools = createTeamTools({
+    store: complete,
+    model: finalTextModel('结论：检查完成。\n[[MIMI_TEAM_WORKER_COMPLETE]]'),
+    tools: [],
+    workspaceRoot: '/tmp',
+  });
+  const completeRun = completeTools.find((item) => item.name === 'run_team');
+  assert.ok(completeRun && 'invoke' in completeRun);
+
+  await completeRun.invoke(new RunContext({}), JSON.stringify({ taskIds: ['done'] }));
+
+  const done = (await complete.list()).find((task) => task.id === 'done');
+  assert.equal(done?.status, 'completed');
+  assert.equal(done?.result, '结论：检查完成。');
 });
 
 test('contains a stale worker result after its claim has already been ended', async () => {

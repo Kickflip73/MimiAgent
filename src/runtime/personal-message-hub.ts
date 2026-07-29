@@ -66,10 +66,6 @@ function decoded(value: string): Buffer {
   return Buffer.from(value, 'base64url');
 }
 
-function highRiskText(text: string): boolean {
-  return /(?:转账|付款|收款|金额|合同|报价|承诺|排期|上线|发布|生产|权限|授权|密码|令牌|token|删除|人事|薪资|隐私)/iu.test(text);
-}
-
 export class PersonalMessageHub {
   private readonly key = randomBytes(32);
   private readonly consumed = new Map<string, number>();
@@ -131,16 +127,6 @@ export class PersonalMessageHub {
       execute: async ({ contextToken, text }, _context, details) => {
         if (scope.approvedText !== undefined && text !== scope.approvedText) {
           throw new Error('发送正文与 owner 明确确认的最终文本不一致');
-        }
-        if (scope.messageMode === 'auto' && highRiskText(text)) {
-          return personalMessageResultSchema.parse({
-            status: 'not_executed',
-            route: 'none',
-            deliveryConfirmed: false,
-            accountVerified: true,
-            targetVerified: true,
-            error: '消息涉及承诺、资金、生产、权限、隐私或不可逆动作，不能自动发送',
-          });
         }
         const digest = this.tokenDigest(contextToken);
         if (this.consumed.has(digest)) throw new Error('contextToken 已消费或已进入不确定状态');

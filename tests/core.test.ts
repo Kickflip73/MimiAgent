@@ -18,7 +18,6 @@ import {
 } from '@openai/agents';
 import { ContextManager, estimateTokens } from '../src/core/context.js';
 import { ProjectGuidanceLoader, SoulLoader } from '../src/core/guidance.js';
-import { explicitlyRequestsMemory } from '../src/core/memory.js';
 import { PlanStore } from '../src/core/plan.js';
 import { FileSession, registerSessionRunOwner } from '../src/core/session.js';
 import { TeamTaskStore } from '../src/core/team.js';
@@ -26,6 +25,7 @@ import { TraceStore } from '../src/core/trace.js';
 import { HookBus } from '../src/runtime/hooks.js';
 import { resolveUserSoulFile } from '../src/runtime/components.js';
 import { createPlanTools } from '../src/runtime/plan-tools.js';
+import { TerminalRunInterruptedError } from '../src/runtime/run-outcome.js';
 import { decideEvent } from '../src/daemon/policy.js';
 import {
   collectTrustedMcpEnvironment,
@@ -401,7 +401,7 @@ test('owner natural-language runs retain the runtime tool and Skill discovery su
   }
 });
 
-test('failed durable attempts roll back after legacy history cleanup changes item offsets', async () => {
+test('failed durable attempts retain owner input after legacy history cleanup changes item offsets', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cleanup-rollback-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const previous = process.env.MIMI_SESSION;
@@ -432,7 +432,50 @@ test('failed durable attempts roll back after legacy history cleanup changes ite
     }), /simulated durable attempt failure/);
     const serialized = JSON.stringify(await session.getItems());
     assert.match(serialized, /STABLE_HISTORY/);
-    assert.doesNotMatch(serialized, /LEGACY_SUMMARY|FAILED_ATTEMPT_INPUT|FAILED_ATTEMPT_OUTPUT/);
+    assert.match(serialized, /FAILED_ATTEMPT_INPUT/);
+    assert.doesNotMatch(serialized, /LEGACY_SUMMARY|FAILED_ATTEMPT_OUTPUT/);
+  } finally {
+    await agent.close();
+    if (previous === undefined) delete process.env.MIMI_SESSION;
+    else process.env.MIMI_SESSION = previous;
+  }
+});
+
+test('terminal cancellation clears the checkpoint without deleting the owner task', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-terminal-cancel-continuity-'));
+  const dataRoot = path.join(root, '.mimi-agent');
+  const sessionId = 'terminal-cancel-continuity';
+  const previous = process.env.MIMI_SESSION;
+  process.env.MIMI_SESSION = sessionId;
+  const session = new FileSession(path.join(dataRoot, 'sessions'), sessionId);
+  const agent = await MimiAgent.create({
+    provider: 'openai', workspaceRoot: root, dataRoot,
+    skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40, maxTurns: 20,
+  });
+  const controller = new AbortController();
+  const runner = (agent as unknown as { runner: { run: (...args: unknown[]) => Promise<never> } }).runner;
+  runner.run = async () => {
+    await session.addItems([
+      { role: 'user', content: 'ORIGINAL_OWNER_TASK' },
+      { role: 'assistant', content: 'PARTIAL_ASSISTANT_OUTPUT' },
+      { type: 'function_call', name: 'side_effect', callId: 'partial-call', arguments: '{}' },
+    ] as unknown as AgentInputItem[]);
+    const cancellation = new TerminalRunInterruptedError('owner cancelled');
+    controller.abort(cancellation);
+    throw cancellation;
+  };
+
+  try {
+    await assert.rejects(agent.stream('ORIGINAL_OWNER_TASK', controller.signal, {
+      executionKey: 'event:terminal-cancel',
+      retainExecutionLedger: true,
+      requireCompletionGate: false,
+    }), /owner cancelled/);
+    assert.deepEqual(await session.getItems(), [
+      { role: 'user', content: 'ORIGINAL_OWNER_TASK' },
+    ]);
+    assert.equal(await session.getCheckpoint(), undefined);
   } finally {
     await agent.close();
     if (previous === undefined) delete process.env.MIMI_SESSION;
@@ -749,13 +792,13 @@ test('summarizes and sorts sessions from recent conversation content', async () 
 
   const [summary] = await FileSession.listSummaries(root);
   assert.equal(summary?.id, 'opaque-id');
-  assert.equal(summary?.title, 'MimiAgent 终端交互与任务队列');
+  assert.equal(summary?.title, '帮我优化 MimiAgent 的终端交互体验');
   assert.equal(summary?.preview, '还要支持任务排队');
   assert.equal(summary?.turns, 3);
   assert.equal(summary?.recoverable, false);
 });
 
-test('generalizes Session titles from the conversation topic instead of copying the opening', async () => {
+test('derives Session titles lexically without keyword classification', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-topic-title-'));
   const session = new FileSession(root, 'topic-title');
   await session.addItems([
@@ -764,8 +807,7 @@ test('generalizes Session titles from the conversation topic instead of copying 
   ] as AgentInputItem[]);
 
   const [summary] = await FileSession.listSummaries(root);
-  assert.equal(summary?.title, 'MimiAgent 会话与标题管理');
-  assert.notEqual(summary?.title, '进入 Mimi 后不要立刻创建一个 session');
+  assert.equal(summary?.title, '进入 Mimi 后不要立刻创建一个 session');
 });
 
 test('orders session summaries by latest activity', async () => {
@@ -800,7 +842,7 @@ test('persists run checkpoints and recovers a process exit at the latest progres
   assert.match(summary?.progress ?? '', /context\.ts/);
 });
 
-test('durable run recovery rolls back only the incomplete transcript attempt', async () => {
+test('durable run recovery preserves owner inputs and removes incomplete protocol units', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-session-attempt-rollback-'));
   const session = new FileSession(root, 'durable-attempt');
   await session.addItems([{ role: 'user', content: 'stable history' }] as AgentInputItem[]);
@@ -808,16 +850,39 @@ test('durable run recovery rolls back only the incomplete transcript attempt', a
   await session.addItems([
     { role: 'user', content: 'send once' },
     { role: 'assistant', content: 'partial duplicate-prone output' },
-  ] as AgentInputItem[]);
+    { type: 'function_call', name: 'send', callId: 'send-call', arguments: '{}' },
+    { type: 'function_call_result', name: 'send', callId: 'send-call', output: 'uncertain' },
+  ] as unknown as AgentInputItem[]);
 
   const recovered = await session.recoverInterruptedRun('event-run');
   assert.equal(recovered?.status, 'interrupted');
-  assert.deepEqual(await session.getItems(), [{ role: 'user', content: 'stable history' }]);
+  assert.deepEqual(await session.getItems(), [
+    { role: 'user', content: 'stable history' },
+    { role: 'user', content: 'send once' },
+  ]);
 
   await session.beginRun('send once', 'retry-run', undefined, true);
-  await session.addItems([{ role: 'user', content: 'send once' }] as AgentInputItem[]);
+  await session.addItems([
+    { role: 'user', content: 'send once' },
+    { role: 'assistant', content: 'second partial output' },
+  ] as AgentInputItem[]);
   assert.equal(await session.rollbackRunItems('retry-run'), true);
-  assert.deepEqual(await session.getItems(), [{ role: 'user', content: 'stable history' }]);
+  assert.deepEqual(await session.getItems(), [
+    { role: 'user', content: 'stable history' },
+    { role: 'user', content: 'send once' },
+  ]);
+
+  await session.beginRun('read the forwarded card', 'correction-run', undefined, true);
+  await session.addItems([
+    { role: 'user', content: 'read the forwarded card' },
+    { role: 'assistant', content: 'third partial output' },
+  ] as AgentInputItem[]);
+  assert.equal(await session.rollbackRunItems('correction-run'), true);
+  assert.deepEqual(await session.getItems(), [
+    { role: 'user', content: 'stable history' },
+    { role: 'user', content: 'send once' },
+    { role: 'user', content: 'read the forwarded card' },
+  ]);
 });
 
 test('keeps completed and failed run outcomes in session metadata', async () => {
@@ -931,13 +996,6 @@ test('repairs dangling tool calls left by an interrupted task', async () => {
   assert.doesNotMatch(serialized, /dangling/);
   assert.doesNotMatch(serialized, /duplicate/);
   assert.match(serialized, /paired/);
-});
-
-test('recognizes explicit memory requests without requiring them for autonomous writes', () => {
-  assert.equal(explicitlyRequestsMemory('请记住我喜欢简洁输出'), true);
-  assert.equal(explicitlyRequestsMemory('不要记住我的密码'), false);
-  assert.equal(explicitlyRequestsMemory('你还记住我什么？'), false);
-  assert.equal(explicitlyRequestsMemory('please do not remember this password'), false);
 });
 
 test('loads skill metadata and content on demand', async () => {

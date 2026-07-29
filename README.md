@@ -373,7 +373,7 @@ Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Con
 
 默认 `mimi` 连接常驻 MimiAgent 后展示一个仅存在于当前 CLI 内存中的新对话草稿，不读取旧对话，也不创建 Session 文件。第一条普通消息被后台接受后，草稿 ID 才成为真实 Session；在此之前执行 `/exit`，或用 `/sessions`、`/switch` 进入已有 Session，都不会留下空会话。全部内置命令通过本地 Socket 读写同一个 Kernel；`/new` 重新准备一个草稿，`/switch` 只选择已存在的 Session actor，不创建第二个控制面。`/exit` 只关闭终端，Esc 会请求后台安全取消当前 Task；若外部 Tool 正在执行，会先等待其结果落账再结束，不把不确定事务当作可重放失败。
 
-一个 `MIMI_DAEMON_DATA_DIR` 对应一个常驻 Kernel 控制面，但一个 Kernel 可以承载多个项目工作区。用户在当前命令中给出的绝对路径或唯一可解析的项目名优先；除此之外，本地 CLI 默认采用运行本次 `mimi` 的目录，当前仓库中的代码分析以及随任务创建的文档、报告、脚本等文件都留在该工作区，不按对话另建目录。只有明确新建独立项目、游戏、网站等事项且当前启动目录不适用，或没有可用的启动/Session 工作区时，MimiAgent 才创建 `~/MimiWorkspace/<具体事项>`；明确继续该事项时再沿用对应 Session 工作区。这样既不会把普通仓库工作移出当前目录，也不会把无关新项目写进 Daemon 首次启动目录或 MimiAgent 产品仓库。若项目名对应多个目录会失败关闭并要求明确路径。`MIMI_SESSION`（兼容 `AGENT_SESSION`）会选择 CLI 首次连接的 Session；未设置时使用稳定 Owner Session。
+一个 `MIMI_DAEMON_DATA_DIR` 对应一个常驻 Kernel 控制面，但一个 Kernel 可以承载多个项目工作区。工作区只由可信 Host 的结构化绝对目录选择：当前 CLI Event 携带的启动目录优先，其次是 Session 已绑定目录，最后是 Runtime 默认目录。MimiAgent 不从自然语言中抽取项目名、绝对路径片段、“新建”或“继续”意图，不搜索候选仓库，也不自动创建 `~/MimiWorkspace` 目录；无效结构化目录会直接失败关闭。当前仓库中的分析以及随任务创建的文档、报告和脚本都留在选定工作区。`MIMI_SESSION`（兼容 `AGENT_SESSION`）会选择 CLI 首次连接的 Session；未设置时使用稳定 Owner Session。
 
 内置命令：
 
@@ -409,12 +409,13 @@ Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Con
 | `/task resume <id> [context]` | 继续 paused/blocked 任务，可补充必要上下文 |
 | `/task cancel <id> [reason]` | 取消 queued/running/paused/blocked 后台任务 |
 | `/goal [objective]` | 查看或设置跨多轮长期目标 |
+| `/confirm-send <text>` | 在当前个人消息 Session 中结构化确认一次精确发送正文 |
 | `/resume` | 根据 Checkpoint、Goal、Plan 与 Team 状态进行 best-effort 续跑 |
 | `/retry` | 重新执行上一条用户输入 |
 | `/help` | 查看全部命令 |
 | `/exit` | 退出 |
 
-完整会话保存在当前唯一数据根 `.mimi-agent/sessions/`。草稿不在该目录创建文件；`/sessions`、`/switch` 和显式 `MIMI_SESSION` 只选择已有 Session，`/new` 只替换内存草稿。每个真实 Session 独立保存 SDK transcript、mode、model、输出等级、最近运行检查点和上下文压缩档案；列表标题会综合多轮用户消息提炼并随主题演进，而不是复制第一句话。切换后按时间回放原始用户/助手消息，工具调用与结果仍保留在 FileSession 中。默认启动草稿不读取历史，已有 Session 快照只返回有界最近对话；`/history` 会通过多个小型本地 RPC 分块重组完整权威历史，避免长期 Session 超过 IPC 帧上限。若上次运行中断，底部显示恢复点和 `/resume` 入口。
+完整会话保存在当前唯一数据根 `.mimi-agent/sessions/`。草稿不在该目录创建文件；`/sessions`、`/switch` 和显式 `MIMI_SESSION` 只选择已有 Session，`/new` 只替换内存草稿。每个真实 Session 独立保存 SDK transcript、mode、model、输出等级、最近运行检查点和上下文压缩档案；列表标题只对最长的用户消息做有界词法压缩，不按业务关键词猜测主题或意图。切换后按时间回放原始用户/助手消息，工具调用与结果仍保留在 FileSession 中。默认启动草稿不读取历史，已有 Session 快照只返回有界最近对话；`/history` 会通过多个小型本地 RPC 分块重组完整权威历史，避免长期 Session 超过 IPC 帧上限。若上次运行中断，底部显示恢复点和 `/resume` 入口。
 
 发送给模型的有效上下文分四层管理：较早 Tool Result 先做 microcompact；超过 `MIMI_HISTORY_LIMIT`（兼容旧 `HISTORY_LIMIT`）或 Token Budget 后把旧完整轮次持久化为 context archive；`/compact` 可主动执行 full compact 并保留最近两轮；仍超预算时才按完整用户轮次做 PTL truncation。窗口由当前模型 Profile 决定，切换或恢复模型时同步更新；完整预算包含动态 Instructions、历史、当前输入、Function Tool Schema、协议安全余量和输出预留，输出预留同时作为模型请求的 `maxTokens`。每次请求都会生成不进入模型输入的 Context Manifest，记录估算器、输入预算、各 section 用量和确定性压缩记录；Provider 返回 usage 后只回填最近请求 actual，不反向篡改估算值。压缩只改变模型视图，不覆盖、删除或伪造原始 transcript。`/context` 会区分 Raw Session、Effective History、Request Estimate、Provider 返回的 Last Request Actual 与 Run Actual。
 
@@ -425,7 +426,7 @@ Task 与 RuntimeAction 的完成过程写入只含摘要和 phase 的 Run Commit
 完成回执一旦落盘，后续崩溃恢复会复用它而不会再次调用模型。JSON 状态本轮
 保持单读单写，不与 SQLite 长期双写。
 
-默认 CLI 交互不会阻塞输入：MimiAgent 执行时仍可继续提交消息。当前窗口指向同一 Session 的普通 `Enter` 消息进入 FIFO 队列并依次执行；发现当前方向有误时可用 `Command+Enter` 立即发送新指引，后台会先持久化新 Event，再在外部 Tool 的安全边界结束旧 Run 并按新方向继续。另一个窗口选择不同 Session 后，可在 `MIMI_SESSION_MAX_CONCURRENCY` 限制内同时运行，不必等待前一个 Session 结束。输入框支持多行编辑：`Shift+Enter` 插入换行，`Command+←/→` 跳到当前行首/行尾；终端 bracketed paste 中自带的换行只会进入编辑区，不会触发提交。长文本只渲染光标附近的有界视窗并标注隐藏行数，发送时仍提交完整内容，避免粘贴大段文本时反复刷新整个终端；Apple Terminal 上使用不会产生物理软换行的单行视窗，并将连续刷新移出输入法按键事件后合并执行，以规避 macOS 26 的原生 marked-text 崩溃。按 `Esc` 会请求后台在外部 Tool 的安全边界取消当前 Event，队列中的后续消息不受影响。长程或多阶段任务通过 `update_plan` 建立阶段任务，当前会话的完成数、当前步骤和最多 5 条附近任务会实时显示在输入框上方；长描述保持单行省略，全部完成后折叠为一行。输入 `/` 会展示命令面板，使用黑色活动光标配合 `↑` / `↓` 选择、`Tab` 补全。`/new`、`/clear` 会清理终端并保留项目顶部信息；会话切换则清理当前画面、恢复顶部信息、任务进度并回放目标会话的历史消息。
+默认 CLI 交互不会阻塞输入：MimiAgent 执行时仍可继续提交消息。当前窗口指向同一 Session 的普通 `Enter` 消息进入 FIFO 队列并依次执行；发现当前方向有误时可用 `Command+Enter` 立即发送新指引，后台会先持久化新 Event，再在外部 Tool 的安全边界结束旧 Run 并按新方向继续。另一个窗口选择不同 Session 后，可在 `MIMI_SESSION_MAX_CONCURRENCY` 限制内同时运行，不必等待前一个 Session 结束。输入框支持多行编辑：`Shift+Enter` 插入换行，`Command+←/→` 跳到当前行首/行尾；终端 bracketed paste 中自带的换行只会进入编辑区，不会触发提交。长文本只渲染光标附近的有界视窗并标注隐藏行数，发送时仍提交完整内容，避免粘贴大段文本时反复刷新整个终端；Apple Terminal 上使用不会产生物理软换行的单行视窗，并关闭可能撞入输入法 marked-text 生命周期的自主动画重绘。草稿非空时到达的并发回答会暂存到内存，在 `Enter` 提交或草稿清空后的安全点按原顺序显示，完整长文本和多行输入都不会丢失。按 `Esc` 会请求后台在外部 Tool 的安全边界取消当前 Event，队列中的后续消息不受影响。长程或多阶段任务通过 `update_plan` 建立阶段任务，当前会话的完成数、当前步骤和最多 5 条附近任务会实时显示在输入框上方；长描述保持单行省略，全部完成后折叠为一行。输入 `/` 会展示命令面板，使用黑色活动光标配合 `↑` / `↓` 选择、`Tab` 补全。`/new`、`/clear` 会清理终端并保留项目顶部信息；会话切换则清理当前画面、恢复顶部信息、任务进度并回放目标会话的历史消息。
 
 简单问答、短操作以及你明确要在当前窗口看到结果的任务，会留在 Conversation actor 中流式执行。长程、大型、多阶段、持续等待或你明确无需立即结果的任务，主 MimiAgent 会调用 `delegate_background_task`：任务写入 SQLite 后立即返回 `taskId`，当前对话恢复可用，`TaskProcessSupervisor` 再用独立 Node.js 子进程和独立 Task Session 执行；`executor: "codex"` 是例外，它由 detached runner 启动独立 Codex CLI，不创建 Mimi Plan，也不进入 Mimi 的工具调用、重试或验收流程。到期 Schedule 与 Daily Routine 也复用同一 Task lane，而不是占用来源 Conversation。默认 `workspaceAccess=write`，写任务独占工作区；明确声明 `read` 的分析任务使用确定性只读工具，可与其他只读后台任务并行。Task 一旦被接受就不会因 snooze、静默时段或 Attention 预算被转成 Digest；这些设置控制的是新事件是否值得接受，不会吞掉执行队列。Task 内不再递归创建 durable 子任务；大型可拆分任务在同一 worker 内用有界 Ultra Team 汇总。只有 owner conversation root 的 write Task 可执行 Connector action；外部 source-policy work Task 不会看到必然被 Broker 拒绝的 action 工具，但完成结果仍由 Outbox 原路返回。发起 CLI 即使已退出，任务仍继续；完成结果由 Outbox 主动发往原渠道或系统通知。若任务确实缺少必要输入，它会持久化为 `blocked` 并主动问你，补充上下文后从原 Task Session 继续。运行中执行 `/task pause` 会先返回“已请求暂停”，并在当前 Tool 完成后的安全点落成 `paused`；pause/cancel 控制会在回复 CLI 前先写入 SQLite，即使 Kernel 或 worker 随后崩溃，重启恢复也不会继续执行已取消任务，已暂停任务仍保持 `paused`。不要为了“并行”把普通短任务强制后台化；用 `/tasks`、`/task <id>`、`/task pause <id>`、`/task resume <id> [context]` 和 `/task cancel <id>` 管理真正的后台工作。
 
@@ -492,7 +493,7 @@ MimiAgent 将身份人格与项目开发合约物理分开：
 <workspace>/CLAUDE.md   同目录兼容补充，冲突时 AGENTS.md 优先
 ```
 
-Soul 在每轮开始前重新读取；项目指令只在开发任务中按目录层级读取，单文件最多注入 20000 字符。可写开发项目缺少两类文件时会创建最小 `AGENTS.md`，只读项目只使用本轮扫描摘要且不落盘。Soul、项目指令和 Memory 都是上下文，不得扩大 Runtime 的工具、scope、trust 或权限；SubAgent/Team 只能读取 workspace Memory，不能读取 private Wiki 或跨 Session episode。
+Soul 在每轮开始前重新读取；只要结构化能力允许读取本地工作区，已有项目指令就按目录层级加载，单文件最多注入 20000 字符。Host 不根据自然语言关键词决定加载或自动创建 `AGENTS.md`。Soul、项目指令和 Memory 都是上下文，不得扩大 Runtime 的工具、scope、trust 或权限；SubAgent/Team 只能读取 workspace Memory，不能读取 private Wiki 或跨 Session episode。
 
 `MIMI.md` 只适合稳定身份和表达风格；构建命令、代码规范和架构约束写入 `AGENTS.md` / `CLAUDE.md`。一次性任务留在当前 Session，可执行流程写成 Skill，稳定事实和偏好交给 MemoryHub。
 

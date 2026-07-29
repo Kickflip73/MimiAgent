@@ -192,6 +192,11 @@ test('daemon stop is idempotent when the background service is already offline',
   assert.equal(await stopMimiDaemon({ ...config, daemonDataRoot: root }), false);
 });
 
+test('daemon lifecycle rejects unsupported force flags instead of silently ignoring them', async () => {
+  await assert.rejects(runDaemonCommand(config, ['stop', '--force']), /不支持参数：--force/);
+  await assert.rejects(runDaemonCommand(config, ['restart', '-f']), /不支持参数：-f/);
+});
+
 test('daemon lifecycle commands adopt and persist the running workspace globally', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cli-workspace-'));
   const daemonWorkspace = path.join(root, 'daemon-workspace');

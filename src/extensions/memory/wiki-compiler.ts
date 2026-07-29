@@ -27,13 +27,6 @@ function pageId(seed: string): string {
   return `mem_${createHash('sha256').update(seed).digest('hex').slice(0, 24)}`;
 }
 
-function sectionKind(title: string): MemoryKind {
-  if (/(?:decision|决定|决策|adr)/i.test(title)) return 'decision';
-  if (/(?:lesson|gotcha|经验|教训|陷阱)/i.test(title)) return 'lesson';
-  if (/(?:people|person|team|组织|人物|实体)/i.test(title)) return 'entity';
-  return 'concept';
-}
-
 function ingestUnits(title: string, content: string, source: SourceRef): Array<{
   ref: { scope: 'workspace'; id: string };
   title: string;
@@ -64,7 +57,7 @@ function ingestUnits(title: string, content: string, source: SourceRef): Array<{
   };
   return [summary, ...sections.map((section) => ({
     ref: { scope: 'workspace' as const, id: pageId(`file:${source.id}#${section.heading.toLowerCase()}`) },
-    title: section.title, content: section.content, kind: sectionKind(section.heading), links: [title],
+    title: section.title, content: section.content, kind: 'concept' as const, links: [title],
   }))].slice(0, 15);
 }
 

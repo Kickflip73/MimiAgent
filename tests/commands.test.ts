@@ -460,15 +460,34 @@ test('switches terminal output detail level', async () => {
 
 test('sets and resumes a durable goal', async () => {
   const tasks: string[] = [];
+  const options: unknown[] = [];
   const output: string[] = [];
-  const handler = new CommandHandler(fakeAgent(), async (input) => { tasks.push(input); }, {
+  const handler = new CommandHandler(fakeAgent(), async (input, _signal, runOptions) => {
+    tasks.push(input);
+    options.push(runOptions);
+  }, {
     write: (text) => output.push(text),
   });
 
   assert.equal(await handler.execute('/goal 发布 MimiAgent'), 'handled');
   assert.equal(await handler.execute('/resume'), 'handled');
   assert.deepEqual(tasks, ['resume goal']);
+  assert.deepEqual(options, [{ resumeState: true }]);
   assert.match(output.join('\n'), /发布 MimiAgent/);
+});
+
+test('passes personal-message confirmation as structured command metadata', async () => {
+  const calls: Array<{ input: string; options: unknown }> = [];
+  const handler = new CommandHandler(fakeAgent(), async (input, _signal, options) => {
+    calls.push({ input, options });
+  }, { write: () => undefined });
+
+  assert.equal(await handler.execute('/confirm-send 唯一确认文本'), 'handled');
+  assert.deepEqual(calls, [{
+    input: '发送 owner 已通过结构化命令确认的个人消息。',
+    options: { approvedPersonalMessageText: '唯一确认文本' },
+  }]);
+  await assert.rejects(handler.execute('/confirm-send'), /\/confirm-send <text>/);
 });
 
 test('lists, inspects, and cancels durable background tasks from the shared CLI', async () => {

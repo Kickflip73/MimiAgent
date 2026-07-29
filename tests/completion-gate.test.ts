@@ -4,7 +4,6 @@ import {
   completionContractSchema,
   assertCompletionContractForTask,
   evaluateCompletion,
-  expectedCompletionKind,
   requiresCompletionContract,
   requiresPersistentGoal,
   type CompletionContract,
@@ -171,25 +170,16 @@ test('completion gate rejects unstructured or forged external receipts', () => {
   assert.equal(evaluateCompletion(contract, report, forged).decision, 'continue');
 });
 
-test('host derives evidence strength from user intent and locks the first contract', () => {
-  assert.equal(expectedCompletionKind('帮我发送一条微信消息'), 'external_action');
-  assert.equal(expectedCompletionKind('修复登录页代码并运行测试'), 'artifact');
-  assert.equal(expectedCompletionKind('持续研究这个议题'), 'long_running');
-  assert.equal(expectedCompletionKind('分析这段错误日志'), 'answer');
-
-  assert.throws(() => assertCompletionContractForTask('发送微信消息', {
-    objective: '发送微信消息',
-    kind: 'answer',
-    criteria: [{ id: 'claimed', description: '声称成功', requiredEvidence: 'semantic' }],
-  }), /必须为 external_action/);
-  assert.throws(() => assertCompletionContractForTask('发送微信消息', {
+test('host validates the structured contract and locks the first accepted version', () => {
+  assert.equal(assertCompletionContractForTask(contract), contract);
+  assert.throws(() => assertCompletionContractForTask({
     ...contract,
     criteria: [{
       id: 'weaker', description: '另一份标准', requiredEvidence: 'tool_receipt',
       expectedTool: 'connector_action', expectedArgumentsContain: ['wechat'],
     }],
   }, contract), /已锁定/);
-  assert.equal(assertCompletionContractForTask('发送微信消息', contract, contract), contract);
+  assert.equal(assertCompletionContractForTask(contract, contract), contract);
 });
 
 test('completion gate only permits blockers that really require user action', () => {

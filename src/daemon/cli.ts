@@ -211,12 +211,18 @@ export async function runDaemonCommand(config: AppConfig, args: string[]): Promi
     return;
   }
   if (command === 'stop') {
+    if (args.length > 1) {
+      throw new Error(`mimi daemon stop 不支持参数：${args.slice(1).join(' ')}`);
+    }
     const { stopMimiDaemon } = await import('./service.js');
     const stopped = await stopMimiDaemon(config);
     process.stdout.write(stopped ? 'MimiAgent 后台已安全停止。\n' : 'MimiAgent 后台未运行。\n');
     return;
   }
   if (command === 'restart') {
+    if (args.length > 1) {
+      throw new Error(`mimi daemon restart 不支持参数：${args.slice(1).join(' ')}`);
+    }
     const { restartMimiDaemon } = await import('./service.js');
     const status = await restartMimiDaemon(config);
     process.stdout.write(

@@ -497,6 +497,8 @@ interface SubmitParams {
   profileId?: string;
   sessionKey?: string;
   workspaceRoot?: string;
+  resumeState?: boolean;
+  approvedPersonalMessageText?: string;
   attachments?: LocalAttachmentRequest[];
   actor?: EventEnvelope['actor'];
   conversation?: EventEnvelope['conversation'];
@@ -1470,7 +1472,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       },
       takeEphemeralSecrets: (eventId, sessionId, references) =>
         ephemeralSecrets.take(eventId, sessionId, references),
-      resolveWorkspace: async (input, event, sessionId) => {
+      resolveWorkspace: async (event, sessionId) => {
         const current = host!.workspaceRootFor(sessionId);
         if (event.trust !== 'owner') return current ?? config.workspaceRoot;
         const payload = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload)
@@ -1481,9 +1483,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           'event.payload.workspaceRoot',
         );
         const resolved = await resolveTaskWorkspace({
-          input,
           requestedWorkspaceRoot,
           sessionWorkspaceRoot: current,
+          defaultWorkspaceRoot: config.workspaceRoot,
         });
         return resolved.workspaceRoot;
       },
@@ -1834,6 +1836,11 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const prompt = params.payload === undefined ? requiredString(params.text, 'text') : undefined;
         const payload = params.payload ?? {
           ...(requestedWorkspaceRoot ? { workspaceRoot: requestedWorkspaceRoot } : {}),
+          ...(params.resumeState === true ? { resumeState: true } : {}),
+          ...(typeof params.approvedPersonalMessageText === 'string'
+            && params.approvedPersonalMessageText.trim()
+            ? { approvedPersonalMessageText: params.approvedPersonalMessageText.trim().slice(0, 4_000) }
+            : {}),
           ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
         };
         const event: EventEnvelope = {
