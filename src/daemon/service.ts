@@ -798,7 +798,8 @@ async function mergeTemplateActions(
       ? Object.entries(packaged.actions).filter(([name, packagedAction]) => {
         const currentAction = connector.actions[name];
         return currentAction !== undefined
-          && ((currentAction.capability === undefined && packagedAction.capability !== undefined)
+          && (currentAction.description !== packagedAction.description
+            || (currentAction.capability === undefined && packagedAction.capability !== undefined)
             || (currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown'));
       })
       : [];
@@ -822,6 +823,7 @@ async function mergeTemplateActions(
       const currentAction = connector.actions[name]!;
       return [name, {
         ...currentAction,
+        description: packagedAction.description,
         ...(currentAction.capability === undefined && packagedAction.capability !== undefined
           ? { capability: packagedAction.capability }
           : {}),

@@ -99,7 +99,7 @@ test('initialization syncs action metadata for an identical managed connector co
           syncTemplateActions: true,
           actions: Object.fromEntries(Object.entries(packaged.actions).map(([name, action]) => [
             name,
-            { ...action, capability: undefined, effect: 'unknown' },
+            { ...action, description: `stale ${name}`, capability: undefined, effect: 'unknown' },
           ])),
         },
       },
@@ -120,6 +120,10 @@ test('initialization syncs action metadata for an identical managed connector co
     assert.deepEqual(migrated.args, [copiedScript]);
     assert.equal(migrated.actions.list_folders?.capability, 'shortcuts.catalog.read');
     assert.equal(migrated.actions.list_folders?.effect, 'read');
+    assert.equal(
+      (migrated.actions.list_folders as { description?: string }).description,
+      (packaged.actions.list_folders as { description?: string }).description,
+    );
     assert.equal(migrated.actions.run_shortcut?.capability, 'shortcuts.run');
     assert.equal(migrated.actions.run_shortcut?.effect, 'write');
   } finally {
