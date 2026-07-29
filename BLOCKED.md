@@ -3,7 +3,12 @@
 - **2026-07-30 多 Provider Review 修复：当前无实施 blocker。** 开工时的 detached
   HEAD 已安全切换到既有任务分支 `codex/multimodel-review-fixes`；依赖安装未产生
   package/lockfile 或 tracked dist 改动。真实部署/canary 仍严格服从运行面 idle、
-  备份、显式 credential 与低成本门禁，不配置的 Provider/生图服务不调用。
+  备份、显式 credential 与低成本门禁。最终两个已配置 target、Session/route/Team
+  canary 均通过；无 imageOutput 的媒体 canary 在 Provider 前诚实 blocked。
+- **2026-07-30 本轮范围外运行告警（非交付阻塞）**：部署后 Doctor 的 `ready=false`
+  由既有 112 个 Task dead letter、253 个 Digest backlog、3 个 Connector startup
+  readiness unknown，以及 personal-daxiang 仍指向其他 checkout 的托管脚本构成。
+  本任务未修改 Connector/M1/Memory 状态，也未重放 dead letter 或清理 backlog。
 - **2026-07-30 任务 0 环境差异（非实施阻塞）**：HEAD 精确匹配
   `d01a6b78cc930dffd7179d6d48ae28c9cdaf0259`，开工工作树干净；
   `codex/multimodel-review-fixes` 指向同一提交，但当前 worktree 为 detached HEAD。

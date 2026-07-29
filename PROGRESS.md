@@ -68,6 +68,21 @@
   密钥模式扫描 clean，无 package/lockfile、tracked dist 或越界文件 diff。
 - 已切换到任务分支 `codex/multimodel-review-fixes`；下一步提交、推送，再按真实
   Daemon idle/备份/构建一致门禁决定部署和低成本 canary。
+- 提交 `eaf0067` 已推送 `origin/codex/multimodel-review-fixes`。部署前连续确认
+  active Event/Task/Outbox sending/host mutation 均为 0；官方备份及二次 verify 位于
+  `/tmp/mimi-provider-review-rollout.OrXoo8/daemon-backup`，databaseIntegrity=ok。
+- 全局包已安装并安全重启：旧 build `0.12.0+8ef2c7b69eab`、PID 14088；新 build
+  `0.12.0+4698e88155a3`、PID 69823。重启后四类 activity 继续为 0。
+- 两个已注册 target 的 registry health 均为 healthy。独立 Session 实际返回
+  `FRIDAY_CANARY_OK`、`DEEPSEEK_CANARY_OK`；Trace 分别冻结 friday/deepseek 的
+  `session-preference` binding，routeVersion=3，未串 target。
+- Team canary 在同一 wave 冻结 `ds→deepseek/team.simple` 与
+  `fr→friday/team.hard`，分别返回 `TEAM_DEEPSEEK_OK`、`TEAM_FRIDAY_OK`；
+  临时 route 随后恢复 auto，当前 routeVersion=7，PID 未变。
+- registry 没有 imageOutput；真实 `generate_image` 只调用一次并在 Provider 前返回
+  `image-generation.default 没有满足 imageOutput/生图 的兼容模型`，未调用生图服务。
+- Daemon doctor 的 ready=false 来自既有 dead-letter/digest、Connector readiness
+  和 personal-daxiang checkout 路径告警；不属于本任务且未修改、重放或冒充通过。
 
 ## 2026-07-29 多 Provider、多模型分层路由
 
