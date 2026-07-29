@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - enforce Connector `routeOwner` claims across ordinary CLI Computer and desktop
   Connector actions even while the owning route is degraded; contain uncertain
   ActionIntents as a Run-local action fence so bounded reads and the final answer
-  can continue without replay or route hopping; keep Daxiang bounded reads ready
-  on a virtualized session-list page before its message composer is open
+  can continue without replay or route hopping; include bounded Connector-declared
+  target and payload usage in the effective capability contract; keep Daxiang
+  bounded reads ready on a virtualized session-list page before its composer is open
 - keep bounded Daxiang web reads available when its dedicated tab is selected in a
   background Chrome window, restore the prior conversation after access, expose
   structured readiness reasons, detect missing owner bindings in Doctor, keep

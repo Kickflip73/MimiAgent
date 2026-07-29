@@ -55,6 +55,7 @@ export interface EffectiveCapabilityItem {
     capability: string;
     action: string;
     effect: 'read' | 'write' | 'unknown';
+    usage?: string;
   }>[];
   safeFallback?: 'not_started_or_failed_safe' | 'none';
 }
@@ -157,7 +158,7 @@ export function renderEffectiveCapabilitySnapshot(
   if (routedItems.length === 0) return '';
   return [
     '## Effective Capability Snapshot',
-    '这是本轮开始前由可信宿主生成的能力事实。优先按 operations 中的精确 capability/action 调用 invoke_capability；unavailable/unknown 不得尝试启用 Connector 或猜测替代路线。',
+    '这是本轮开始前由可信宿主生成的能力事实。优先按 operations 中的精确 capability/action 调用 invoke_capability，并严格遵循 usage 声明的调用顺序、target 和 payload；unavailable/unknown 不得尝试启用 Connector 或猜测替代路线。',
     JSON.stringify({
       schemaVersion: snapshot.schemaVersion,
       policyRevision: snapshot.policyRevision,

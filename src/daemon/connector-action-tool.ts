@@ -106,6 +106,7 @@ export function connectorEffectiveCapabilityItems(
           capability: action.capability,
           action: action.name,
           effect: action.effect,
+          usage: action.description.slice(0, MAX_DESCRIPTION_CHARS),
         }))
         .sort((left, right) =>
           left.capability.localeCompare(right.capability)

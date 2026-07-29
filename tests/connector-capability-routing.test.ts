@@ -122,3 +122,28 @@ test('effective capability items preserve Connector availability, readiness, fre
     },
   ]);
 });
+
+test('effective capability operations carry bounded Connector-declared invocation usage', () => {
+  const manager = {
+    listCapabilities: () => [{
+      id: 'messages',
+      enabled: true,
+      online: true,
+      readiness: { inbound: 'ready', outbound: 'ready' },
+      actions: [{
+        name: 'get_context',
+        description: '先使用 list_targets，再把返回的稳定 target 传入；payload 限制为有界条数',
+        capability: 'personal-message.context.read',
+        effect: 'read',
+        routeOwner: 'messages',
+      }],
+    }],
+  } as ConnectorManager;
+
+  assert.deepEqual(connectorEffectiveCapabilityItems(manager)[0]?.operations, [{
+    capability: 'personal-message.context.read',
+    action: 'get_context',
+    effect: 'read',
+    usage: '先使用 list_targets，再把返回的稳定 target 传入；payload 限制为有界条数',
+  }]);
+});
