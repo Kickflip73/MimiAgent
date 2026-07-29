@@ -200,14 +200,14 @@ test('classifies the existing durable side-effect tools from one policy source',
 test('derives displayed orchestration tools from mode policy', () => {
   const base = [fakeTool('read_file'), fakeTool('write_file')];
   assert.deepEqual(toolNamesForMode('general', base), [
-    'delegate_background_task', 'delegate_research', 'delegate_review', 'read_file', 'write_file',
+    'delegate_background_task', 'delegate_research', 'delegate_review', 'generate_image', 'read_file', 'write_file',
   ]);
   assert.deepEqual(toolNamesForMode('plan', base), [
     'delegate_architecture', 'delegate_research', 'delegate_review', 'read_file',
   ]);
   assert.deepEqual(toolNamesForMode('ultra', base), [
     'claim_team_task', 'delegate_architecture', 'delegate_background_task', 'delegate_research', 'delegate_review',
-    'read_file', 'retry_team_task', 'run_team', 'set_team_tasks', 'show_team_tasks',
+    'generate_image', 'read_file', 'retry_team_task', 'run_team', 'set_team_tasks', 'show_team_tasks',
     'update_team_task', 'write_file',
   ]);
   assert.deepEqual(toolNamesForMode('ultra', base, 'workspace'), [

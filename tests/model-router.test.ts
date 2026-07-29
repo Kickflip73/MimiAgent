@@ -13,11 +13,13 @@ const provider: ProviderDefinition = {
       target: { providerId: 'fake', modelId: 'text' },
       kind: 'agent',
       capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+      contextWindow: 32_000,
     },
     {
       target: { providerId: 'fake', modelId: 'vision' },
       kind: 'agent',
       capabilities: { imageInput: true, imageOutput: false, toolCalling: true },
+      contextWindow: 16_000,
     },
     {
       target: { providerId: 'fake', modelId: 'image' },
@@ -33,7 +35,11 @@ test('resolver applies explicit, team, session, scenario and global precedence d
     routing: {
       globalDefault: { providerId: 'fake', modelId: 'text' },
       scenarios: {
-        'team.hard': { target: { providerId: 'fake', modelId: 'vision' } },
+        'team.hard': {
+          target: { providerId: 'fake', modelId: 'vision' },
+          maxTurns: 7,
+          maxOutputTokens: 2_048,
+        },
       },
     },
   });
@@ -55,10 +61,14 @@ test('resolver applies explicit, team, session, scenario and global precedence d
     sessionTarget: { providerId: 'fake', modelId: 'vision' },
     routeVersion: 7,
   }).reason, 'session-preference');
-  assert.equal(resolver.resolve({
+  const routed = resolver.resolve({
     scenario: 'team.hard',
     routeVersion: 7,
-  }).reason, 'scenario-route');
+  });
+  assert.equal(routed.reason, 'scenario-route');
+  assert.equal(routed.contextWindow, 16_000);
+  assert.equal(routed.maxTurns, 7);
+  assert.equal(routed.maxOutputTokens, 2_048);
   assert.equal(resolver.resolve({
     scenario: 'background.default',
     routeVersion: 7,

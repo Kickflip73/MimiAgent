@@ -1,6 +1,7 @@
 import { OpenAIChatCompletionsModel, type AgentInputItem } from '@openai/agents';
 import OpenAI from 'openai';
 import type { AppConfig } from '../config.js';
+import type { ProviderTransport } from '../core/model-routing.js';
 import type { AgentModel } from '../extensions/model-port.js';
 
 export type { AgentModel } from '../extensions/model-port.js';
@@ -18,10 +19,10 @@ export interface ModelProfile {
 }
 
 export function normalizeModelInput(
-  provider: AppConfig['provider'],
+  provider: AppConfig['provider'] | ProviderTransport,
   items: AgentInputItem[],
 ): AgentInputItem[] {
-  if (provider !== 'openai') return items;
+  if (provider !== 'openai' && provider !== 'openai-responses') return items;
   return items.map((item) => {
     const value = item as unknown as Record<string, unknown>;
     if (value.type !== 'message' || typeof value.id !== 'string' || value.id.startsWith('msg')) {

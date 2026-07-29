@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { randomUUID } from 'node:crypto';
@@ -6,6 +6,18 @@ import {
   resolveEnvironmentFile,
   type ModelProvider,
 } from './config.js';
+import {
+  modelTargetSchema,
+  type ModelRegistration,
+  type ProviderDefinition,
+  type ProviderTransport,
+} from './core/model-routing.js';
+import {
+  ModelConfigStore,
+  parseModelsConfig,
+  type ModelsConfig,
+} from './runtime/model-config.js';
+import { ModelGateway } from './runtime/model-gateway.js';
 
 export interface ProviderSetRequest {
   provider: ModelProvider;
@@ -275,5 +287,237 @@ export async function persistProviderConfiguration(
     provider: request.provider,
     ...(request.model ? { model: request.model } : {}),
     ...(request.baseUrl ? { baseUrl: request.baseUrl } : {}),
+  };
+}
+
+function registryTarget(value: string | undefined) {
+  const slash = value?.indexOf('/') ?? -1;
+  if (slash <= 0 || slash === value!.length - 1) {
+    throw new Error('模型 target 必须是 providerId/modelId');
+  }
+  return modelTargetSchema.parse({
+    providerId: value!.slice(0, slash),
+    modelId: value!.slice(slash + 1),
+  });
+}
+
+function booleanOption(value: string, name: string): boolean {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`${name} 只能是 true 或 false`);
+}
+
+function positiveIntegerOption(value: string, name: string): number {
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) <= 0) {
+    throw new Error(`${name} 必须是正安全整数`);
+  }
+  return Number(value);
+}
+
+function registryOptions(args: string[], start: number): Map<string, string> {
+  const options = new Map<string, string>();
+  for (let index = start; index < args.length; index += 2) {
+    const name = args[index];
+    if (!name?.startsWith('--')) throw new Error(`未知 Provider registry 参数：${name ?? '(empty)'}`);
+    const value = optionValue(args, index, name);
+    if (options.has(name)) throw new Error(`Provider registry 选项重复：${name}`);
+    options.set(name, value);
+  }
+  return options;
+}
+
+const REGISTRY_TRANSPORTS = new Set<ProviderTransport>([
+  'openai-responses',
+  'openai-chat-completions',
+  'anthropic-messages',
+  'google-generate-content',
+]);
+
+async function modelConfigExists(file: string): Promise<boolean> {
+  return access(file).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  });
+}
+
+function listedProviders(
+  config: ModelsConfig,
+  environment: Readonly<Record<string, string | undefined>>,
+) {
+  return config.providers.map((provider) => ({
+    id: provider.id,
+    label: provider.label,
+    transport: provider.transport,
+    baseUrl: provider.baseUrl,
+    apiKeyEnv: provider.apiKeyEnv,
+    configured: Boolean(environment[provider.apiKeyEnv]?.trim()),
+    models: provider.models,
+  }));
+}
+
+export async function runProviderRegistryCommand(
+  args: string[],
+  modelsFile: string,
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<unknown> {
+  const action = args[0];
+  const store = new ModelConfigStore(modelsFile);
+  if (action === 'list') {
+    if (args.length !== 1) throw new Error('用法：mimi provider list');
+    const config = await store.read();
+    return {
+      routeVersion: config.routeVersion,
+      globalDefault: config.routing.globalDefault,
+      providers: listedProviders(config, environment),
+    };
+  }
+  if (action === 'test') {
+    if (args.length !== 2) throw new Error('用法：mimi provider test <providerId/modelId>');
+    const target = registryTarget(args[1]);
+    const config = await store.read();
+    return new ModelGateway({
+      providers: config.providers,
+      environment,
+    }).health(target);
+  }
+  if (action === 'set') {
+    if (args.length !== 2) throw new Error('用法：mimi provider set <providerId/modelId>');
+    const target = registryTarget(args[1]);
+    const next = await store.update((config) => {
+      const registration = config.providers.flatMap((provider) => provider.models)
+        .find((model) => model.target.providerId === target.providerId
+          && model.target.modelId === target.modelId);
+      if (!registration) throw new Error(`模型 target 未注册：${target.providerId}/${target.modelId}`);
+      if (registration.kind !== 'agent' || !registration.capabilities.toolCalling) {
+        throw new Error('全局默认 target 必须是可运行工具循环的 Agent 模型');
+      }
+      return {
+        ...config,
+        routeVersion: config.routeVersion + 1,
+        routing: { ...config.routing, globalDefault: target },
+      };
+    });
+    return { action: 'set', target, routeVersion: next.routeVersion, daemonRestarted: false };
+  }
+  if (action !== 'add') {
+    throw new Error('用法：mimi provider <add|set|list|test> ...');
+  }
+
+  const providerId = args[1]?.trim();
+  if (!providerId) throw new Error('provider add 需要 providerId');
+  const options = registryOptions(args, 2);
+  const allowed = new Set([
+    '--label', '--transport', '--base-url', '--api-key-env', '--model', '--kind',
+    '--image-input', '--image-output', '--tool-calling', '--context-window',
+    '--reasoning-high', '--reasoning-off', '--manual-budget-tokens',
+  ]);
+  for (const name of options.keys()) {
+    if (!allowed.has(name)) throw new Error(`未知 Provider registry 选项：${name}`);
+  }
+  const label = options.get('--label');
+  const transport = options.get('--transport') as ProviderTransport | undefined;
+  const apiKeyEnv = options.get('--api-key-env');
+  const modelId = options.get('--model');
+  const kind = options.get('--kind') ?? 'agent';
+  if (!label || !transport || !apiKeyEnv || !modelId) {
+    throw new Error('provider add 需要 --label、--transport、--api-key-env 和 --model');
+  }
+  if (!REGISTRY_TRANSPORTS.has(transport)) throw new Error(`不支持的 Provider transport：${transport}`);
+  if (!/^[A-Z][A-Z0-9_]*$/.test(apiKeyEnv)) throw new Error('--api-key-env 必须是环境变量名');
+  if (kind !== 'agent' && kind !== 'image-generation') throw new Error('--kind 只能是 agent 或 image-generation');
+  const baseUrl = options.get('--base-url');
+  if (transport !== 'openai-responses' && !baseUrl) {
+    throw new Error(`${transport} 需要显式 --base-url`);
+  }
+  if (baseUrl) {
+    let parsed: URL;
+    try {
+      parsed = new URL(baseUrl);
+    } catch {
+      throw new Error('--base-url 必须是有效 URL');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('--base-url 必须使用 http 或 https');
+    }
+  }
+  const imageInput = booleanOption(options.get('--image-input') ?? 'false', '--image-input');
+  const imageOutput = booleanOption(options.get('--image-output') ?? 'false', '--image-output');
+  const toolCalling = booleanOption(options.get('--tool-calling') ?? 'false', '--tool-calling');
+  const reasoningHighValue = options.get('--reasoning-high');
+  if (reasoningHighValue && reasoningHighValue !== 'manual' && reasoningHighValue !== 'adaptive') {
+    throw new Error('--reasoning-high 只能是 manual 或 adaptive');
+  }
+  const reasoningHigh = reasoningHighValue as 'manual' | 'adaptive' | undefined;
+  const supportsOff = options.has('--reasoning-off')
+    ? booleanOption(options.get('--reasoning-off')!, '--reasoning-off')
+    : false;
+  const manualBudgetTokens = options.has('--manual-budget-tokens')
+    ? positiveIntegerOption(options.get('--manual-budget-tokens')!, '--manual-budget-tokens')
+    : undefined;
+  const registration: ModelRegistration = {
+    target: { providerId, modelId },
+    kind,
+    capabilities: { imageInput, imageOutput, toolCalling },
+    ...(options.has('--context-window')
+      ? { contextWindow: positiveIntegerOption(options.get('--context-window')!, '--context-window') }
+      : {}),
+    ...(reasoningHigh ? {
+      reasoning: {
+        high: reasoningHigh,
+        supportsOff,
+        ...(manualBudgetTokens ? { manualBudgetTokens } : {}),
+      },
+    } : {}),
+  };
+  const provider: ProviderDefinition = {
+    id: providerId,
+    label,
+    transport,
+    ...(baseUrl ? { baseUrl } : {}),
+    apiKeyEnv,
+    models: [registration],
+  };
+  let next: ModelsConfig;
+  if (!await modelConfigExists(modelsFile)) {
+    next = parseModelsConfig({
+      version: 1,
+      routeVersion: 1,
+      providers: [provider],
+      routing: { globalDefault: registration.target, scenarios: {} },
+    });
+    await store.write(next);
+  } else {
+    next = await store.update((config) => {
+      const existing = config.providers.find((candidate) => candidate.id === providerId);
+      if (!existing) {
+        return {
+          ...config,
+          routeVersion: config.routeVersion + 1,
+          providers: [...config.providers, provider],
+        };
+      }
+      if (existing.label !== label
+        || existing.transport !== transport
+        || existing.baseUrl !== provider.baseUrl
+        || existing.apiKeyEnv !== apiKeyEnv) {
+        throw new Error(`Provider ${providerId} 已存在且定义不一致`);
+      }
+      if (existing.models.some((model) => model.target.modelId === modelId)) {
+        throw new Error(`模型 target 已注册：${providerId}/${modelId}`);
+      }
+      return {
+        ...config,
+        routeVersion: config.routeVersion + 1,
+        providers: config.providers.map((candidate) => candidate.id === providerId
+          ? { ...candidate, models: [...candidate.models, registration] }
+          : candidate),
+      };
+    });
+  }
+  return {
+    action: 'added',
+    target: registration.target,
+    routeVersion: next.routeVersion,
+    daemonRestarted: false,
   };
 }

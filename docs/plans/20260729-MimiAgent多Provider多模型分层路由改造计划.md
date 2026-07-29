@@ -810,3 +810,19 @@ Claude、Gemini、Kimi、千问或 `imageOutput` 模型，因此真实运行态�
 - 最终不少于 `755` 个测试、fail/skipped/todo 均为 0，并完成 check、build、
   package smoke、diff check；真实 Provider 与 Daemon 验收必须使用显式预算和凭据，
   不得用 fake endpoint 冒充。
+
+### 13.1 2026-07-30 修正结果
+
+上述 8 项偏差均已落实到产品路径和回归测试：
+
+1. `generate_image` 通过真实 MimiAgent 工具面创建独立 Media WorkUnit，纯生图模型不进入 Agent loop；无兼容 target 在 Provider 前 blocked。
+2. Anthropic Messages 与 Google Generate Content 保留 data URL 图片的原生 block，远程图片 URL 不做隐式抓取。
+3. `routeVersion` 变化后，每个缓存 Session actor 在下一 Run/FIFO mutation 安全点重载；已开始的 Run 与已冻结 Team 不变。
+4. 工具面、跨 transport 历史归一化、RunScope、status 和 Trace 使用 binding 的精确 target/transport，不再以 legacy 启动 Provider 推断。
+5. Claude 高推理只按注册的协议能力生成合法 manual budget 或 adaptive thinking/effort；不支持显式要求时明确拒绝。
+6. `mimi provider add/set/list/test` 管理 registry 和 credential 引用；`model_control` 是唯一自然语言 Session/route 写入口，legacy action 不再暴露给模型。
+7. registration `contextWindow` 与 route `maxTurns/maxOutputTokens` 进入冻结 binding、ContextManager、Runner 和 Provider 请求，非法预算失败关闭。
+8. README、架构、环境示例与变更记录统一为“已注册 target 下一 Run 生效、无需重启”。
+
+最终门禁和真实运行回执以本次任务的 `PROGRESS.md` 为准；未配置 Provider 或
+`imageOutput` 服务不做猜测，也不以 fake endpoint 冒充真实可用。

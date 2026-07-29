@@ -20,6 +20,19 @@ test('model control request schema keeps route target and auto mutually exclusiv
     target: { providerId: 'right', modelId: 'right-model' },
     routeAuto: true,
   }));
+  assert.deepEqual(modelControlRequestSchema.parse({
+    action: 'route',
+    scenario: 'conversation.default',
+    target: { providerId: 'right', modelId: 'right-model' },
+    maxTurns: 9,
+    maxOutputTokens: 4_096,
+  }), {
+    action: 'route',
+    scenario: 'conversation.default',
+    target: { providerId: 'right', modelId: 'right-model' },
+    maxTurns: 9,
+    maxOutputTokens: 4_096,
+  });
 });
 
 test('model control permits read actions and requires direct Owner for writes', async () => {

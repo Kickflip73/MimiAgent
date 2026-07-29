@@ -15,6 +15,12 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
     reasoning: ReasoningIntent,
   ) {
     if (!provider.baseUrl) throw new Error(`Provider ${provider.id} 缺少 baseUrl`);
+    if (reasoning === 'high' && !registration.reasoning) {
+      throw new Error('Claude reasoning=high 的推理能力未知或未注册；请求未发送');
+    }
+    if (reasoning === 'off' && !registration.reasoning?.supportsOff) {
+      throw new Error('Claude reasoning=off 未注册为受支持能力；请求未发送');
+    }
     return {
       model: new NativeJsonAgentModel({
         protocol: 'anthropic',
@@ -22,6 +28,7 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
         apiKey,
         modelId: registration.target.modelId,
         reasoning,
+        reasoningCapability: registration.reasoning,
       }),
       target: registration.target,
       registration,

@@ -30,8 +30,10 @@ export function createModelControlTools(controls: ModelControlTools): Tool[] {
         scenario: scenarioSchema.optional(),
         target: modelTargetSchema.optional(),
         routeAuto: z.boolean().optional(),
+        maxTurns: z.number().int().positive().optional(),
+        maxOutputTokens: z.number().int().positive().optional(),
       }).strict(),
-      execute: async ({ action, scenario, target, routeAuto }) => {
+      execute: async ({ action, scenario, target, routeAuto, maxTurns, maxOutputTokens }) => {
         if (action === 'list') return controls.list();
         if (action === 'inspect') {
           if (!target) throw new Error('inspect 需要 target');
@@ -53,8 +55,15 @@ export function createModelControlTools(controls: ModelControlTools): Tool[] {
           if (Boolean(target) === (routeAuto === true)) {
             throw new Error('route 必须二选一提供 target 或 routeAuto=true');
           }
+          if (routeAuto && (maxTurns !== undefined || maxOutputTokens !== undefined)) {
+            throw new Error('routeAuto=true 不能同时设置预算');
+          }
           controls.assertOwner();
-          return controls.setRoute(scenario, target ? { target } : undefined);
+          return controls.setRoute(scenario, target ? {
+            target,
+            ...(maxTurns ? { maxTurns } : {}),
+            ...(maxOutputTokens ? { maxOutputTokens } : {}),
+          } : undefined);
         }
         return controls.doctor(target);
       },

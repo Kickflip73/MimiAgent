@@ -146,11 +146,26 @@ export async function createRuntimeComponents(
     ? modelGateway.createAgentRuntime(defaultBinding.target, defaultBinding.reasoning)
     : undefined;
   const resolvedProfile = resolveModelProfile(config, defaultBinding.target.modelId);
+  const contextWindow = defaultBinding.contextWindow ?? resolvedProfile.contextWindow;
+  const outputReserve = defaultBinding.maxOutputTokens
+    ?? (defaultBinding.contextWindow === undefined
+      ? resolvedProfile.outputReserve
+      : Math.min(
+          resolvedProfile.outputReserve,
+          Math.max(256, Math.floor(contextWindow * 0.1)),
+        ));
+  if (outputReserve >= contextWindow) {
+    throw new Error(
+      `模型请求预算非法：maxOutputTokens=${outputReserve} 必须小于 contextWindow=${contextWindow}`,
+    );
+  }
   const modelRuntime: ModelRuntime = {
     model: agentRuntime?.model ?? createModel(config, defaultBinding.target.modelId).model,
     name: defaultBinding.target.modelId,
     profile: {
       ...resolvedProfile,
+      contextWindow,
+      outputReserve,
       supportsImageInput: agentRuntime
         ? agentRuntime.registration.capabilities.imageInput
         : modelGateway.inspect(defaultBinding.target).capabilities.imageInput,

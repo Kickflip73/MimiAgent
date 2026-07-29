@@ -9,6 +9,8 @@ import type { AgentInputItem } from '@openai/agents';
 import type { AppConfig } from '../src/config.js';
 import { FileSession } from '../src/core/session.js';
 import { MimiAgent } from '../src/runtime/mimi-agent.js';
+import { MimiHost } from '../src/runtime/mimi-host.js';
+import { AgentRunService } from '../src/runtime/run-service.js';
 import { ModelConfigStore, type ModelsConfig } from '../src/runtime/model-config.js';
 
 async function fakeGoogle(label: string, beforeResponse?: () => Promise<void>) {
@@ -313,6 +315,199 @@ test('changing the Session target during a Run affects only the next Run', async
     else process.env.MIMI_TEST_LEFT_KEY = saved.left;
     if (saved.right === undefined) delete process.env.MIMI_TEST_RIGHT_KEY;
     else process.env.MIMI_TEST_RIGHT_KEY = saved.right;
+  }
+});
+
+test('two cached Session actors observe one new routeVersion on their next Run', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-model-route-refresh-'));
+  const leftEndpoint = await fakeGoogle('left');
+  const rightEndpoint = await fakeGoogle('right');
+  const modelsFile = path.join(root, 'models.json');
+  const models: ModelsConfig = {
+    version: 1,
+    routeVersion: 20,
+    providers: [
+      {
+        id: 'left',
+        label: 'Left',
+        transport: 'google-generate-content',
+        baseUrl: leftEndpoint.baseUrl,
+        apiKeyEnv: 'MIMI_TEST_LEFT_KEY',
+        models: [{
+          target: { providerId: 'left', modelId: 'left-model' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        }],
+      },
+      {
+        id: 'right',
+        label: 'Right',
+        transport: 'google-generate-content',
+        baseUrl: rightEndpoint.baseUrl,
+        apiKeyEnv: 'MIMI_TEST_RIGHT_KEY',
+        models: [{
+          target: { providerId: 'right', modelId: 'right-model' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        }],
+      },
+    ],
+    routing: {
+      globalDefault: { providerId: 'left', modelId: 'left-model' },
+      scenarios: {},
+    },
+  };
+  await new ModelConfigStore(modelsFile).write(models);
+  const config: AppConfig = {
+    provider: 'openai',
+    defaultModel: 'legacy-startup-model',
+    modelsConfig: modelsFile,
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: null,
+    securityProfile: 'full-owner',
+    permissionMode: 'trusted',
+  };
+  const saved = {
+    left: process.env.MIMI_TEST_LEFT_KEY,
+    right: process.env.MIMI_TEST_RIGHT_KEY,
+  };
+  process.env.MIMI_TEST_LEFT_KEY = 'left-secret';
+  process.env.MIMI_TEST_RIGHT_KEY = 'right-secret';
+  let host: MimiHost | undefined;
+  try {
+    const primary = await MimiAgent.create(config, 'session-a');
+    host = new MimiHost(primary, new AgentRunService(primary), {
+      createSessionRuntime: async (sessionId) => {
+        const agent = await MimiAgent.create(config, sessionId);
+        return { agent, runs: new AgentRunService(agent) };
+      },
+    });
+    await host.mutate('session-b', (agent) => agent.modelControl({ action: 'current' }));
+    const toolNames = await host.mutate('session-b', (agent) => agent.toolNames) as string[];
+    assert.ok(toolNames.includes('model_control'));
+    assert.ok(toolNames.includes('generate_image'));
+    assert.ok(!toolNames.includes('switch_model'));
+    assert.ok(!toolNames.includes('switch_provider'));
+    assert.deepEqual(await host.mutate('session-a', (agent) => agent.modelControl({
+      action: 'route',
+      scenario: 'conversation.default',
+      target: { providerId: 'right', modelId: 'right-model' },
+    })), {
+      scenario: 'conversation.default',
+      route: { providerId: 'right', modelId: 'right-model' },
+      routeVersion: 21,
+      daemonRestarted: false,
+    });
+
+    assert.equal((await host.execute({
+      sessionId: 'session-b',
+      input: 'use refreshed route',
+    })).answer, 'right-answer');
+    assert.equal(rightEndpoint.requests.length, 1);
+    assert.equal(leftEndpoint.requests.length, 0);
+    const current = await host.mutate('session-b', (agent) =>
+      agent.modelControl({ action: 'current' })) as {
+        next: { routeVersion: number; target: { providerId: string; modelId: string } };
+      };
+    assert.equal(current.next.routeVersion, 21);
+    assert.deepEqual(current.next.target, { providerId: 'right', modelId: 'right-model' });
+    const info = await host.mutate('session-b', (agent) => agent.runtimeInfo()) as {
+      provider: string;
+      transport: string;
+    };
+    assert.equal(info.provider, 'right');
+    assert.equal(info.transport, 'google-generate-content');
+  } finally {
+    await host?.close();
+    await Promise.all([leftEndpoint.close(), rightEndpoint.close()]);
+    if (saved.left === undefined) delete process.env.MIMI_TEST_LEFT_KEY;
+    else process.env.MIMI_TEST_LEFT_KEY = saved.left;
+    if (saved.right === undefined) delete process.env.MIMI_TEST_RIGHT_KEY;
+    else process.env.MIMI_TEST_RIGHT_KEY = saved.right;
+  }
+});
+
+test('registration contextWindow and scenario budgets drive the frozen Run request', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-model-budget-binding-'));
+  const endpoint = await fakeGoogle('budget');
+  const modelsFile = path.join(root, 'models.json');
+  await new ModelConfigStore(modelsFile).write({
+    version: 1,
+    routeVersion: 30,
+    providers: [{
+      id: 'budget',
+      label: 'Budget',
+      transport: 'google-generate-content',
+      baseUrl: endpoint.baseUrl,
+      apiKeyEnv: 'MIMI_TEST_BUDGET_KEY',
+      models: [{
+        target: { providerId: 'budget', modelId: 'budget-model' },
+        kind: 'agent',
+        capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        contextWindow: 120_000,
+      }],
+    }],
+    routing: {
+      globalDefault: { providerId: 'budget', modelId: 'budget-model' },
+      scenarios: {
+        'conversation.default': {
+          target: { providerId: 'budget', modelId: 'budget-model' },
+          maxTurns: 3,
+          maxOutputTokens: 20_000,
+        },
+      },
+    },
+  });
+  const previous = process.env.MIMI_TEST_BUDGET_KEY;
+  process.env.MIMI_TEST_BUDGET_KEY = 'budget-secret';
+  const agent = await MimiAgent.create({
+    provider: 'openai-compatible',
+    providerBaseUrl: endpoint.baseUrl,
+    defaultModel: 'legacy-model',
+    modelsConfig: modelsFile,
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: null,
+    securityProfile: 'safe',
+    permissionMode: 'read-only',
+  }, 'budget-session');
+  try {
+    const run = await agent.stream('bounded request');
+    await run.completed;
+    await agent.completeRun('budget-answer');
+    const body = JSON.parse(endpoint.requests[0]!.body) as {
+      generationConfig: { maxOutputTokens?: number };
+    };
+    assert.equal(body.generationConfig.maxOutputTokens, 20_000);
+    const current = await agent.modelControl({ action: 'current' }) as {
+      next: {
+        contextWindow: number;
+        maxTurns: number;
+        maxOutputTokens: number;
+      };
+    };
+    assert.deepEqual({
+      contextWindow: current.next.contextWindow,
+      maxTurns: current.next.maxTurns,
+      maxOutputTokens: current.next.maxOutputTokens,
+    }, {
+      contextWindow: 120_000,
+      maxTurns: 3,
+      maxOutputTokens: 20_000,
+    });
+    assert.equal((await agent.sessionSnapshot()).context.contextWindow, 120_000);
+  } finally {
+    await agent.close();
+    await endpoint.close();
+    if (previous === undefined) delete process.env.MIMI_TEST_BUDGET_KEY;
+    else process.env.MIMI_TEST_BUDGET_KEY = previous;
   }
 });
 
