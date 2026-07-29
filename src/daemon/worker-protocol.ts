@@ -23,6 +23,12 @@ const providerCredentialSchema = z.discriminatedUnion('provider', [
   }).strict(),
 ]);
 
+const embeddingCredentialSchema = z.object({
+  apiKey: z.string().trim().min(1).max(16_384),
+  baseURL: z.string().url().max(4_096).optional(),
+  model: z.string().trim().min(1).max(200).optional(),
+}).strict();
+
 const backupProviderSchema = z.object({
   id: z.string().min(1).max(300),
   provider: z.enum(['openai', 'deepseek']),
@@ -30,7 +36,7 @@ const backupProviderSchema = z.object({
 }).strict();
 
 export type TaskProviderCredential = z.infer<typeof providerCredentialSchema>;
-export type TaskEmbeddingCredential = z.infer<typeof openAiProviderCredentialSchema>;
+export type TaskEmbeddingCredential = z.infer<typeof embeddingCredentialSchema>;
 
 const taskMcpEnvironmentSchema = z.record(
   z.string().regex(/^[A-Z_][A-Z0-9_]*$/i),
@@ -69,6 +75,33 @@ export async function withTaskProviderCredential<T>(
   } finally {
     if (previous === undefined) delete environment[name];
     else environment[name] = previous;
+  }
+}
+
+export async function withTaskEmbeddingCredential<T>(
+  credential: TaskEmbeddingCredential,
+  operation: () => Promise<T>,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<T> {
+  const entries = [
+    ['MIMI_EMBEDDING_API_KEY', credential.apiKey],
+    ['MIMI_EMBEDDING_BASE_URL', credential.baseURL],
+    ['EMBEDDING_MODEL', credential.model],
+  ] as const;
+  const previous = new Map<string, string | undefined>();
+  for (const [name, value] of entries) {
+    previous.set(name, environment[name]);
+    if (value === undefined) delete environment[name];
+    else environment[name] = value;
+  }
+  try {
+    return await operation();
+  } finally {
+    for (const [name] of entries) {
+      const value = previous.get(name);
+      if (value === undefined) delete environment[name];
+      else environment[name] = value;
+    }
   }
 }
 
@@ -131,7 +164,7 @@ export const taskWorkerInitSchema = z.object({
   providerCredential: providerCredentialSchema.optional(),
   backupProvider: backupProviderSchema.optional(),
   backupProviderCredential: providerCredentialSchema.optional(),
-  embeddingCredential: openAiProviderCredentialSchema.optional(),
+  embeddingCredential: embeddingCredentialSchema.optional(),
   mcpEnvironment: taskMcpEnvironmentSchema,
   config: appConfigSchema,
 }).strict().superRefine((init, context) => {
@@ -169,13 +202,6 @@ export const taskWorkerInitSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: 'Backup Provider 必须不同于 Primary Provider',
       path: ['backupProvider', 'provider'],
-    });
-  }
-  if (init.embeddingCredential && init.config.provider !== 'deepseek') {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Embedding credential 仅用于 DeepSeek Task 的 OpenAI MemoryHub 检索',
-      path: ['embeddingCredential'],
     });
   }
   if (init.enableMcp && init.workspaceAccess !== 'write') {

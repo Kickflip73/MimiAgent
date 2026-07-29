@@ -29,6 +29,24 @@ export interface RuntimeComponents {
   computer?: ComputerManager;
 }
 
+export interface EmbeddingClientConfig {
+  apiKey: string;
+  baseURL?: string;
+}
+
+export function embeddingClientConfig(
+  environment: NodeJS.ProcessEnv = process.env,
+): EmbeddingClientConfig | undefined {
+  const apiKey = environment.MIMI_EMBEDDING_API_KEY?.trim()
+    || environment.OPENAI_API_KEY?.trim();
+  if (!apiKey) return undefined;
+  const baseURL = environment.MIMI_EMBEDDING_BASE_URL?.trim();
+  return {
+    apiKey,
+    ...(baseURL ? { baseURL } : {}),
+  };
+}
+
 export function resolveUserSoulFile(homeDirectory = os.homedir()): string {
   return path.join(homeDirectory, '.mimi-agent', 'MIMI.md');
 }
@@ -89,8 +107,9 @@ export async function createRuntimeComponents(
   } = {},
 ): Promise<RuntimeComponents> {
   const modelRuntime = createModel(config);
-  const embeddingClient = process.env.OPENAI_API_KEY
-    ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY, fetch: globalThis.fetch })
+  const embeddingConfig = embeddingClientConfig();
+  const embeddingClient = embeddingConfig
+    ? new OpenAI({ ...embeddingConfig, fetch: globalThis.fetch })
     : undefined;
   const sessionId = requestedSessionId
     ?? preferredEnvironmentValue('MIMI_SESSION', 'AGENT_SESSION')

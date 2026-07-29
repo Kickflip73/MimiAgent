@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { AppConfig } from '../src/config.js';
 import {
   TaskProcessSupervisor,
   defaultTaskWorkerEntry,
+  taskEmbeddingCredential,
   taskWorkerEnvironment,
   taskWorkerExecArgv,
   taskWorkerRuntimeReadiness,
@@ -118,6 +120,29 @@ test('task worker boundary strips dotenv preloads and redacted connector credent
   assert.equal(environment.MIMI_BACKUP_PROVIDER, undefined);
   assert.match(defaultTaskWorkerEntry('file:///tmp/daemon/task-supervisor.ts'), /task-worker-entry\.ts$/);
   assert.match(defaultTaskWorkerEntry('file:///tmp/daemon/task-supervisor.js'), /task-worker-entry\.js$/);
+});
+
+test('task worker forwards explicit embedding configuration and keeps the DeepSeek OpenAI fallback', () => {
+  const config = {
+    provider: 'openai-compatible',
+  } as AppConfig;
+  assert.deepEqual(taskEmbeddingCredential(config, {
+    MIMI_EMBEDDING_API_KEY: 'embedding-key',
+    MIMI_EMBEDDING_BASE_URL: 'https://embedding.example/v1',
+    EMBEDDING_MODEL: 'embedding-model',
+  }), {
+    apiKey: 'embedding-key',
+    baseURL: 'https://embedding.example/v1',
+    model: 'embedding-model',
+  });
+  assert.deepEqual(taskEmbeddingCredential({ provider: 'deepseek' } as AppConfig, {
+    OPENAI_API_KEY: 'legacy-openai-key',
+  }), {
+    apiKey: 'legacy-openai-key',
+  });
+  assert.equal(taskEmbeddingCredential(config, {
+    DEEPSEEK_API_KEY: 'chat-only-key',
+  }), undefined);
 });
 
 test('task worker dependency preflight fails before a queued task can consume an attempt', async () => {

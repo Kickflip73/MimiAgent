@@ -119,3 +119,10 @@ test('short confirmations resolve against the immediately preceding assistant pr
   assert.match(BASE_INSTRUCTIONS, /短回复必须结合紧邻的上一条 assistant 提问或提议解释/);
   assert.match(BASE_INSTRUCTIONS, /视为同意并继续执行/);
 });
+
+test('memory recall reformulates irrelevant results before guessing', () => {
+  assert.match(BASE_INSTRUCTIONS, /结果为空或主题明显不符/);
+  assert.match(BASE_INSTRUCTIONS, /全称、缩写、别名、URL、产品名或任务对象/);
+  assert.match(BASE_INSTRUCTIONS, /最多再检索两次/);
+  assert.match(BASE_INSTRUCTIONS, /不得先猜域名/);
+});

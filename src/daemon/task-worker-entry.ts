@@ -18,6 +18,7 @@ import {
   taskWorkerInitSchema,
   restrictedTaskShellEnvironment,
   withTaskProviderCredential,
+  withTaskEmbeddingCredential,
   type TaskWorkerControl,
   type TaskWorkerInit,
   type TaskWorkerOutput,
@@ -80,7 +81,6 @@ async function run(raw: unknown): Promise<void> {
     const mcpEnvironment: Record<string, string> = init.enableMcp ? {
       ...init.mcpEnvironment,
       [taskProviderEnvironmentName(init.providerCredential.provider)]: init.providerCredential.apiKey,
-      ...(init.embeddingCredential ? { OPENAI_API_KEY: init.embeddingCredential.apiKey } : {}),
     } : {};
     try {
       agent = await withTaskProviderCredential(init.providerCredential, async () => {
@@ -97,7 +97,7 @@ async function run(raw: unknown): Promise<void> {
           });
         };
         return init.embeddingCredential
-          ? withTaskProviderCredential(init.embeddingCredential, create)
+          ? withTaskEmbeddingCredential(init.embeddingCredential, create)
           : create();
       });
     } finally {

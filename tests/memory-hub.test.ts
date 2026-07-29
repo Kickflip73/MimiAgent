@@ -439,6 +439,31 @@ test('compiled Wiki knowledge ranks before matching raw Session episodes', async
   assert.ok(hits.some((hit) => hit.documentType === 'episode'));
 });
 
+test('matching Wiki noise cannot crowd relevant Session episodes out of the bounded result', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-episode-fusion-'));
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot: path.join(root, 'data'), profileId: 'owner' });
+  const ctx = context(root);
+  const episode = await hub.recordEpisode({
+    sessionId: ctx.sessionId,
+    runId: ctx.runId,
+    input: 'Friday 模型平台的个人 APP ID 在哪里？',
+    answer: '入口是 https://aigc.sankuai.com/ml/modelPlaza/detail/487?tabKey=apiUsage。',
+    occurredAt: new Date().toISOString(),
+  }, ctx);
+  for (let index = 0; index < 6; index += 1) {
+    await hub.remember({
+      title: `无关 APP 项目 ${index}`,
+      content: `这是第 ${index} 个包含 APP 关键词、但与模型平台无关的项目。`,
+      kind: 'entity',
+    }, { ...ctx, runId: `run-noise-${index}` });
+  }
+
+  const hits = await hub.search('FRD 平台 APP ID', ctx, { scope: 'private', limit: 5 });
+
+  assert.ok(hits.some((hit) => hit.ref.id === episode.id), '相关 episode 应进入有界结果');
+  assert.ok(hits.some((hit) => hit.documentType === 'wiki'), '仍应保留 Wiki-first 结果');
+});
+
 test('MemoryHub rejects external writes and workspace private provenance', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-policy-'));
   const hub = await createMemoryHub({ workspaceRoot: root, dataRoot: path.join(root, 'data'), profileId: 'owner' });

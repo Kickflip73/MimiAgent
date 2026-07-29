@@ -9,10 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- fuse compiled Wiki and owner Session episodes before applying Memory search
+  limits, require bounded query reformulation for irrelevant recall, and support
+  an independent OpenAI-compatible Embedding endpoint instead of coupling
+  MemoryHub vectors to the chat Provider
 - preserve explicit pre-execution Connector rejections as `failed_safe` across
   the SDK tool boundary, so input, target, readiness, and business validation
   errors remain correctable without freezing the Run; keep timeout, disconnect,
   and explicitly uncertain results non-replayable
+- preserve the concrete Connector rejection message instead of replacing it
+  with a generic label, normalize Browser snapshot targets supplied as `ref`,
+  `locator`, or `element`, and expose declared page JavaScript execution to
+  Full Owner Browser sessions
+- allow the authenticated Daemon control plane to resume any paused or blocked
+  Task type that it can pause, including conversation Tasks
 - replace the Safari/Chrome JXA `macos-browser` route with one Chrome-only
   Browser Connector backed by OpenCLI, including isolated/bound sessions,
   DOM/AX observations, semantic locators, bounded reads and structured page

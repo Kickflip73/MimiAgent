@@ -1904,7 +1904,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const id = requiredString(params.id, 'id');
         const context = typeof params.context === 'string' ? params.context : undefined;
         const task = store.getTask(id);
-        if (!task || task.type !== 'background') return { state: 'not_found' };
+        if (!task) return { state: 'not_found' };
         if (task.status !== 'paused' && task.status !== 'blocked') {
           return { state: 'not_resumable' };
         }

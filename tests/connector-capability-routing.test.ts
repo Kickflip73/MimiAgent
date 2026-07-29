@@ -56,7 +56,9 @@ test('capability routing instructions use stable declarations instead of busines
   assert.match(BASE_INSTRUCTIONS, /Shell 沙箱.*不是 SIP/);
   assert.match(BASE_INSTRUCTIONS, /只读诊断能力/);
   assert.match(BASE_INSTRUCTIONS, /网页 routeOwner 唯一为 Chrome Browser Connector/);
-  assert.match(BASE_INSTRUCTIONS, /禁 Safari\/Shell\/OpenCLI\/CDP\/JXA\/任意 JavaScript/);
+  assert.match(BASE_INSTRUCTIONS, /禁 Safari\/Shell\/OpenCLI\/CDP\/JXA/);
+  assert.match(BASE_INSTRUCTIONS, /Full Owner.*browser\.page\.execute/);
+  assert.doesNotMatch(BASE_INSTRUCTIONS, /禁.*任意 JavaScript/);
   assert.match(BASE_INSTRUCTIONS, /使用最新 observationId，写后重观察/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /大象|QQ|微信/);
 });

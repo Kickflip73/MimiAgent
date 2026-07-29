@@ -125,6 +125,25 @@ function uncertainActionFenceResult(error: ActionIntentUncertainError): Record<s
   };
 }
 
+function failedSafeMessage(result: unknown): string {
+  let value = result;
+  if (typeof value === 'string') {
+    const raw = value;
+    try {
+      value = JSON.parse(raw) as unknown;
+    } catch {
+      return raw.slice(0, 2_000);
+    }
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    for (const candidate of [record.message, record.error]) {
+      if (typeof candidate === 'string' && candidate.trim()) return candidate.slice(0, 2_000);
+    }
+  }
+  return '动作明确未执行，可修正参数后重试';
+}
+
 export function withExecutionLedger(
   tools: Tool[],
   ledger: ExecutionLedger,
@@ -238,7 +257,9 @@ export function withExecutionLedger(
                   argumentsJson,
                 }, invokeAuthorized);
                 const outcome = action.outcome?.(output) ?? 'confirmed';
-                if (outcome === 'failed_safe') throw new ActionFailedSafeError('动作明确未执行，可安全换路');
+                if (outcome === 'failed_safe') {
+                  throw new ActionFailedSafeError(failedSafeMessage(output));
+                }
                 if (outcome === 'uncertain') throw new ActionIntentUncertainError('动作结果不确定');
                 return output;
               },

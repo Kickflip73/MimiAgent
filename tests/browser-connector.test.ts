@@ -67,6 +67,7 @@ else if (command === 'get' && subcommand === 'html') process.stdout.write(JSON.s
 else if (command === 'get' && subcommand === 'text') process.stdout.write(JSON.stringify({ value: 'Save', matches_n: 1, match_level: 'exact' }));
 else if (command === 'network') process.stdout.write(JSON.stringify([{ url: 'https://example.com/api?token=secret', body: { token: 'secret' }, shape: ['items'] }]));
 else if (command === 'click') process.stdout.write(JSON.stringify({ clicked: true, target: subcommand, matches_n: 1, match_level: 'exact' }));
+else if (command === 'eval') process.stdout.write(JSON.stringify({ value: 'script-result', script: subcommand }));
 else if (command === 'fill') {
   const value = rest[0];
   process.stdout.write(JSON.stringify({ filled: true, verified: true, target: subcommand, text: value, actual: value, matches_n: 1, match_level: 'exact' }));
@@ -142,11 +143,30 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
 
     const clicked = await call('click', 'click', sessionRef, {
       observationId,
-      element: '7',
+      ref: 7,
     });
     assert.equal(clicked.ok, true, clicked.error);
     assert.equal(clicked.result?.outcome, 'confirmed');
     assert.equal(clicked.result?.clicked, true);
+
+    const evaluated = await call('eval', 'execute_javascript', sessionRef, {
+      code: 'document.title',
+    });
+    assert.equal(evaluated.ok, true, evaluated.error);
+    assert.equal(evaluated.result?.outcome, 'confirmed');
+    assert.equal(evaluated.result?.value, 'script-result');
+
+    const foundButton = await call('find-button', 'find', sessionRef, {
+      role: 'button',
+      name: 'Save',
+    });
+    const hoverObservation = String(foundButton.result?.observationId);
+    const hovered = await call('hover', 'hover', sessionRef, {
+      observationId: hoverObservation,
+      locator: 7,
+    });
+    assert.equal(hovered.ok, true, hovered.error);
+    assert.equal(hovered.result?.outcome, 'confirmed');
 
     const stale = await call('stale', 'click', sessionRef, {
       observationId,

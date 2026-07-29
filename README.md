@@ -353,6 +353,8 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_RUNTIME_HTTP_TOKEN` | 未设置 | Runtime HTTP Bearer Token，启用时至少 32 字节 |
 | `MIMI_SKILLS_DIR` | 未设置 | 最高优先级额外 Skill 根目录；不再替换标准发现位置 |
 | `MIMI_MCP_CONFIG` | `<workspace>/mcp.json` | MCP Server 配置文件 |
+| `MIMI_EMBEDDING_API_KEY` | 回退 `OPENAI_API_KEY` | 独立 OpenAI-compatible Embedding 凭证；不会自动复用 DeepSeek 对话凭证 |
+| `MIMI_EMBEDDING_BASE_URL` | OpenAI 默认端点 | 独立 OpenAI-compatible Embedding API 根地址 |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | MemoryHub Embedding 模型 |
 | `MIMI_MEMORY_RETRIEVAL_MODE` | `auto` | `auto` 使用可用 Embedding；`lexical` 固定纯本地 FTS/BM25 |
 | `MIMI_ENV_FILE` | 自动选择 | 显式指定统一环境配置文件 |
@@ -598,7 +600,7 @@ Memory 编译与查询流程：
 读取来源 → 校验 SourceRef/digest → 持久化多页 CompilationPlan → 逐页原子提交 → Lint/index/log → Wiki-first 召回
 ```
 
-默认使用 FTS5/BM25；配置 `OPENAI_API_KEY` 时用 `text-embedding-3-small` 增强并以 RRF 合并排名，Embedding 失败立即回退词法检索。`/memory reindex` 只重建页面、向量和 links 等派生数据，不清空 suppression 与 compilation receipt。缺少 FTS5 的 Node 构建会回退 bounded LIKE 并在 status 中标记 degraded。
+默认使用 FTS5/BM25；配置 `MIMI_EMBEDDING_API_KEY`（可配 `MIMI_EMBEDDING_BASE_URL`）时使用独立 OpenAI-compatible Embedding 服务，未配置时向后兼容复用 `OPENAI_API_KEY`。DeepSeek 对话凭证不会被假定支持 Embeddings。向量与词法结果通过 RRF 合并，Embedding 失败立即回退词法检索；Wiki 和 owner 历史 episode 也统一融合，避免弱相关 Wiki 填满结果上限。`/memory reindex` 只重建页面、向量和 links 等派生数据，不清空 suppression 与 compilation receipt。缺少 FTS5 的 Node 构建会回退 bounded LIKE 并在 status 中标记 degraded。
 
 每个已完成的 Session round 都会作为 private episode 增量索引；owner 的普通 Memory 检索默认同时搜索已编译 Wiki 和全部历史 episode，因此新 Session 可以直接回忆其他 Session 的相关信息。private episode 不向外部来源或 SubAgent/Team 开放。Daemon 在普通 Task 终态事务中登记 observation，达到 10 条或最老等待 10 分钟后才创建低优先级 `memory_maintenance` Task；连续 50 个页面变化，或有变化且 7 天未 lint 时，把 semantic lint 合并进下一维护 Task。维护 Run 每批最多读取 20 条/8KB 证据、写 5 页，只能使用 Memory 工具；单条 external/public 断言不能直接成为 active 事实。`/memory maintain` 可显式触发无网络的有界 semantic lint。
 

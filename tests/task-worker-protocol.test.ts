@@ -5,6 +5,7 @@ import {
   taskProviderEnvironmentName,
   taskWorkerConfig,
   taskWorkerInitSchema,
+  withTaskEmbeddingCredential,
 } from '../src/daemon/worker-protocol.js';
 
 test('Task worker configuration excludes Computer Use capability', () => {
@@ -116,4 +117,26 @@ test('Task worker accepts OpenAI-compatible provider configuration and credentia
     mcpEnvironment: {},
     config,
   }));
+});
+
+test('Task worker accepts and scopes an independent OpenAI-compatible embedding credential', async () => {
+  const environment: NodeJS.ProcessEnv = {
+    MIMI_EMBEDDING_API_KEY: 'previous-key',
+    MIMI_EMBEDDING_BASE_URL: 'https://previous.example/v1',
+    EMBEDDING_MODEL: 'previous-model',
+  };
+  await withTaskEmbeddingCredential({
+    apiKey: 'embedding-key',
+    baseURL: 'https://embedding.example/v1',
+    model: 'embedding-model',
+  }, async () => {
+    assert.equal(environment.MIMI_EMBEDDING_API_KEY, 'embedding-key');
+    assert.equal(environment.MIMI_EMBEDDING_BASE_URL, 'https://embedding.example/v1');
+    assert.equal(environment.EMBEDDING_MODEL, 'embedding-model');
+  }, environment);
+  assert.deepEqual(environment, {
+    MIMI_EMBEDDING_API_KEY: 'previous-key',
+    MIMI_EMBEDDING_BASE_URL: 'https://previous.example/v1',
+    EMBEDDING_MODEL: 'previous-model',
+  });
 });

@@ -311,14 +311,14 @@
         "snapshot": { "description": "读取 DOM 或 AX 页面状态并签发新 observationId；target 为 sessionRef，payload 可含 source=dom|ax 和 page", "capability": "browser.page.snapshot", "effect": "read" },
         "find": { "description": "按 CSS 或 role/name/label/text/testid 查找元素并签发新 observationId；target 为 sessionRef", "capability": "browser.element.read", "effect": "read" },
         "read_page": { "description": "读取有界 HTML 或结构化 DOM 树；target 为 sessionRef，payload 可含 format、selector、page 和大小预算", "capability": "browser.page.read", "effect": "read" },
-        "read_element": { "description": "按新鲜 ref、CSS 或语义 locator 读取元素 text/attributes；不开放 input value 或任意 JavaScript", "capability": "browser.element.read", "effect": "read" },
+        "read_element": { "description": "按 payload.ref、payload.locator、payload.element（均可使用快照数字 ref）、CSS 或语义 locator 读取元素 text/attributes；不读取 input value", "capability": "browser.element.read", "effect": "read" },
         "extract": { "description": "把页面正文提取为有游标的 Markdown 分块；target 为 sessionRef，payload 可含 selector、chunkSize、start、page", "capability": "browser.page.read", "effect": "read" },
         "frames": { "description": "列出跨域 iframe target；target 为 sessionRef，payload 可含 page", "capability": "browser.frames.read", "effect": "read" },
         "network": { "description": "读取经过 URL 查询参数和敏感字段裁剪的网络响应 shape 目录，不返回 raw body；target 为 sessionRef", "capability": "browser.network.read", "effect": "read" },
         "wait": { "description": "有界等待 selector、text、XHR 或 download；target 为 sessionRef，payload 含 kind、value、timeoutMs 和可选 page", "capability": "browser.page.wait", "effect": "read" },
         "navigate": { "description": "导航当前或指定 page；target 为 sessionRef，payload 含 observationId、http/https url 和可选 page", "capability": "browser.navigation.write", "effect": "write" },
         "back": { "description": "当前或指定 page 后退；target 为 sessionRef，payload 含 observationId 和可选 page", "capability": "browser.navigation.write", "effect": "write" },
-        "click": { "description": "按新鲜 ref、CSS 或语义 locator 单击唯一元素；target 为 sessionRef，payload 必须含 observationId", "capability": "browser.element.write", "effect": "write" },
+        "click": { "description": "按新鲜 payload.ref、payload.locator、payload.element（均可使用快照数字 ref）、CSS 或语义 locator 单击唯一元素；target 为 sessionRef，payload 必须含 observationId", "capability": "browser.element.write", "effect": "write" },
         "type": { "description": "按新鲜 locator 点击后键入文本；target 为 sessionRef，payload 含 observationId、value；回执不持久化明文", "capability": "browser.element.write", "effect": "write" },
         "fill": { "description": "精确替换并核验输入框内容；target 为 sessionRef，payload 含 observationId、value；回执不持久化明文", "capability": "browser.element.write", "effect": "write" },
         "select": { "description": "选择原生 select 选项；target 为 sessionRef，payload 含 observationId、value 和元素 locator", "capability": "browser.element.write", "effect": "write" },
@@ -331,7 +331,8 @@
         "scroll": { "description": "滚动当前或指定页面；target 为 sessionRef，payload 含 observationId、direction、amount 和可选 page", "capability": "browser.page.write", "effect": "write" },
         "upload": { "description": "向文件输入控件附加显式绝对路径文件；target 为 sessionRef，payload 含 observationId、files 和元素 locator", "capability": "browser.file.upload", "effect": "write" },
         "drag": { "description": "在新鲜 source/destination locator 间执行拖拽；target 为 sessionRef，payload 必须含 observationId", "capability": "browser.element.write", "effect": "write" },
-        "dialog": { "description": "接受或拒绝当前 JavaScript dialog；target 为 sessionRef，payload 含 observationId、decision 和可选 value", "capability": "browser.dialog.write", "effect": "write" }
+        "dialog": { "description": "接受或拒绝当前 JavaScript dialog；target 为 sessionRef，payload 含 observationId、decision 和可选 value", "capability": "browser.dialog.write", "effect": "write" },
+        "execute_javascript": { "description": "Full Owner 在当前 sessionRef 页面执行 JavaScript；payload 使用 script 或 code，可选 page；用于结构化动作不足以完成的页面操作", "capability": "browser.page.execute", "effect": "write" }
       }
     },
     "macos-screen": {

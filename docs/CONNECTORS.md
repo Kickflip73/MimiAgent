@@ -168,7 +168,7 @@ Connector 执行完成后返回：
 {"type":"action_result","id":"action-uuid","ok":true,"result":{"sent":true}}
 ```
 
-在执行前完成入参、目标或业务前置条件校验并明确拒绝时，返回 `ok:false` 和简短 `error`，不得设置 `uncertain:true`；Host 将其记为 `failed_safe`，本轮不会冻结后续 ActionIntent。只有请求可能已经越过副作用提交点、但无法确认结果时，才返回 `ok:false,uncertain:true`。`target` 是主要事务对象，`payload` 是 Connector 自己定义的 JSON。`deadlineAt` 是 Daemon 给出的 Unix 毫秒绝对截止时间；新 Connector 应在截止时间前停止底层进程或请求并返回失败，旧 Connector 可忽略该兼容字段。外层 `deliveryTimeoutMs` / `actionTimeoutMs` 到达后，Manager 会终止并重启整个 Connector 子进程，防止已经向调用方报超时的本地动作继续晚到；子进程退出或 action 超时时仍把结果视为不确定并拒绝自动重放。Connector 应在上游支持时使用 action `id` 做幂等键。
+在执行前完成入参、目标或业务前置条件校验并明确拒绝时，返回 `ok:false` 和简短 `error`，不得设置 `uncertain:true`；Host 将其记为 `failed_safe`，保留原始错误文本，本轮不会冻结后续 ActionIntent。只有请求可能已经越过副作用提交点、但无法确认结果时，才返回 `ok:false,uncertain:true`。`target` 是主要事务对象，`payload` 是 Connector 自己定义的 JSON。`deadlineAt` 是 Daemon 给出的 Unix 毫秒绝对截止时间；新 Connector 应在截止时间前停止底层进程或请求并返回失败，旧 Connector 可忽略该兼容字段。外层 `deliveryTimeoutMs` / `actionTimeoutMs` 到达后，Manager 会终止并重启整个 Connector 子进程，防止已经向调用方报超时的本地动作继续晚到；子进程退出或 action 超时时仍把结果视为不确定并拒绝自动重放。Connector 应在上游支持时使用 action `id` 做幂等键。
 
 运行 `mimi daemon connectors` 可查看每个 Connector 的当前进程状态、双向就绪度和 action 目录，输出不包含凭证。恢复通知仍需要通过上述稳定窗口。
 

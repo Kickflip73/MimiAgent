@@ -285,8 +285,10 @@ test('explicit Connector rejection remains failed_safe across the SDK tool bound
   };
 
   const rejected = await invokeWrapped('{"valid":false}', 'rejected') as {
+    error?: string;
     mimiActionIntent?: { outcome?: string };
   };
+  assert.equal(rejected.error, 'payload rejected before execution');
   assert.equal(rejected.mimiActionIntent?.outcome, 'failed_safe');
 
   const corrected = await invokeWrapped('{"valid":true}', 'corrected') as {

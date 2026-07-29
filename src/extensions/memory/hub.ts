@@ -227,7 +227,10 @@ class DefaultMemoryHub implements MemoryHub {
     }
     const wikiHits = reciprocalRankFusion(wikiChannels.filter((channel) => channel.length), limit);
     const episodeHits = reciprocalRankFusion(episodeChannels.filter((channel) => channel.length), limit);
-    const memoryHits = [...wikiHits, ...episodeHits].slice(0, limit);
+    const memoryHits = reciprocalRankFusion([
+      wikiHits.map((item) => ({ item, key: `${item.ref.scope}:${item.ref.id}` })),
+      episodeHits.map((item) => ({ item, key: `episode:${item.ref.id}` })),
+    ].filter((channel) => channel.length), limit);
     const needsEvidence = options.includeEvidence
       || memoryHits.length < limit
       || memoryHits.some((hit) => hit.stale || hit.status === 'conflicted');

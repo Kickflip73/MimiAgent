@@ -61,6 +61,7 @@ const ACTIONS = new Set([
   'upload',
   'drag',
   'dialog',
+  'execute_javascript',
 ]);
 const WRITE_ACTIONS = new Set([
   'open_session',
@@ -85,6 +86,7 @@ const WRITE_ACTIONS = new Set([
   'upload',
   'drag',
   'dialog',
+  'execute_javascript',
 ]);
 const OBSERVATION_ACTIONS = new Set(['list_tabs', 'snapshot', 'find']);
 const sessions = new Map();
@@ -146,6 +148,12 @@ function boundedString(value, label, maximum, required = false) {
 function optionalString(value, label, maximum) {
   if (value === undefined) return undefined;
   return boundedString(value, label, maximum);
+}
+
+function optionalElementRef(value, label) {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return String(value);
+  return boundedString(value, label, 2_000, true);
 }
 
 function integer(value, label, minimum, maximum, fallback) {
@@ -216,10 +224,27 @@ function locatorOptions(payload, prefix = '') {
 }
 
 function targetAndLocator(payload, targetKey = 'element', prefix = '') {
-  const target = optionalString(payload[targetKey], `payload.${targetKey}`, 2_000);
+  const explicitTarget = optionalElementRef(payload[targetKey], `payload.${targetKey}`);
+  const ref = prefix || targetKey !== 'element'
+    ? undefined
+    : optionalElementRef(payload.ref, 'payload.ref');
+  const locatorTarget = prefix || targetKey !== 'element'
+    ? undefined
+    : optionalElementRef(payload.locator, 'payload.locator');
+  const targetCandidates = [explicitTarget, ref, locatorTarget].filter(
+    (candidate) => candidate !== undefined,
+  );
+  if (targetCandidates.length > 1) {
+    throw new Error('use only one of payload.ref, payload.locator, or payload.element');
+  }
+  const target = targetCandidates[0];
   const locator = locatorOptions(payload, prefix);
   if (!target && locator.length === 0) {
-    throw new Error(`payload.${targetKey} or a semantic locator is required`);
+    throw new Error(
+      targetKey === 'element'
+        ? 'payload.ref, payload.locator, payload.element, or a semantic locator is required'
+        : `payload.${targetKey} or a semantic locator is required`,
+    );
   }
   if (target && locator.length > 0) {
     throw new Error(`use payload.${targetKey} or a semantic locator, not both`);
@@ -600,7 +625,7 @@ async function executeReadAction(action, session, payload) {
 }
 
 async function executeWriteAction(action, session, payload) {
-  requireObservation(session, payload);
+  if (action !== 'execute_javascript') requireObservation(session, payload);
   let command;
   if (action === 'new_tab') {
     command = ['tab', 'new', ...(payload.url === undefined ? [] : [url(payload.url)])];
@@ -689,6 +714,16 @@ async function executeWriteAction(action, session, payload) {
       ...(payload.value === undefined
         ? []
         : ['--text', boundedString(payload.value, 'payload.value', 20_000)]),
+      ...pageOption(payload),
+    ];
+  } else if (action === 'execute_javascript') {
+    const script = payload.script ?? payload.code;
+    if (payload.script !== undefined && payload.code !== undefined) {
+      throw new Error('use payload.script or payload.code, not both');
+    }
+    command = [
+      'eval',
+      boundedString(script, 'payload.script or payload.code', 100_000, true),
       ...pageOption(payload),
     ];
   } else throw new Error(`unsupported write action: ${action}`);

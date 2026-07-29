@@ -96,13 +96,23 @@ function taskProviderCredential(
   return { provider, apiKey };
 }
 
-function taskEmbeddingCredential(
+export function taskEmbeddingCredential(
   config: AppConfig,
   source = process.env,
 ): TaskEmbeddingCredential | undefined {
-  if (config.provider !== 'deepseek') return undefined;
-  const apiKey = source.OPENAI_API_KEY?.trim();
-  return apiKey ? { provider: 'openai', apiKey } : undefined;
+  const explicitApiKey = source.MIMI_EMBEDDING_API_KEY?.trim();
+  const legacyOpenAiKey = config.provider === 'deepseek'
+    ? source.OPENAI_API_KEY?.trim()
+    : undefined;
+  const apiKey = explicitApiKey || legacyOpenAiKey;
+  if (!apiKey) return undefined;
+  const baseURL = source.MIMI_EMBEDDING_BASE_URL?.trim();
+  const model = source.EMBEDDING_MODEL?.trim();
+  return {
+    apiKey,
+    ...(baseURL ? { baseURL } : {}),
+    ...(model ? { model } : {}),
+  };
 }
 
 function hasOwnerConversationRoot(store: MimiStore, taskId: string): boolean {
@@ -453,7 +463,10 @@ export class TaskProcessSupervisor {
       if (backupProviderCredential) {
         delete mcpEnvironment[taskProviderEnvironmentName(backupProviderCredential.provider)];
       }
-      if (embeddingCredential) delete mcpEnvironment.OPENAI_API_KEY;
+      if (embeddingCredential) {
+        delete mcpEnvironment.OPENAI_API_KEY;
+        delete mcpEnvironment.MIMI_EMBEDDING_API_KEY;
+      }
       if (this.stopping || this.store.getTask(taskId)?.status !== 'queued') return;
       child = fork(entry, [], {
         execArgv: taskWorkerExecArgv(process.execArgv),
