@@ -1,5 +1,30 @@
 # Progress
 
+## 2026-07-30 systemic architecture repair kickoff
+- Goal: reduce the deep live-eval failures to shared architectural causes, then repair at least the first three with generic red-to-green contracts.
+- Priority: real completion/runtime stability, then state consistency/diagnostics, then cost, then breadth.
+- Branch: created `codex/mimi-systemic-architecture-repair` from detached `325af70` before task-owned file changes.
+- Baseline ownership: all inherited tracked and untracked working-tree changes remain user-owned and must be preserved.
+- Evidence: all eight frozen eval inputs exist under the read-only `20260729-deep-live-eval` directory.
+- Baseline failure: `npm run check` exited 127 (`tsc` missing); 10 focused files loaded 0 tests because `tsx` was missing.
+- Largest risk: overlapping inherited runtime changes make per-file attribution and independent commits harder; use path-level diff review and narrow staging.
+- Next: restore lockfile-declared dependencies without changing manifests, rerun baseline, freeze the root-cause plan, then implement in dependency order.
+
+## 2026-07-30 restored code baseline
+- `npm ci` restored 115 lockfile-declared packages and its prepare build passed; manifests and lockfile were not changed.
+- `npm run check` passed after dependency restore.
+- Focused baseline passed 121/121 across Daemon store/recovery/retry, Goal completion, Ledger, Memory, run pipeline/service, and tool policy; skip/todo=0.
+
+## 2026-07-30 root-cause plan frozen
+- Five evidence/source chains are reconciled into eight generic roots in `docs/plans/20260730-MimiAgent-systemic-architecture-repair.md`.
+- Implementation order is R1 lifecycle truth, R2 typed failure disposition, R3 atomic revisioned Goal, then R4 canonical finalization/Tool manifest.
+- The plan explicitly treats the maintenance/exit adjacency as non-causal and separates frozen eval builds from the current source baseline.
+
+## 2026-07-30 R1 daemon lifecycle truth
+- Red: `tests/daemon-lifecycle.test.ts` failed at load because the durable lifecycle contract did not exist.
+- Green: lifecycle unit + Daemon CLI/IPC/build/recovery focused suite passed 30/30; `npm run check` passed.
+- Result: owner shutdown, signal/failure, orphan recovery, supervisor/build/pid/worker and offline last-state diagnostics now share one bounded atomic epoch history; no Task replay was added.
+
 ## 2026-07-28 M1 heartbeat blocked by runtime drift
 
 1. `2026-07-28T12:22:34.171Z` heartbeat 观察到 Daemon 已从目标构建

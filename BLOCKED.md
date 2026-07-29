@@ -1,5 +1,7 @@
 # Blocked
 
+- **2026-07-30 initial test baseline dependency prerequisite**: this worktree has no usable local `node_modules`; `npm run check` exits 127 with `tsc: command not found`, and the selected ten focused test files fail in the loader with `ERR_MODULE_NOT_FOUND: tsx` before executing any tests. This is not classified as a source regression. Continue read-only analysis and restore only lockfile-declared dependencies with `npm ci`; do not change `package.json` or `package-lock.json`.
+
 - **M1.1 等待运行时重新冻结并重启 24h 日历 soak**：历史正式实机已累计 129/129
   成功；构建 `0.12.0+9bf15be88f93` 的首轮正式 canary 完成 20/20，
   Browser/Computer/Screen/Shortcuts 各 5/5，blocked/failed/uncertain=0，
