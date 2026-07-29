@@ -16,7 +16,10 @@ const ORIGIN = 'https://x.sankuai.com';
 const SOURCE = 'personal-message:daxiang';
 const DEFAULT_TIMEOUT_MS = 20_000;
 const CONVERSATION_SETTLE_MS = 750;
+const SESSION_DISCOVERY_SETTLE_MS = 600;
+const MAX_SESSION_DISCOVERY_STEPS = 12;
 const MAX_CONTEXT_RESULT_BYTES = 28_000;
+const SESSION_TYPES = new Set(['chat', 'groupchat', 'pubchat', 'collectchat']);
 const BRIDGE_FILE = fileURLToPath(new URL('./daxiang-web-page-bridge.js', import.meta.url));
 const ALLOWED_CONFIG_KEYS = new Set([
   'schemaVersion', 'tabMarker', 'expectedAccountFingerprint', 'allowedPageFingerprints',
@@ -60,6 +63,13 @@ function sid(value, label = 'sid') {
   const normalized = boundedString(value, label, 40);
   if (!/^\d+$/.test(normalized)) throw new Error(`${label} must contain digits only`);
   return normalized;
+}
+
+function sessionType(value, label = 'type') {
+  if (!SESSION_TYPES.has(value)) {
+    throw new Error(`${label} must be chat, groupchat, pubchat, or collectchat`);
+  }
+  return value;
 }
 
 function conversation(value, label) {
@@ -450,8 +460,8 @@ export class DaxiangWebAdapter {
             type: target.type,
           });
           if (candidate.matched === true
-            && candidate.sid === target.sid
-            && candidate.type === target.type) {
+            && candidate.candidate?.sid === target.sid
+            && candidate.candidate?.type === target.type) {
             targetBound = true;
             break;
           }
@@ -462,9 +472,10 @@ export class DaxiangWebAdapter {
         ? 'page_unreadable'
         : !accountVerified
           ? 'account_fingerprint_mismatch'
-          : !targetBound
-            ? configuredBindings.length === 0 ? 'owner_binding_missing' : 'target_candidate_missing'
-            : !pageAllowed ? 'page_fingerprint_mismatch' : undefined;
+          : !pageAllowed ? 'page_fingerprint_mismatch'
+            : !targetBound
+              ? configuredBindings.length === 0 ? 'owner_binding_missing' : 'target_candidate_missing'
+              : undefined;
       this.lastHealth = {
         available: readable,
         accountVerified,
@@ -475,9 +486,9 @@ export class DaxiangWebAdapter {
         backgroundSafe: true,
         targetBound,
         ...(targetBound ? { targetBindingStatus: 'bound' } : { targetBindingStatus: 'target_not_bound' }),
-        coverage: readable && accountVerified && targetBound ? 'bounded' : 'unavailable',
-        contextRead: readable && accountVerified && targetBound ? 'bounded' : 'unavailable',
-        inbound: readable && accountVerified && targetBound ? 'ready' : 'unavailable',
+        coverage: readable && accountVerified ? 'bounded' : 'unavailable',
+        contextRead: readable && accountVerified ? 'bounded' : 'unavailable',
+        inbound: readable && accountVerified ? 'ready' : 'unavailable',
         outbound: readable && accountVerified && targetBound && pageAllowed && inspect.sendStructureReady
           ? 'ready'
           : 'unavailable',
@@ -567,10 +578,7 @@ export class DaxiangWebAdapter {
 
   async getContext(input) {
     this.#assertAccount(input.accountFingerprint);
-    const target = this.#allowedConversation(input.sid, input.type);
-    if (!await this.#targetAvailable(target)) {
-      throw new Error('target_not_bound: Daxiang conversation is not uniquely available on the current page');
-    }
+    const target = await this.#discoveredConversation(input.sid, input.type);
     const limit = integer(input.limit, 'limit', 1, 100, this.config.limits.contextMessages);
     const snapshot = await this.#readConversation(target, limit);
     const messages = snapshot.messages
@@ -610,43 +618,70 @@ export class DaxiangWebAdapter {
     return result;
   }
 
-  async listTargets() {
+  async listTargets(input = {}) {
     const health = await this.health();
     if (!health.accountVerified) {
       return {
         channel: 'daxiang',
+        dynamicDiscovery: true,
         accountVerified: false,
         coverage: 'unavailable',
-        configuredTargetCount: 0,
-        unavailableTargetCount: 0,
+        returnedTargetCount: 0,
+        discoveredTargetCount: 0,
         targets: [],
-        targetBindingStatus: 'target_not_bound',
-        contextReadUsage: 'get_context 必须逐个使用 targets[].sid；* 和 all 无效',
+        nextCursor: null,
+        complete: false,
+        contextReadUsage: '先分页调用 list_targets，再逐个用 targets[].sid 调用 get_context；* 和 all 不能替代具体 sid',
       };
     }
-    const configured = [
-      { ...this.config.selfConversation, role: 'self' },
-      ...this.config.watch.conversations.map((target) => ({ ...target, role: 'watch' })),
-    ];
-    const targets = [];
-    for (const target of configured) {
-      if (!this.#bindingMatches(target) || !await this.#targetAvailable(target)) continue;
-      const { binding, ...visible } = target;
-      targets.push({
-        ...visible,
-        bound: true,
-        authorizationRevision: binding.authorizationRevision,
-      });
+    const limit = integer(input.limit, 'limit', 1, 100, 50);
+    const rawCursor = input.cursor === undefined || input.cursor === null ? '0' : String(input.cursor);
+    if (!/^\d+$/.test(rawCursor)) throw new Error('cursor must be a non-negative integer string');
+    const offset = integer(Number(rawCursor), 'cursor', 0, 10_000, 0);
+    const scroll = await this.#bridgeCall('sessionScrollState', {});
+    let listing;
+    let stablePasses = 0;
+    try {
+      for (let step = 0; step < MAX_SESSION_DISCOVERY_STEPS; step += 1) {
+        listing = await this.#bridgeCall('listSessions', { offset, limit: Math.min(100, limit + 1) });
+        if (listing.loadedCount > offset + limit) break;
+        const beforeCount = listing.loadedCount;
+        const requested = await this.#bridgeCall('loadMoreSessions', {});
+        if (!requested.requested) break;
+        await new Promise((resolve) => setTimeout(resolve, SESSION_DISCOVERY_SETTLE_MS));
+        const after = await this.#bridgeCall('listSessions', { offset, limit: Math.min(100, limit + 1) });
+        listing = after;
+        if (after.loadedCount === beforeCount) stablePasses += 1;
+        else stablePasses = 0;
+        if (stablePasses >= 2 || after.loadedCount > offset + limit) break;
+      }
+    } finally {
+      if (scroll.available && Number.isFinite(scroll.top)) {
+        await this.#bridgeCall('restoreSessionScroll', { top: scroll.top });
+      }
     }
+    listing ||= await this.#bridgeCall('listSessions', { offset, limit: Math.min(100, limit + 1) });
+    const targets = listing.sessions.slice(0, limit).map((target) => ({
+      sid: target.sid,
+      type: target.type,
+      ...(target.label ? { label: target.label } : {}),
+      unread: target.unread === true,
+      selected: target.selected === true,
+    }));
+    const nextOffset = offset + targets.length;
+    const hasMore = listing.loadedCount > nextOffset || stablePasses < 2;
     return {
       channel: 'daxiang',
+      dynamicDiscovery: true,
       accountVerified: true,
       coverage: health.coverage,
-      configuredTargetCount: configured.length,
-      unavailableTargetCount: configured.length - targets.length,
+      cursor: String(offset),
+      returnedTargetCount: targets.length,
+      discoveredTargetCount: listing.loadedCount,
       targets,
-      targetBindingStatus: targets.length === configured.length ? 'bound' : 'target_not_bound',
-      contextReadUsage: 'get_context 必须逐个使用 targets[].sid；* 和 all 无效',
+      nextCursor: hasMore && targets.length > 0 ? String(nextOffset) : null,
+      complete: !hasMore,
+      contextReadUsage: '持续分页调用 list_targets 直到 nextCursor=null，再逐个用 targets[].sid 调用 get_context；* 和 all 不能替代具体 sid',
     };
   }
 
@@ -730,7 +765,7 @@ export class DaxiangWebAdapter {
     if (!this.lastHealth.pageAllowed || this.lastHealth.outbound !== 'ready') {
       return this.#failure('页面指纹未获准或写能力不可用');
     }
-    const target = this.#allowedConversation(input.sid, input.type);
+    const target = this.#allowedWriteConversation(input.sid, input.type);
     const text = boundedString(input.text, 'text', 4_000);
     const original = await this.#selectedConversation();
     const restore = original
@@ -814,7 +849,7 @@ export class DaxiangWebAdapter {
     }
   }
 
-  #allowedConversation(targetSid, targetType) {
+  #allowedWriteConversation(targetSid, targetType) {
     const normalizedSid = sid(targetSid);
     const available = [
       this.config.selfConversation,
@@ -826,6 +861,27 @@ export class DaxiangWebAdapter {
       throw new Error('target_not_bound: owner stable sid binding is missing or stale');
     }
     return available;
+  }
+
+  async #discoveredConversation(targetSid, targetType) {
+    const normalizedSid = sid(targetSid);
+    const normalizedType = targetType === undefined ? undefined : sessionType(targetType);
+    const candidate = await this.#bridgeCall('targetCandidate', {
+      sid: normalizedSid,
+      ...(normalizedType ? { type: normalizedType } : {}),
+    });
+    if (candidate.matched !== true || candidate.count !== 1 || !candidate.candidate) {
+      throw new Error(
+        candidate.count > 1
+          ? 'target_ambiguous: Daxiang conversation sid is not unique on the current page'
+          : 'target_unavailable: Daxiang conversation is not currently present in the session list',
+      );
+    }
+    return {
+      sid: normalizedSid,
+      type: sessionType(candidate.candidate.type),
+      ...(candidate.candidate.label ? { label: candidate.candidate.label } : {}),
+    };
   }
 
   async #readConversation(target, limit) {
@@ -873,7 +929,7 @@ export class DaxiangWebAdapter {
     });
     return inspected.selected
       && /^\d+$/.test(String(inspected.selected.sid))
-      && (inspected.selected.type === 'chat' || inspected.selected.type === 'groupchat')
+      && SESSION_TYPES.has(inspected.selected.type)
       ? { sid: String(inspected.selected.sid), type: inspected.selected.type }
       : undefined;
   }
@@ -889,8 +945,8 @@ export class DaxiangWebAdapter {
       type: target.type,
     });
     return candidate.matched === true
-      && candidate.sid === target.sid
-      && candidate.type === target.type;
+      && candidate.candidate?.sid === target.sid
+      && candidate.candidate?.type === target.type;
   }
 
   async #select(target) {

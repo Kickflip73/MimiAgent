@@ -260,12 +260,15 @@ owner/system 以及命中 owner source policy 的 MimiAgent 事件可使用有�
 微信 Bot、邮件、Messages、新闻和天气等渠道通过隔离的 stdio Connector 接入：Daemon 负责拉起、崩溃退避重启、故障自愈跟踪、事件去重和可靠回传，Connector 只负责渠道协议。MimiAgent 会核对实时能力、跟踪到稳定恢复，并只在无法自愈或影响事务时通知；中断期间结果不确定的外部动作不会自动重放。每个 Daemon Run 都获得动态只读 `inspect_mimi_capabilities`，可小范围查看 enabled、online、readiness 和 action 目录。配置示例见 `mimi.connectors.example.json`，协议见 [docs/CONNECTORS.md](docs/CONNECTORS.md)。
 
 大象个人账号通道通过默认关闭的 `personal-daxiang` Connector 接入已登录的专用
-Chrome 后台标签，提供有界读取、首次监听历史基线、ACK 后游标和一次性观察式发送；
+Chrome 后台标签，动态分页发现当前账号已有会话并提供有界读取、首次监听历史基线、
+ACK 后游标和一次性观察式发送；读取不要求预配会话 allowlist，监听和发送仍只允许
+owner 明确绑定的稳定 sid，
 账号/页面指纹未锁定或标签正在使用时失败关闭。个人 QQ、个人微信 Adapter 尚未实现，
 配置槽位无 action 且默认关闭。腾讯官方 `openclaw-weixin` 仍是独立 iLink Bot，QQ
 `qq-messenger-skill` 仍是当次 CUA 兜底，两者都不会冒充个人消息 Connector。
 owner 查询大象消息时通过 `query=大象` 发现完整 `personal-daxiang` ID，再使用
-`list_targets/sync_now/get_context`；该查询不会因 ID 猜错或 bounded coverage
+`list_targets/get_context`；`list_targets` 按 `nextCursor` 分页直到为空。该查询不会因
+ID 猜错或 bounded coverage
 自动降级到 CUA、Browser、桌面或 Shell。
 更完整的范围见 [Connector 文档](docs/CONNECTORS.md)。
 

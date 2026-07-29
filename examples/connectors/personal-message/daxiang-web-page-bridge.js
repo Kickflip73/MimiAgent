@@ -4,6 +4,7 @@
   const VERSION = '1.0.0';
   const MAX_TEXT = 4_000;
   const MAX_EVENTS = 200;
+  const SESSION_TYPES = Object.freeze(['chat', 'groupchat', 'pubchat', 'collectchat']);
   const state = {
     observer: null,
     events: [],
@@ -29,7 +30,9 @@
   }
 
   function requireType(value) {
-    if (value !== 'chat' && value !== 'groupchat') throw new Error('type must be chat or groupchat');
+    if (!SESSION_TYPES.includes(value)) {
+      throw new Error(`type must be one of ${SESSION_TYPES.join(', ')}`);
+    }
     return value;
   }
 
@@ -37,14 +40,37 @@
     return String(value || '').replace(/\r\n/g, '\n').trim().slice(0, MAX_TEXT);
   }
 
+  function sessionType(row) {
+    return SESSION_TYPES.find((type) => row.classList.contains(type)) || null;
+  }
+
+  function sessionRecord(row) {
+    const sid = row.getAttribute('data-sid');
+    const type = sessionType(row);
+    if (!sid || !/^\d+$/.test(sid) || !type) return null;
+    const labelElement = row.querySelector(
+      '.session-name, .comp-session-name, .nickname, [data-session-name]',
+    );
+    const label = normalizeText(
+      row.getAttribute('data-session-name')
+      || labelElement?.innerText
+      || labelElement?.textContent
+      || row.getAttribute('title'),
+    );
+    return {
+      sid,
+      type,
+      ...(label ? { label: label.slice(0, 200) } : {}),
+      unread: row.classList.contains('unread'),
+      selected: row.classList.contains('selected'),
+    };
+  }
+
   function selectedSession() {
     const rows = document.querySelectorAll('.comp-session.selected[data-sid]');
     if (rows.length !== 1) return null;
-    const row = rows[0];
-    const type = row.classList.contains('chat')
-      ? 'chat'
-      : row.classList.contains('groupchat') ? 'groupchat' : 'unknown';
-    return { sid: row.getAttribute('data-sid'), type };
+    const record = sessionRecord(rows[0]);
+    return record ? { sid: record.sid, type: record.type } : null;
   }
 
   function directionOf(element) {
@@ -214,14 +240,92 @@
   function targetCandidate(raw) {
     const input = requireObject(raw, 'input');
     const sid = requireSid(input.sid);
-    const type = requireType(input.type);
-    const rows = document.querySelectorAll(`.comp-session[data-sid="${sid}"].${type}`);
+    const type = input.type === undefined ? undefined : requireType(input.type);
+    const candidates = Array.from(document.querySelectorAll(`.comp-session[data-sid="${sid}"]`))
+      .map(sessionRecord)
+      .filter(Boolean)
+      .filter((candidate) => !type || candidate.type === type);
     return {
-      matched: rows.length === 1,
+      matched: candidates.length === 1,
       sid,
-      type,
-      count: rows.length,
+      ...(type ? { type } : {}),
+      ...(candidates.length === 1 ? { candidate: candidates[0] } : {}),
+      count: candidates.length,
     };
+  }
+
+  function listSessions(raw) {
+    const input = requireObject(raw, 'input');
+    const offset = Number(input.offset);
+    const limit = Number(input.limit);
+    if (!Number.isInteger(offset) || offset < 0 || offset > 10_000) {
+      throw new Error('offset must be 0..10000');
+    }
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('limit must be 1..100');
+    }
+    const seen = new Set();
+    const sessions = Array.from(document.querySelectorAll('.comp-session[data-sid]'))
+      .map(sessionRecord)
+      .filter(Boolean)
+      .filter((session) => {
+        const key = `${session.type}:${session.sid}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    return {
+      offset,
+      limit,
+      loadedCount: sessions.length,
+      sessions: sessions.slice(offset, offset + limit),
+    };
+  }
+
+  function sessionScrollState() {
+    const containers = document.querySelectorAll('.comp-dynamic-loader.main-list');
+    if (containers.length !== 1) {
+      return { available: false, count: containers.length };
+    }
+    const container = containers[0];
+    return {
+      available: true,
+      top: container.scrollTop,
+      height: container.scrollHeight,
+      viewport: container.clientHeight,
+    };
+  }
+
+  function loadMoreSessions() {
+    const containers = document.querySelectorAll('.comp-dynamic-loader.main-list');
+    if (containers.length !== 1) {
+      return { requested: false, reason: 'session_list_not_unique', count: containers.length };
+    }
+    const container = containers[0];
+    const before = {
+      top: container.scrollTop,
+      height: container.scrollHeight,
+    };
+    container.scrollTop = container.scrollHeight;
+    container.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return {
+      requested: true,
+      before,
+      afterTop: container.scrollTop,
+    };
+  }
+
+  function restoreSessionScroll(raw) {
+    const input = requireObject(raw, 'input');
+    const top = Number(input.top);
+    if (!Number.isFinite(top) || top < 0) throw new Error('top must be a non-negative number');
+    const containers = document.querySelectorAll('.comp-dynamic-loader.main-list');
+    if (containers.length !== 1) {
+      return { restored: false, reason: 'session_list_not_unique', count: containers.length };
+    }
+    containers[0].scrollTop = top;
+    containers[0].dispatchEvent(new Event('scroll', { bubbles: true }));
+    return { restored: true, top: containers[0].scrollTop };
   }
 
   function readCurrentConversation(raw) {
@@ -364,6 +468,10 @@
       installObserver,
       drain,
       targetCandidate,
+      listSessions,
+      sessionScrollState,
+      loadMoreSessions,
+      restoreSessionScroll,
       selectConversation,
       readCurrentConversation,
       prepareSend,

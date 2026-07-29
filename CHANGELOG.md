@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- dynamically paginate every existing Daxiang web conversation for bounded reads,
+  including direct, group, public-account, and collection sessions, while keeping
+  polling and sends restricted to explicit owner-bound stable sids
 - enforce Connector `routeOwner` claims across ordinary CLI Computer and desktop
   Connector actions even while the owning route is degraded; contain uncertain
   ActionIntents as a Run-local action fence so bounded reads and the final answer

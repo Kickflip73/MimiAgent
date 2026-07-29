@@ -44,15 +44,29 @@ const pageFingerprint = sha256(JSON.stringify({
   sendButtonTag: pageShape.sendButtonTag,
 }));
 
+type DaxiangSessionType = 'chat' | 'groupchat' | 'pubchat' | 'collectchat';
+
 class FakeDriver {
   commits = 0;
   observeStatus: 'observed' | 'failed' | 'pending' = 'observed';
   candidateMatched = true;
-  candidateType: 'chat' | 'groupchat' | undefined;
+  candidateType: DaxiangSessionType | undefined;
   missingCandidateSids = new Set<string>();
   selectedSid = '123';
-  selectedType: 'chat' | 'groupchat' = 'chat';
+  selectedType: DaxiangSessionType = 'chat';
   selectionCalls: string[] = [];
+  sessions: Array<{
+    sid: string;
+    type: DaxiangSessionType;
+    label?: string;
+    unread?: boolean;
+  }> = [
+    { sid: '123', type: 'chat', label: 'Owner Self' },
+    { sid: '456', type: 'groupchat', label: 'Group' },
+  ];
+  loadedSessionCount = 2;
+  sessionLoadBatch = 2;
+  sessionScrollTop = 24;
   messages = [{
     mid: '9001',
     direction: 'incoming',
@@ -104,17 +118,55 @@ class FakeDriver {
     } else if (method === 'installObserver') result = { installed: true };
     else if (method === 'drain') result = [];
     else if (method === 'targetCandidate') {
-      const matched = this.candidateMatched && !this.missingCandidateSids.has(String(input.sid));
+      const requestedSid = String(input.sid);
+      const requestedType = input.type as DaxiangSessionType | undefined;
+      const visible = this.sessions
+        .slice(0, this.loadedSessionCount)
+        .filter((session) => session.sid === requestedSid)
+        .filter((session) => !requestedType || session.type === requestedType);
+      const base = visible[0];
+      const candidate = base
+        ? { ...base, type: this.candidateType ?? base.type, unread: false, selected: false }
+        : undefined;
+      const matched = this.candidateMatched
+        && !this.missingCandidateSids.has(requestedSid)
+        && Boolean(candidate);
       result = {
         matched,
-        sid: String(input.sid),
-        type: this.candidateType ?? input.type,
+        sid: requestedSid,
+        ...(requestedType ? { type: requestedType } : {}),
+        ...(matched ? { candidate } : {}),
         count: matched ? 1 : 0,
       };
+    } else if (method === 'listSessions') {
+      const offset = Number(input.offset);
+      const limit = Number(input.limit);
+      const visible = this.sessions.slice(0, this.loadedSessionCount);
+      result = {
+        offset,
+        limit,
+        loadedCount: visible.length,
+        sessions: visible.slice(offset, offset + limit).map((session) => ({
+          ...session,
+          unread: session.unread === true,
+          selected: session.sid === this.selectedSid && session.type === this.selectedType,
+        })),
+      };
+    } else if (method === 'sessionScrollState') {
+      result = { available: true, top: this.sessionScrollTop, height: 1_000, viewport: 500 };
+    } else if (method === 'loadMoreSessions') {
+      this.loadedSessionCount = Math.min(
+        this.sessions.length,
+        this.loadedSessionCount + this.sessionLoadBatch,
+      );
+      result = { requested: true };
+    } else if (method === 'restoreSessionScroll') {
+      this.sessionScrollTop = Number(input.top);
+      result = { restored: true, top: this.sessionScrollTop };
     }
     else if (method === 'selectConversation') {
       const nextSid = String(input.sid);
-      const nextType = input.type as 'chat' | 'groupchat';
+      const nextType = input.type as DaxiangSessionType;
       const changed = this.selectedSid !== nextSid || this.selectedType !== nextType;
       this.selectedSid = nextSid;
       this.selectedType = nextType;
@@ -123,7 +175,7 @@ class FakeDriver {
     }
     else if (method === 'readCurrentConversation') {
       const requestedSid = String(input.sid);
-      const requestedType = input.type as 'chat' | 'groupchat';
+      const requestedType = input.type as DaxiangSessionType;
       result = {
         matched: requestedSid === this.selectedSid && requestedType === this.selectedType,
         sid: requestedSid,
@@ -193,29 +245,18 @@ test('Daxiang bounded reads restore the previously selected conversation', async
   assert.deepEqual(driver.selectionCalls, ['groupchat:456', 'chat:123']);
 });
 
-test('Daxiang target listing excludes configured conversations missing from the current page', async () => {
+test('Daxiang dynamically paginates all current session types and reads an unconfigured session', async () => {
   const driver = new FakeDriver();
-  driver.missingCandidateSids.add('456');
-  const alternate = parseDaxiangConfig({
-    ...config(),
-    watch: {
-      ...config().watch,
-      conversations: [
-        ...config().watch.conversations,
-        {
-          sid: '456',
-          type: 'groupchat',
-          binding: {
-            selectedBy: 'owner',
-            accountFingerprint,
-            authorizationRevision: 'owner-revision-2',
-          },
-        },
-      ],
-    },
-  });
+  driver.sessions = [
+    { sid: '123', type: 'chat', label: 'Owner Self' },
+    { sid: '456', type: 'groupchat', label: 'Group' },
+    { sid: '789', type: 'pubchat', label: 'Public account', unread: true },
+    { sid: '999', type: 'collectchat', label: 'Collection' },
+  ];
+  driver.loadedSessionCount = 1;
+  driver.sessionLoadBatch = 1;
   const adapter = new DaxiangWebAdapter({
-    config: alternate,
+    config: config(),
     driver,
     bridgeSource: 'bridge',
     stateFile: path.join(os.tmpdir(), `daxiang-targets-${Date.now()}.json`),
@@ -223,26 +264,49 @@ test('Daxiang target listing excludes configured conversations missing from the 
   await adapter.health({ probe: true });
 
   const listed = await (adapter as unknown as {
-    listTargets(): Promise<{
-      configuredTargetCount: number;
-      unavailableTargetCount: number;
-      targets: Array<{ sid: string }>;
-      targetBindingStatus: string;
+    listTargets(input: Record<string, unknown>): Promise<{
+      dynamicDiscovery: boolean;
+      returnedTargetCount: number;
+      targets: Array<{ sid: string; type: string }>;
+      nextCursor: string | null;
+      complete: boolean;
       contextReadUsage: string;
     }>;
-  }).listTargets();
+  }).listTargets({ limit: 2 });
 
-  assert.equal(listed.configuredTargetCount, 3);
-  assert.equal(listed.unavailableTargetCount, 1);
-  assert.deepEqual(listed.targets.map((target: { sid: string }) => target.sid), ['123', '123']);
-  assert.equal(listed.targetBindingStatus, 'target_not_bound');
-  assert.match(listed.contextReadUsage, /targets\[\]\.sid/);
-  await assert.rejects(() => adapter.getContext({
+  assert.equal(listed.dynamicDiscovery, true);
+  assert.equal(listed.returnedTargetCount, 2);
+  assert.deepEqual(listed.targets.map((target) => target.type), ['chat', 'groupchat']);
+  assert.equal(listed.nextCursor, '2');
+  assert.equal(listed.complete, false);
+  assert.match(listed.contextReadUsage, /nextCursor=null/);
+
+  const second = await (adapter as unknown as {
+    listTargets(input: Record<string, unknown>): Promise<{
+      targets: Array<{ sid: string; type: string }>;
+      nextCursor: string | null;
+      complete: boolean;
+    }>;
+  }).listTargets({ limit: 2, cursor: listed.nextCursor });
+  assert.deepEqual(second.targets.map((target) => target.type), ['pubchat', 'collectchat']);
+  assert.equal(second.nextCursor, null);
+  assert.equal(second.complete, true);
+  assert.equal(driver.sessionScrollTop, 24);
+
+  const context = await adapter.getContext({
     accountFingerprint,
-    sid: '456',
-    type: 'groupchat',
+    sid: '789',
     limit: 1,
-  }), /target_not_bound/);
+  });
+  assert.match(String(context.conversationId), /:789$/);
+  assert.equal(driver.selectedType, 'chat');
+  await assert.rejects(() => adapter.send({
+    accountFingerprint,
+    sid: '789',
+    type: 'pubchat',
+    text: 'must remain write-bound',
+    latestFingerprint: context.latestFingerprint,
+  }), /configured allowlist/);
 });
 
 function config() {
@@ -306,7 +370,7 @@ test('Daxiang config rejects unstable targets and unknown fields', () => {
   }), /authorizationRevision is invalid/);
 });
 
-test('Daxiang exposes target-not-bound and refuses bounded context before owner binding', async () => {
+test('Daxiang reads discovered sessions without an owner write binding but keeps send unavailable', async () => {
   const unbound = parseDaxiangConfig({
     ...config(),
     selfConversation: { sid: '123', type: 'chat' },
@@ -323,13 +387,21 @@ test('Daxiang exposes target-not-bound and refuses bounded context before owner 
   });
   const health = await adapter.health({ probe: true });
   assert.equal(health.targetBound, false);
-  assert.equal(health.contextRead, 'unavailable');
-  await assert.rejects(() => adapter.getContext({
+  assert.equal(health.contextRead, 'bounded');
+  const context = await adapter.getContext({
+    accountFingerprint,
+    sid: '123',
+    limit: 1,
+  });
+  const send = await adapter.send({
     accountFingerprint,
     sid: '123',
     type: 'chat',
-    limit: 1,
-  }), /target_not_bound/);
+    text: 'must not send',
+    latestFingerprint: context.latestFingerprint,
+  });
+  assert.equal(send.status, 'failed');
+  assert.equal(health.outbound, 'unavailable');
 });
 
 test('Daxiang account and page changes fail closed without losing honest bounded-read coverage', async () => {
@@ -499,7 +571,7 @@ test('Daxiang rejects a configured binding that is absent or type-mismatched on 
     assert.equal(health.accountVerified, true);
     assert.equal(health.targetBound, false);
     assert.equal(health.targetBindingStatus, 'target_not_bound');
-    assert.equal(health.contextRead, 'unavailable');
+    assert.equal(health.contextRead, 'bounded');
   }
 });
 

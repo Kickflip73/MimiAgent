@@ -153,6 +153,13 @@ function targetConversation(target) {
   return item;
 }
 
+function targetSid(target) {
+  if (typeof target !== 'string' || !/^\d+$/.test(target)) {
+    throw new Error('target must be a numeric sid returned by list_targets');
+  }
+  return target;
+}
+
 async function handleAction(message) {
   if (typeof message.id !== 'string' || !message.id || typeof message.action !== 'string') {
     throw new Error('action requires id and action');
@@ -164,21 +171,21 @@ async function handleAction(message) {
     ? message.payload
     : {};
   if (message.action === 'health_check') return reportHealth(payload.probe === true);
-  if (message.action === 'list_targets') return adapter.listTargets();
+  if (message.action === 'list_targets') return adapter.listTargets(payload);
   if (!['get_context', 'send_message'].includes(message.action)) {
     throw new Error(`unsupported action: ${message.action}`);
   }
-  const target = targetConversation(message.target);
   if (message.action === 'get_context') {
     const health = await adapter.health();
     return adapter.getContext({
       accountFingerprint: payload.accountFingerprint || health.accountFingerprint,
-      sid: target.sid,
-      type: target.type,
+      sid: targetSid(message.target),
+      ...(payload.type ? { type: payload.type } : {}),
       limit: payload.limit,
     });
   }
   if (message.action === 'send_message') {
+    const target = targetConversation(message.target);
     return adapter.send({
       accountFingerprint: payload.accountFingerprint,
       sid: target.sid,

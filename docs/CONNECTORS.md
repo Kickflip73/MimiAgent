@@ -190,13 +190,14 @@ M0 运行基线允许把尚未达到其所属阶段门禁的实验渠道暂时�
 unavailable 即重新停用并保留配置。恢复检查不得触发发送、日历写入或授权点击。
 
 个人消息 Event 由 Host 结构化绑定为 `PersonalMessageScope`，不是根据 owner 文本或渠道
-关键词分类。该 Scope 只开放绑定 Connector 的有界读取/发送工具；`list_targets` 只返回
-配置允许且当前页面存在唯一候选的 self/watch 稳定 sid，不扫描或复制全部联系人；配置
-存在但当前页面不可用的目标只计入 `unavailableTargetCount`，不会作为可调用 target 返回。readiness、账号、页面、
-target 或 outbound 任一失败时都失败关闭，同一资源不能降级到 Shell、Computer/CUA、
-Browser/Desktop 或其他 Connector。
+关键词分类。该 Scope 只开放 Daxiang Connector 的有界读取/发送工具；`list_targets`
+从当前已验证账号的网页会话列表动态分页返回稳定 numeric sid，支持 `chat`、
+`groupchat`、`pubchat` 和 `collectchat`，按 `nextCursor` 继续读取直到为 `null`。
+它只枚举账号当前已有会话，不复制联系人目录。`get_context` 对其中唯一 sid 做有界读取，
+无需把所有会话提前写入配置。账号或会话候选验证失败时读取失败关闭；同一资源不能降级到
+Shell、Computer/CUA、Browser/Desktop 或其他 Connector。
 
-allowlist 中的会话只有带 owner binding 才能读取或发送：
+监听和发送仍只允许带 owner binding 的配置会话：
 
 ```json
 {
@@ -210,19 +211,19 @@ allowlist 中的会话只有带 owner binding 才能读取或发送：
 }
 ```
 
-`sid + type` 必须在当前已验证账号的专用网页会话列表中精确匹配一个候选；显示名不
-参与查找，也不能作为发送目标。配置文件本身就是现有 allowlist 的持久真相，
-`authorizationRevision` 使 owner 的每次重新选择可审计。缺 binding、账号变化、
-revision 无效或当前页面不存在该唯一候选时，status/list_targets 结构化返回
-`targetBindingStatus=target_not_bound`，`contextRead/coverage/outbound` 不会冒充
-可用。页面指纹仅影响写能力时，已验证 binding 的 bounded read 和 Draft 仍可用。
+动态读取以 `sid` 精确匹配当前已验证账号会话列表中的唯一候选，再从页面结构解析真实
+类型；显示名不参与定位，也不能作为发送目标。配置文件只持久化监听/发送 allowlist，
+`authorizationRevision` 使 owner 的每次写目标选择可审计。缺 binding、账号变化、
+revision 无效或写目标当前不存在唯一候选时，status 返回
+`targetBindingStatus=target_not_bound`，`outbound` 不会冒充可用，但账号验证通过后的
+动态 `contextRead/coverage` 仍为 bounded。页面指纹也只影响写能力。
 
 大象 Adapter 使用已登录的 `https://x.sankuai.com/` 专用 Chrome 后台标签。它通过 Chrome Apple Events JavaScript 接口注入窄页面 Bridge，不激活 Chrome、不发送键盘鼠标事件，也不读取或导出浏览器认证资料。标签必须通过 `origin + window.name tabMarker` 唯一绑定；Chrome 在前台时，专用标签不能是当前标签，Chrome 整体处于后台时则允许该标签是窗口当前页。读取或发送结束后会恢复原会话选择；恢复失败时失败关闭。账号指纹、页面指纹、稳定 `sid` 和稳定 `mid` 任一不匹配都会停止写操作。
 
 业务配置从 `DAXIANG_WEB_CONFIG` 读取，模板为
 `examples/connectors/personal-message/daxiang-web.example.json`。初次启用时先保持
 `expectedAccountFingerprint` 和 `allowedPageFingerprints` 为空，只调用
-`health_check` 的 probe 获取摘要；写回并重载后才开放有界读取。配置缺失、Chrome
+`health_check` 的 probe 获取摘要；写回并重载后才开放动态有界读取。配置缺失、Chrome
 未运行、专用标签在 Chrome 前台时处于活动状态或 Apple Events JavaScript 未获准时，Connector
 保持 `unavailable`，不会打开或激活浏览器。
 
