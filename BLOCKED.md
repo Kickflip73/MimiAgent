@@ -18,7 +18,10 @@
   为 `0.12.0+27e9a5182037`；虽然 idle，但工作区仍有未提交运行时改动，依然不能
   建立新 T0。`2026-07-29T08:24:41.809Z` 时 Daemon 再次变为
   `0.12.0+9ea51be56887`，并有 2 个 active Event 与大范围未提交改动，本轮两项
-  门禁均失败，继续只记录 blocked。
+  门禁均失败，继续只记录 blocked。旧 T0 的名义终验时间已于
+  `2026-07-29T10:28:51.828Z` 到达，但这不弥补期间的构建中断；
+  `2026-07-29T12:25:15.062Z` 时 Daemon 又变为 `0.12.0+d26fe770f81e`，并有
+  1 个 active Event 和未提交运行时改动，M1.1 仍不能退出。
 - **凭证轮换需 owner/外部系统（M-1）**：2026-07-28 发现一枚 Multica access token 曾进入 Task objective、Schedule 和 Memory observation；原值不在本文件或诊断输出中。已扩展统一净化器，验证备份后净化 50 个数据库值，复扫 0 命中，原始记录仅保留在权限受限的已验证恢复备份。该凭证必须在 Multica 控制面吊销并重发；MimiAgent 不得代替 owner 点击授权或猜测新值。
 - **M1 大象真实目标绑定需 owner/外部状态**：当前没有 owner 选定的精确会话、授权 revision，也没有唯一且非活动的已登录大象网页会话可用于 stable sid 绑定。允许完成 deterministic fixture、bounded read、Draft 和 fail-closed 代码；不得写入猜测目标、不得启用真实发送、不得伪造 72h soak。
 - **macOS Life 恢复需 Calendar/Reminders TCC**：`macos-life` 属于 M4，当前保持 disabled 且配置完整。只有 owner 授权后，按 `docs/CONNECTORS.md` 的只读 probe 和恢复门禁重新启用；不得代点系统授权。
