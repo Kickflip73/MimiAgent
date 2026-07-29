@@ -1,24 +1,72 @@
 import { isTerminalRunInterruption } from '../runtime/run-outcome.js';
+import {
+  runFailureDisposition,
+  type RunFailureDisposition,
+} from '../runtime/run-failure.js';
 
 function errorStatus(error: unknown): number | undefined {
   const value = error && typeof error === 'object' ? error as Record<string, unknown> : {};
-  if (typeof value.status === 'number') return value.status;
-  const message = error instanceof Error ? error.message : String(error);
-  const messageStatus = /^(\d{3})(?:\s|$)/.exec(message)?.[1];
-  return messageStatus ? Number(messageStatus) : undefined;
+  return typeof value.status === 'number' ? value.status : undefined;
 }
 
-function isNonRetryableRunFailure(error: unknown): boolean {
+export function classifyRunFailure(error: unknown): RunFailureDisposition {
+  const typed = runFailureDisposition(error);
+  if (typed) return typed;
   const value = error && typeof error === 'object' ? error as Record<string, unknown> : {};
-  const message = error instanceof Error ? error.message : String(error);
-  return isTerminalRunInterruption(error)
+  if (isTerminalRunInterruption(error)
     || value.name === 'ContextProtocolBudgetError'
     || value.name === 'MaxTurnsExceededError'
     || value.name === 'EphemeralSecretsExpiredError'
-    || value.name === 'EphemeralSensitiveRunFailedError'
-    || value.name === 'ActionIntentUncertainError'
-    || /ActionIntent.*(?:uncertain|结果不确定)|之前处于 uncertain 状态|禁止.*(?:自动重放|换路)/i.test(message)
-    || /^Max turns \(\d+\) exceeded$/i.test(message);
+    || value.name === 'EphemeralSensitiveRunFailedError') {
+    return {
+      phase: 'runtime',
+      kind: 'terminal',
+      retryable: false,
+      dispatchStarted: false,
+    };
+  }
+  if (value.name === 'ActionIntentUncertainError') {
+    return {
+      phase: 'dispatch',
+      kind: 'uncertain',
+      retryable: false,
+      dispatchStarted: true,
+    };
+  }
+  const status = errorStatus(error);
+  if (status !== undefined) {
+    if (status >= 500 || status === 408 || status === 409 || status === 425) {
+      return {
+        phase: 'provider',
+        kind: 'transient',
+        retryable: true,
+        dispatchStarted: false,
+      };
+    }
+    if (status >= 400 && status < 500) {
+      return {
+        phase: 'provider',
+        kind: 'validation',
+        retryable: false,
+        dispatchStarted: false,
+      };
+    }
+  }
+  if (['ECONNRESET', 'ECONNREFUSED', 'ENETUNREACH', 'ETIMEDOUT'].includes(String(value.code ?? ''))
+    || ['APIConnectionError', 'APITimeoutError'].includes(String(value.name ?? ''))) {
+    return {
+      phase: 'provider',
+      kind: 'transient',
+      retryable: true,
+      dispatchStarted: false,
+    };
+  }
+  return {
+    phase: 'runtime',
+    kind: 'unclassified',
+    retryable: false,
+    dispatchStarted: false,
+  };
 }
 
 export function eventFailureAttemptLimit(
@@ -26,14 +74,7 @@ export function eventFailureAttemptLimit(
   claimedAttempts: number,
   configuredMaxAttempts: number,
 ): number {
-  if (isNonRetryableRunFailure(error)) return Math.max(1, claimedAttempts);
-  const status = errorStatus(error);
-  // Background conversation retries happen within seconds. Retrying a rejected
-  // request, exhausted quota, or rate limit only burns attempts/credits and can
-  // produce a stale IM reply later; dead-letter once and require an explicit retry.
-  if (status !== undefined && status >= 400 && status < 500
-    && status !== 408 && status !== 409 && status !== 425) {
-    return Math.max(1, claimedAttempts);
-  }
-  return configuredMaxAttempts;
+  return classifyRunFailure(error).retryable
+    ? configuredMaxAttempts
+    : Math.max(1, claimedAttempts);
 }
