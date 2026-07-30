@@ -532,7 +532,7 @@ export class MimiAgent {
         },
       }),
       ...createRuntimeControlTools({
-        status: () => this.runtimeInfo(),
+        status: (projection) => this.runtimeStatus(projection),
         models: () => this.availableModels(),
         providers: () => configuredProviders(),
         modes: () => this.availableModes(),
@@ -1079,7 +1079,7 @@ export class MimiAgent {
       skillCatalog: canReadLocal && skillsDisclosed ? this.skills.catalog({
         canReadLocal,
         availableTools: run.availableToolNames,
-      }) : '',
+      }, { includeLocations: false }) : '',
       activeSkills,
       memories,
       plan: activePlan,
@@ -1600,6 +1600,43 @@ export class MimiAgent {
         completed: team.filter((item) => item.status === 'completed').length,
         failed: team.filter((item) => item.status === 'failed').length,
       },
+    };
+  }
+
+  async runtimeStatus(projection: 'summary' | 'detail' = 'summary') {
+    if (projection === 'detail') {
+      return {
+        schemaVersion: 1 as const,
+        projection,
+        ...await this.runtimeInfo(),
+      };
+    }
+    const capabilitySnapshot = this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot;
+    return {
+      schemaVersion: 1 as const,
+      projection,
+      provider: this.config.provider,
+      configuredProviders: configuredProviders().map((provider) => ({
+        id: provider.id,
+        models: provider.models,
+      })),
+      model: this.modelName,
+      mode: this.currentMode,
+      sessionId: this.sessionId,
+      workspaceRoot: this.config.workspaceRoot,
+      outputLevel: this.outputLevel,
+      permissionMode: this.permissionMode,
+      securityProfile: this.currentSecuritySummary(),
+      computer: this.securityProfile === 'full-owner'
+        ? this.computer?.status() ?? { configured: false, backend: undefined }
+        : { configured: false, backend: undefined },
+      capability: capabilitySnapshot ? {
+        runId: capabilitySnapshot.runId,
+        policyRevision: capabilitySnapshot.policyRevision,
+        toolSetDigest: capabilitySnapshot.toolSetDigest,
+        snapshotDigest: capabilitySnapshot.snapshotDigest,
+        tools: capabilitySnapshot.tools,
+      } : undefined,
     };
   }
 

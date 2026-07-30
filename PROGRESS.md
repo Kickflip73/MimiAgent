@@ -51,6 +51,12 @@
 - Result: immutable content is stored once under `blobs/<sha256>`, each observation gets a separate payload-free provenance ref, legacy schema-v1 Markdown remains untouched, and episode catalog indexing occurs inside the same compensated raw-evidence commit.
 - Different content cannot overwrite a blob; a failed catalog callback removes newly created reference/blob state instead of leaving a dangling half-commit.
 
+## 2026-07-30 R7 bounded runtime status and default catalog cost
+- Red: both status scenarios passed the parsed `{}` object into the old full-status callback; explicit `projection: detail` had no structural effect.
+- Green: summary/detail, Skill catalog cost, Skills, capability, and Tool focused suite passed 60/60 and `npm run check` passed.
+- Result: `runtime_status` defaults to a summary that does not load Session summary, Memory status, Guidance files, Team state, or full capability items; diagnostic detail requires the explicit enum field.
+- The summary retains the exact final Tool names/digests. Model-facing Skill discovery keeps names/descriptions but removes diagnostic source IDs and absolute paths; the 20-Skill cost contract is at most 60% of the previous catalog while the diagnostic catalog remains unchanged.
+
 ## 2026-07-30 release verification
 - `npm test` passed 745/745 with skip/todo=0; standalone `npm run build` passed.
 - First `npm run ci` stopped at dependency direction because Goal core imported the runtime failure contract.
