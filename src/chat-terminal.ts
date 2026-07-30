@@ -160,8 +160,6 @@ export async function runMimiCli(
       model: snapshot.model,
       contextUsed: snapshot.contextUsed,
       contextWindow: snapshot.contextWindow,
-      contextSource: snapshot.contextStatus?.source ?? 'raw-history',
-      compressedFrom: snapshot.contextStatus?.compressedFrom,
     });
     terminal.setTasks(snapshot.plan);
   };

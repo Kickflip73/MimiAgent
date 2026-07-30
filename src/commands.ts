@@ -274,6 +274,35 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   archived: '已归档',
 };
 
+const CONTEXT_SECTION_LABELS: Record<string, string> = {
+  'base-instructions': '基础指令',
+  'session-state': '会话状态',
+  soul: 'Soul',
+  'behavior-preferences': '行为偏好',
+  'runtime-context': '运行上下文',
+  'project-guidance': '项目指引',
+  'goal-plan-team': '目标/计划/团队',
+  recovery: '恢复信息',
+  'memory-cards': '相关记忆',
+  'skill-catalog': 'Skill 目录',
+  'active-skills': '已激活 Skill',
+  'work-snapshot': '工作快照',
+  archive: '历史归档',
+  'recent-history': '最近对话',
+  'current-input': '当前输入',
+  'tool-schemas': '工具 Schema',
+};
+
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}m`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return String(value);
+}
+
+function formatPercentage(value: number, total: number): string {
+  return `${total > 0 ? Math.round((value / total) * 100) : 0}%`;
+}
+
 function modelControlChoices(value: unknown): ModelChoice[] {
   if (!Array.isArray(value)) throw new Error('模型控制面返回了无效列表');
   return value.flatMap((item): ModelChoice[] => {
@@ -708,35 +737,29 @@ export class CommandHandler {
     }
     if (command === '/context') {
       const info = await this.agent.contextInfo();
-      const largestSections = [...(info.sections ?? [])]
-        .sort((left, right) => right.estimatedTokens - left.estimatedTokens)
-        .slice(0, 8)
-        .map((section) => `  - ${section.id}: ~${section.estimatedTokens}${section.truncated ? '（已截断）' : ''}`);
-      const compression = (info.compression ?? []).map((record) =>
-        `  - ${record.strategy}: ${record.beforeTokens}→${record.afterTokens} tokens · ${record.affectedItems} items`
-      );
+      const contextUsed = info.lastRequestInputTokens
+        ?? info.requestEstimateTokens
+        ?? info.modelViewTokens
+        ?? info.effectiveTokens
+        ?? info.estimatedTokens;
+      const aggregatedSections = new Map<string, { tokens: number; truncated: boolean }>();
+      for (const section of info.sections ?? []) {
+        if (section.id === 'protocol-reserve' || section.estimatedTokens <= 0) continue;
+        const current = aggregatedSections.get(section.id) ?? { tokens: 0, truncated: false };
+        current.tokens += section.estimatedTokens;
+        current.truncated ||= section.truncated;
+        aggregatedSections.set(section.id, current);
+      }
+      const sectionTotal = [...aggregatedSections.values()]
+        .reduce((total, section) => total + section.tokens, 0);
+      const sections = [...aggregatedSections.entries()]
+        .sort((left, right) => right[1].tokens - left[1].tokens)
+        .map(([id, section]) =>
+          `- ${CONTEXT_SECTION_LABELS[id] ?? id}：~${formatTokenCount(section.tokens)}（${formatPercentage(section.tokens, sectionTotal)}）${section.truncated ? '，已截断' : ''}`
+        );
       return this.handled([
-        `历史条目  ${info.historyItems} / ${info.historyLimit}`,
-        `Raw Session  ~${info.rawTokens ?? info.estimatedTokens} tokens`,
-        `模型视图  ~${info.modelViewTokens ?? info.effectiveTokens ?? info.estimatedTokens} tokens · ${((info.modelViewRatio ?? 0) * 100).toFixed(1)}%`,
-        `Request Estimate  ${info.requestEstimateTokens ? `~${info.requestEstimateTokens} tokens` : '尚无请求 Manifest'}`,
-        `Last request actual  ${info.lastRequestInputTokens ? `${info.lastRequestInputTokens} input + ${info.lastRequestOutputTokens ?? 0} output` : 'Provider 未返回'}`,
-        `Run cumulative  ${info.runTotalTokens ? `${info.runTotalTokens} tokens（input ${info.runInputTokens ?? 0} / output ${info.runOutputTokens ?? 0}）` : 'Provider 未返回'}`,
-        `静态工具/能力开销  ~${info.staticCapabilityTokens ?? 0} tokens`,
-        `模型窗口  ${info.contextWindow} · Available Input Budget ${info.inputBudget} · 输出预留 ${info.outputReserve} · protocol reserve ${info.protocolReserveTokens ?? 0}（仅预留）`,
-        `估算器  ${info.estimator ?? 'mimi-char-v1'}${info.requestId ? ` · request ${info.requestId}` : ''}`,
-        ...(largestSections.length ? ['请求分项', ...largestSections] : []),
-        `压缩归档  ${info.archivedItems ?? 0} 条 · ~${info.archiveTokens ?? 0} tokens`,
-        `压缩次数  ${info.compressionCount ?? 0}`,
-        ...(compression.length ? ['压缩记录', ...compression] : [
-          `压缩策略  ${info.contextStrategies?.join(', ') || '未触发'}`,
-        ]),
-        `最近压缩  ${info.compactedAt ?? '无'}`,
-        `运行状态  ${info.runStatus ?? 'idle'}`,
-        `长期记忆  ${info.memories}`,
-        `计划步骤  ${info.planSteps}`,
-        `长期目标  ${info.goal ?? '未设置'}`,
-        '原始 Session 始终保留；压缩只改变发送给模型的有效视图。',
+        `当前上下文 ${formatTokenCount(contextUsed)}/${formatTokenCount(info.contextWindow)}（${formatPercentage(contextUsed, info.contextWindow)}）`,
+        ...(sections.length ? ['内容分布（估算）', ...sections] : ['内容分布：尚无模型请求']),
       ].join('\n'));
     }
     if (command === '/compact') {

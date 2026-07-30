@@ -108,7 +108,23 @@ function fakeAgent(): MimiAgent {
       return { effective: 'next_run', daemonRestarted: false };
     },
     switchModel: () => undefined,
-    contextInfo: async () => ({ historyItems: 4, historyLimit: 40, estimatedTokens: 1200, contextWindow: 128000, memories: 1, planSteps: 1, goal: 'active' }),
+    contextInfo: async () => ({
+      historyItems: 4,
+      historyLimit: 40,
+      estimatedTokens: 1_200,
+      contextWindow: 128_000,
+      lastRequestInputTokens: 25_600,
+      sections: [
+        { id: 'base-instructions', estimatedTokens: 6_400, truncated: false },
+        { id: 'recent-history', estimatedTokens: 12_800, truncated: false },
+        { id: 'current-input', estimatedTokens: 3_200, truncated: false },
+        { id: 'tool-schemas', estimatedTokens: 3_200, truncated: false },
+        { id: 'protocol-reserve', estimatedTokens: 2_560, truncated: false },
+      ],
+      memories: 1,
+      planSteps: 1,
+      goal: 'active',
+    }),
     compactContext: async () => ({
       changed: true,
       archive: { coveredItems: 8, summary: 'summary', strategy: 'full', originalTokens: 2000, compactedTokens: 200, updatedAt: '' },
@@ -420,7 +436,10 @@ test('selects a model and exposes common runtime inspection commands', async () 
     action: 'use',
     target: { providerId: 'deepseek', modelId: 'deepseek-reasoner' },
   }]);
-  assert.match(output.join('\n'), /历史条目/);
+  assert.match(output.join('\n'), /当前上下文 26k\/128k（20%）/);
+  assert.match(output.join('\n'), /最近对话：~13k（50%）/);
+  assert.match(output.join('\n'), /基础指令：~6\.4k（25%）/);
+  assert.doesNotMatch(output.join('\n'), /actual|已压缩|protocol reserve/);
   assert.match(output.join('\n'), /已归档 8 个历史条目/);
   assert.match(output.join('\n'), /run_shell/);
   assert.match(output.join('\n'), /MCP 未配置/);

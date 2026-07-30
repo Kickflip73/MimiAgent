@@ -296,7 +296,7 @@ test('keeps queue and a self-updating runtime status above the bottom input box'
   ]);
 
   const plain = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-  assert.match(plain, /↯ 引导  立即调整当前执行方向\n↳ 排队  排队中的第一条对话内容\n↳ 排队.*\.\.\.\n\^\._\.\^~ 运行中 · 0秒 · 模式 编码 · 模型 deepseek-chat · 上下文 1\.2k\/128k\n┊>/);
+  assert.match(plain, /↯ 引导  立即调整当前执行方向\n↳ 排队  排队中的第一条对话内容\n↳ 排队.*\.\.\.\n\^\._\.\^~ 运行中 · 0秒 · 模式 编码 · 模型 deepseek-chat · 上下文 1\.2k\/128k（1%）\n┊>/);
   output.value = '';
   await new Promise((resolve) => setTimeout(resolve, 420));
   const animated = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
@@ -333,7 +333,7 @@ test('preserves the renderer spinner frame and elapsed time in interactive statu
   terminal.close();
 });
 
-test('labels structured context status as estimate and shows compression', () => {
+test('shows only current context usage and percentage', () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   output.columns = 140;
@@ -341,15 +341,13 @@ test('labels structured context status as estimate and shows compression', () =>
   terminal.setRuntimeStatus({
     mode: '标准',
     model: 'test',
-    contextUsed: 1_200,
-    contextWindow: 128_000,
-    contextSource: 'estimate',
-    compressedFrom: 9_000,
+    contextUsed: 200_000,
+    contextWindow: 1_000_000,
   });
   terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
   const plain = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-  assert.match(plain, /上下文 ~1\.2k est\/128k/);
-  assert.match(plain, /已压缩 9\.0k→1\.2k/);
+  assert.match(plain, /上下文 200k\/1\.0m（20%）/);
+  assert.doesNotMatch(plain, /\bactual\b|上下文 ~|已压缩/);
   terminal.close();
 });
 
