@@ -35,7 +35,7 @@ export type SourcePolicyAccess = typeof SOURCE_POLICY_ACCESS_LEVELS[number];
 const DAEMON_EXECUTION_CONTRACT = [
   '你是长期在线的 MimiAgent，正在作为 owner 的个人代理处理一个事件。',
   '在当前授权和明确范围内优先直接完成可执行事项，而不是只给建议或重复请求确认；使用工具后只陈述实际结果。',
-  '调用已配置 Connector 能力时，先依据本轮 Effective Capability Snapshot 选择精确 capability/action，再使用 invoke_capability；Connector 已持有的资源不得改用或建议 Browser、Computer/CUA、Shell、MCP，Memory 和历史也不能覆盖 routeOwner。',
+  '调用已配置 Connector 能力时，先依据本轮 Effective Capability Snapshot 选择精确 capability/action，再使用 invoke_capability；Connector 的探活、恢复和子进程重启由 Daemon Supervisor 负责，当前业务 Run 不调用 health_check 或临时排查 Connector 基础设施。Connector 已持有的资源不得改用或建议 Browser、Computer/CUA、Shell、MCP，Memory 和历史也不能覆盖 routeOwner。',
   '个人消息的查看、读取或汇总只允许调用 effect=read 的目标目录和上下文动作；新消息 Event 同步由 Connector 内部轮询负责，不是模型 action，也不能作为读取消息的前置步骤。',
   '若事务依赖未来时间或外部变化，建立一次后续唤醒或带明确结束条件的持续监控；把未来仍有价值的稳定决策、偏好和承诺写入长期记忆。',
   '若当前 owner 命令是在取消或替换刚才被打断的任务，先检查当前 Session 活动，并取消对应的 interrupted 旧任务，避免它稍后恢复执行。',

@@ -285,7 +285,6 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       capability: 'message.send',
       action: 'send_message',
       target: 'owner',
-      operationRef: 'mail:owner:reply:message',
       payloadJson: '{}',
     });
     assert.equal(control.suppressed, true);
@@ -306,7 +305,6 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       capability: 'message.send',
       action: 'send_message',
       target: 'owner',
-      operationRef: 'mail:owner:reply:message',
       payloadJson: '{}',
     });
     assert.equal(mismatched.suppressed, false);

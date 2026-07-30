@@ -43,7 +43,7 @@ async function stop(child: ChildProcessWithoutNullStreams): Promise<void> {
   });
 }
 
-test('Browser Connector exposes bounded OpenCLI Chrome sessions with fresh observations', async () => {
+test('Browser Connector exposes bounded OpenCLI Chrome sessions without observation gates', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'browser-connector-'));
   const commandLog = path.join(root, 'commands.ndjson');
   const mockOpenCli = path.join(root, 'mock-opencli.mjs');
@@ -162,16 +162,18 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     assert.equal(rejected.ok, false);
     assert.match(rejected.error ?? '', /use only one of payload\.ref.*payload\.element/);
 
-    const clicked = await call('click', 'click', sessionRef, {
-      observationId,
-      ref: 7,
+    const newerObservation = await call('newer-observation', 'find', sessionRef, {
+      role: 'button',
+      name: 'Save',
     });
+    assert.notEqual(newerObservation.result?.observationId, observationId);
+    const clicked = await call('click', 'click', sessionRef, { ref: 7 });
     assert.equal(clicked.ok, true, clicked.error);
     assert.equal(clicked.result?.outcome, 'confirmed');
     assert.equal(clicked.result?.completionScope, 'interaction');
     assert.equal(clicked.result?.businessOutcome, 'unverified');
     assert.equal(clicked.result?.clicked, true);
-    assert.equal(clicked.result?.observationInvalidated, true);
+    assert.equal(clicked.result?.observationInvalidated, undefined);
     assert.deepEqual(clicked.result?.nextRead, {
       action: 'list_tabs',
       reason: '点击可能打开或选择新标签页；先重新列出 page，再读取目标 page',
@@ -180,8 +182,8 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     const unobservedEval = await call('unobserved-eval', 'execute_javascript', sessionRef, {
       code: 'document.title',
     });
-    assert.equal(unobservedEval.ok, false);
-    assert.match(unobservedEval.error ?? '', /payload\.observationId|observationId is stale/);
+    assert.equal(unobservedEval.ok, true, unobservedEval.error);
+    assert.equal(unobservedEval.result?.value, 'script-result');
 
     const evalSnapshot = await call('eval-snapshot', 'snapshot', sessionRef, {
       source: 'dom',
@@ -192,7 +194,7 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     });
     assert.equal(evaluated.ok, true, evaluated.error);
     assert.equal(evaluated.result?.outcome, 'confirmed');
-    assert.equal(evaluated.result?.observationInvalidated, true);
+    assert.equal(evaluated.result?.observationInvalidated, undefined);
     assert.equal(evaluated.result?.completionScope, 'interaction');
     assert.equal(evaluated.result?.businessOutcome, 'unverified');
     assert.equal(evaluated.result?.value, 'script-result');
@@ -209,12 +211,11 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     assert.equal(hovered.ok, true, hovered.error);
     assert.equal(hovered.result?.outcome, 'confirmed');
 
-    const stale = await call('stale', 'click', sessionRef, {
+    const oldObservation = await call('old-observation', 'click', sessionRef, {
       observationId,
       element: '7',
     });
-    assert.equal(stale.ok, false);
-    assert.match(stale.error ?? '', /observationId is stale/);
+    assert.equal(oldObservation.ok, true, oldObservation.error);
 
     const found = await call('find', 'find', sessionRef, {
       role: 'textbox',

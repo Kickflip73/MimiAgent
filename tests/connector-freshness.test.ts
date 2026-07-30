@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { ActionFailedSafeError } from '../src/core/action-intent.js';
-import { ConnectorManager } from '../src/daemon/connectors.js';
+import {
+  ConnectorManager,
+  connectorReadinessMonitorAction,
+  parseConnectorConfig,
+} from '../src/daemon/connectors.js';
 import { NotifierRegistry } from '../src/daemon/notifier.js';
 import { MimiStore } from '../src/daemon/store.js';
 
@@ -53,6 +58,143 @@ test('marks an online Connector stale after its declared readiness heartbeat exp
     } finally {
       Date.now = now;
     }
+  } finally {
+    await manager.stop();
+    store.close();
+  }
+});
+
+test('readiness monitor ignores legacy write or unknown health actions', () => {
+  for (const effect of ['write', 'unknown'] as const) {
+    const config = parseConnectorConfig({
+      connectors: {
+        unsafe: {
+          command: process.execPath,
+          readinessMonitor: { action: 'health_check' },
+          actions: {
+            health_check: {
+              description: 'must never be replayed by the monitor',
+              effect,
+            },
+          },
+        },
+      },
+    });
+    const connector = config.connectors.unsafe;
+    assert.ok(connector);
+    assert.equal(connectorReadinessMonitorAction(connector), undefined);
+  }
+  const config = parseConnectorConfig({
+    connectors: {
+      safe: {
+        command: process.execPath,
+        actions: {
+          health_check: {
+            description: 'safe monitor action',
+            effect: 'read',
+          },
+        },
+      },
+    },
+  });
+  const connector = config.connectors.safe;
+  assert.ok(connector);
+  assert.equal(connectorReadinessMonitorAction(connector), 'health_check');
+});
+
+test('readiness monitor repairs an unavailable Connector through its declared read-only health action', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-readiness-monitor-'));
+  const database = path.join(root, 'mimi.db');
+  const configFile = path.join(root, 'connectors.json');
+  const logFile = path.join(root, 'monitor.log');
+  await writeFile(configFile, JSON.stringify({
+    connectors: {
+      monitored: {
+        command: process.execPath,
+        args: [
+          path.resolve('tests/fixtures/connector-readiness-monitor-fixture.mjs'),
+          'recover',
+          logFile,
+        ],
+        restart: true,
+        healthEvents: false,
+        readinessMonitor: {
+          intervalMs: 100,
+          restartAfterFailures: 2,
+        },
+        actions: {
+          health_check: {
+            description: 'read-only fixture health check',
+            capability: 'fixture.health.read',
+            effect: 'read',
+          },
+        },
+      },
+    },
+  }));
+  const store = new MimiStore(database);
+  const manager = await ConnectorManager.load(configFile, store, new NotifierRegistry());
+  manager.start();
+  try {
+    await waitUntil(() => manager.listCapabilities()[0]?.readiness.outbound === 'ready');
+    const log = await readFile(logFile, 'utf8');
+    assert.equal((log.match(/^spawn:/gm) ?? []).length, 1);
+    assert.match(log, /^health:\d+:1$/m);
+  } finally {
+    await manager.stop();
+    store.close();
+  }
+});
+
+test('readiness monitor restarts only its Connector after bounded consecutive failures', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-readiness-restart-'));
+  const database = path.join(root, 'mimi.db');
+  const configFile = path.join(root, 'connectors.json');
+  const logFile = path.join(root, 'monitor.log');
+  await writeFile(configFile, JSON.stringify({
+    connectors: {
+      monitored: {
+        command: process.execPath,
+        args: [
+          path.resolve('tests/fixtures/connector-readiness-monitor-fixture.mjs'),
+          'unavailable',
+          logFile,
+        ],
+        restart: true,
+        healthEvents: false,
+        healthStabilityMs: 100,
+        readinessMonitor: {
+          intervalMs: 100,
+          restartAfterFailures: 2,
+        },
+        actions: {
+          health_check: {
+            description: 'read-only fixture health check',
+            capability: 'fixture.health.read',
+            effect: 'read',
+          },
+        },
+      },
+    },
+  }));
+  const store = new MimiStore(database);
+  const manager = await ConnectorManager.load(configFile, store, new NotifierRegistry());
+  manager.start();
+  try {
+    await waitUntil(() => {
+      try {
+        const log = readFileSync(logFile, 'utf8');
+        return (log.match(/^spawn:/gm) ?? []).length >= 2;
+      } catch {
+        return false;
+      }
+    });
+    const log = await readFile(logFile, 'utf8');
+    const firstSpawn = log.match(/^spawn:(\d+)$/m)?.[1];
+    const spawnPids = [...log.matchAll(/^spawn:(\d+)$/gm)].map((match) => match[1]);
+    assert.ok(firstSpawn);
+    assert.ok(spawnPids.some((pid) => pid !== firstSpawn));
+    assert.match(log, /^health:\d+:2$/m);
   } finally {
     await manager.stop();
     store.close();

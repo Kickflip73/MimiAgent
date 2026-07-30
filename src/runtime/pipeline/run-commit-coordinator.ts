@@ -17,11 +17,17 @@ export interface RunFailureInput {
   error: unknown;
   interrupted: boolean;
   usage?: RunCommitUsage;
+  interruptedAnswer?: string;
 }
 
 export interface RunCommitCoordinatorPort {
   complete(answer: string, usage?: RunCommitUsage): Promise<RuntimeEffect[]>;
-  fail(error: unknown, interrupted: boolean, usage?: RunCommitUsage): Promise<void>;
+  fail(
+    error: unknown,
+    interrupted: boolean,
+    usage?: RunCommitUsage,
+    interruptedAnswer?: string,
+  ): Promise<void>;
 }
 
 export class RunCommitCoordinator {
@@ -32,6 +38,6 @@ export class RunCommitCoordinator {
   }
 
   fail(input: RunFailureInput): Promise<void> {
-    return this.port.fail(input.error, input.interrupted, input.usage);
+    return this.port.fail(input.error, input.interrupted, input.usage, input.interruptedAnswer);
   }
 }

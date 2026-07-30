@@ -88,7 +88,7 @@ CLI / IM / Voice / Schedule / Connector events
                                       主动通知原会话或渠道
 ```
 
-1. **Kernel 层**只有一个长期存活的状态所有者。它接收和持久化事件，执行 Attention 的确定性分类，维护租约、重试、Schedule、Outbox、Connector 生命周期与 Connector action broker，并监督任务子进程。没有待处理事件、计划到期或投递工作时，不启动 Agent Run，也不为了“思考”而周期调用模型。
+1. **Kernel 层**只有一个长期存活的状态所有者。它接收和持久化事件，执行 Attention 的确定性分类，维护租约、重试、Schedule、Outbox、Connector 生命周期与 Connector action broker，并监督任务子进程。Connector readiness 由确定性 Supervisor 定时调用渠道声明的只读健康动作维护；连续失败只重启对应 Connector 子进程，不启动模型、不并发业务动作，也不重放任何外部写事务。没有待处理事件、计划到期或投递工作时，不启动 Agent Run，也不为了“思考”而周期调用模型。
 2. **Conversation 层**按 Session 创建隔离的 actor runtime。每个 actor 拥有自己的可变 `MimiAgent` 与 `AgentRunService`，因此一个会话的模型、模式、checkpoint 和流式运行不会污染另一个会话。同一 Session 的 Run 和 mutation 始终 FIFO；不同 Session 在 `MIMI_SESSION_MAX_CONCURRENCY` 限制内并行。工作区是 Session Run 的不可变执行范围；解析结果变化时，actor 会在 FIFO 安全点关闭旧的工作区运行时，并用新目录重建文件工具、Shell、Project Guidance、Skill、MCP、Memory 路由与 Team。actor 是进程内的逻辑执行单元，不等于一个 PID；多个 CLI 窗口只有选择不同 Session 时才并行，指向同一 Session 时会按顺序执行以保护 transcript。
 3. **Task 层**处理无需在当前对话等待的长程、大型、多阶段或持续型工作。主 MimiAgent 调用 `delegate_background_task` 后，先把带来源 Session、父事件、深度、已解析 `workspaceRoot`、`workspaceAccess: read | write` 和独立 Task Session 的 Event 持久化到 `task` lane，再立即把 `taskId` 返回当前对话。`TaskProcessSupervisor` 为 ready task fork 独立 Node.js 子进程，并用持久化的工作区重建 worker 配置，不能回退到 Kernel 启动目录。子进程通过租约领取精确 Event 并运行一个 Task Lead；暂停、继续、取消、阻塞等待输入、崩溃恢复和重试继续服从 Event/ExecutionLedger 语义。`read` Task 可并行读取、分析并更新自己的 Plan/Goal/checkpoint，但确定性禁用 Shell、文件写、任意写网络、Connector 事务、后台再委派和 Team；`write` Task 保留其来源授权档位并由 Supervisor 做工作区互斥，需要拆分时只使用当前 Task 内的只读 SubAgent 或 Ultra Team，不再建立持久 Task 子树。终态或输入请求由子进程写入 Event/Run，并通过 Kernel 的 Outbox/Notifier 主动送回来源渠道。Connector 凭据与渠道子进程仍由 Kernel 的 broker 单一持有，任务进程不复制渠道控制面；broker 请求只携带该 worker 的独立随机 `workerToken`，显式不读取控制面 bearer，也不能调用 status、submit、shutdown 或其他 owner RPC。
 
@@ -173,6 +173,8 @@ running
 ```
 
 Session 是完整运行状态边界。启动指定 Session、从历史列表切换和新建对话都经过同一条激活路径，同步恢复 transcript、mode、model、输出等级、Plan、Goal、Team、ContextArchive 与 checkpoint。CLI 的 `/retry` 最近输入缓存仅属于当前终端进程，不伪装成持久 Session 状态。每轮执行捕获不可变作用域并生成 runId/owner；checkpoint、Trace、事件和延迟动作始终写回启动该轮的 Session，所有进展与终态更新都以 runId 做 CAS。其他 Session 的消息和局部运行状态不会进入当前模型上下文；唯一允许跨 Session 注入的对话信息是带新 `recordedAt` 或兼容旧 `confirmedAt` 标记的长期记忆。`/resume` 将未完成 checkpoint 与 Goal/Plan/Team 合并为新一轮输入，并要求先核对当前工作区；这是 best-effort 任务续跑，不是任意 SDK 指令点的精确恢复。没有未完成状态时拒绝空恢复。
+
+Esc 中断会原子保留 checkpoint 中的 owner 输入，并把已经流向 owner 的回答文本保存为明确标注“任务未完成”的 assistant 快照；SDK 尚未落盘输入时也由 checkpoint 补齐。因此切换 Session 后再返回仍能看到中断前的对话上下文。Function Call、Function Result 与未展示的 completion-gate 候选仍从本轮 transcript 回滚，避免保留不完整协议单元、泄露临时敏感值或暗示不确定副作用可以重放。
 
 `AtomicJsonStore` 是 Plan、Team、ExecutionLedger 和 Session 的统一 JSON 状态层：按绝对路径共享进程内队列，使用跨进程锁在锁内重读，写入 PID+UUID 临时文件后原子 rename，并通过 Zod 校验和损坏文件隔离处理异常。MemoryHub 的语义正文使用原子 Markdown 页面，派生索引与控制账本使用 SQLite WAL；控制表损坏时写入失败关闭，不能从空状态继续。
 
@@ -321,7 +323,7 @@ macOS Shortcuts 适配把系统 `shortcuts` CLI 作为通用能力总线，但�
 
 macOS Desktop 适配补齐没有专用 API 的即时桌面操作。System Events/JXA 只承担前台应用、窗口、剪贴板、菜单和键盘的窄动作，`/usr/bin/open` 只接受参数数组形式的 URL 或绝对路径；复杂多步骤流程仍交给 Shortcuts。可选剪贴板轮询只有进程内 hash：首次读取静默建立基线，外部变化产生 ambient Event，Connector 自身写入同步更新基线，避免形成自触发循环。它不引入 UI 工作流、截图模型或额外持久状态。
 
-Browser Connector 是唯一网页语义执行面，只支持 Chrome，并通过 OpenCLI daemon 与 Browser Bridge 扩展复用当前 profile 和登录态。Connector 为 Mimi 创建隔离的 `mimi-*` owned/bound session；DOM/AX snapshot、locator、正文、iframe、网络 shape 和结构化页面动作均使用有界 argv 调用。写动作必须消费当前 Connector 签发的 observationId，随后重新观察；超时、输出溢出或进程中断视为不确定且不自动重放。Safari/JXA、任意 JavaScript 和 Shell/CDP 浏览器控制不再属于产品能力。
+Browser Connector 是唯一网页语义执行面，只支持 Chrome，并通过 OpenCLI daemon 与 Browser Bridge 扩展复用当前 profile 和登录态。Connector 为 Mimi 创建隔离的 `mimi-*` owned/bound session；DOM/AX snapshot、locator、正文、iframe、网络 shape 和结构化页面动作均使用有界 argv 调用。读取回执可携带 `observationId` 作为关联证据，但它不参与写动作授权或新鲜度门禁；写后仍重新观察。超时、输出溢出或进程中断视为不确定且不自动重放。Safari/JXA、任意 JavaScript 和 Shell/CDP 浏览器控制不再属于产品能力。
 
 macOS Screen 适配补齐非 DOM 视觉文字入口。Node Connector 只编排系统 `screencapture` 和一份窄职责 Swift Vision helper；截图 target、图片大小、OCR 字符/行数、子进程输出和超时全部有界。`read_screen` 的临时图片在所有终态清理，显式 `capture_screen` 才持久保存文件；没有持续录屏、屏幕轮询、图片数据库、云端 OCR 或视觉 Agent。
 
@@ -605,10 +607,10 @@ digest 和 policy revision 建立 at-most-once fence。同一业务引用跨 Too
 - `confirmed` 跨 Tool、Provider、Connector/Computer route 只返回既有回执。
 - `started/uncertain` 永久禁止自动换路重放。
 - 只有 `failed_safe` 可以在新 route 重新尝试。
-- Connector `write/unknown` 动作携带稳定 `operationRef` 作为业务操作引用；同一引用和
-  action family 已 confirmed 时跨 Browser `sessionRef`、target、payload 或 route 复用
-  原回执，started/uncertain 时保持冻结；只有 failed-safe 才允许换路。临时页面/窗口
-  标识不是业务目标。
+- Connector `write/unknown` 的业务操作引用由 Host 根据不可变 Run 与 Tool Call 身份
+  自动建立，模型接口不再暴露 `operationRef`。相同 Host 调用已 confirmed 时复用原
+  回执，started/uncertain 时由 Ledger 与运行时 fence 阻止自动重试；只有 failed-safe
+  才能重新执行。
 - Full Owner 的精确目标动作不再要求第二次一次性审批；Observation 新鲜度、窗口漂移、
   控制面保护、应用 allowlist、动作预算和前后台状态仍由 ComputerManager 在真正执行前
   自动校验，这些是机械安全约束，不能扩大 Security。

@@ -77,6 +77,14 @@ class UnavailableAdapter {
     throw this.error;
   }
 
+  async searchTargets() {
+    throw this.error;
+  }
+
+  async bindTarget() {
+    throw this.error;
+  }
+
   async send() {
     throw this.error;
   }
@@ -172,6 +180,12 @@ async function handleAction(message) {
     : {};
   if (message.action === 'health_check') return reportHealth(payload.probe === true);
   if (message.action === 'list_targets') return adapter.listTargets(payload);
+  if (message.action === 'search_targets') return adapter.searchTargets(payload);
+  if (message.action === 'bind_target') {
+    return adapter.bindTarget({
+      candidateToken: message.target,
+    });
+  }
   if (!['get_context', 'send_message'].includes(message.action)) {
     throw new Error(`unsupported action: ${message.action}`);
   }

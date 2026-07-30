@@ -2688,17 +2688,25 @@ export class MimiAgent {
     });
   }
 
-  async failRun(error: unknown, interrupted = false, usage?: ContextUsageSnapshot): Promise<void> {
+  async failRun(
+    error: unknown,
+    interrupted = false,
+    usage?: ContextUsageSnapshot,
+    interruptedAnswer?: string,
+  ): Promise<void> {
     const run = this.activeRun;
     if (!run) return;
     const safeError = this.redactRunError(error, run.ephemeralSensitiveAccess);
+    const safeInterruptedAnswer = interrupted && interruptedAnswer
+      ? redactActiveEphemeralText(interruptedAnswer, run.ephemeralSensitiveAccess)
+      : undefined;
     this.activeRun = undefined;
     await this.computer?.endRun(run.runId).catch(() => undefined);
     run.releaseOwner();
     this.lastUsage = this.validUsage(usage, run.scope.modelBinding);
     this.applyManifestActual(this.lastUsage);
     if (run.options?.retainExecutionLedger) {
-      await run.session.rollbackRunItems(run.runId).catch(() => undefined);
+      await run.session.rollbackRunItems(run.runId, safeInterruptedAnswer).catch(() => undefined);
     }
     if (interrupted && isTerminalRunInterruption(safeError)) {
       await run.session.clearRunCheckpoint(run.runId);

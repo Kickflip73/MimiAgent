@@ -167,20 +167,12 @@ test('model-facing host tools expose only inspect and capability invocation with
     capability: 'message.send',
     action: 'send_message',
     target: 'owner',
-    operationRef: 'mail:owner:message:invalid-json',
     payloadJson: '{',
   })), /有效 JSON/);
-  assert.match(String(await invoke(tools, 'invoke_capability', {
-    capability: 'message.send',
-    action: 'send_message',
-    target: 'owner',
-    payloadJson: JSON.stringify({ mode: 'message' }),
-  })), /缺少 operationRef/);
   const confirmed = await invoke(tools, 'invoke_capability', {
     capability: 'message.send',
     action: 'send_message',
     target: 'owner',
-    operationRef: 'mail:owner:message:confirmed',
     payloadJson: JSON.stringify({ mode: 'message' }),
   }) as Record<string, unknown>;
   assert.equal(confirmed.outcome, 'confirmed');
@@ -189,7 +181,6 @@ test('model-facing host tools expose only inspect and capability invocation with
     capability: 'message.send',
     action: 'send_message',
     target: 'owner',
-    operationRef: 'mail:owner:message:request',
     payloadJson: JSON.stringify({ mode: 'request' }),
   }) as Record<string, unknown>;
   assert.equal(requestReceipt.operationId, 'request-1');
@@ -197,7 +188,6 @@ test('model-facing host tools expose only inspect and capability invocation with
     capability: 'message.send',
     action: 'send_message',
     target: 'owner',
-    operationRef: 'mail:owner:message:accepted',
     payloadJson: JSON.stringify({ mode: 'plain' }),
   }) as Record<string, unknown>;
   assert.equal(accepted.outcome, 'accepted');
@@ -206,7 +196,6 @@ test('model-facing host tools expose only inspect and capability invocation with
     capability: 'message.send',
     action: 'send_message',
     target: 'owner',
-    operationRef: 'mail:owner:message:large',
     payloadJson: JSON.stringify({ mode: 'large' }),
   }) as Record<string, unknown>;
   assert.equal(large.truncated, true);
@@ -291,7 +280,6 @@ test('explicit Connector rejection remains failed_safe across the SDK tool bound
       capability: 'fixture.write',
       action: 'mutate',
       target: 'fixture:1',
-      operationRef: 'fixture:test:1:mutate',
       payloadJson,
     }), { toolCall: { callId } } as never);
   };
@@ -312,8 +300,8 @@ test('explicit Connector rejection remains failed_safe across the SDK tool bound
   assert.equal(executions, 2);
 });
 
-test('stable Connector operationRef freezes an uncertain business action across temporary targets', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-operation-ref-'));
+test('host ledger freezes an exact uncertain Connector retry without model operationRef', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-host-intent-'));
   let executions = 0;
   const manager = {
     configPath: '/fixture/connectors.json',
@@ -352,7 +340,6 @@ test('stable Connector operationRef freezes an uncertain business action across 
       capability: 'browser.page.execute',
       action: 'execute_javascript',
       target,
-      operationRef: 'crane:test:inspection-period-switch-job:route',
       payloadJson: JSON.stringify({ code }),
     }),
     { toolCall: { callId } } as never,
@@ -363,14 +350,14 @@ test('stable Connector operationRef freezes an uncertain business action across 
     frozenTargetRef?: string;
   };
   assert.equal(uncertain.mimiStatus, 'action_uncertain');
-  assert.equal(uncertain.frozenTargetRef, 'crane:test:inspection-period-switch-job:route');
+  assert.equal(uncertain.frozenTargetRef, 'browser:first-session');
 
-  const reopened = await invokeBrowser('browser:new-session', 'submitAgain()', 'second') as {
+  const replay = await invokeBrowser('browser:first-session', 'submit()', 'second') as {
     mimiStatus?: string;
     frozenTargetRef?: string;
   };
-  assert.equal(reopened.mimiStatus, 'action_uncertain');
-  assert.equal(reopened.frozenTargetRef, 'crane:test:inspection-period-switch-job:route');
+  assert.equal(replay.mimiStatus, 'action_uncertain');
+  assert.equal(replay.frozenTargetRef, 'browser:first-session');
   assert.equal(executions, 1);
 });
 
