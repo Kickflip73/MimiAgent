@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   computeMimiBuildVersion,
   daemonProtocolAction,
+  forcedRestartBlockers,
   MIMI_BUILD_VERSION,
 } from '../src/daemon/client-runtime.js';
 import { DAEMON_PROTOCOL_VERSION, type DaemonStatus } from '../src/daemon/types.js';
@@ -44,4 +45,32 @@ test('a compatible busy daemon remains usable until a build upgrade is safe', ()
     () => daemonProtocolAction({ ...status, permissionMode: 'workspace' }, 'trusted'),
     /执行档位/,
   );
+});
+
+test('forced restart interrupts model-only work but protects uncertain boundaries', () => {
+  assert.deepEqual(forcedRestartBlockers({
+    activeEventCount: 1,
+    activeToolCount: 0,
+    activeTaskCount: 0,
+    activeHostMutations: 0,
+    outbox: { sending: 0 },
+  }), []);
+  assert.deepEqual(forcedRestartBlockers({
+    activeEventCount: 1,
+    activeTaskCount: 0,
+    activeHostMutations: 0,
+    outbox: { sending: 0 },
+  }), ['活动 Run 未报告在途 Tool 状态']);
+  assert.deepEqual(forcedRestartBlockers({
+    activeEventCount: 1,
+    activeToolCount: 2,
+    activeTaskCount: 1,
+    activeHostMutations: 1,
+    outbox: { sending: 1 },
+  }), [
+    '在途 Tool 2',
+    '独立 Task worker 1',
+    'Host mutation 1',
+    'Outbox sending 1',
+  ]);
 });

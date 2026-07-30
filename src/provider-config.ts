@@ -403,9 +403,14 @@ export async function runProviderRegistryCommand(
     throw new Error('用法：mimi provider <add|set|list|test> ...');
   }
 
-  const providerId = args[1]?.trim();
-  if (!providerId) throw new Error('provider add 需要 providerId');
-  const options = registryOptions(args, 2);
+  const rawTarget = args[1]?.trim();
+  if (!rawTarget) throw new Error('provider add 需要 providerId 或 providerId/modelId');
+  const targetArgument = rawTarget.includes('/') ? registryTarget(rawTarget) : undefined;
+  const positionalModelId = !targetArgument && args[2] && !args[2].startsWith('--')
+    ? args[2].trim()
+    : undefined;
+  const providerId = targetArgument?.providerId ?? rawTarget;
+  const options = registryOptions(args, positionalModelId ? 3 : 2);
   const allowed = new Set([
     '--label', '--transport', '--base-url', '--api-key-env', '--model', '--kind',
     '--image-input', '--image-output', '--tool-calling', '--context-window',
@@ -414,10 +419,17 @@ export async function runProviderRegistryCommand(
   for (const name of options.keys()) {
     if (!allowed.has(name)) throw new Error(`未知 Provider registry 选项：${name}`);
   }
-  const label = options.get('--label');
-  const transport = options.get('--transport') as ProviderTransport | undefined;
-  const apiKeyEnv = options.get('--api-key-env');
-  const modelId = options.get('--model');
+  const exists = await modelConfigExists(modelsFile);
+  const current = exists ? await store.read() : undefined;
+  const existingProvider = current?.providers.find((candidate) => candidate.id === providerId);
+  const optionModelId = options.get('--model');
+  const modelId = targetArgument?.modelId ?? positionalModelId ?? optionModelId;
+  if (optionModelId && modelId !== optionModelId) {
+    throw new Error('位置 modelId 与 --model 不一致');
+  }
+  const label = options.get('--label') ?? existingProvider?.label;
+  const transport = (options.get('--transport') ?? existingProvider?.transport) as ProviderTransport | undefined;
+  const apiKeyEnv = options.get('--api-key-env') ?? existingProvider?.apiKeyEnv;
   const kind = options.get('--kind') ?? 'agent';
   if (!label || !transport || !apiKeyEnv || !modelId) {
     throw new Error('provider add 需要 --label、--transport、--api-key-env 和 --model');
@@ -425,7 +437,7 @@ export async function runProviderRegistryCommand(
   if (!REGISTRY_TRANSPORTS.has(transport)) throw new Error(`不支持的 Provider transport：${transport}`);
   if (!/^[A-Z][A-Z0-9_]*$/.test(apiKeyEnv)) throw new Error('--api-key-env 必须是环境变量名');
   if (kind !== 'agent' && kind !== 'image-generation') throw new Error('--kind 只能是 agent 或 image-generation');
-  const baseUrl = options.get('--base-url');
+  const baseUrl = options.get('--base-url') ?? existingProvider?.baseUrl;
   if (transport !== 'openai-responses' && !baseUrl) {
     throw new Error(`${transport} 需要显式 --base-url`);
   }
@@ -478,7 +490,7 @@ export async function runProviderRegistryCommand(
     models: [registration],
   };
   let next: ModelsConfig;
-  if (!await modelConfigExists(modelsFile)) {
+  if (!exists) {
     next = parseModelsConfig({
       version: 1,
       routeVersion: 1,

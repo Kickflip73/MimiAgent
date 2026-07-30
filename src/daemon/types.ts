@@ -358,6 +358,7 @@ export interface DaemonStatus {
   activeEventId?: string;
   activeEventIds?: string[];
   activeEventCount?: number;
+  activeToolCount?: number;
   activeTaskCount?: number;
   taskWorkers?: DaemonTaskWorkerStatus[];
   taskWorkerRuntime?: DaemonTaskWorkerRuntime;

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import {
   getAllMcpTools,
   Runner,
@@ -751,7 +752,7 @@ export class MimiAgent {
   private async refreshModelConfiguration(): Promise<void> {
     if (this.legacyModels || this.fixedModelBinding || !this.config.modelsConfig) return;
     const next = await new ModelConfigStore(this.config.modelsConfig).read();
-    if (next.routeVersion === this.modelConfig.routeVersion) return;
+    if (isDeepStrictEqual(next, this.modelConfig)) return;
     this.installModelConfiguration(next);
   }
 

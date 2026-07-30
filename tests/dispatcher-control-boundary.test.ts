@@ -142,6 +142,7 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
 
     assert.equal(store.getTask(routed.task.id)?.status, 'running');
     assert.equal(dispatcher.status().activeEventCount, 1);
+    assert.equal(dispatcher.status().activeToolCount, 0);
 
     releaseFinalization();
     assert.equal(await processing, true);
@@ -152,6 +153,7 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
       'run-provider',
     );
     assert.equal(dispatcher.status().activeEventCount, 0);
+    assert.equal(dispatcher.status().activeToolCount, 0);
   } finally {
     releaseFinalization();
     store.close();

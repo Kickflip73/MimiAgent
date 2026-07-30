@@ -103,6 +103,7 @@ import {
   daemonHasActiveWork,
   daemonProtocolAction,
   daemonProtocolState,
+  forcedRestartBlockers,
   MIMI_BUILD_VERSION,
   migrateLegacyMimiDaemon,
   mimiPaths,
@@ -2054,14 +2055,32 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       }
       if (method === 'schedules.remove') return store.removeSchedule(requiredString(object(rawParams).id, 'id'));
       if (method === 'shutdown') {
-        if (daemonHasActiveWork(activeStatus())) {
+        const params = rawParams === undefined ? {} : object(rawParams);
+        for (const key of Object.keys(params)) {
+          if (key !== 'force') throw new Error(`shutdown 不支持参数：${key}`);
+        }
+        if (params.force !== undefined && typeof params.force !== 'boolean') {
+          throw new Error('shutdown.force 必须是 boolean');
+        }
+        const force = params.force === true;
+        const status = activeStatus();
+        if (!force && daemonHasActiveWork(status)) {
           throw new Error('MimiAgent 仍有活动事件、投递或 Chat 操作；为避免中断外部事务，当前拒绝关闭。');
+        }
+        if (force) {
+          const blockers = forcedRestartBlockers(status);
+          if (blockers.length > 0) {
+            throw new Error(
+              `强制重启仍被不可中断边界阻止：${blockers.join('、')}。请等待这些操作结束；不会重放 uncertain 副作用。`,
+            );
+          }
         }
         if (!mutationGate.beginShutdown()) {
           throw new Error('MimiAgent 仍有活动管理事务；为避免竞态，当前拒绝关闭。');
         }
+        if (force) activeDispatcher.forceStop('Owner 请求强制重启，已中断无在途 Tool 的活动 Run');
         setImmediate(() => { void stop('owner_shutdown'); });
-        return { accepted: true };
+        return { accepted: true, forced: force };
       }
       throw new Error(`未知 MimiAgent RPC 方法：${method}`);
     });
@@ -2269,7 +2288,10 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
   throw new Error(`MimiAgent 启动失败，请查看 ${paths.stderrLog}：${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
-export async function stopMimiDaemon(config: AppConfig): Promise<boolean> {
+export async function stopMimiDaemon(
+  config: AppConfig,
+  options: { force?: boolean } = {},
+): Promise<boolean> {
   config = await resolveDaemonWorkspaceConfig(config);
   const paths = mimiPaths(config);
   let existing: DaemonStatusWire;
@@ -2279,7 +2301,7 @@ export async function stopMimiDaemon(config: AppConfig): Promise<boolean> {
     return false;
   }
   assertDaemonWorkspace(existing.workspaceRoot, config.workspaceRoot);
-  await mimiRpc(paths.socket, 'shutdown', undefined, 2_000);
+  await mimiRpc(paths.socket, 'shutdown', options.force ? { force: true } : undefined, 2_000);
   const replacement = await waitForDaemonOffline(
     paths.socket,
     existing.workerId,
@@ -2294,9 +2316,12 @@ export async function stopMimiDaemon(config: AppConfig): Promise<boolean> {
   return true;
 }
 
-export async function restartMimiDaemon(config: AppConfig): Promise<DaemonStatus> {
+export async function restartMimiDaemon(
+  config: AppConfig,
+  options: { force?: boolean } = {},
+): Promise<DaemonStatus> {
   config = await resolveDaemonWorkspaceConfig(config);
-  await stopMimiDaemon(config);
+  await stopMimiDaemon(config, options);
   return startMimiDaemon(config);
 }
 

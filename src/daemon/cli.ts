@@ -6,7 +6,7 @@ export function daemonHelp(): string {
   return `MimiAgent 后台服务：
   mimi daemon start                       一键初始化并启动后台服务
   mimi daemon stop                        安全停止后台服务
-  mimi daemon restart                     安全重启后台服务
+  mimi daemon restart [--force]           安全重启；--force 仅中断无在途 Tool 的活动 Run
   mimi daemon status [--json]             查看可读状态；--json 输出完整数据
   mimi daemon doctor                      检查本机就绪度与下一步
   mimi daemon diagnostics [输出文件]       生成不含正文、目标、Token 和私人 Memory 的脱敏诊断包
@@ -38,7 +38,9 @@ export function daemonHelp(): string {
 模型 Provider：
   mimi provider set openai-compatible --base-url <URL> --model <ID>
       [--api-key-env <NAME>] [--models <ID,...>] [--context-window <N>]
-      当前 Run 仅有一个 MIMI_EPHEMERAL_SECRET_n 时自动使用；默认保存后重启`;
+      当前 Run 仅有一个 MIMI_EPHEMERAL_SECRET_n 时自动使用；legacy 配置保存后重启
+  mimi provider add <providerId/modelId> [能力选项]
+      为 registry 中已有 Provider 注册模型，下一 Run 生效，不重启 Daemon`;
 }
 
 function output(value: unknown): void {
@@ -120,6 +122,12 @@ export function formatDaemonStatus(status: DaemonStatus, now = Date.now()): stri
   }
   lines.push('', '详细信息：mimi daemon status --json');
   return `${lines.join('\n')}\n`;
+}
+
+export function parseDaemonRestartOptions(args: string[]): { force: boolean } {
+  if (args.length === 0) return { force: false };
+  if (args.length === 1 && args[0] === '--force') return { force: true };
+  throw new Error(`mimi daemon restart 不支持参数：${args.join(' ')}`);
 }
 
 function unavailableDaemon(error: unknown): boolean {
@@ -220,11 +228,9 @@ export async function runDaemonCommand(config: AppConfig, args: string[]): Promi
     return;
   }
   if (command === 'restart') {
-    if (args.length > 1) {
-      throw new Error(`mimi daemon restart 不支持参数：${args.slice(1).join(' ')}`);
-    }
+    const options = parseDaemonRestartOptions(args.slice(1));
     const { restartMimiDaemon } = await import('./service.js');
-    const status = await restartMimiDaemon(config);
+    const status = await restartMimiDaemon(config, options);
     process.stdout.write(
       `MimiAgent 后台已重启（PID ${status.pid}，工作区 ${status.workspaceRoot}）。\n`,
     );

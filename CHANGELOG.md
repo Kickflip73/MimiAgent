@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- hot-reload complete model registry changes at the next Run even when a legacy
+  writer did not bump routeVersion; allow concise model registration on an
+  existing Provider, and add a bounded `daemon restart --force` that interrupts
+  only model-only Runs while preserving Tool, worker, Host mutation, Outbox and
+  at-most-once side-effect boundaries
 - close the multi-Provider review gaps with a product `generate_image` Media
   WorkUnit, native Anthropic/Gemini image blocks, fail-closed capability checks,
   exact target/transport tool and transcript handling, and routeVersion refresh

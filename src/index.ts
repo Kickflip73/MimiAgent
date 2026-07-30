@@ -21,7 +21,8 @@ function cliHelp(): string {
 用法：
   mimi                    开始对话
   mimi "任务"             执行单次任务
-  mimi provider add ...    注册 Provider/模型（只保存 credential 环境变量引用）
+  mimi provider add <providerId/modelId> [能力选项]
+                           为已有 Provider 注册模型；新 Provider 需完整连接参数
   mimi provider set <providerId/modelId>
                            更新 registry 全局默认 target，不重启
   mimi provider list       查看 registry

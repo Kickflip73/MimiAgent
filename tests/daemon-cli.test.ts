@@ -4,7 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import type { AppConfig } from '../src/config.js';
-import { daemonHelp, formatDaemonStatus, runDaemonCommand } from '../src/daemon/cli.js';
+import {
+  daemonHelp,
+  formatDaemonStatus,
+  parseDaemonRestartOptions,
+  runDaemonCommand,
+} from '../src/daemon/cli.js';
 import { MimiIpcServer } from '../src/daemon/ipc.js';
 import { resolveDaemonWorkspaceConfig, stopMimiDaemon } from '../src/daemon/service.js';
 import type { DaemonStatus } from '../src/daemon/types.js';
@@ -194,7 +199,9 @@ test('daemon stop is idempotent when the background service is already offline',
 
 test('daemon lifecycle rejects unsupported force flags instead of silently ignoring them', async () => {
   await assert.rejects(runDaemonCommand(config, ['stop', '--force']), /不支持参数：--force/);
-  await assert.rejects(runDaemonCommand(config, ['restart', '-f']), /不支持参数：-f/);
+  assert.deepEqual(parseDaemonRestartOptions([]), { force: false });
+  assert.deepEqual(parseDaemonRestartOptions(['--force']), { force: true });
+  assert.throws(() => parseDaemonRestartOptions(['-f']), /不支持参数：-f/);
 });
 
 test('daemon lifecycle commands adopt and persist the running workspace globally', async () => {

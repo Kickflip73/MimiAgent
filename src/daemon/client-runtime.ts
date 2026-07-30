@@ -172,6 +172,40 @@ export function daemonHasActiveWork(
     || positiveCount(count(status.outbox, 'sending'));
 }
 
+export function forcedRestartBlockers(
+  status: {
+    activeEventId?: unknown;
+    activeEventIds?: unknown;
+    activeEventCount?: unknown;
+    activeToolCount?: unknown;
+    activeTaskCount?: unknown;
+    activeHostMutations?: unknown;
+    outbox?: unknown;
+  },
+): string[] {
+  const positiveCount = (value: unknown): number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+  const activeEvents = positiveCount(status.activeEventCount)
+    || (Array.isArray(status.activeEventIds) ? status.activeEventIds.length : 0)
+    || (status.activeEventId ? 1 : 0);
+  const blockers: string[] = [];
+  if (activeEvents > 0 && typeof status.activeToolCount !== 'number') {
+    blockers.push('活动 Run 未报告在途 Tool 状态');
+  } else {
+    const tools = positiveCount(status.activeToolCount);
+    if (tools > 0) blockers.push(`在途 Tool ${tools}`);
+  }
+  const workers = positiveCount(status.activeTaskCount);
+  if (workers > 0) blockers.push(`独立 Task worker ${workers}`);
+  const mutations = positiveCount(status.activeHostMutations);
+  if (mutations > 0) blockers.push(`Host mutation ${mutations}`);
+  const sending = positiveCount(status.outbox && typeof status.outbox === 'object'
+    ? (status.outbox as Record<string, unknown>).sending
+    : undefined);
+  if (sending > 0) blockers.push(`Outbox sending ${sending}`);
+  return blockers;
+}
+
 export function assertDaemonWorkspace(
   workspaceRoot: unknown,
   expectedWorkspaceRoot: string,

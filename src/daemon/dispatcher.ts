@@ -176,6 +176,8 @@ export class MimiDispatcher {
       activeEventId: this.active.values().next().value?.task.id,
       activeEventIds: [...this.active.keys()],
       activeEventCount: this.active.size,
+      activeToolCount: [...this.active.values()]
+        .reduce((total, execution) => total + execution.tools, 0),
       ...this.store.counts(),
     };
   }

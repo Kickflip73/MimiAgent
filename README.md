@@ -241,6 +241,7 @@ mimi "读取 package.json 并介绍这个项目"
 mimi daemon start
 mimi daemon stop
 mimi daemon restart
+mimi daemon restart --force
 mimi daemon status
 mimi daemon doctor
 mimi daemon diagnostics ./mimi-diagnostics.json
@@ -250,6 +251,12 @@ mimi daemon --help
 ```
 
 `mimi daemon status` 默认输出适合终端阅读的健康摘要；脚本、自动化和完整排障数据使用 `mimi daemon status --json`。
+
+普通 `restart` 在有活动工作时失败关闭。`restart --force` 只会中断并安全重排“尚无
+在途 Tool”的模型 Run；在途 Tool、独立 Task worker、Host mutation 或正在发送的
+Outbox 仍会阻止重启，避免 uncertain 副作用被重放。排队、阻塞、死信和待简报等持久
+积压本身不是重启阻塞项。若从 MimiAgent 自己的 Shell Tool 内执行，当前 Tool 会构成
+安全阻塞；需要在另一个终端运行该维护命令。
 
 首次 `mimi` 会执行幂等初始化：创建权限为 `0700` 的 MimiAgent 数据目录、`0600` 的策略/Connector 配置和本机数据库，并把发布包内的 Connector 目录物化为当前安装位置的绝对路径。macOS 默认启用无界面的 System Connector 和 action-only Desktop Connector；Desktop 默认不轮询、不打开 GUI，只有明确调用 action 才执行。Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Browser、Screen、Voice 和三个个人消息配置槽位默认关闭。旧版自动启用的 canonical 本机 Connector 会一次性切换到轻量默认，后续用户显式启停仍会保留；个人消息槽位也只补一次，owner 删除后不会反复恢复。Calendar/Reminders 与 Mail 即使被启用，也不会为了后台轮询重新打开已关闭的 App。OpenClaw 微信、Radar 等额外数据源保持关闭。升级会删除旧大象 Bot/AppleScript、QQ OneBot/NapCat、通用 HTTP Action 及 QQ/微信 AppleScript Connector 配置，补齐缺失的默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充新 action。个人 QQ/微信 Adapter 尚未实现；现有 QQ CUA Skill 和 OpenClaw iLink Bot 都不是个人消息通道的自动降级路线。`mimi daemon doctor` 只读检查模型 Key、脚本、系统命令、后台、运行中 Connector、dead letter、容量阈值和 launchd 状态，不读取邮件、消息或屏幕，也不触发系统授权。
 
@@ -488,10 +495,18 @@ mimi provider add acme \
   --api-key-env ACME_API_KEY \
   --model exact-model-id \
   --tool-calling true
+mimi provider add acme/second-exact-model-id \
+  --tool-calling true
 mimi provider list
 mimi provider test acme/exact-model-id
 mimi provider set acme/exact-model-id
 ```
+
+已有 Provider 可用 `providerId/modelId` 简写追加模型，连接地址和 credential 引用继承
+该 Provider；未知能力仍默认 `false`，必须按已知协议能力显式声明。registry 的任何
+实际内容变化都会由缓存 Session actor 在下一 Run/control 安全点重载，即使旧工具没有
+递增 `routeVersion`；活动 Run/Team 的冻结 binding 不变。`reload_mcp` 只重载 MCP，
+不会也不需要用来刷新模型 registry。
 
 未知能力默认 `false`；不兼容的视觉、生图或推理要求会在 Provider 调用前失败关闭。
 旧环境变量模型列表和 `mimi provider set openai|deepseek|openai-compatible ...`

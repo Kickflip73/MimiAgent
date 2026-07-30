@@ -318,7 +318,7 @@ test('changing the Session target during a Run affects only the next Run', async
   }
 });
 
-test('two cached Session actors observe one new routeVersion on their next Run', async () => {
+test('two cached Session actors reload registry content on their next Run even without a new routeVersion', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-model-route-refresh-'));
   const leftEndpoint = await fakeGoogle('left');
   const rightEndpoint = await fakeGoogle('right');
@@ -421,6 +421,27 @@ test('two cached Session actors observe one new routeVersion on their next Run',
     };
     assert.equal(info.provider, 'right');
     assert.equal(info.transport, 'google-generate-content');
+
+    const sameVersion = await new ModelConfigStore(modelsFile).read();
+    await new ModelConfigStore(modelsFile).write({
+      ...sameVersion,
+      providers: sameVersion.providers.map((provider) => provider.id === 'right'
+        ? {
+            ...provider,
+            models: [...provider.models, {
+              target: { providerId: 'right', modelId: 'right-new-model' },
+              kind: 'agent' as const,
+              capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+            }],
+          }
+        : provider),
+    });
+    const listed = await host.mutate('session-b', (agent) =>
+      agent.modelControl({ action: 'list' })) as Array<{
+        target: { providerId: string; modelId: string };
+      }>;
+    assert.ok(listed.some((item) =>
+      item.target.providerId === 'right' && item.target.modelId === 'right-new-model'));
   } finally {
     await host?.close();
     await Promise.all([leftEndpoint.close(), rightEndpoint.close()]);

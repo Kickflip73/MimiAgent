@@ -180,6 +180,16 @@ test('provider registry add/set/list/test manages models.json without secrets or
   const contents = await readFile(modelsFile, 'utf8');
   assert.match(contents, /"apiKeyEnv": "TEST_PROVIDER_KEY"/);
   assert.doesNotMatch(contents, /fixture-secret|apiKey":/);
+  assert.deepEqual(await runProviderRegistryCommand([
+    'add',
+    'test-provider/gemini-second',
+    '--tool-calling', 'true',
+  ], modelsFile, environment), {
+    action: 'added',
+    target: { providerId: 'test-provider', modelId: 'gemini-second' },
+    routeVersion: 2,
+    daemonRestarted: false,
+  });
   await assert.rejects(
     runProviderRegistryCommand([
       'add',
@@ -211,7 +221,7 @@ test('provider registry add/set/list/test manages models.json without secrets or
   ], modelsFile, environment), {
     action: 'set',
     target: { providerId: 'test-provider', modelId: 'gemini-explicit' },
-    routeVersion: 2,
+    routeVersion: 3,
     daemonRestarted: false,
   });
   const tested = await runProviderRegistryCommand([
