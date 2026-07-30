@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
   const MAX_TEXT = 4_000;
   const MAX_EVENTS = 200;
   const SESSION_TYPES = Object.freeze(['chat', 'groupchat', 'pubchat', 'collectchat']);
@@ -9,6 +9,7 @@
     observer: null,
     events: [],
     attempts: new Map(),
+    search: null,
   };
 
   function requireObject(value, name) {
@@ -64,6 +65,212 @@
       unread: row.classList.contains('unread'),
       selected: row.classList.contains('selected'),
     };
+  }
+
+  function candidateType(element) {
+    const rowType = sessionType(element);
+    if (rowType) return rowType;
+    const className = String(element.className || '');
+    if (/(?:^|\s)user(?:\s|$)/.test(className)) return 'chat';
+    if (/(?:^|\s)group(?:\s|$)/.test(className)) return 'groupchat';
+    const declared = [
+      element.getAttribute('data-type'),
+      element.getAttribute('data-session-type'),
+      element.closest('[data-type]')?.getAttribute('data-type'),
+      element.closest('[data-session-type]')?.getAttribute('data-session-type'),
+    ].find((value) => SESSION_TYPES.includes(value));
+    if (declared) return declared;
+    const href = element.closest('a[href]')?.getAttribute('href')
+      || element.querySelector('a[href]')?.getAttribute('href');
+    if (!href) return null;
+    try {
+      const url = new URL(href, window.location.href);
+      const routeType = url.searchParams.get('type');
+      return SESSION_TYPES.includes(routeType) ? routeType : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function candidateOwner(element) {
+    return element.closest('.suggest-item')
+      || element.closest('[data-sid], [data-uid], [uid]')
+      || element;
+  }
+
+  function candidateId(element) {
+    return element.getAttribute('data-sid')
+      || element.getAttribute('data-uid')
+      || element.getAttribute('uid')
+      || element.querySelector('[data-sid]')?.getAttribute('data-sid')
+      || element.querySelector('[data-uid]')?.getAttribute('data-uid')
+      || element.querySelector('[uid]')?.getAttribute('uid');
+  }
+
+  function isVisible(element) {
+    return element.getClientRects().length > 0
+      && window.getComputedStyle(element).visibility !== 'hidden';
+  }
+
+  function isSearchSurface(element) {
+    if (element.matches('.comp-session[data-sid]')) return true;
+    let current = element;
+    for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+      if (/search/i.test(String(current.className || ''))) return true;
+    }
+    return false;
+  }
+
+  function candidateRecord(element) {
+    const owner = candidateOwner(element);
+    const sid = candidateId(owner);
+    const declaredType = candidateType(owner);
+    const type = declaredType || (
+      isSearchSurface(owner)
+      && Boolean(
+        owner.hasAttribute('data-uid')
+        || owner.hasAttribute('uid')
+        || owner.querySelector('[data-uid], [uid]'),
+      )
+        ? 'chat'
+        : null
+    );
+    if (!isVisible(owner) || !isSearchSurface(owner)
+      || !sid || !/^\d+$/.test(sid) || !type) return null;
+    const labelElement = owner.querySelector(
+      '.session-name, .comp-session-name, .nickname, [data-session-name], [data-name]',
+    );
+    const label = normalizeText(
+      owner.getAttribute('data-session-name')
+      || owner.getAttribute('data-name')
+      || labelElement?.innerText
+      || labelElement?.textContent
+      || owner.getAttribute('title')
+      || owner.innerText
+      || owner.textContent,
+    );
+    if (!label) return null;
+    return { sid, type, label: label.slice(0, 200) };
+  }
+
+  function searchInput() {
+    const inputs = document.querySelectorAll('#navSearchInput');
+    if (inputs.length !== 1 || inputs[0].tagName !== 'INPUT') {
+      throw new Error('Daxiang target search input must be one input');
+    }
+    return inputs[0];
+  }
+
+  function setInputValue(element, value) {
+    const previousValue = String(element.value || '');
+    const descriptor = Object.getOwnPropertyDescriptor(
+      element.ownerDocument.defaultView.HTMLInputElement.prototype,
+      'value',
+    );
+    if (!descriptor?.set) throw new Error('native input setter unavailable');
+    descriptor.set.call(element, value);
+    if (element._valueTracker?.setValue) {
+      element._valueTracker.setValue(previousValue);
+    }
+    element.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      inputType: value ? 'insertText' : 'deleteContentBackward',
+      data: value || null,
+    }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function beginTargetSearch(raw) {
+    const input = requireObject(raw, 'input');
+    const query = requireString(input.query, 'query', 100).trim();
+    const element = searchInput();
+    state.search = {
+      query,
+      previousValue: String(element.value || ''),
+    };
+    element.focus();
+    element.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      key: query.at(-1) || '',
+    }));
+    setInputValue(element, query);
+    element.dispatchEvent(new KeyboardEvent('keyup', {
+      bubbles: true,
+      key: query.at(-1) || '',
+    }));
+    return { started: true, queryLength: query.length };
+  }
+
+  function targetSearchCandidates(raw) {
+    const input = requireObject(raw, 'input');
+    const query = requireString(input.query, 'query', 100).trim();
+    const limit = Number(input.limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
+      throw new Error('limit must be 1..20');
+    }
+    if (!state.search || state.search.query !== query || searchInput().value !== query) {
+      return { matched: false, reason: 'search_state_changed', candidates: [] };
+    }
+    const normalizedQuery = query.toLocaleLowerCase();
+    const seen = new Set();
+    const candidates = Array.from(document.querySelectorAll('[data-sid], [data-uid], [uid]'))
+      .map(candidateRecord)
+      .filter(Boolean)
+      .filter((candidate) => candidate.label.toLocaleLowerCase().includes(normalizedQuery))
+      .filter((candidate) => {
+        const key = `${candidate.type}:${candidate.sid}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .slice(0, limit);
+    return { matched: true, candidates };
+  }
+
+  function finishTargetSearch() {
+    if (!state.search) return { restored: false, reason: 'search_not_started' };
+    const previousValue = state.search.previousValue;
+    state.search = null;
+    const element = searchInput();
+    setInputValue(element, previousValue);
+    return { restored: true };
+  }
+
+  function activateTargetSearchCandidate(raw) {
+    const input = requireObject(raw, 'input');
+    const query = requireString(input.query, 'query', 100).trim();
+    const sid = requireSid(input.sid);
+    const type = requireType(input.type);
+    if (!state.search || state.search.query !== query || searchInput().value !== query) {
+      return { activated: false, reason: 'search_state_changed' };
+    }
+    const normalizedQuery = query.toLocaleLowerCase();
+    const selector = [
+      `[data-sid="${sid}"]`,
+      `[data-uid="${sid}"]`,
+      `[uid="${sid}"]`,
+    ].join(', ');
+    const matches = Array.from(document.querySelectorAll(selector))
+      .map(candidateOwner)
+      .filter((element, index, all) => all.indexOf(element) === index)
+      .filter((element) => {
+        const candidate = candidateRecord(element);
+        return candidate?.sid === sid
+          && candidate.type === type
+          && candidate.label.toLocaleLowerCase().includes(normalizedQuery);
+      });
+    const sessionMatches = matches.filter((element) => element.matches('.comp-session[data-sid]'));
+    const exact = sessionMatches.length === 1 ? sessionMatches : matches;
+    if (exact.length !== 1) {
+      return {
+        activated: false,
+        reason: exact.length > 1 ? 'target_ambiguous' : 'target_missing',
+        count: exact.length,
+      };
+    }
+    state.search = null;
+    exact[0].click();
+    return { activated: true, sid, type };
   }
 
   function selectedSession() {
@@ -455,6 +662,7 @@
     state.observer = null;
     state.events.length = 0;
     state.attempts.clear();
+    state.search = null;
     return { disposed: true };
   }
 
@@ -472,6 +680,10 @@
       sessionScrollState,
       loadMoreSessions,
       restoreSessionScroll,
+      beginTargetSearch,
+      targetSearchCandidates,
+      finishTargetSearch,
+      activateTargetSearchCandidate,
       selectConversation,
       readCurrentConversation,
       prepareSend,

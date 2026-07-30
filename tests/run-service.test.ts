@@ -455,6 +455,44 @@ test('shared run service preserves a terminal signal when the SDK throws a gener
   assert.equal(isTerminalRunInterruption(failed), true);
 });
 
+test('shared run service commits visible interrupted output for Session continuity', async () => {
+  const controller = new AbortController();
+  const cancellation = new TerminalRunInterruptedError('owner cancelled');
+  let interruptedAnswer: string | undefined;
+  const stream = {
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: undefined,
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() {
+      yield { type: 'raw_model_stream_event', data: { type: 'output_text_delta', delta: '已经核查到一半' } };
+      controller.abort(cancellation);
+      throw new Error('AbortError');
+    },
+  };
+  const agent = {
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => stream,
+    recordEvent: async () => undefined,
+    failRun: async (
+      _error: unknown,
+      _interrupted: boolean,
+      _usage: unknown,
+      visibleAnswer?: string,
+    ) => {
+      interruptedAnswer = visibleAnswer;
+    },
+  } as unknown as MimiAgent;
+
+  await assert.rejects(
+    new AgentRunService(agent).execute({ input: '继续核查', signal: controller.signal }),
+    /AbortError/,
+  );
+  assert.equal(interruptedAnswer, '已经核查到一半');
+});
+
 test('an unfinished Goal completes the Event once with the Host-committed safe answer', async () => {
   const safeAnswer = '长期 Goal 尚未通过验收，已保留当前 Goal 和检查点，不会从头自动重跑。';
   let committedAnswer: string | undefined;

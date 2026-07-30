@@ -365,32 +365,6 @@ function browserArgs(session, command) {
   return ['browser', session.opencliSession, ...command];
 }
 
-function newObservation(session, source) {
-  const observationId = randomUUID();
-  session.observationId = observationId;
-  session.observationSource = source;
-  return observationId;
-}
-
-function requireObservation(session, payload, requiredSource) {
-  const observationId = boundedString(
-    payload.observationId,
-    'payload.observationId',
-    100,
-    true,
-  );
-  if (!session.observationId || observationId !== session.observationId) {
-    throw new Error('observationId is stale; call snapshot, find, or list_tabs again');
-  }
-  if (requiredSource && session.observationSource !== requiredSource) {
-    throw new Error(
-      `${requiredSource} observation is required before this action; call ${requiredSource} first`,
-    );
-  }
-  session.observationId = undefined;
-  session.observationSource = undefined;
-}
-
 function sanitizeWriteResult(action, result, payload) {
   if (!result || typeof result !== 'object' || Array.isArray(result)) {
     return { result };
@@ -443,8 +417,6 @@ async function createSession(kind, target, payload) {
     ref,
     opencliSession,
     kind,
-    observationId: undefined,
-    observationSource: undefined,
   };
   sessions.set(ref, session);
   if (kind === 'owned') {
@@ -529,8 +501,6 @@ async function readUrl(target, payload) {
     ref: `browser:${randomUUID()}`,
     opencliSession: `mimi-read-${randomUUID().slice(0, 8)}`,
     kind: 'owned',
-    observationId: undefined,
-    observationSource: undefined,
   };
   await runOpenCli([
     'browser',
@@ -661,8 +631,8 @@ async function executeReadAction(action, session, payload) {
       ? safeResult
       : { value: safeResult };
   const observationId = OBSERVATION_ACTIONS.has(action)
-    ? newObservation(session, action)
-    : session.observationId;
+    ? randomUUID()
+    : undefined;
   return {
     ...normalized,
     ...(observationId ? { observationId } : {}),
@@ -773,10 +743,6 @@ async function executeWriteAction(action, session, payload) {
     ];
   } else throw new Error(`unsupported write action: ${action}`);
 
-  // Consume the observation only after every payload field has been validated.
-  // A rejected command never reaches Chrome and must remain safely correctable
-  // with the same snapshot.
-  requireObservation(session, payload, action === 'execute_javascript' ? 'snapshot' : undefined);
   const result = await runOpenCli(
     browserArgs(session, command),
     { uncertainOnFailure: true },
@@ -786,7 +752,6 @@ async function executeWriteAction(action, session, payload) {
     outcome: 'confirmed',
     completionScope: 'interaction',
     businessOutcome: 'unverified',
-    observationInvalidated: true,
     nextRead: action === 'click' || action === 'double_click'
       ? {
           action: 'list_tabs',
@@ -794,7 +759,7 @@ async function executeWriteAction(action, session, payload) {
         }
       : {
           action: 'snapshot',
-          reason: '写动作后重新观察页面，不能复用旧 observationId 或元素 ref',
+          reason: '写动作后重新观察当前页面并核对结果',
         },
     untrusted: true,
   };

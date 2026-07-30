@@ -123,10 +123,15 @@ interface SessionFile {
   activeSkills?: ActivatedSkill[];
 }
 
-function rollbackIncompleteAttempt(items: AgentInputItem[], start: number): boolean {
-  const attempt = items.slice(start);
-  if (!attempt.length) return false;
+const interruptedAnswerPrefix = '【本轮回答在中断前的可见片段；任务未完成】\n';
 
+function rollbackIncompleteAttempt(
+  items: AgentInputItem[],
+  start: number,
+  fallbackInput?: string,
+  interruptedAnswer?: string,
+): boolean {
+  const attempt = items.slice(start);
   const retainedInputs: AgentInputItem[] = [];
   let previous = start > 0 ? items[start - 1] : undefined;
   for (const item of attempt) {
@@ -137,9 +142,32 @@ function rollbackIncompleteAttempt(items: AgentInputItem[], start: number): bool
     previous = item;
   }
 
+  const durableInput = fallbackInput?.trim().slice(0, 8_000);
+  if (!retainedInputs.length && durableInput) {
+    const fallbackItem = { role: 'user', content: durableInput } as AgentInputItem;
+    if (!previous || JSON.stringify(previous) !== JSON.stringify(fallbackItem)) {
+      retainedInputs.push(fallbackItem);
+    }
+  }
+
+  const visibleAnswer = interruptedAnswer?.trim().slice(0, 20_000);
+  if (visibleAnswer) {
+    retainedInputs.push({
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{
+        type: 'output_text',
+        text: `${interruptedAnswerPrefix}${visibleAnswer}`,
+      }],
+    });
+  }
+
+  if (!attempt.length && !retainedInputs.length) return false;
+
   // An interrupted attempt may contain uncertain tool effects or incomplete
-  // protocol units. Keep only the real user inputs so the next Run retains
-  // task continuity without replaying partial assistant/tool output.
+  // protocol units. Keep real user inputs and an explicitly incomplete snapshot
+  // of text already shown to the owner, without retaining replayable tool items.
   items.splice(start, attempt.length, ...retainedInputs);
   return true;
 }
@@ -483,14 +511,14 @@ export class FileSession implements Session {
     });
   }
 
-  async rollbackRunItems(expectedRunId: string): Promise<boolean> {
+  async rollbackRunItems(expectedRunId: string, interruptedAnswer?: string): Promise<boolean> {
     return this.mutateWhen((session) => {
       const checkpoint = session.checkpoint;
       if (!checkpoint || checkpoint.runId !== expectedRunId || checkpoint.historyStart === undefined) {
         return { result: false, changed: false };
       }
       const start = Math.min(checkpoint.historyStart, session.items.length);
-      if (!rollbackIncompleteAttempt(session.items, start)) {
+      if (!rollbackIncompleteAttempt(session.items, start, checkpoint.input, interruptedAnswer)) {
         return { result: false, changed: false };
       }
       if (session.contextArchive && session.contextArchive.coveredItems > start) {
@@ -512,7 +540,7 @@ export class FileSession implements Session {
       const now = new Date().toISOString();
       if (session.checkpoint.historyStart !== undefined) {
         const start = Math.min(session.checkpoint.historyStart, session.items.length);
-        rollbackIncompleteAttempt(session.items, start);
+        rollbackIncompleteAttempt(session.items, start, session.checkpoint.input);
         if (session.contextArchive && session.contextArchive.coveredItems > start) {
           session.contextArchive = undefined;
         }

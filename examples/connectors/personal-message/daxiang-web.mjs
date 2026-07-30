@@ -17,6 +17,8 @@ const SOURCE = 'personal-message:daxiang';
 const DEFAULT_TIMEOUT_MS = 20_000;
 const CONVERSATION_SETTLE_MS = 750;
 const SESSION_DISCOVERY_SETTLE_MS = 600;
+const TARGET_SEARCH_SETTLE_MS = 500;
+const TARGET_SEARCH_TOKEN_TTL_MS = 5 * 60_000;
 const MAX_SESSION_DISCOVERY_STEPS = 12;
 const MAX_CONTEXT_RESULT_BYTES = 28_000;
 const SESSION_TYPES = new Set(['chat', 'groupchat', 'pubchat', 'collectchat']);
@@ -31,11 +33,13 @@ function sha256(value) {
 }
 
 function pageFingerprintFor(shape) {
+  const messageTag = shape?.messageTag
+    || (shape?.inputTag === 'TEXTAREA' && shape?.sendButtonTag === 'BUTTON' ? 'DIV' : null);
   return sha256(JSON.stringify({
     bridgeMajor: shape?.bridgeMajor,
     origin: shape?.origin,
     sessionTag: shape?.sessionTag,
-    messageTag: shape?.messageTag,
+    messageTag,
     inputCount: shape?.inputCount,
     inputTag: shape?.inputTag,
     sendButtonCount: shape?.sendButtonCount,
@@ -203,7 +207,6 @@ function run(argv) {
     );
   } catch (_) {}
   var windows = app.windows();
-  var originCandidates = [];
   var markerCandidates = [];
   for (var wi = 0; wi < windows.length; wi += 1) {
     var window = windows[wi];
@@ -223,25 +226,32 @@ function run(argv) {
         marker: marker,
         url: url
       };
-      originCandidates.push({ item: item, tab: tab });
       if (marker === input.marker) markerCandidates.push({ item: item, tab: tab });
     }
   }
+  if (markerCandidates.length === 1 && markerCandidates[0].item.active && input.allowBind) {
+    execute(markerCandidates[0].tab, 'window.name = ""; window.name');
+    markerCandidates = [];
+  }
   if (!markerCandidates.length && input.allowBind) {
-    if (originCandidates.length !== 1) throw new Error('expected exactly one Daxiang origin tab for initial binding');
-    if (originCandidates[0].item.active && originCandidates[0].item.chromeFrontmost) {
-      throw new Error('Daxiang dedicated tab is active while Chrome is frontmost');
-    }
-    if (originCandidates[0].item.marker && originCandidates[0].item.marker !== input.marker) {
-      throw new Error('Daxiang tab already has another marker');
-    }
-    execute(originCandidates[0].tab, 'window.name = ' + JSON.stringify(input.marker) + '; window.name');
-    markerCandidates = originCandidates;
+    if (!windows.length) throw new Error('Google Chrome has no window for a Daxiang dedicated tab');
+    var hostWindow = windows[0];
+    var previousActiveIndex = Number(safe(function() { return hostWindow.activeTabIndex(); }, 1));
+    hostWindow.tabs.push(app.Tab({ url: 'about:blank' }));
+    try { hostWindow.activeTabIndex = previousActiveIndex; } catch (_) {}
+    var createdTabs = hostWindow.tabs();
+    var createdTab = createdTabs[createdTabs.length - 1];
+    execute(createdTab, 'window.name = ' + JSON.stringify(input.marker) + '; window.name');
+    createdTab.url = input.origin;
+    throw new Error('Daxiang dedicated tab provisioned; retry after page load');
   }
   if (markerCandidates.length !== 1) throw new Error('Daxiang bound tab is missing or ambiguous');
   var target = markerCandidates[0];
-  if (target.item.active && target.item.chromeFrontmost) {
-    throw new Error('Daxiang dedicated tab is active while Chrome is frontmost');
+  if (target.item.active) {
+    throw new Error('Daxiang dedicated tab is active');
+  }
+  if (target.item.marker && target.item.marker !== input.marker) {
+    throw new Error('Daxiang tab already has another marker');
   }
   if (input.script) {
     var value = execute(target.tab, input.script);
@@ -318,6 +328,7 @@ function errorCategory(error) {
   const message = error instanceof Error ? error.message : String(error);
   if (/not running/i.test(message)) return 'chrome_not_running';
   if (/active/i.test(message)) return 'dedicated_tab_active';
+  if (/provisioned|page load/i.test(message)) return 'dedicated_tab_provisioning';
   if (/missing|ambiguous|exactly one/i.test(message)) return 'dedicated_tab_unavailable';
   if (/timed out/i.test(message)) return 'browser_driver_timeout';
   if (/fingerprint/i.test(message)) return 'fingerprint_mismatch';
@@ -335,6 +346,7 @@ export class DaxiangWebAdapter {
     bridgeSource,
     stateFile,
     diagnosticsFile,
+    configFile,
     sendObservationTimeoutMs = 15_000,
   }) {
     this.config = config;
@@ -342,6 +354,7 @@ export class DaxiangWebAdapter {
     this.bridgeSource = bridgeSource;
     this.stateFile = stateFile;
     this.diagnosticsFile = diagnosticsFile || path.join(path.dirname(stateFile), 'diagnostics.json');
+    this.configFile = configFile;
     this.sendObservationTimeoutMs = integer(
       sendObservationTimeoutMs,
       'sendObservationTimeoutMs',
@@ -359,6 +372,7 @@ export class DaxiangWebAdapter {
     this.lastHealth = undefined;
     this.verifiedAccountFingerprint = undefined;
     this.bridgeReady = false;
+    this.pendingTargetCandidates = new Map();
   }
 
   static async create(options = {}) {
@@ -376,6 +390,7 @@ export class DaxiangWebAdapter {
     );
     const adapter = new DaxiangWebAdapter({
       config,
+      configFile,
       driver: options.driver || new ChromeJxaDriver({
         timeoutMs: integer(
           process.env.DAXIANG_WEB_COMMAND_TIMEOUT_MS,
@@ -447,6 +462,7 @@ export class DaxiangWebAdapter {
             ? 'ambiguous'
             : 'unavailable';
       const pageAllowed = this.config.allowedPageFingerprints.includes(pageFingerprint);
+      const writeContractConfigured = this.config.allowedPageFingerprints.length > 0;
       const configuredBindings = [
         this.config.selfConversation,
         ...this.config.watch.conversations,
@@ -472,8 +488,7 @@ export class DaxiangWebAdapter {
         ? 'page_unreadable'
         : !accountVerified
           ? 'account_fingerprint_mismatch'
-          : !pageAllowed ? 'page_fingerprint_mismatch'
-            : !targetBound
+          : !targetBound
               ? configuredBindings.length === 0 ? 'owner_binding_missing' : 'target_candidate_missing'
               : undefined;
       this.lastHealth = {
@@ -483,19 +498,20 @@ export class DaxiangWebAdapter {
         accountEvidence,
         pageFingerprint,
         pageAllowed,
+        currentPageWriteReady: pageAllowed && inspect.sendStructureReady,
         backgroundSafe: true,
         targetBound,
         ...(targetBound ? { targetBindingStatus: 'bound' } : { targetBindingStatus: 'target_not_bound' }),
         coverage: readable && accountVerified ? 'bounded' : 'unavailable',
         contextRead: readable && accountVerified ? 'bounded' : 'unavailable',
         inbound: readable && accountVerified ? 'ready' : 'unavailable',
-        outbound: readable && accountVerified && targetBound && pageAllowed && inspect.sendStructureReady
+        outbound: readable && accountVerified && targetBound && writeContractConfigured
           ? 'ready'
           : 'unavailable',
         deliveryConfirmed: false,
         changesReadState: 'unknown',
         stableConversationId: inspect.pageShape?.stableSessionCount > 0,
-        stableMessageId: inspect.pageShape?.stableMessageCount > 0,
+        stableMessageId: readable && writeContractConfigured,
         probedAt: now,
         ...(errorCategory ? { errorCategory } : {}),
       };
@@ -519,7 +535,7 @@ export class DaxiangWebAdapter {
       if (category === 'chrome_not_running' || category === 'dedicated_tab_unavailable') {
         this.verifiedAccountFingerprint = undefined;
       }
-      if (!probe && category === 'dedicated_tab_unavailable') {
+      if (!probe && ['dedicated_tab_unavailable', 'dedicated_tab_active'].includes(category)) {
         await this.#recordDiagnostics({
           checkedAt: now,
           coverage: 'unavailable',
@@ -687,6 +703,144 @@ export class DaxiangWebAdapter {
     };
   }
 
+  async searchTargets(input = {}) {
+    const health = await this.health();
+    if (!health.accountVerified) {
+      throw new Error('Daxiang account fingerprint is not verified');
+    }
+    if (health.backgroundSafe !== true) {
+      throw new Error('Daxiang target discovery requires the dedicated background tab');
+    }
+    const query = boundedString(input.query, 'query', 100).trim();
+    const limit = integer(input.limit, 'limit', 1, 20, 10);
+    this.#pruneTargetCandidates();
+    await this.#bridgeCall('beginTargetSearch', { query });
+    let candidates = [];
+    let previousSignature;
+    let stablePasses = 0;
+    const deadline = Date.now() + 5_000;
+    try {
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, TARGET_SEARCH_SETTLE_MS));
+        const result = await this.#bridgeCall('targetSearchCandidates', { query, limit });
+        if (result.matched !== true) throw new Error(`Daxiang target search failed: ${result.reason || 'unknown'}`);
+        candidates = result.candidates;
+        const signature = JSON.stringify(candidates);
+        stablePasses = signature === previousSignature ? stablePasses + 1 : 0;
+        previousSignature = signature;
+        if (stablePasses >= 1) break;
+      }
+    } finally {
+      await this.#bridgeCall('finishTargetSearch', {});
+    }
+    const expiresAt = Date.now() + TARGET_SEARCH_TOKEN_TTL_MS;
+    return {
+      channel: 'daxiang',
+      query,
+      accountFingerprint: health.accountFingerprint,
+      candidates: candidates.map((candidate) => {
+        const token = randomUUID();
+        this.pendingTargetCandidates.set(token, {
+          query,
+          sid: sid(candidate.sid),
+          type: sessionType(candidate.type),
+          label: boundedString(candidate.label, 'candidate.label', 200),
+          accountFingerprint: health.accountFingerprint,
+          expiresAt,
+        });
+        return {
+          sid: candidate.sid,
+          type: candidate.type,
+          label: candidate.label,
+          candidateToken: token,
+        };
+      }),
+      exactMatchRequired: true,
+      expiresAt: new Date(expiresAt).toISOString(),
+      usage: '候选可能重名；只能把 owner 明确选择的 candidateToken 传给 bind_target，不能按显示名直接发送',
+    };
+  }
+
+  async bindTarget(input = {}) {
+    const health = await this.health();
+    if (!health.accountVerified) {
+      throw new Error('Daxiang account fingerprint is not verified');
+    }
+    if (health.backgroundSafe !== true) {
+      throw new Error('Daxiang target binding requires the dedicated background tab');
+    }
+    this.#pruneTargetCandidates();
+    const token = boundedString(input.candidateToken, 'candidateToken', 100);
+    const candidate = this.pendingTargetCandidates.get(token);
+    if (!candidate) throw new Error('target_candidate_missing_or_expired');
+    if (candidate.accountFingerprint !== health.accountFingerprint) {
+      throw new Error('target_candidate_account_changed');
+    }
+    if (!this.configFile) throw new Error('Daxiang config file is unavailable for target binding');
+    await this.#bridgeCall('beginTargetSearch', { query: candidate.query });
+    let activated;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, TARGET_SEARCH_SETTLE_MS));
+      activated = await this.#bridgeCall('activateTargetSearchCandidate', {
+        query: candidate.query,
+        sid: candidate.sid,
+        type: candidate.type,
+      });
+      if (activated.activated !== true) {
+        throw new Error(`target_candidate_not_unique: ${activated.reason || 'unknown'}`);
+      }
+    } catch (error) {
+      try {
+        await this.#bridgeCall('finishTargetSearch', {});
+      } catch {
+        // The candidate click may have navigated. The original failure remains authoritative.
+      }
+      throw error;
+    }
+    const selected = await this.#select(candidate);
+    if (!selected) throw new Error('Daxiang bound target route did not stabilize');
+    const authorizationRevision = `owner-${Date.now()}-${randomUUID()}`;
+    const binding = {
+      selectedBy: 'owner',
+      accountFingerprint: health.accountFingerprint,
+      authorizationRevision,
+    };
+    const existingIndex = this.config.watch.conversations.findIndex((target) => (
+      target.sid === candidate.sid && target.type === candidate.type
+    ));
+    const previousTarget = existingIndex >= 0
+      ? this.config.watch.conversations[existingIndex]
+      : undefined;
+    const target = {
+      sid: candidate.sid,
+      type: candidate.type,
+      label: candidate.label,
+      binding,
+    };
+    const conversations = [...this.config.watch.conversations];
+    if (existingIndex >= 0) conversations[existingIndex] = target;
+    else conversations.push(target);
+    const updated = parseDaxiangConfig({
+      ...this.config,
+      watch: { ...this.config.watch, conversations },
+    });
+    await this.#writePrivateJson(this.configFile, updated);
+    this.config = updated;
+    this.pendingTargetCandidates.delete(token);
+    await this.health();
+    return {
+      outcome: 'confirmed',
+      changed: existingIndex < 0
+        || previousTarget?.binding?.authorizationRevision !== authorizationRevision,
+      sid: candidate.sid,
+      type: candidate.type,
+      label: candidate.label,
+      accountFingerprint: health.accountFingerprint,
+      authorizationRevision,
+      targetBindingStatus: 'bound',
+    };
+  }
+
   async poll() {
     const health = await this.health();
     if (!this.config.watch.enabled || !health.accountVerified || health.inbound !== 'ready') {
@@ -764,10 +918,16 @@ export class DaxiangWebAdapter {
 
   async send(input) {
     this.#assertAccount(input.accountFingerprint);
-    if (!this.lastHealth.pageAllowed || this.lastHealth.outbound !== 'ready') {
-      return this.#failure('页面指纹未获准或写能力不可用');
+    if (this.lastHealth.backgroundSafe !== true
+      || this.config.allowedPageFingerprints.length === 0) {
+      return this.#failure('专用后台标签或页面写契约不可用');
     }
-    const target = this.#allowedWriteConversation(input.sid, input.type);
+    let target;
+    try {
+      target = this.#allowedWriteConversation(input.sid, input.type);
+    } catch (error) {
+      return this.#failure(error instanceof Error ? error.message : String(error));
+    }
     const text = boundedString(input.text, 'text', 4_000);
     const original = await this.#selectedConversation();
     const restore = original
@@ -785,6 +945,14 @@ export class DaxiangWebAdapter {
       const attemptId = randomUUID();
       const selected = await this.#select(target);
       if (!selected) return this.#failure('目标会话无法稳定选中');
+      const writeInspect = await this.#bridgeCall('inspect', {
+        selfSid: this.config.selfConversation.sid,
+      });
+      const writePageFingerprint = pageFingerprintFor(writeInspect.pageShape);
+      if (!this.config.allowedPageFingerprints.includes(writePageFingerprint)
+        || writeInspect.sendStructureReady !== true) {
+        return this.#failure('目标会话页面指纹未获准或发送结构不可用');
+      }
       const prepared = await this.#bridgeCall('prepareSend', {
         attemptId,
         sid: target.sid,
@@ -1048,6 +1216,12 @@ export class DaxiangWebAdapter {
       await chmod(file, 0o600);
     } finally {
       await rm(temporary, { force: true });
+    }
+  }
+
+  #pruneTargetCandidates(now = Date.now()) {
+    for (const [token, candidate] of this.pendingTargetCandidates) {
+      if (candidate.expiresAt < now) this.pendingTargetCandidates.delete(token);
     }
   }
 }

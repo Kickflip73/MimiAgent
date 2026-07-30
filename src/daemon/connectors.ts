@@ -28,6 +28,19 @@ const connectorSchema = z.object({
   healthStabilityMs: z.number().int().min(100).max(120_000).default(5_000),
   deliveryTimeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
   actionTimeoutMs: z.number().int().min(1_000).max(900_000).default(30_000),
+  readinessMonitor: z.object({
+    enabled: z.boolean().default(true),
+    action: z.string().regex(/^[a-zA-Z0-9._-]+$/).default('health_check'),
+    target: z.string().min(1).max(500).default('health'),
+    intervalMs: z.number().int().min(100).max(24 * 60 * 60_000).default(10_000),
+    restartAfterFailures: z.number().int().min(0).max(100).default(3),
+  }).strict().default({
+    enabled: true,
+    action: 'health_check',
+    target: 'health',
+    intervalMs: 10_000,
+    restartAfterFailures: 3,
+  }),
   syncTemplateActions: z.boolean().default(true),
   claimedComputerApps: z.array(z.string().min(1).max(500)).max(100).default([]),
   actions: z.record(
@@ -55,6 +68,14 @@ export type ConnectorFileConfig = z.infer<typeof configSchema>;
 
 export function parseConnectorConfig(value: unknown): ConnectorFileConfig {
   return configSchema.parse(value);
+}
+
+export function connectorReadinessMonitorAction(config: ConnectorConfig): string | undefined {
+  if (!config.readinessMonitor.enabled) return undefined;
+  const action = config.actions[config.readinessMonitor.action];
+  return action?.effect === 'read'
+    ? config.readinessMonitor.action
+    : undefined;
 }
 
 interface ConnectorEventMessage {
@@ -183,7 +204,6 @@ export interface ConnectorActionRequest {
   action: string;
   target: string;
   payload: unknown;
-  operationRef?: string;
 }
 
 export interface ConnectorCapabilityRequest {
@@ -191,6 +211,20 @@ export interface ConnectorCapabilityRequest {
   action: string;
   target: string;
   payload: unknown;
+}
+
+export function connectorCapabilityActionReady(
+  connector: ConnectorCapability,
+  action: ConnectorCapability['actions'][number],
+): boolean {
+  if (!connector.enabled || !connector.online || connector.readiness.stale === true) return false;
+  if (action.effect === 'read') return true;
+  if (action.capability === 'personal-message.target.bind') {
+    return connector.readiness.inbound === 'ready'
+      && connector.readiness.accountVerified === true
+      && connector.readiness.backgroundSafe === true;
+  }
+  return connector.readiness.outbound === 'ready';
 }
 
 export interface ConnectorEnabledResult {
@@ -227,6 +261,9 @@ class ConnectorProcess implements NotificationSink {
   private restartTimer?: NodeJS.Timeout;
   private stableTimer?: NodeJS.Timeout;
   private healthTimer?: NodeJS.Timeout;
+  private readinessMonitorTimer?: NodeJS.Timeout;
+  private readinessMonitorRunning = false;
+  private readinessFailureCount = 0;
   private restartAttempt = 0;
   private healthState: 'initial' | 'outage' | 'healthy' = 'initial';
   private draining = false;
@@ -273,6 +310,7 @@ class ConnectorProcess implements NotificationSink {
       this.stableTimer.unref();
       this.healthTimer = setTimeout(() => this.markHealthy(), this.config.healthStabilityMs);
       this.healthTimer.unref();
+      this.scheduleReadinessMonitor();
     });
     child.once('error', (error) => this.onExit(error));
     child.once('exit', (code, signal) => this.onExit(new Error(`退出 code=${code ?? 'null'} signal=${signal ?? 'none'}`)));
@@ -283,6 +321,8 @@ class ConnectorProcess implements NotificationSink {
     if (this.restartTimer) clearTimeout(this.restartTimer);
     if (this.stableTimer) clearTimeout(this.stableTimer);
     if (this.healthTimer) clearTimeout(this.healthTimer);
+    if (this.readinessMonitorTimer) clearTimeout(this.readinessMonitorTimer);
+    this.readinessMonitorTimer = undefined;
     this.rejectPending(new Error(`Connector ${this.id} 已停止`));
     const child = this.child;
     this.child = undefined;
@@ -646,8 +686,73 @@ class ConnectorProcess implements NotificationSink {
     this.stableTimer = undefined;
     if (this.healthTimer) clearTimeout(this.healthTimer);
     this.healthTimer = undefined;
+    if (this.readinessMonitorTimer) clearTimeout(this.readinessMonitorTimer);
+    this.readinessMonitorTimer = undefined;
     this.rejectPending(error);
     this.recordFailure(error);
+  }
+
+  private readinessMonitorAction(): string | undefined {
+    return connectorReadinessMonitorAction(this.config);
+  }
+
+  private scheduleReadinessMonitor(): void {
+    if (!this.readinessMonitorAction() || this.stopping || this.draining || !this.isOnline) return;
+    if (this.readinessMonitorTimer) clearTimeout(this.readinessMonitorTimer);
+    this.readinessMonitorTimer = setTimeout(() => {
+      this.readinessMonitorTimer = undefined;
+      void this.runReadinessMonitor();
+    }, this.config.readinessMonitor.intervalMs);
+    this.readinessMonitorTimer.unref();
+  }
+
+  private async runReadinessMonitor(): Promise<void> {
+    const action = this.readinessMonitorAction();
+    const monitoredChild = this.child;
+    if (!action || !monitoredChild || this.readinessMonitorRunning
+      || this.stopping || this.draining || !this.isOnline) return;
+    if (this.pending.size > 0 || this.pendingActions.size > 0) {
+      this.scheduleReadinessMonitor();
+      return;
+    }
+    this.readinessMonitorRunning = true;
+    try {
+      await this.executeAction(action, this.config.readinessMonitor.target, {});
+      const capability = this.capability();
+      const healthy = capability.online
+        && capability.readiness.stale !== true
+        && (
+          capability.readiness.inbound === 'ready'
+          || capability.readiness.outbound === 'ready'
+        );
+      if (healthy) this.readinessFailureCount = 0;
+      else this.recordReadinessFailure(monitoredChild);
+    } catch (error) {
+      this.recordReadinessFailure(monitoredChild);
+      process.stderr.write(
+        `[MimiAgent connector:${this.id}] readiness monitor 失败：`
+        + `${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    } finally {
+      this.readinessMonitorRunning = false;
+      if (this.child === monitoredChild && this.isOnline) this.scheduleReadinessMonitor();
+    }
+  }
+
+  private recordReadinessFailure(monitoredChild: ChildProcessWithoutNullStreams): void {
+    this.readinessFailureCount += 1;
+    if (!this.config.restart
+      || this.config.readinessMonitor.restartAfterFailures === 0
+      || this.readinessFailureCount < this.config.readinessMonitor.restartAfterFailures
+      || this.child !== monitoredChild
+      || this.pending.size > 0
+      || this.pendingActions.size > 0) return;
+    this.readinessFailureCount = 0;
+    process.stderr.write(
+      `[MimiAgent connector:${this.id}] readiness 连续不可用，自动重启 Connector 子进程\n`,
+    );
+    monitoredChild.stdin.destroy();
+    monitoredChild.kill('SIGTERM');
   }
 
   private onStartFailure(error: Error): void {
@@ -916,10 +1021,9 @@ export class ConnectorManager {
         `capability_unavailable：没有 Connector 声明 ${request.capability}/${request.action}`,
       );
     }
-    const ready = declared.filter(({ connector, action }) => connector.enabled
-      && connector.online
-      && connector.readiness.stale !== true
-      && (action.effect === 'read' || connector.readiness.outbound === 'ready'));
+    const ready = declared.filter(({ connector, action }) => (
+      connectorCapabilityActionReady(connector, action)
+    ));
     if (ready.length === 0) {
       const reasons = declared.map(({ connector }) => (
         `${connector.id}=${!connector.enabled ? 'disabled'
@@ -1008,7 +1112,14 @@ export class ConnectorManager {
     if (!request.connector.startsWith('personal-')) {
       throw new Error(`Connector ${request.connector} 不是个人消息 Connector`);
     }
-    if (!['list_targets', 'get_context', 'send_message', 'health_check'].includes(request.action)) {
+    if (![
+      'list_targets',
+      'search_targets',
+      'bind_target',
+      'get_context',
+      'send_message',
+      'health_check',
+    ].includes(request.action)) {
       throw new Error(`个人消息 Connector 不允许 action ${request.action}`);
     }
     return this.executeRegisteredAction(request);
