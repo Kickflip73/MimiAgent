@@ -57,6 +57,16 @@
 - Result: `runtime_status` defaults to a summary that does not load Session summary, Memory status, Guidance files, Team state, or full capability items; diagnostic detail requires the explicit enum field.
 - The summary retains the exact final Tool names/digests. Model-facing Skill discovery keeps names/descriptions but removes diagnostic source IDs and absolute paths; the 20-Skill cost contract is at most 60% of the previous catalog while the diagnostic catalog remains unchanged.
 
+## 2026-07-30 R8 Computer frontmost normalization
+- Red: an active App with two windows produced two `frontmost=true` targets; an exact window-level false/true pair was flattened to true/true.
+- Green: both normalization scenarios and the complete Computer suite passed 30/30; `npm run check` passed.
+- Result: target discovery accepts only one exact window-level frontmost signal, leaves ambiguous active-App windows unknown, and marks inactive windows false. Background observation/action now requires an explicitly false focus state instead of treating unknown as safe.
+- Scope: the repair stays inside Cua target normalization and ComputerManager focus checks; it adds no foreground action, approval, permission, dependency, or driver retry.
+
+## 2026-07-30 resumed final verification
+- The earlier handoff was premature because R6-R8 were still listed as remaining. Execution resumed without changing the acceptance criteria.
+- R6, R7, and R8 are now implemented with generic red-to-green contracts. Full `npm test`, standalone build, and final `npm run ci` are pending on this complete source state.
+
 ## 2026-07-30 release verification
 - `npm test` passed 745/745 with skip/todo=0; standalone `npm run build` passed.
 - First `npm run ci` stopped at dependency direction because Goal core imported the runtime failure contract.

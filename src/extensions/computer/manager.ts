@@ -198,19 +198,19 @@ export class ComputerManager {
       const targets = await this.backend.listTargets({ limit: 50 }, signal);
       const target = targets.find((candidate) => (
         authority.allowedApps!.includes(candidate.bundleId)
-        && candidate.frontmost !== true
+        && candidate.frontmost === false
         && (!expectedTarget
           || (candidate.bundleId === expectedTarget.bundleId
             && candidate.pid === expectedTarget.pid
             && candidate.windowId === expectedTarget.windowId))
       ));
       if (!target) {
-        const frontmost = targets.some((candidate) => (
+        const focusUnknown = targets.some((candidate) => (
           authority.allowedApps!.includes(candidate.bundleId)
-          && candidate.frontmost === true
+          && candidate.frontmost !== false
         ));
-        throw new Error(frontmost
-          ? 'target_in_use：allowlist 目标当前 frontmost，拒绝后台观察'
+        throw new Error(focusUnknown
+          ? 'target_in_use：allowlist 目标 frontmost 或焦点状态未知，拒绝后台观察'
           : 'target_not_found：没有可验证的 allowlist 后台窗口');
       }
       await this.observe(authority, {
@@ -230,8 +230,8 @@ export class ComputerManager {
         && candidate.pid === target.pid
         && candidate.windowId === target.windowId
       ));
-      if (!verified || verified.frontmost === true) {
-        throw new Error('target drift：Computer read probe 后目标窗口漂移或进入前台');
+      if (!verified || verified.frontmost !== false) {
+        throw new Error('target drift：Computer read probe 后目标窗口漂移、进入前台或焦点状态未知');
       }
       return {
         boundary: 'computer_manager',
@@ -289,8 +289,8 @@ export class ComputerManager {
       target = observation.target;
       if (!target || !observation.dimensions) throw new Error('UI 动作必须引用带精确窗口目标和尺寸的 Observation');
       this.authorizeApp(authority, target.bundleId);
-      if (this.config.pauseWhenTargetFrontmost && requiredAccess === 'background' && observation.frontmost) {
-        throw new Error('target_in_use：目标应用当前处于前台，暂停后台动作');
+      if (this.config.pauseWhenTargetFrontmost && requiredAccess === 'background' && observation.frontmost !== false) {
+        throw new Error('target_in_use：目标应用处于前台或焦点状态未知，暂停后台动作');
       }
       for (const point of actionCoordinates(input.action)) this.assertPoint(point.x, point.y, observation.dimensions);
       element = actionElement(input.action, observation);
@@ -328,8 +328,8 @@ export class ComputerManager {
           const fresh = freshTargets.find((candidate) => candidate.bundleId === target.bundleId
             && candidate.pid === target.pid && candidate.windowId === target.windowId);
           if (!fresh) throw new Error('stale_observation：目标窗口身份已变化，请重新观察');
-          if (this.config.pauseWhenTargetFrontmost && requiredAccess === 'background' && fresh.frontmost) {
-            throw new Error('target_in_use：目标应用当前处于前台，暂停后台动作');
+          if (this.config.pauseWhenTargetFrontmost && requiredAccess === 'background' && fresh.frontmost !== false) {
+            throw new Error('target_in_use：目标应用处于前台或焦点状态未知，暂停后台动作');
           }
         }
         if (input.action.type === 'drag' && input.action.path.length !== 2) {
@@ -346,7 +346,9 @@ export class ComputerManager {
         if (target && requiredAccess === 'background') {
           const after = await this.backend.listTargets({ query: target.bundleId, limit: 50 }, signal);
           const fresh = after.find((candidate) => candidate.pid === target.pid && candidate.windowId === target.windowId);
-          if (fresh?.frontmost) throw new ComputerActionUncertainError('foreground_violation：后台动作后目标应用意外成为前台，停止后续动作');
+          if (fresh && fresh.frontmost !== false) {
+            throw new ComputerActionUncertainError('foreground_violation：后台动作后目标成为前台或焦点状态未知，停止后续动作');
+          }
         }
         return applied;
       },
