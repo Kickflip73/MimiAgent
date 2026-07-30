@@ -99,7 +99,13 @@ test('initialization syncs action metadata for an identical managed connector co
           syncTemplateActions: true,
           actions: Object.fromEntries(Object.entries(packaged.actions).map(([name, action]) => [
             name,
-            { ...action, description: `stale ${name}`, capability: undefined, effect: 'unknown' },
+            {
+              ...action,
+              description: `stale ${name}`,
+              capability: undefined,
+              effect: 'unknown',
+              modelVisible: false,
+            },
           ])),
         },
       },
@@ -111,7 +117,7 @@ test('initialization syncs action metadata for an identical managed connector co
     ) as {
       connectors: Record<string, {
         args: string[];
-        actions: Record<string, { capability?: string; effect: string }>;
+        actions: Record<string, { capability?: string; effect: string; modelVisible?: boolean }>;
       }>;
     };
     const migrated = persisted.connectors['macos-shortcuts'];
@@ -120,6 +126,7 @@ test('initialization syncs action metadata for an identical managed connector co
     assert.deepEqual(migrated.args, [copiedScript]);
     assert.equal(migrated.actions.list_folders?.capability, 'shortcuts.catalog.read');
     assert.equal(migrated.actions.list_folders?.effect, 'read');
+    assert.equal(migrated.actions.list_folders?.modelVisible, true);
     assert.equal(
       (migrated.actions.list_folders as { description?: string }).description,
       (packaged.actions.list_folders as { description?: string }).description,

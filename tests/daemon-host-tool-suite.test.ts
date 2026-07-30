@@ -247,20 +247,35 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       configPath: '/fixture/connectors.json',
       size: 1,
       listCapabilities: () => [{
-        id: 'mail',
-        enabled: true,
-        online: true,
-        readiness: { inbound: 'ready', outbound: 'ready', deliveryConfirmed: true },
-        source: 'fixture:mail',
-        trust: 'owner',
-        actions: [{
-          name: 'send_message',
-          description: 'send',
-          capability: 'message.send',
-          effect: 'write',
-          routeOwner: 'mail',
+          id: 'mail',
+          enabled: true,
+          online: true,
+          readiness: { inbound: 'ready', outbound: 'ready', deliveryConfirmed: true },
+          source: 'fixture:mail',
+          trust: 'owner',
+          actions: [{
+            name: 'send_message',
+            description: 'send',
+            capability: 'message.send',
+            effect: 'write',
+            routeOwner: 'mail',
+          }],
+        }, {
+          id: 'personal-daxiang',
+          enabled: true,
+          online: true,
+          readiness: { inbound: 'ready', outbound: 'ready' },
+          source: 'fixture:personal-daxiang',
+          trust: 'owner',
+          actions: [{
+            name: 'send_to_owner',
+            description: 'internal owner send',
+            capability: 'personal-message.owner.send',
+            effect: 'write',
+            routeOwner: 'personal-daxiang',
+            modelVisible: false,
+          }],
         }],
-      }],
       setEnabled: async () => ({ ok: true }),
       reload: async () => [],
       executeAction: async () => ({ outcome: 'confirmed', messageId: 'message-1' }),
@@ -281,6 +296,7 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       connectors: manager,
       replyRoute: { channel: 'connector:mail', target: 'owner' },
     });
+    assert.ok(connectorTools.some((tool) => tool.name === 'send_owner_message'));
     await invoke(connectorTools, 'invoke_capability', {
       capability: 'message.send',
       action: 'send_message',
@@ -308,6 +324,17 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       payloadJson: '{}',
     });
     assert.equal(mismatched.suppressed, false);
+
+    const externalTools = createMimiHostTools({
+      store,
+      attention,
+      task,
+      event: { ...event, trust: 'external' },
+      deliveryControl: { suppressed: false },
+      sessionId: 'session-external',
+      connectors: manager,
+    });
+    assert.equal(externalTools.some((tool) => tool.name === 'send_owner_message'), false);
 
     const runtimeTools = createMimiHostTools({
       store,

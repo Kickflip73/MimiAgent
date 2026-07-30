@@ -116,6 +116,21 @@ test('two Sessions in one process persist independent exact Provider targets wit
       MimiAgent.create(config, 'session-a'),
       MimiAgent.create(config, 'session-b'),
     ]);
+    const inspected = await left.modelControl({
+      action: 'inspect',
+      target: { providerId: 'left', modelId: 'left-model' },
+    }) as {
+      provider: {
+        baseUrl?: string;
+        apiKeyEnv?: string;
+        configured?: boolean;
+      };
+    };
+    assert.equal(inspected.provider.baseUrl, leftEndpoint.baseUrl);
+    assert.equal(inspected.provider.apiKeyEnv, 'MIMI_TEST_LEFT_KEY');
+    assert.equal(inspected.provider.configured, true);
+    assert.doesNotMatch(JSON.stringify(inspected), /left-secret/);
+    assert.equal(leftEndpoint.requests.length, 0);
     await Promise.all([
       left.switchModelTarget({ providerId: 'left', modelId: 'left-model' }),
       right.switchModelTarget({ providerId: 'right', modelId: 'right-model' }),

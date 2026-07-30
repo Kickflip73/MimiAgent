@@ -85,7 +85,7 @@ export function createMimiHostTools(context: MimiHostToolContext): Tool[] {
             || route.target !== request.target) return;
           context.deliveryControl.suppressed = true;
           context.deliveryControl.reason = '已通过同一 Connector 会话显式发送回复，抑制重复最终投递';
-        })
+        }, { allowOwnerMessage: context.event.trust === 'owner' })
       : context.connectorRuntime
         ? createConnectorTaskHostTools(context.connectorRuntime)
         : []),

@@ -290,6 +290,30 @@ test('computer tools respect mode and deployment permission boundaries', async (
   assert.deepEqual(toolsForPermission('trusted', tools).map((item) => item.name), ['computer_observe', 'computer_act']);
 });
 
+test('model-facing Computer tools keep observation and authorization handles inside the Host', async () => {
+  const { manager, authority } = await fixture();
+  const tools = createComputerTools(manager, () => authority);
+  const observe = tools.find((item) => item.name === 'computer_observe');
+  const act = tools.find((item) => item.name === 'computer_act');
+  assert.ok(observe && act && 'invoke' in observe);
+  assert.doesNotMatch(
+    JSON.stringify((observe as unknown as Record<string, unknown>).parameters),
+    /observationId|authorizationId/,
+  );
+  assert.doesNotMatch(
+    JSON.stringify((act as unknown as Record<string, unknown>).parameters),
+    /observationId|authorizationId/,
+  );
+
+  const observed = await observe.invoke(new RunContext({}), JSON.stringify({
+    scope: 'window',
+    target: { bundleId: target.bundleId, pid: target.pid, windowId: target.windowId },
+    includeScreenshot: false,
+  })) as Record<string, unknown>;
+  assert.equal(observed.observationId, undefined);
+  assert.ok(Array.isArray(observed.elements));
+});
+
 test('redacts type_text plaintext from semantic and persisted ledger arguments', async () => {
   const raw = JSON.stringify({
     observationId: 'b9c5b354-88d8-4bee-9135-9e550dfca2ab',
@@ -299,6 +323,7 @@ test('redacts type_text plaintext from semantic and persisted ledger arguments',
   const redacted = computerLedgerArguments(raw);
   assert.doesNotMatch(redacted, /private value/);
   assert.doesNotMatch(redacted, /authorization-type-text/);
+  assert.doesNotMatch(redacted, /observationId|authorizationId/);
   assert.match(redacted, /textSha256/);
   assert.match(redacted, /textLength/);
 

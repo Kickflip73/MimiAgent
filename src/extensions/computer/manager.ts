@@ -9,10 +9,11 @@ import type {
   ComputerBackend,
   ComputerConfig,
   ComputerElement,
+  ComputerAction,
   ComputerObserveInput,
   ComputerTargetSummary,
 } from './types.js';
-import { ComputerActionUncertainError } from './types.js';
+import { computerActInputSchema, ComputerActionUncertainError } from './types.js';
 import { ComputerArtifactStore } from './artifact-store.js';
 
 const ACCESS_LEVEL: Record<ComputerAccess, number> = {
@@ -183,6 +184,38 @@ export class ComputerManager {
       data: observation.data,
       screenshot: observation.screenshot,
     };
+  }
+
+  bindLatestRegion(
+    authority: ComputerRunAuthority,
+    rect: Extract<ComputerObserveInput, { scope: 'region' }>['rect'],
+  ): ComputerObserveInput {
+    return {
+      scope: 'region',
+      observationId: this.latestTargetObservation(authority.runId).id,
+      rect,
+    };
+  }
+
+  bindLatestAction(
+    authority: ComputerRunAuthority,
+    action: ComputerAction,
+  ): ComputerActInput {
+    if ([
+      'click',
+      'double_click',
+      'type_text',
+      'set_value',
+      'keypress',
+      'scroll',
+      'drag',
+    ].includes(action.type)) {
+      return computerActInputSchema.parse({
+        observationId: this.latestTargetObservation(authority.runId).id,
+        action,
+      });
+    }
+    return computerActInputSchema.parse({ action });
   }
 
   async observeStableBackgroundWindow(
@@ -438,6 +471,21 @@ export class ComputerManager {
     const observation = state.observations.get(id);
     if (!observation || observation.runId !== runId || !observation.valid || observation.expiresAt <= Date.now()) {
       throw new Error('stale_observation：请重新观察目标窗口');
+    }
+    return observation;
+  }
+
+  private latestTargetObservation(runId: string): StoredObservation {
+    const state = this.runs.get(runId);
+    const observation = state && [...state.observations.values()]
+      .filter((candidate) => candidate.runId === runId
+        && candidate.valid
+        && candidate.expiresAt > Date.now()
+        && candidate.target !== undefined
+        && candidate.dimensions !== undefined)
+      .sort((left, right) => right.capturedAt - left.capturedAt)[0];
+    if (!observation) {
+      throw new Error('stale_observation：当前 Run 没有可绑定的最新窗口观察');
     }
     return observation;
   }

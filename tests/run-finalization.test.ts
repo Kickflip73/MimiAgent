@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   createRunFinalization,
+  executionCompletionDecision,
   toolExecutionManifest,
 } from '../src/core/run-finalization.js';
 
@@ -77,4 +78,25 @@ test('finalization gives shell and uncertain external effects one canonical answ
   assert.deepEqual(record.toolManifest.map((entry) => entry.status), ['succeeded', 'uncertain']);
   assert.equal(record.toolManifest[0]!.modelCallId, 'model-shell');
   assert.notEqual(record.toolManifest[0]!.argumentsDigest, record.toolManifest[1]!.argumentsDigest);
+  assert.equal(executionCompletionDecision(calls), 'uncertain');
+});
+
+test('ordinary run completion is not downgraded by a recovered failed-safe action', () => {
+  assert.equal(executionCompletionDecision([{
+    sessionId: 'owner',
+    runId: 'run-1',
+    toolName: 'invoke_capability',
+    callId: 'rejected',
+    argumentsJson: '{}',
+    status: 'failed',
+    error: 'rejected before dispatch',
+  }, {
+    sessionId: 'owner',
+    runId: 'run-1',
+    toolName: 'invoke_capability',
+    callId: 'corrected',
+    argumentsJson: '{}',
+    status: 'succeeded',
+    output: { outcome: 'confirmed' },
+  }]), undefined);
 });

@@ -27,7 +27,8 @@
         "search_targets": { "description": "在 personal-daxiang 专用后台标签内按 owner 给出的姓名查找有界候选；target=people，payloadJson={\"query\":\"姓名\",\"limit\":10}。返回稳定 sid、类型和一次性 candidateToken；重名时不得静默选择", "capability": "personal-message.targets.search", "effect": "read" },
         "bind_target": { "description": "把 search_targets 返回且经 owner 明确选择的一次性 candidateToken 设为稳定 sid 写目标并发起会话；target 必须是 candidateToken，payloadJson={}。只建立 owner binding，不发送消息", "capability": "personal-message.target.bind", "effect": "write" },
         "get_context": { "description": "按最近一页 list_targets 返回的具体 numeric sid 按需读取有界大象会话上下文；无需预配 read allowlist，target=* 或 all 无效；payloadJson 建议传 {\"limit\":15}", "capability": "personal-message.context.read", "effect": "read" },
-        "send_message": { "description": "仅供 PersonalMessageHub 向已绑定 sid 发送一条文本", "capability": "personal-message.send", "effect": "write" }
+        "send_message": { "description": "仅供 PersonalMessageHub 向已绑定 sid 发送一条文本", "capability": "personal-message.send", "effect": "write", "modelVisible": false },
+        "send_to_owner": { "description": "Host 内部：向配置中 owner 自会话发送文本，Connector 自行校验账号、目标和最新上下文", "capability": "personal-message.owner.send", "effect": "write", "modelVisible": false }
       }
     },
     "personal-qq": {

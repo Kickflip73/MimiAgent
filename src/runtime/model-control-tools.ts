@@ -24,7 +24,7 @@ export function createModelControlTools(controls: ModelControlTools): Tool[] {
   return [
     tool({
       name: 'model_control',
-      description: '结构化查看或配置模型路由；写操作仅限 direct Owner。',
+      description: '结构化查看或配置模型路由。inspect 会返回 Provider endpoint、credential 环境变量名和配置状态，但不返回 credential 原值；写操作仅限 direct Owner。',
       parameters: z.object({
         action: z.enum(['list', 'inspect', 'current', 'use', 'auto', 'routes', 'route', 'doctor']),
         scenario: scenarioSchema.optional(),

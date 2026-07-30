@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing Provider, and add a bounded `daemon restart --force` that interrupts
   only model-only Runs while preserving Tool, worker, Host mutation, Outbox and
   at-most-once side-effect boundaries
+- scope Provider circuit breakers to the resolved `providerId/modelId` for each
+  Run, so a model-specific 429 on a shared gateway does not block other models
+  while repeated requests to the limited model remain fenced
+- move non-profile external-action safeguards out of model instructions and into
+  Host/tool code: hide internal Connector actions, add business-only owner
+  messaging, bind Computer observations internally, classify ordinary uncertain
+  runs as incomplete, and route all KM Skills to the official Citadel CLI
 - close the multi-Provider review gaps with a product `generate_image` Media
   WorkUnit, native Anthropic/Gemini image blocks, fail-closed capability checks,
   exact target/transport tool and transcript handling, and routeVersion refresh

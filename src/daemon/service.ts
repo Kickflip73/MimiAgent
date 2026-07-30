@@ -816,7 +816,8 @@ async function mergeTemplateActions(
         return currentAction !== undefined
           && (currentAction.description !== packagedAction.description
             || (currentAction.capability === undefined && packagedAction.capability !== undefined)
-            || (currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown'));
+            || (currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown')
+            || currentAction.modelVisible !== packagedAction.modelVisible);
       })
       : [];
     const missingEnv = (REQUIRED_CONNECTOR_ENV[id] ?? []).filter((name) => (
@@ -845,6 +846,9 @@ async function mergeTemplateActions(
           : {}),
         ...(currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown'
           ? { effect: packagedAction.effect }
+          : {}),
+        ...(currentAction.modelVisible !== packagedAction.modelVisible
+          ? { modelVisible: packagedAction.modelVisible }
           : {}),
       }];
     }));
@@ -1422,6 +1426,10 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
     const backupProvider = providerBackupRouteFromEnvironment(config.provider);
     const runService = (runtime: MimiAgent) => new AgentRunService(runtime, {
       providerId: config.provider,
+      providerIdForRun: (request) => runtime.providerReliabilityKey(
+        request.modelInput ?? request.input,
+        request.options,
+      ),
       ...(backupProvider ? { backupProvider } : {}),
     });
     if (config.computer) {

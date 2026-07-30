@@ -57,6 +57,7 @@ const TOOL_DESCRIPTOR_DEFINITIONS = {
   reload_mimi_connectors: { capabilities: ['state-write'], sideEffect: true },
   connector_action: { capabilities: ['state-write'], sideEffect: true },
   invoke_capability: { capabilities: ['state-write'], sideEffect: true },
+  send_owner_message: { capabilities: ['state-write'], sideEffect: true },
   get_personal_message_context: { capabilities: ['state-read'], modes: ALL_MODES },
   send_personal_message: { capabilities: ['state-write'], sideEffect: true },
   memory_search: { capabilities: ['memory-read'], modes: ALL_MODES },
@@ -222,6 +223,7 @@ const WORKSTATION_CAPABILITIES = new Set<ToolCapability>([
 const FULL_OWNER_ONLY_TOOLS = new Set([
   'connector_action',
   'invoke_capability',
+  'send_owner_message',
   'send_personal_message',
   'set_mimi_connector_enabled',
   'reload_mimi_connectors',

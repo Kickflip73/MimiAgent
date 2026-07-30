@@ -7,7 +7,7 @@ import {
 } from '../core/tool-metadata.js';
 import { ActionFailedSafeError } from '../core/action-intent.js';
 import type { EffectiveCapabilityItem } from '../runtime/pipeline/capability-resolver.js';
-import { isUncertainDeliveryError } from './notifier.js';
+import { isUncertainDeliveryError, UncertainDeliveryError } from './notifier.js';
 import type {
   ConnectorActionRequest,
   ConnectorCapabilityRequest,
@@ -19,6 +19,32 @@ const MAX_CONNECTORS = 50;
 const MAX_ACTIONS = 100;
 const MAX_DESCRIPTION_CHARS = 300;
 const MAX_ACTION_RESULT_BYTES = 32_000;
+const OWNER_MESSAGE_CHANNELS = ['daxiang', 'qq', 'wechat'] as const;
+type OwnerMessageChannel = typeof OWNER_MESSAGE_CHANNELS[number];
+
+function modelVisibleCapabilities(
+  connectors: ConnectorManager,
+): ReturnType<ConnectorManager['listCapabilities']> {
+  return connectors.listCapabilities().map((connector) => ({
+    ...connector,
+    actions: (connector.actions ?? []).filter((action) => action.modelVisible !== false),
+  }));
+}
+
+function ownerMessageChannels(connectors: ConnectorManager): OwnerMessageChannel[] {
+  return connectors.listCapabilities().flatMap((connector) => {
+    if (!connector.enabled || !connector.id.startsWith('personal-')) return [];
+    const channel = connector.id.slice('personal-'.length);
+    if (!OWNER_MESSAGE_CHANNELS.includes(channel as OwnerMessageChannel)) return [];
+    const declared = connector.actions.some((action) => (
+      action.name === 'send_to_owner'
+      && action.capability === 'personal-message.owner.send'
+      && action.effect === 'write'
+      && action.modelVisible === false
+    ));
+    return declared ? [channel as OwnerMessageChannel] : [];
+  });
+}
 
 export interface ConnectorCapabilitySnapshot {
   configFile: string;
@@ -79,7 +105,7 @@ export interface ConnectorCapabilityFilter {
 export function connectorEffectiveCapabilityItems(
   connectors: ConnectorManager,
 ): EffectiveCapabilityItem[] {
-  return connectors.listCapabilities().map((connector) => {
+  return modelVisibleCapabilities(connectors).map((connector) => {
     const readiness = connector.readiness;
     const actions = connector.actions ?? [];
     const stale = readiness.stale === true;
@@ -130,7 +156,7 @@ export interface ConnectorTaskRuntime {
 type InspectCapabilities = ConnectorTaskRuntime['inspectCapabilities'];
 type ExecuteConnectorAction = ConnectorTaskRuntime['executeAction'];
 type ConnectorActionReceipt = Record<string, unknown> & {
-  tool: 'connector_action' | 'invoke_capability';
+  tool: 'connector_action' | 'invoke_capability' | 'send_owner_message';
   connector: string;
   action: string;
   target: string;
@@ -190,8 +216,8 @@ export function connectorCapabilitySnapshot(
   filter: ConnectorCapabilityFilter = {},
 ): ConnectorCapabilitySnapshot {
   const exact = filter.connector
-    ? connectors.listCapabilities().filter((connector) => connector.id === filter.connector)
-    : connectors.listCapabilities();
+    ? modelVisibleCapabilities(connectors).filter((connector) => connector.id === filter.connector)
+    : modelVisibleCapabilities(connectors);
   const capability = filter.capability?.trim();
   const capabilityFiltered = capability
     ? exact.flatMap((connector) => {
@@ -273,7 +299,7 @@ export function createConnectorCapabilityTool(connectors: ConnectorManager): Too
 export function createConnectorCapabilityRuntimeTool(inspect: InspectCapabilities): Tool {
   return tool({
     name: 'inspect_mimi_capabilities',
-    description: '动态读取 MimiAgent 当前 Connector 的进程状态、真实 inbound/outbound 就绪度和结构化 action capability 目录。优先用稳定 capability（例如 browser.page.read）选择能力；query 只是人类可读目录检索，零字面命中不等于没有 Connector。catalogTotal/catalogActions 表示过滤前目录，filterMatched 表示本次过滤是否命中。online 只表示进程存活；执行 action 前还要检查 readiness、effect 和 routeOwner。',
+    description: '读取当前可供模型使用的 Connector 业务能力目录及结构化就绪状态。Host 内部动作不会出现在目录中。',
     parameters: z.object({
       connector: identifier.optional().describe('可选完整 Connector ID 精确过滤，例如 personal-daxiang 或 openclaw-weixin；不要填 daxiang、qq 等渠道简称'),
       capability: z.string()
@@ -286,10 +312,7 @@ export function createConnectorCapabilityRuntimeTool(inspect: InspectCapabilitie
     execute: async (filter, _context, details) => {
       const snapshot = await inspect(filter, details?.signal);
       if (filter.connector && snapshot.catalogTotal === 0) {
-        throw new Error(
-          `Connector ID "${filter.connector}" 未注册；这不是 Connector 离线证据。`
-          + '请先读取完整 capability 目录并使用返回的 routeOwner，不得据此自动降级到 GUI、CUA 或 Shell。',
-        );
+        throw new ActionFailedSafeError(`Connector ID "${filter.connector}" 未注册`);
       }
       return snapshot;
     },
@@ -323,10 +346,15 @@ export function createConnectorEnabledTool(connectors: ConnectorManager): Tool {
 export function createConnectorHostTools(
   connectors: ConnectorManager,
   onAction?: OnConnectorAction,
+  options: { allowOwnerMessage?: boolean } = {},
 ): Tool[] {
+  const ownerChannels = options.allowOwnerMessage ? ownerMessageChannels(connectors) : [];
   return [
     createConnectorCapabilityTool(connectors),
     createInvokeCapabilityTool(connectors, onAction),
+    ...(ownerChannels.length
+      ? [createOwnerMessageTool(connectors, ownerChannels, onAction)]
+      : []),
   ];
 }
 
@@ -351,7 +379,7 @@ export function createInvokeCapabilityTool(
 ): Tool {
   const capabilityTool = tool({
     name: 'invoke_capability',
-    description: '按当前 Effective Capability Snapshot 中的稳定 capability 和 action 执行唯一已就绪 Connector 路线。Host 自动为 write/unknown 动作建立副作用账本，模型无需提供内部幂等字段；confirmed 使用原回执，uncertain 停止。无需猜 Connector ID，也不要先启停 Connector；不得改走 Shell、Computer 或其他 Connector。',
+    description: '调用当前目录中的一项 Connector 业务能力。',
     parameters: z.object({
       capability: z.string()
         .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)
@@ -397,7 +425,7 @@ export function createInvokeCapabilityTool(
     const capability = String(input.capability ?? '');
     const action = String(input.action ?? '');
     const target = String(input.target ?? '');
-    const declarations = connectors.listCapabilities().flatMap((connector) => connector.actions
+    const declarations = modelVisibleCapabilities(connectors).flatMap((connector) => connector.actions
       .filter((candidate) => candidate.name === action && candidate.capability === capability));
     const effect = declarations.length === 1 ? declarations[0]!.effect : 'unknown';
     return {
@@ -420,6 +448,67 @@ export function createInvokeCapabilityTool(
     };
   };
   return capabilityTool;
+}
+
+export function createOwnerMessageTool(
+  connectors: ConnectorManager,
+  channels: readonly OwnerMessageChannel[],
+  onAction?: OnConnectorAction,
+): Tool {
+  const channelSchema = z.enum(channels as [OwnerMessageChannel, ...OwnerMessageChannel[]]);
+  const ownerMessageTool = tool({
+    name: 'send_owner_message',
+    description: '向 owner 自己在指定个人消息渠道发送一条文本。',
+    parameters: z.object({
+      channel: channelSchema,
+      text: z.string().trim().min(1).max(4_000),
+    }).strict(),
+    errorFunction: (_context, error) => connectorActionErrorResult(error),
+    execute: async ({ channel, text }) => {
+      const request: ConnectorActionRequest = {
+        connector: `personal-${channel}`,
+        action: 'send_to_owner',
+        target: 'owner',
+        payload: { text },
+      };
+      const result = await connectors.executePersonalMessageAction(request);
+      const value = result !== null && typeof result === 'object' && !Array.isArray(result)
+        ? result as Record<string, unknown>
+        : undefined;
+      if (value?.status === 'failed') {
+        throw new ActionFailedSafeError(String(value.error ?? '个人消息未执行'));
+      }
+      if (value?.status === 'uncertain') {
+        throw new UncertainDeliveryError(String(value.error ?? '个人消息发送结果不确定'));
+      }
+      const receipt = connectorReceipt('send_owner_message', request, result, 'write');
+      onAction?.(request, receipt);
+      return receipt;
+    },
+  }) as Tool & {
+    [TOOL_ACTION_INTENT]?: (rawInput: string) => ToolActionIntentMetadata;
+  };
+  ownerMessageTool[TOOL_ACTION_INTENT] = (rawInput) => {
+    const input = JSON.parse(rawInput) as Record<string, unknown>;
+    const channel = String(input.channel ?? '');
+    return {
+      actionFamily: 'personal-message.owner.send',
+      targetRef: `personal-${channel}:owner`,
+      payload: {
+        channel,
+        text: String(input.text ?? ''),
+      },
+      selectedRoute: `personal-${channel}`,
+      effect: 'write',
+      guarded: {
+        exactTarget: true,
+        lowRisk: false,
+        reversible: false,
+      },
+      outcome: connectorActionOutcome,
+    };
+  };
+  return ownerMessageTool;
 }
 
 function connectorReceipt(
@@ -465,7 +554,7 @@ function createConnectorActionRuntimeTool(
 ): Tool {
   return tool({
     name: 'connector_action',
-    description: '调用隔离 Connector 已声明的有界读取或外部 action。调用前先用 inspect_mimi_capabilities 按稳定 capability 获取完整 connector ID、action、effect、routeOwner、target 格式和 readiness；禁止从业务词猜测能力。只能调用目录中已声明且由所选 routeOwner 持有的 action；资源被某路线声明后不得改走 GUI、CUA、MCP 或 Shell。个人消息查看、读取或汇总只能使用 effect=read 的目标目录和上下文动作；新消息 Event 同步由 Connector 内部轮询负责，不是模型 action。payloadJson 必须是严格 JSON；结果超时、accepted 或 uncertain 时不得自动重试或换路。',
+    description: '调用任务 Host 已提供的一项 Connector 业务能力。',
     parameters: z.object({
       connector: identifier.describe('Connector ID，例如 macos-mail'),
       action: identifier.describe('Connector 声明的 action 名称，例如 send_message'),

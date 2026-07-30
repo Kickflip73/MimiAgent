@@ -101,6 +101,18 @@ test('personal message connector stays diagnosable when Daxiang config is missin
     const sync = await waitFor(messages, (message) => message.id === 'sync-1');
     assert.equal(sync.ok, false);
     assert.match(sync.error ?? '', /unsupported action: sync_now/);
+
+    child.stdin.write(`${JSON.stringify({
+      type: 'action',
+      id: 'owner-send-1',
+      action: 'send_to_owner',
+      target: 'owner',
+      payload: { text: 'hello' },
+      deadlineAt: Date.now() + 2_000,
+    })}\n`);
+    const ownerSend = await waitFor(messages, (message) => message.id === 'owner-send-1');
+    assert.equal(ownerSend.ok, false);
+    assert.match(ownerSend.error ?? '', /owner account or self conversation is not ready/);
   } finally {
     await stop(child);
   }
