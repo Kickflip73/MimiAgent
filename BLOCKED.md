@@ -2,6 +2,20 @@
 
 - **2026-07-30 initial test baseline dependency prerequisite**: this worktree has no usable local `node_modules`; `npm run check` exits 127 with `tsc: command not found`, and the selected ten focused test files fail in the loader with `ERR_MODULE_NOT_FOUND: tsx` before executing any tests. This is not classified as a source regression. Continue read-only analysis and restore only lockfile-declared dependencies with `npm ci`; do not change `package.json` or `package-lock.json`.
 
+- **2026-07-29 多模型分层路由实现及真实 Daemon 验收：无。**
+- **2026-07-29 多模型任务 0 环境差异（非实施阻塞）**：
+  `git branch --show-current` 为空，但补充核实这是
+  `create_thread(startingState=working-tree)` 独立 worktree 的预期状态；`HEAD`、本地
+  `codex/mimiagent-integrated` 与 `origin/codex/mimiagent-integrated` 均为
+  `cc362de19453a03230c19c118a775171e154eea2`。不切分支、不提交或推送，并保留继承
+  的脏改动。首次 `npm run check` exit 127，
+  原始错误为 `sh: tsc: command not found`，说明此 worktree 尚未安装本地依赖；
+  `npm ci` 后 `npm run check` 已通过。首次 `npm test` 实际为
+  `tests 726 / pass 720 / fail 6 / skipped 0`，不等于规格记录的 726/726：
+  `tests/computer.test.ts` 一项 fake Cua `--version` 进程被 SIGTERM，
+  `tests/qq-messenger-skill.test.ts` 五项观察到共享 QQ 后台通道忙。两组都在本任务
+  实现白名单之外；随后聚焦复跑实际为 `tests 40 / pass 40 / fail 0 / skipped 0`，
+  确认为一次性环境争用，不会为通过基线修改越界代码。
 - **M1.1 等待运行时重新冻结并重启 24h 日历 soak**：历史正式实机已累计 129/129
   成功；构建 `0.12.0+9bf15be88f93` 的首轮正式 canary 完成 20/20，
   Browser/Computer/Screen/Shortcuts 各 5/5，blocked/failed/uncertain=0，
@@ -26,7 +40,11 @@
   1 个 active Event 和未提交运行时改动，M1.1 仍不能退出。
   `2026-07-29T16:24:44.066Z` 时 Daemon 又重启为 `0.12.0+bc01c6e46deb`；
   虽然 idle，但仍有大量未提交运行时/M1 清单改动，且仓库基线发生重写，不能建立
-  可追溯新 T0。
+  可追溯新 T0。`2026-07-29T20:26:16.029Z` 时 Daemon 又变为
+  `0.12.0+4698e88155a3`；运行面虽 idle，但主工作区仍有大量未提交改动并落后
+  远端 2 个提交，不能证明该运行时来自冻结远端基线，本轮继续 blocked。
+  `2026-07-30T00:28:13.145Z` 再次确认同一构建与 idle 状态，但主工作区已落后
+  远端 3 个提交，仍没有新的冻结部署或 T0。
 - **凭证轮换需 owner/外部系统（M-1）**：2026-07-28 发现一枚 Multica access token 曾进入 Task objective、Schedule 和 Memory observation；原值不在本文件或诊断输出中。已扩展统一净化器，验证备份后净化 50 个数据库值，复扫 0 命中，原始记录仅保留在权限受限的已验证恢复备份。该凭证必须在 Multica 控制面吊销并重发；MimiAgent 不得代替 owner 点击授权或猜测新值。
 - **M1 大象真实目标绑定需 owner/外部状态**：当前没有 owner 选定的精确会话、授权 revision，也没有唯一且非活动的已登录大象网页会话可用于 stable sid 绑定。允许完成 deterministic fixture、bounded read、Draft 和 fail-closed 代码；不得写入猜测目标、不得启用真实发送、不得伪造 72h soak。
 - **macOS Life 恢复需 Calendar/Reminders TCC**：`macos-life` 属于 M4，当前保持 disabled 且配置完整。只有 owner 授权后，按 `docs/CONNECTORS.md` 的只读 probe 和恢复门禁重新启用；不得代点系统授权。

@@ -5,6 +5,7 @@ import type {
   SecurityProfile,
 } from '../../config.js';
 import type { AgentMode } from '../instructions.js';
+import type { RunModelBinding } from '../../core/model-routing.js';
 
 export interface RunScopeCause {
   eventId: string;
@@ -26,6 +27,7 @@ export interface RunScope {
   readonly workspaceRoot: string;
   readonly provider: AppConfig['provider'];
   readonly model: string;
+  readonly modelBinding?: Readonly<RunModelBinding>;
   readonly mode: AgentMode;
   readonly permissionMode: AgentPermissionMode;
   readonly securityProfile: SecurityProfile;
@@ -39,6 +41,7 @@ export interface RunScopeInput {
   workspaceRoot: string;
   provider: AppConfig['provider'];
   model: string;
+  modelBinding?: RunModelBinding;
   mode: AgentMode;
   permissionMode: AgentPermissionMode;
   securityProfile: SecurityProfile;
@@ -61,6 +64,12 @@ export function captureRunScope(input: RunScopeInput): RunScope {
     workspaceRoot: input.workspaceRoot,
     provider: input.provider,
     model: input.model,
+    modelBinding: input.modelBinding
+      ? Object.freeze({
+          ...input.modelBinding,
+          target: Object.freeze({ ...input.modelBinding.target }),
+        })
+      : undefined,
     mode: input.mode,
     permissionMode: input.permissionMode,
     securityProfile: input.securityProfile,

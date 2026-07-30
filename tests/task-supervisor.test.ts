@@ -1,15 +1,21 @@
 import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import type { AppConfig } from '../src/config.js';
 import {
   TaskProcessSupervisor,
   defaultTaskWorkerEntry,
+  resolveTaskModel,
+  routedTaskProviderCredential,
   taskEmbeddingCredential,
   taskWorkerEnvironment,
   taskWorkerExecArgv,
   taskWorkerRuntimeReadiness,
 } from '../src/daemon/task-supervisor.js';
 import type { TaskRecord } from '../src/daemon/types.js';
+import { ModelConfigStore } from '../src/runtime/model-config.js';
 
 function task(id: string, executor: TaskRecord['executor']): TaskRecord {
   return {
@@ -143,6 +149,93 @@ test('task worker forwards explicit embedding configuration and keeps the DeepSe
   assert.equal(taskEmbeddingCredential(config, {
     DEEPSEEK_API_KEY: 'chat-only-key',
   }), undefined);
+});
+
+test('background routing sends only the selected Provider and credential to a worker', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-task-model-routing-'));
+  const modelsConfig = path.join(root, 'models.json');
+  await new ModelConfigStore(modelsConfig).write({
+    version: 1,
+    routeVersion: 6,
+    providers: [
+      {
+        id: 'left',
+        label: 'Left',
+        transport: 'openai-chat-completions',
+        baseUrl: 'https://left.example/v1',
+        apiKeyEnv: 'TASK_LEFT_KEY',
+        models: [{
+          target: { providerId: 'left', modelId: 'left-model' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        }],
+      },
+      {
+        id: 'right',
+        label: 'Right',
+        transport: 'openai-chat-completions',
+        baseUrl: 'https://right.example/v1',
+        apiKeyEnv: 'TASK_RIGHT_KEY',
+        models: [{
+          target: { providerId: 'right', modelId: 'right-model' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        }],
+      },
+    ],
+    routing: {
+      globalDefault: { providerId: 'left', modelId: 'left-model' },
+      scenarios: {
+        'background.default': {
+          target: { providerId: 'right', modelId: 'right-model' },
+        },
+      },
+    },
+  });
+  const saved = {
+    left: process.env.TASK_LEFT_KEY,
+    right: process.env.TASK_RIGHT_KEY,
+  };
+  process.env.TASK_LEFT_KEY = 'left-fixture-key';
+  process.env.TASK_RIGHT_KEY = 'right-fixture-key';
+  try {
+    const routed = await resolveTaskModel({
+      provider: 'openai',
+      modelsConfig,
+      workspaceRoot: root,
+      dataRoot: path.join(root, 'data'),
+      skillsRoot: path.join(root, 'skills'),
+      mcpConfig: path.join(root, 'mcp.json'),
+      historyLimit: 40,
+      maxTurns: null,
+    }, task('routed-task', 'isolated_worker') as never);
+    assert.deepEqual(routed.binding.target, {
+      providerId: 'right',
+      modelId: 'right-model',
+    });
+    assert.equal(routed.configuration.providers.length, 1);
+    assert.equal(routed.configuration.providers[0]?.id, 'right');
+    assert.equal(routed.configuration.providers[0]?.models.length, 1);
+    assert.doesNotMatch(JSON.stringify(routed.configuration), /fixture-key/);
+    assert.deepEqual(routedTaskProviderCredential(
+      routed.provider,
+      routed.binding,
+      {
+        TASK_LEFT_KEY: 'left-fixture-key',
+        TASK_RIGHT_KEY: 'right-fixture-key',
+      },
+    ), {
+      providerId: 'right',
+      apiKeyEnv: 'TASK_RIGHT_KEY',
+      target: { providerId: 'right', modelId: 'right-model' },
+      apiKey: 'right-fixture-key',
+    });
+  } finally {
+    if (saved.left === undefined) delete process.env.TASK_LEFT_KEY;
+    else process.env.TASK_LEFT_KEY = saved.left;
+    if (saved.right === undefined) delete process.env.TASK_RIGHT_KEY;
+    else process.env.TASK_RIGHT_KEY = saved.right;
+  }
 });
 
 test('task worker dependency preflight fails before a queued task can consume an attempt', async () => {

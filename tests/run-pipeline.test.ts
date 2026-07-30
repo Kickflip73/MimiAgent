@@ -276,6 +276,7 @@ test('state loader skips every unauthorized source', async () => {
     loadTeamSummary: denied,
     loadHistory: denied,
     loadSoul: denied,
+    loadPreferences: denied,
     loadProjectGuidance: denied,
     loadArchive: denied,
     loadActiveSkills: denied,
@@ -293,6 +294,42 @@ test('state loader skips every unauthorized source', async () => {
   assert.ok(Object.isFrozen(state));
 });
 
+test('state loader can inject direct-owner Soul and preferences without granting local file access', async () => {
+  const denied = () => Promise.reject(new Error('unauthorized loader was called'));
+  const soul = {
+    files: [],
+    instructions: 'Mimi identity',
+  };
+  const preferences = {
+    files: [],
+    instructions: 'owner behavior preferences',
+  };
+  const loader = new RunStateLoader({
+    hotProfile: denied,
+    searchMemories: denied,
+    loadPlan: denied,
+    loadGoal: denied,
+    loadTeamSummary: denied,
+    loadHistory: denied,
+    loadSoul: async () => soul,
+    loadPreferences: async () => preferences,
+    loadProjectGuidance: denied,
+    loadArchive: denied,
+    loadActiveSkills: denied,
+  });
+  const state = await loader.load({
+    canReadLocal: false,
+    canReadMemory: false,
+    canReadState: false,
+    canReadSessionContext: false,
+    completionToolsAllowed: false,
+    computerAccess: 'none',
+  }, { loadOwnerSoul: true, loadOwnerPreferences: true });
+  assert.equal(state.soul.instructions, soul.instructions);
+  assert.equal(state.preferences.instructions, preferences.instructions);
+  assert.equal(state.projectGuidance.instructions, '');
+});
+
 test('request factory freezes the model-facing tool order and output cap', () => {
   const request = new AgentRequestFactory().create({
     model: 'gpt-test',
@@ -305,4 +342,18 @@ test('request factory freezes the model-facing tool order and output cap', () =>
   assert.equal(request.maxTokens, 4_096);
   assert.deepEqual(request.toolNames, ['read_file', 'delegate_research']);
   assert.ok(Object.isFrozen(request.toolNames));
+});
+
+test('request factory maps the provider-neutral reasoning intent into SDK settings', () => {
+  const create = (reasoning: 'off' | 'auto' | 'high') => new AgentRequestFactory().create({
+    model: 'gpt-test',
+    instructions: 'system',
+    tools: [],
+    mcpServers: [],
+    outputReserve: 8_000,
+    reasoning,
+  }).agent.modelSettings.reasoning?.effort;
+  assert.equal(create('off'), 'none');
+  assert.equal(create('auto'), undefined);
+  assert.equal(create('high'), 'high');
 });

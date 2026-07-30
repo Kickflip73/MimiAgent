@@ -89,6 +89,20 @@ function fakeAgent(): MimiAgent {
     setGoal: async (objective: string) => ({ objective, status: 'active', createdAt: '', updatedAt: '' }),
     resumePrompt: async () => 'resume goal',
     availableModels: () => ['deepseek-chat', 'deepseek-reasoner'],
+    modelControl: async (request: { action: string }) => {
+      if (request.action === 'list') {
+        return ['deepseek-chat', 'deepseek-reasoner'].map((model) => ({
+          target: { providerId: 'deepseek', modelId: model },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+          provider: { id: 'deepseek', label: 'DeepSeek', transport: 'openai-chat-completions' },
+        }));
+      }
+      if (request.action === 'current') {
+        return { next: { target: { providerId: 'deepseek', modelId: 'deepseek-chat' } } };
+      }
+      return { effective: 'next_run', daemonRestarted: false };
+    },
     switchModel: () => undefined,
     contextInfo: async () => ({ historyItems: 4, historyLimit: 40, estimatedTokens: 1200, contextWindow: 128000, memories: 1, planSteps: 1, goal: 'active' }),
     compactContext: async () => ({
@@ -275,10 +289,14 @@ test('selects sessions and restores their persisted transcript', async () => {
 });
 
 test('selects a model and exposes common runtime inspection commands', async () => {
-  const switched: string[] = [];
+  const switched: unknown[] = [];
   const output: string[] = [];
-  const agent = fakeAgent() as MimiAgent & { switchModel: (name: string) => void };
-  agent.switchModel = async (name) => { switched.push(name); };
+  const agent = fakeAgent();
+  const baseModelControl = agent.modelControl.bind(agent);
+  agent.modelControl = async (request) => {
+    if ((request as { action?: unknown }).action === 'use') switched.push(request);
+    return baseModelControl(request);
+  };
   const handler = new CommandHandler(agent, async () => undefined, {
     write: (text) => output.push(text),
     selectModel: async () => ({
@@ -293,7 +311,10 @@ test('selects a model and exposes common runtime inspection commands', async () 
   assert.equal(await handler.execute('/compact'), 'handled');
   assert.equal(await handler.execute('/tools'), 'handled');
   assert.equal(await handler.execute('/mcp'), 'handled');
-  assert.deepEqual(switched, ['deepseek-reasoner']);
+  assert.deepEqual(switched, [{
+    action: 'use',
+    target: { providerId: 'deepseek', modelId: 'deepseek-reasoner' },
+  }]);
   assert.match(output.join('\n'), /历史条目/);
   assert.match(output.join('\n'), /已归档 8 个历史条目/);
   assert.match(output.join('\n'), /run_shell/);
@@ -323,6 +344,34 @@ test('lists models from every configured Provider and switches across Providers'
   let choices: string[] = [];
   const providerSwitches: Array<{ provider: string; model: string }> = [];
   const localSwitches: string[] = [];
+  const modelControlCalls: unknown[] = [];
+  agent.modelControl = async (request) => {
+    const action = (request as { action?: unknown }).action;
+    if (action === 'list') {
+      return [
+        {
+          target: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
+          kind: 'agent',
+          provider: { label: 'DeepSeek' },
+        },
+        {
+          target: { providerId: 'deepseek', modelId: 'deepseek-v4-flash' },
+          kind: 'agent',
+          provider: { label: 'DeepSeek' },
+        },
+        {
+          target: { providerId: 'openai-compatible', modelId: 'kimi-k3' },
+          kind: 'agent',
+          provider: { label: 'OpenAI Compatible' },
+        },
+      ];
+    }
+    if (action === 'current') {
+      return { next: { target: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' } } };
+    }
+    modelControlCalls.push(request);
+    return { effective: 'next_run', daemonRestarted: false };
+  };
   agent.switchModel = async (model) => { localSwitches.push(model); };
   const handler = new CommandHandler(agent, async () => undefined, {
     write: () => undefined,
@@ -342,11 +391,122 @@ test('lists models from every configured Provider and switches across Providers'
     'openai-compatible:kimi-k3',
   ]);
   assert.deepEqual(localSwitches, []);
-  assert.deepEqual(providerSwitches, [{ provider: 'openai-compatible', model: 'kimi-k3' }]);
+  assert.deepEqual(providerSwitches, []);
+  assert.deepEqual(modelControlCalls, [{
+    action: 'use',
+    target: { providerId: 'openai-compatible', modelId: 'kimi-k3' },
+  }]);
+});
+
+test('keeps the selected Provider when duplicate model ids exist', async () => {
+  const agent = fakeAgent();
+  const baseRuntimeInfo = agent.runtimeInfo.bind(agent);
+  agent.runtimeInfo = async () => ({
+    ...await baseRuntimeInfo(),
+    provider: 'openai-compatible',
+    model: 'deepseek-v4-pro',
+    configuredProviders: [
+      {
+        id: 'deepseek',
+        label: 'DeepSeek',
+        model: 'deepseek-v4-pro',
+        models: ['deepseek-v4-pro'],
+      },
+      {
+        id: 'openai-compatible',
+        label: 'OpenAI Compatible',
+        model: 'deepseek-v4-pro',
+        models: ['deepseek-v4-pro'],
+      },
+    ],
+  });
+  const calls: unknown[] = [];
+  agent.modelControl = async (request) => {
+    const action = (request as { action?: unknown }).action;
+    if (action === 'list') {
+      return [
+        {
+          target: { providerId: 'friday', modelId: 'deepseek-v4-pro' },
+          kind: 'agent',
+          provider: { label: 'Friday DeepSeek V4 Pro' },
+        },
+        {
+          target: { providerId: 'deepseek', modelId: 'deepseek-v4-pro' },
+          kind: 'agent',
+          provider: { label: 'DeepSeek' },
+        },
+      ];
+    }
+    if (action === 'current') {
+      return { next: { target: { providerId: 'friday', modelId: 'deepseek-v4-pro' } } };
+    }
+    calls.push(request);
+    return { effective: 'next_run', daemonRestarted: false };
+  };
+  agent.switchModel = async () => {
+    throw new Error('legacy model switch must not run');
+  };
+  const output: string[] = [];
+  const handler = new CommandHandler(agent, async () => undefined, {
+    write: (text) => output.push(text),
+    selectModel: async (models) => models.find((choice) =>
+      choice.provider === 'friday' && choice.model === 'deepseek-v4-pro'),
+  });
+
+  assert.equal(await handler.execute('/model'), 'handled');
+  assert.deepEqual(calls, [{
+    action: 'use',
+    target: { providerId: 'friday', modelId: 'deepseek-v4-pro' },
+  }]);
+  assert.match(output.join('\n'), /已切换模型：deepseek-v4-pro（friday）/);
+});
+
+test('supports structured multi-Provider model slash commands without restarting the Daemon', async () => {
+  const agent = fakeAgent();
+  const calls: unknown[] = [];
+  (agent as unknown as {
+    modelControl: (request: unknown) => Promise<unknown>;
+  }).modelControl = async (request) => {
+    calls.push(request);
+    return { request, daemonRestarted: false };
+  };
+  const output: string[] = [];
+  const handler = new CommandHandler(agent, async () => undefined, {
+    write: (text) => output.push(text),
+  });
+
+  assert.equal(await handler.execute('/models'), 'handled');
+  assert.equal(await handler.execute('/model current'), 'handled');
+  assert.equal(await handler.execute('/model inspect left/model-a'), 'handled');
+  assert.equal(await handler.execute('/model use right/model-b'), 'handled');
+  assert.equal(await handler.execute('/model auto'), 'handled');
+  assert.equal(await handler.execute('/model routes'), 'handled');
+  assert.equal(await handler.execute('/model route team.hard right/model-b'), 'handled');
+  assert.equal(await handler.execute('/model route team.simple auto'), 'handled');
+  assert.equal(await handler.execute('/model doctor'), 'handled');
+  assert.equal(await handler.execute('/model doctor left/model-a'), 'handled');
+
+  assert.deepEqual(calls, [
+    { action: 'list' },
+    { action: 'current' },
+    { action: 'inspect', target: { providerId: 'left', modelId: 'model-a' } },
+    { action: 'use', target: { providerId: 'right', modelId: 'model-b' } },
+    { action: 'auto' },
+    { action: 'routes' },
+    {
+      action: 'route',
+      scenario: 'team.hard',
+      target: { providerId: 'right', modelId: 'model-b' },
+    },
+    { action: 'route', scenario: 'team.simple', routeAuto: true },
+    { action: 'doctor' },
+    { action: 'doctor', target: { providerId: 'left', modelId: 'model-a' } },
+  ]);
+  assert.match(output.join('\n'), /daemonRestarted/);
 });
 
 test('allows runtime commands before the draft Session receives its first message', async () => {
-  const switched: string[] = [];
+  const switched: unknown[] = [];
   const modes: string[] = [];
   const profiles: string[] = [];
   const output: string[] = [];
@@ -363,7 +523,11 @@ test('allows runtime commands before the draft Session receives its first messag
       trustedWorkspaceMcp: false,
     },
   });
-  agent.switchModel = async (name) => { switched.push(name); };
+  const baseModelControl = agent.modelControl.bind(agent);
+  agent.modelControl = async (request) => {
+    if ((request as { action?: unknown }).action === 'use') switched.push(request);
+    return baseModelControl(request);
+  };
   agent.switchMode = async (mode) => { modes.push(mode); };
   agent.switchSecurityProfile = async (profile) => {
     profiles.push(profile);
@@ -382,7 +546,10 @@ test('allows runtime commands before the draft Session receives its first messag
   assert.equal(await handler.execute('/model'), 'handled');
   assert.equal(await handler.execute('/mode ultra'), 'handled');
   assert.equal(await handler.execute('/security workstation'), 'handled');
-  assert.deepEqual(switched, ['gpt-5-mini']);
+  assert.deepEqual(switched, [{
+    action: 'use',
+    target: { providerId: 'deepseek', modelId: 'gpt-5-mini' },
+  }]);
   assert.deepEqual(modes, ['ultra']);
   assert.deepEqual(profiles, ['workstation']);
   assert.match(output.join('\n'), /模型\s+deepseek/);

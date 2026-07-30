@@ -5,6 +5,7 @@ import {
   taskProviderEnvironmentName,
   taskWorkerConfig,
   taskWorkerInitSchema,
+  withTaskProviderCredential,
   withTaskEmbeddingCredential,
 } from '../src/daemon/worker-protocol.js';
 
@@ -87,6 +88,90 @@ test('Task worker configuration excludes Computer Use capability', () => {
     mcpEnvironment: {},
     config: workerConfig,
   }), /Backup Provider credential/);
+});
+
+test('Task worker freezes one routed target and scopes only its selected credential', async () => {
+  const binding = {
+    target: { providerId: 'right', modelId: 'right-model' },
+    kind: 'agent' as const,
+    reasoning: 'auto' as const,
+    scenario: 'background.default',
+    reason: 'scenario-route' as const,
+    routeVersion: 8,
+  };
+  const credential = {
+    providerId: 'right',
+    apiKeyEnv: 'RIGHT_ONLY_KEY',
+    target: { ...binding.target },
+    apiKey: 'right-secret',
+  };
+  const modelConfiguration = {
+    version: 1 as const,
+    routeVersion: 8,
+    providers: [{
+      id: 'right',
+      label: 'Right',
+      transport: 'openai-chat-completions' as const,
+      baseUrl: 'https://right.example/v1',
+      apiKeyEnv: 'RIGHT_ONLY_KEY',
+      models: [{
+        target: { ...binding.target },
+        kind: 'agent' as const,
+        capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+      }],
+    }],
+    routing: { globalDefault: { ...binding.target }, scenarios: {} },
+  };
+  const config = taskWorkerConfig({
+    provider: 'openai-compatible',
+    providerBaseUrl: 'https://right.example/v1',
+    defaultModel: 'right-model',
+    workspaceRoot: '/workspace',
+    dataRoot: '/data',
+    skillsRoot: '/workspace/skills',
+    mcpConfig: '/workspace/mcp.json',
+    historyLimit: 40,
+    maxTurns: null,
+  });
+  assert.doesNotThrow(() => taskWorkerInitSchema.parse({
+    type: 'init',
+    taskId: 'd4d0011b-d947-5963-b2ef-7982b303f612',
+    database: '/daemon/mimi.db',
+    assistantConfig: '/daemon/assistant.json',
+    socket: '/daemon/mimi.sock',
+    workerToken: 'a'.repeat(43),
+    workspaceAccess: 'read',
+    enableMcp: false,
+    providerCredential: credential,
+    modelBinding: binding,
+    modelConfiguration,
+    mcpEnvironment: {},
+    config,
+  }));
+  assert.throws(() => taskWorkerInitSchema.parse({
+    type: 'init',
+    taskId: 'd4d0011b-d947-5963-b2ef-7982b303f612',
+    database: '/daemon/mimi.db',
+    assistantConfig: '/daemon/assistant.json',
+    socket: '/daemon/mimi.sock',
+    workerToken: 'a'.repeat(43),
+    workspaceAccess: 'read',
+    enableMcp: false,
+    providerCredential: {
+      ...credential,
+      target: { providerId: 'left', modelId: 'left-model' },
+    },
+    modelBinding: binding,
+    modelConfiguration,
+    mcpEnvironment: {},
+    config,
+  }), /credential 与冻结 modelBinding 不匹配/);
+  const environment: NodeJS.ProcessEnv = { LEFT_ONLY_KEY: 'must-not-leak' };
+  await withTaskProviderCredential(credential, async () => {
+    assert.equal(environment.RIGHT_ONLY_KEY, 'right-secret');
+    assert.equal(environment.LEFT_ONLY_KEY, 'must-not-leak');
+  }, environment);
+  assert.equal(environment.RIGHT_ONLY_KEY, undefined);
 });
 
 test('Task worker accepts OpenAI-compatible provider configuration and credential', () => {

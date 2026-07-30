@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 export interface GuidanceFile {
-  scope: 'soul' | 'project';
+  scope: 'soul' | 'preferences' | 'project';
   path: string;
   content: string;
   truncated: boolean;
@@ -15,7 +15,11 @@ export interface GuidanceSnapshot {
   instructions: string;
 }
 
-async function readGuidance(file: string, scope: GuidanceFile['scope'], maxChars: number): Promise<GuidanceFile | undefined> {
+export async function readGuidanceFile(
+  file: string,
+  scope: GuidanceFile['scope'],
+  maxChars: number,
+): Promise<GuidanceFile | undefined> {
   let handle;
   try {
     handle = await open(file, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -47,9 +51,9 @@ export class SoulLoader {
   }
 
   async load(): Promise<GuidanceSnapshot> {
-    const user = await readGuidance(this.userFile, 'soul', this.maxChars);
+    const user = await readGuidanceFile(this.userFile, 'soul', this.maxChars);
     const packaged = !user && this.packagedFile
-      ? await readGuidance(path.resolve(this.packagedFile), 'soul', this.maxChars)
+      ? await readGuidanceFile(path.resolve(this.packagedFile), 'soul', this.maxChars)
       : undefined;
     const file = user ?? packaged;
     return {
@@ -78,8 +82,8 @@ export class ProjectGuidanceLoader {
     }
     const files: GuidanceFile[] = [];
     for (const directory of directories) {
-      const agents = await readGuidance(path.join(directory, 'AGENTS.md'), 'project', this.maxChars);
-      const claude = await readGuidance(path.join(directory, 'CLAUDE.md'), 'project', this.maxChars);
+      const agents = await readGuidanceFile(path.join(directory, 'AGENTS.md'), 'project', this.maxChars);
+      const claude = await readGuidanceFile(path.join(directory, 'CLAUDE.md'), 'project', this.maxChars);
       if (claude) files.push(claude);
       if (agents) files.push(agents);
     }

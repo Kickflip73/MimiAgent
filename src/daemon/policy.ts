@@ -344,6 +344,13 @@ export function decideEvent(
   const computerEnabled = computerAccess !== 'none';
   const computerWriteEnabled = computerAccess !== 'observe' && computerAccess !== 'none';
   const memoryMaintenance = task?.type === 'memory_maintenance';
+  const scenario = task?.type === 'scheduled'
+    ? 'scheduled.default'
+    : memoryMaintenance
+      ? 'memory-maintenance.default'
+      : backgroundTask
+        ? 'background.default'
+        : 'conversation.default';
   const semanticMemoryLint = memoryMaintenance
     && task.objective !== null && typeof task.objective === 'object'
     && (task.objective as Record<string, unknown>).semanticLint === true;
@@ -539,6 +546,7 @@ export function decideEvent(
     ...(personalMessage ? { personalMessage } : {}),
     options: {
       hostInstructions,
+      scenario,
       cause: {
         eventId: event.id,
         taskId: task?.id,

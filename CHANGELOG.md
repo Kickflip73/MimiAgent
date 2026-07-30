@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- add per-Session and per-WorkUnit model routing through a provider-neutral Gateway,
+  native OpenAI Responses/OpenAI-compatible/Anthropic/Gemini adapters, frozen Run
+  bindings, atomically frozen Team route snapshots, independently selected
+  SubAgent/Team/background workers, binding/usage observations, and a distinct
+  image-generation Runtime while preserving legacy environment configuration;
+  add `/models` plus `/model current/inspect/use/auto/routes/route/doctor` over the
+  Session-scoped Daemon control path without restarting it; derive each Daemon
+  Run scenario from its durable task kind so Conversation Sessions retain their
+  selected target, and probe the portable authenticated `/models` endpoint for
+  OpenAI-compatible health instead of requiring optional model-detail support
+- add a Mimi-only `~/.mimi-agent/PREFERENCES.md` for owner-confirmed behavior
+  defaults, inject `MIMI.md` Soul first followed by core rules, Preferences,
+  Runtime Context, and active Skills as pinned direct-owner context, and expose
+  owner-only atomic list/add/remove tools
 - prevent macOS Terminal.app IME crashes by disabling autonomous TUI animation
   redraws there and deferring concurrent terminal output until an active
   long-text or multiline draft reaches a safe submit/clear boundary

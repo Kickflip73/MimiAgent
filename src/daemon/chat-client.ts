@@ -28,6 +28,7 @@ import type {
 import { parseAttachmentInput } from '../runtime/attachments.js';
 import type { SessionSummary } from '../core/session.js';
 import type { MemoryRef, MemoryScope } from '../core/memory.js';
+import type { ModelControlRequest } from '../core/model-routing.js';
 
 const CHAT_RECONNECT_INITIAL_DELAY_MS = 50;
 const CHAT_RECONNECT_MAX_DELAY_MS = 1_000;
@@ -459,6 +460,10 @@ export class RemoteCommandTarget implements CommandTarget {
 
   availableModels(): Promise<CommandMethodResult<'availableModels'>> {
     return this.client.invoke('models', undefined, this.sessionId);
+  }
+
+  modelControl(request: ModelControlRequest): Promise<CommandMethodResult<'modelControl'>> {
+    return this.client.invoke('model.control', request, this.sessionId);
   }
 
   async switchModel(model: string): Promise<void> {

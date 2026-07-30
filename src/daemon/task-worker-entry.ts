@@ -80,7 +80,7 @@ async function run(raw: unknown): Promise<void> {
     let agent;
     const mcpEnvironment: Record<string, string> = init.enableMcp ? {
       ...init.mcpEnvironment,
-      [taskProviderEnvironmentName(init.providerCredential.provider)]: init.providerCredential.apiKey,
+      [taskProviderEnvironmentName(init.providerCredential)]: init.providerCredential.apiKey,
     } : {};
     try {
       agent = await withTaskProviderCredential(init.providerCredential, async () => {
@@ -94,6 +94,8 @@ async function run(raw: unknown): Promise<void> {
             mcpEnvironment,
             enableMcp: init.enableMcp,
             releaseMcpEnvironmentAfterConnect: true,
+            modelConfiguration: init.modelConfiguration,
+            modelBinding: init.modelBinding,
           });
         };
         return init.embeddingCredential
@@ -111,7 +113,7 @@ async function run(raw: unknown): Promise<void> {
       : {};
     if (payload.strategy === 'team') await agent.switchMode('ultra');
     host = new MimiHost(agent, new AgentRunService(agent, {
-      providerId: init.config.provider,
+      providerId: init.modelBinding?.target.providerId ?? init.config.provider,
       ...(init.backupProvider ? { backupProvider: init.backupProvider } : {}),
     }), { maxConcurrentSessions: 1 });
     dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {

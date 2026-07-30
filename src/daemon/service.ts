@@ -1767,6 +1767,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return sanitizeSensitiveData(await mutationGate.run(() => host!.mutate(sessionId, async (agent) => {
             if (operation === 'runtime') return agent.runtimeInfo();
             if (operation === 'models') return agent.availableModels();
+            if (operation === 'model.control') {
+              return agent.modelControl(object(params.value));
+            }
             if (operation === 'model.set') {
               await agent.switchModel(requiredString(params.value, 'value'));
               return agent.runtimeInfo();

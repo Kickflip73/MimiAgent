@@ -1,5 +1,4 @@
-import { setDefaultOpenAIClient, setTracingDisabled } from '@openai/agents';
-import OpenAI from 'openai';
+import { setTracingDisabled } from '@openai/agents';
 import { EnvHttpProxyAgent, fetch as undiciFetch } from 'undici';
 import type { AppConfig } from '../config.js';
 
@@ -29,7 +28,6 @@ export function configureAgentRuntime(config: AppConfig): void {
     setTracingDisabled(true);
     configured = true;
   }
-  if (config.provider === 'openai') {
-    setDefaultOpenAIClient(new OpenAI({ apiKey: process.env.OPENAI_API_KEY, fetch: globalThis.fetch }));
-  }
+  // Every Run receives an explicit Model from ModelGateway. A process-global
+  // client would allow concurrent Sessions to leak endpoint or credential state.
 }

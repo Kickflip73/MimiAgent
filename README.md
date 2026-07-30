@@ -13,7 +13,8 @@ MimiAgent 不是一次性工具调用样例，也不想变成重量级工作流�
 ## 核心能力
 
 - OpenAI Agents SDK 驱动的 Agent Loop
-- OpenAI Responses API 与 DeepSeek OpenAI-compatible API
+- 同一 Daemon 内按 Session、场景、SubAgent、TeamTask 和 Media WorkUnit 独立路由模型
+- OpenAI Responses、OpenAI-compatible、Anthropic Messages 与 Google Generate Content adapter
 - 持久化多轮会话，可新建、切换和恢复
 - 不同 Session actor 有界并行、同一 Session 严格 FIFO，多个不同 Session 的对话窗口互不阻塞
 - 长程、大型和持续型任务持久委派到独立 OS 子进程，当前对话立即恢复可用，终态主动通知
@@ -34,7 +35,7 @@ MimiAgent 不是一次性工具调用样例，也不想变成重量级工作流�
 - Unix Socket 本地控制面，支持后台任务提交、等待、状态和 Connector 能力查询
 - 外部内容与可信 Host 指令分区；`trust` 只记录来源，未命中 owner source policy 的外部事件使用最小策略，命中后才获得本机策略明确范围内的有界代办工具
 - 多实例/多进程安全的原子 JSON 状态、格式校验与损坏隔离
-- 用户级 `MIMI.md` Soul 与层级化 `AGENTS.md` / `CLAUDE.md` 项目开发指令，分层加载且不授予权限
+- 用户级 `MIMI.md` Soul、`PREFERENCES.md` 行为偏好与层级化 `AGENTS.md` / `CLAUDE.md` 项目开发指令，分层加载且不授予权限
 - CLI 与 Agent 共用运行时控制：模型、模式、输出、Session、MCP 和退出均可由对话触发
 - 按 Token Budget 裁剪历史、结构化压缩旧上下文和动态上下文组装
 - 统一 MemoryHub：private/workspace 双 Wiki、来源回读、冲突、遗忘 suppression 与 profile 隔离
@@ -177,6 +178,23 @@ OpenAI Responses API。兼容服务若只实现了部分 OpenAI 协议，Tool Ca
 profile；可通过 `MIMI_CONTEXT_WINDOW`、`MIMI_OUTPUT_TOKEN_RESERVE` 和
 `MIMI_MODEL_SUPPORTS_IMAGE_INPUT` 显式覆盖。
 
+多 Provider 并行使用时，在 owner 私有的 `~/.mimi-agent/models.json` 注册精确
+`providerId/modelId`、transport、`apiKeyEnv` 和 `imageInput/imageOutput/toolCalling`
+三项硬能力；可用 `MIMI_MODELS_CONFIG` 覆盖路径。配置文件不保存 API key，写入采用
+严格校验、共享锁和原子替换。文件不存在时继续按上面的旧环境变量启动，行为兼容。
+Session 固定值只影响下一 Run，不修改全局 Provider，也不重启 Daemon；结构化
+`model_control` 可查看注册、当前 binding、路由和健康状态；其 direct Owner 写动作
+可固定/清除当前 Session target 或修改场景路由。
+OpenAI-compatible 健康检查只依赖协议通用的认证 `/models` 列表端点，不要求服务商
+额外实现可选的 `GET /models/{id}`。
+
+上层任务只声明场景、复杂度和硬能力，厂商协议由 Gateway adapter 隔离。图片理解与
+生图是不同能力：视觉理解模型不能代替图片生成模型；没有兼容模型时明确 blocked。
+第一次 `run_team` 会在领取 worker 前用同一配置快照冻结全部 task 的精确 target，
+SubAgent 每次委派重新选型；后台 worker 只获得被选 Provider 的 credential。
+Conversation、SubAgent 与 Team worker 的 binding 会进入 Trace，usage 记录精确
+target、scenario 和选择原因，未配置价格时 cost 显示 `unknown`。
+
 也可以用一条命令原子保存 Provider 配置并重启 Daemon。当前 Owner Run 只有一个
 `MIMI_EPHEMERAL_SECRET_n` 时会自动使用该临时值，无需把 API Key 放进命令参数：
 
@@ -191,9 +209,9 @@ mimi provider set openai-compatible \
 plist，也不会因为 Key 最初只存在于当前 Shell 而中断重启。存在多个临时敏感值时使用
 `--api-key-env MIMI_EPHEMERAL_SECRET_n` 精确选择。
 
-配置过的 Provider 会同时出现在 `runtime_status.configuredProviders`。在对话中要求
-“切换到 DeepSeek/Kimi”时，MimiAgent 使用 `switch_provider`，待当前回答完成后只执行
-一次原子切换与 Daemon 重启；`switch_model` 仅用于同一 Provider 内的模型切换。
+旧的 `mimi provider set` 与单 Provider 环境仍保留兼容；它们管理 legacy 全局启动
+配置。启用 `models.json` 后，日常对话选型应使用 Session target 和场景路由，不再
+通过切换全局 Provider 重启 Daemon。
 
 编辑 `~/.mimi-agent/.env` 填入所选 Provider 的配置，然后一键启动后台：
 
@@ -380,6 +398,10 @@ Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Con
 | 命令 | 作用 |
 |---|---|
 | `/model [name]` | 查看或切换所有已配置 Provider 的模型；无参数时使用全局选择器 |
+| `/models`、`/model current` | 列出精确 target/硬能力，或查看当前 Session、下一 Run 与最近 binding |
+| `/model inspect <target>`、`/model doctor [target]` | 查看注册信息或执行无副作用健康检查 |
+| `/model use <target>`、`/model auto` | 固定或清除当前 Session target；只影响下一 Run，不重启 Daemon |
+| `/model routes`、`/model route <scenario> <target\|auto>` | 查看、修改或清除持久场景路由 |
 | `/mode [name]` | 在 `general`、`plan`、`ultra` 之间切换 |
 | `/output [level]` | 切换终端执行事件的展示详细度 |
 | `/new [id]` | 准备一个首次发言才落盘的新对话草稿 |
@@ -393,7 +415,7 @@ Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Con
 | `/mcp [reload]` | 查看状态或重新连接 MCP Server |
 | `/context` | 查看历史、记忆和计划用量 |
 | `/compact` | 归档较早上下文并保留最近两轮；原始 Session 不删除 |
-| `/instructions` | 查看当前加载的 Soul 与项目指令 |
+| `/instructions` | 查看当前加载的 Soul、Preferences 与项目指令 |
 | `/memory status` | 查看页面、冲突、stale、FTS/Embedding 状态 |
 | `/memory search <query>` | 搜索 private/workspace Wiki |
 | `/memory read <scope:id>` | 显式读取一页 Memory |
@@ -483,21 +505,23 @@ Provider 凭证，原子更新默认模型并安全重启 Daemon。`/model <name
 
 Agent 的基础 Instructions 使用“终端优先”输出约束：普通回答默认不超过约 12 行，优先采用少量紧凑段落，避免 Markdown 表格、连续标题、频繁空行和手工空格对齐；列表通常不超过 5 项且每项保持单行。渲染层还会压缩异常的横向空白和连续空行，作为模型输出不稳定时的显示兜底。用户明确要求详细内容时，模型仍可按任务需要展开。
 
-## Soul 与项目开发指令
+## Soul、行为偏好与项目开发指令
 
-MimiAgent 将身份人格与项目开发合约物理分开：
+MimiAgent 用两个用户级文档保持自身连续性，并与项目开发合约物理分开：
 
 ```text
 ~/.mimi-agent/MIMI.md   Soul：名字、人格、价值观与表达风格
+~/.mimi-agent/PREFERENCES.md
+                         owner 要求 Mimi 跨直接对话默认遵循的稳定行为
 <workspace>/AGENTS.md   canonical 项目开发合约
 <workspace>/CLAUDE.md   同目录兼容补充，冲突时 AGENTS.md 优先
 ```
 
-Soul 在每轮开始前重新读取；只要结构化能力允许读取本地工作区，已有项目指令就按目录层级加载，单文件最多注入 20000 字符。Host 不根据自然语言关键词决定加载或自动创建 `AGENTS.md`。Soul、项目指令和 Memory 都是上下文，不得扩大 Runtime 的工具、scope、trust 或权限；SubAgent/Team 只能读取 workspace Memory，不能读取 private Wiki 或跨 Session episode。
+direct-owner 每轮开始前由可信 Host 热读取两个用户级文档，不依赖本轮是否开放普通本地文件工具；只要结构化能力允许读取本地工作区，已有项目指令再按目录层级加载。单文件最多注入 20000 字符。上下文固定按 `MIMI.md Soul → Runtime 核心准则 → Preferences → 当前 Runtime Context → active Skill` 排列，这五层完整保留；Session state、项目指令、Goal/Plan、Memory Cards 与历史摘要随后按预算装配。存在 Soul 或 Preferences 时 direct-owner instruction budget 从 35% 提升到 40%，并额外预留两份用户级指令的实际 token，避免固定身份、行为规则和管理工具挤掉原本可用的 Skill；required sections 仍超限时会明确失败，不会静默丢失。SubAgent/Team 不获得 owner Preferences。
 
-`MIMI.md` 只适合稳定身份和表达风格；构建命令、代码规范和架构约束写入 `AGENTS.md` / `CLAUDE.md`。一次性任务留在当前 Session，可执行流程写成 Skill，稳定事实和偏好交给 MemoryHub。
+`MIMI.md` 只适合稳定身份和表达风格，是 Mimi 自己可控 Prompt 的第一身份层；`PREFERENCES.md` 只保存 owner 明确要求 Mimi 每次 direct-owner 对话默认遵循的行为规则，当前轮明确指令优先。模型通过 `list_mimi_preferences`、`add_mimi_preference`、`remove_mimi_preference` 管理该文件，写入使用跨进程锁、原子替换和 `0600` 权限。构建命令、代码规范和架构约束写入 `AGENTS.md` / `CLAUDE.md`；一次性任务留在当前 Session；可执行流程写成 Skill；稳定事实、人物偏好和经验交给 MemoryHub。文档顺序不代表授权顺序；所有这些上下文都不能扩大 Runtime 的工具、scope、trust 或权限。
 
-该设计参考了 [Codex AGENTS.md](https://developers.openai.com/codex/concepts/customization#agents-guidance)、[Claude Code CLAUDE.md](https://code.claude.com/docs/zh-CN/memory) 和 [OpenClaw workspace bootstrap](https://docs.openclaw.ai/agent-workspace) 的持久上下文模式，同时只保留 MimiAgent 当前需要的两层结构。
+该设计参考了 [Codex AGENTS.md](https://developers.openai.com/codex/concepts/customization#agents-guidance)、[Claude Code CLAUDE.md](https://code.claude.com/docs/zh-CN/memory) 和 [OpenClaw workspace bootstrap injection](https://docs.openclaw.ai/concepts/system-prompt#workspace-bootstrap-injection) 的持久上下文模式；OpenClaw 拆分 SOUL、IDENTITY、USER、MEMORY 等多类文件，MimiAgent 只保留 Soul 与 Preferences 两个用户级文档。
 
 ## Agent 自管理与自修改
 
@@ -658,6 +682,7 @@ Provider canary 对 OpenAI/DeepSeek 各执行一个固定、低成本、Safe 档
 | 文件 | `read_file`、`write_file`、`edit_file`、`apply_patch`、`move_file`、`list_directory`、`search_files`、`inspect_changes` |
 | 系统与网络 | `inspect_processes`、`run_shell`、`http_request`、`web_search`、`current_time`、`calculate` |
 | MemoryHub | `memory_search`、`memory_read`、`memory_links`、`remember`、`forget`、`memory_ingest` |
+| Mimi Preferences | `list_mimi_preferences`、`add_mimi_preference`、`remove_mimi_preference` |
 | Skill | `use_skill`、`read_skill_resource`、`list_skills`、`reload_skills` |
 | 验收 / Plan / Goal | `prepare_task`、`finish_task`、`update_plan`、`show_plan`、`set_goal`、`update_goal`、`show_goal` |
 | 后台任务 | `delegate_background_task`、`list_background_tasks`、`inspect_background_task`、`pause_background_task`、`resume_background_task`、`cancel_background_task`、`request_background_task_input`（按事件策略提供） |

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { AppConfig } from '../config.js';
 import { restrictedShellEnvironment } from '../runtime/shell-environment.js';
+import { modelTargetSchema, runModelBindingSchema } from '../core/model-routing.js';
+import { modelsConfigSchema } from '../runtime/model-config.js';
 
 export function restrictedTaskShellEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return restrictedShellEnvironment(source);
@@ -22,6 +24,16 @@ const providerCredentialSchema = z.discriminatedUnion('provider', [
     apiKey: z.string().trim().min(1).max(16_384),
   }).strict(),
 ]);
+const routedProviderCredentialSchema = z.object({
+  providerId: z.string().trim().min(1).max(100),
+  apiKeyEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  target: modelTargetSchema,
+  apiKey: z.string().trim().min(1).max(16_384),
+}).strict();
+const anyProviderCredentialSchema = z.union([
+  providerCredentialSchema,
+  routedProviderCredentialSchema,
+]);
 
 const embeddingCredentialSchema = z.object({
   apiKey: z.string().trim().min(1).max(16_384),
@@ -35,7 +47,8 @@ const backupProviderSchema = z.object({
   model: z.string().min(1).max(200).optional(),
 }).strict();
 
-export type TaskProviderCredential = z.infer<typeof providerCredentialSchema>;
+export type TaskProviderCredential = z.infer<typeof anyProviderCredentialSchema>;
+export type TaskLegacyProviderCredential = Extract<TaskProviderCredential, { provider: string }>;
 export type TaskEmbeddingCredential = z.infer<typeof embeddingCredentialSchema>;
 
 const taskMcpEnvironmentSchema = z.record(
@@ -53,8 +66,13 @@ const taskMcpEnvironmentSchema = z.record(
 });
 
 export function taskProviderEnvironmentName(
-  provider: TaskProviderCredential['provider'],
-): 'OPENAI_API_KEY' | 'DEEPSEEK_API_KEY' | 'MIMI_PROVIDER_API_KEY' {
+  provider: 'openai' | 'deepseek' | 'openai-compatible' | TaskProviderCredential,
+): string {
+  if (typeof provider === 'object') {
+    return 'apiKeyEnv' in provider
+      ? provider.apiKeyEnv
+      : taskProviderEnvironmentName(provider.provider);
+  }
   return provider === 'deepseek'
     ? 'DEEPSEEK_API_KEY'
     : provider === 'openai-compatible'
@@ -67,14 +85,14 @@ export async function withTaskProviderCredential<T>(
   operation: () => Promise<T>,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<T> {
-  const name = taskProviderEnvironmentName(credential.provider);
-  const previous = environment[name];
-  environment[name] = credential.apiKey;
+  const resolvedName = taskProviderEnvironmentName(credential);
+  const previous = environment[resolvedName];
+  environment[resolvedName] = credential.apiKey;
   try {
     return await operation();
   } finally {
-    if (previous === undefined) delete environment[name];
-    else environment[name] = previous;
+    if (previous === undefined) delete environment[resolvedName];
+    else environment[resolvedName] = previous;
   }
 }
 
@@ -110,6 +128,7 @@ const appConfigSchema = z.object({
   providerBaseUrl: z.string().url().optional(),
   defaultModel: z.string().min(1).optional(),
   availableModels: z.array(z.string().min(1)).optional(),
+  modelsConfig: z.string().min(1).optional(),
   workspaceRoot: z.string().min(1),
   dataRoot: z.string().min(1),
   daemonDataRoot: z.string().min(1).optional(),
@@ -161,12 +180,14 @@ export const taskWorkerInitSchema = z.object({
   workerToken: taskWorkerTokenSchema,
   workspaceAccess: z.enum(['read', 'write']),
   enableMcp: z.boolean(),
-  providerCredential: providerCredentialSchema.optional(),
+  providerCredential: anyProviderCredentialSchema.optional(),
   backupProvider: backupProviderSchema.optional(),
   backupProviderCredential: providerCredentialSchema.optional(),
   embeddingCredential: embeddingCredentialSchema.optional(),
   mcpEnvironment: taskMcpEnvironmentSchema,
   config: appConfigSchema,
+  modelBinding: runModelBindingSchema.optional(),
+  modelConfiguration: modelsConfigSchema.optional(),
 }).strict().superRefine((init, context) => {
   if (init.executor === 'mimi' && !init.providerCredential) {
     context.addIssue({
@@ -175,12 +196,38 @@ export const taskWorkerInitSchema = z.object({
       path: ['providerCredential'],
     });
   }
-  if (init.providerCredential && init.providerCredential.provider !== init.config.provider) {
+  if (init.providerCredential && 'provider' in init.providerCredential
+    && init.providerCredential.provider !== init.config.provider) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: 'Task worker provider credential 与运行配置不匹配',
       path: ['providerCredential', 'provider'],
     });
+  }
+  if (init.modelBinding) {
+    if (!init.modelConfiguration) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: '冻结 modelBinding 必须携带最小 modelConfiguration',
+        path: ['modelConfiguration'],
+      });
+    }
+    if (!init.providerCredential || !('providerId' in init.providerCredential)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: '冻结 modelBinding 必须携带 routed Provider credential',
+        path: ['providerCredential'],
+      });
+    } else if (
+      init.providerCredential.providerId !== init.modelBinding.target.providerId
+      || init.providerCredential.target.modelId !== init.modelBinding.target.modelId
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Task worker routed credential 与冻结 modelBinding 不匹配',
+        path: ['providerCredential'],
+      });
+    }
   }
   if (Boolean(init.backupProvider) !== Boolean(init.backupProviderCredential)) {
     context.addIssue({

@@ -3,8 +3,12 @@ import type { MimiAgent } from './agent.js';
 import { SECURITY_PROFILES } from './config.js';
 import type { ModelProvider, SecurityProfile, SecurityProfileSummary } from './config.js';
 import type { MemoryRef, MemoryScope } from './core/memory.js';
+import {
+  modelTargetSchema,
+  type ModelControlRequest,
+  type ModelTarget,
+} from './core/model-routing.js';
 import type { SessionSummary } from './core/session.js';
-import type { ConfiguredProvider } from './provider-config.js';
 import { OUTPUT_LEVELS, type OutputLevel } from './terminal.js';
 
 export type CommandResult = 'handled' | 'exit' | 'pass';
@@ -103,7 +107,7 @@ export interface CommandRunOptions {
 }
 
 export interface ModelChoice {
-  provider: ModelProvider;
+  provider: string;
   providerLabel: string;
   model: string;
 }
@@ -114,6 +118,7 @@ export interface CommandTarget {
   readonly toolNames: MaybePromise<string[]>;
   runtimeInfo(): ReturnType<MimiAgent['runtimeInfo']>;
   availableModels(): MaybePromise<ReturnType<MimiAgent['availableModels']>>;
+  modelControl(request: ModelControlRequest): ReturnType<MimiAgent['modelControl']>;
   switchModel(model: string): ReturnType<MimiAgent['switchModel']>;
   availableModes(): MaybePromise<ReturnType<MimiAgent['availableModes']>>;
   switchMode(mode: string): ReturnType<MimiAgent['switchMode']>;
@@ -164,6 +169,7 @@ export interface CommandTarget {
 export const COMMANDS = [
   { value: '/status', description: '查看运行状态' },
   { value: '/security', description: '查看或临时调整当前运行权限' },
+  { value: '/models', description: '列出全部已注册模型及硬能力' },
   { value: '/model', description: '查看或切换模型' },
   { value: '/mode', description: '查看或切换运行模式' },
   { value: '/output', description: '调整执行过程展示等级' },
@@ -195,7 +201,11 @@ export const COMMANDS = [
 const HELP = `内置命令：
   /status             查看模型、会话和扩展状态
   /security [profile] 查看或临时调整当前运行权限
-  /model [name]       查看或切换当前模型
+  /models             列出全部精确模型 target、能力和配置状态
+  /model [name]       使用兼容选择器查看或切换当前模型
+  /model current|inspect <target>|use <target>|auto
+  /model routes|route <scenario> <target|auto>|doctor [target]
+                      查看或调整当前 Session 与场景模型路由
   /mode [name]        查看或切换运行模式
   /output [level]     调整答案、思考、工具或详细事件展示
   /new [id]           新建并切换对话
@@ -264,31 +274,49 @@ const TASK_STATUS_LABELS: Record<string, string> = {
   archived: '已归档',
 };
 
-function globalModelChoices(
-  providers: readonly ConfiguredProvider[] | undefined,
-  currentProvider: ModelProvider,
-  currentModels: readonly string[],
-): ModelChoice[] {
-  const configured = providers?.length
-    ? providers
-    : [{
-        id: currentProvider,
-        label: currentProvider,
-        model: currentModels[0] ?? '',
-        models: [...currentModels],
-      }];
-  return configured.flatMap((provider) => provider.models.map((model) => ({
-    provider: provider.id,
-    providerLabel: provider.label,
-    model,
-  })));
+function modelControlChoices(value: unknown): ModelChoice[] {
+  if (!Array.isArray(value)) throw new Error('模型控制面返回了无效列表');
+  return value.flatMap((item): ModelChoice[] => {
+    if (!item || typeof item !== 'object') return [];
+    const record = item as {
+      kind?: unknown;
+      target?: unknown;
+      provider?: unknown;
+    };
+    if (record.kind !== 'agent') return [];
+    const target = modelTargetSchema.safeParse(record.target);
+    if (!target.success) return [];
+    const provider = record.provider && typeof record.provider === 'object'
+      ? record.provider as { label?: unknown }
+      : undefined;
+    return [{
+      provider: target.data.providerId,
+      providerLabel: typeof provider?.label === 'string'
+        ? provider.label
+        : target.data.providerId,
+      model: target.data.modelId,
+    }];
+  });
+}
+
+function currentModelTarget(value: unknown): ModelTarget | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as { next?: unknown; sessionTarget?: unknown };
+  if (record.next && typeof record.next === 'object') {
+    const next = modelTargetSchema.safeParse((record.next as { target?: unknown }).target);
+    if (next.success) return next.data;
+  }
+  const sessionTarget = modelTargetSchema.safeParse(record.sessionTarget);
+  return sessionTarget.success ? sessionTarget.data : undefined;
 }
 
 function resolveModelChoice(
   model: string,
   choices: readonly ModelChoice[],
-  currentProvider: ModelProvider,
+  currentProvider: string,
 ): ModelChoice {
+  const exact = choices.find((choice) => `${choice.provider}/${choice.model}` === model);
+  if (exact) return exact;
   const matches = choices.filter((choice) => choice.model === model);
   const selected = matches.find((choice) => choice.provider === currentProvider) ?? matches[0];
   if (!selected) {
@@ -298,6 +326,54 @@ function resolveModelChoice(
     throw new Error(`模型名称 ${model} 同时属于多个 Provider，请通过 /model 选择器切换`);
   }
   return selected;
+}
+
+function parseModelTarget(value: string): ModelTarget {
+  const slash = value.indexOf('/');
+  if (slash <= 0 || slash === value.length - 1) {
+    throw new Error(`模型 target 必须是 providerId/modelId：${value || '(empty)'}`);
+  }
+  return modelTargetSchema.parse({
+    providerId: value.slice(0, slash),
+    modelId: value.slice(slash + 1),
+  });
+}
+
+function exactArguments(
+  action: string,
+  values: readonly string[],
+  count: number,
+): void {
+  if (values.length !== count) {
+    throw new Error(`/model ${action} 参数数量无效`);
+  }
+}
+
+function modelSlashRequest(values: readonly string[]): ModelControlRequest | undefined {
+  const [action, ...arguments_] = values;
+  if (!action) return undefined;
+  if (action === 'current' || action === 'auto' || action === 'routes') {
+    exactArguments(action, arguments_, 0);
+    return { action };
+  }
+  if (action === 'inspect' || action === 'use') {
+    exactArguments(action, arguments_, 1);
+    return { action, target: parseModelTarget(arguments_[0]!) };
+  }
+  if (action === 'doctor') {
+    if (arguments_.length > 1) throw new Error('/model doctor 最多接受一个 target');
+    return {
+      action,
+      ...(arguments_[0] ? { target: parseModelTarget(arguments_[0]) } : {}),
+    };
+  }
+  if (action === 'route') {
+    exactArguments(action, arguments_, 2);
+    const [scenario, target] = arguments_;
+    if (target === 'auto') return { action, scenario: scenario!, routeAuto: true };
+    return { action, scenario: scenario!, target: parseModelTarget(target!) };
+  }
+  return undefined;
 }
 
 function taskStatus(status: string): string {
@@ -467,24 +543,36 @@ export class CommandHandler {
         '如需临时收紧，可使用 /security safe 或 /security workstation；恢复使用 /security full-owner。',
       ].join('\n'));
     }
+    if (command === '/models') {
+      if (rest.length) throw new Error('/models 不接受参数');
+      return this.handled(taskValue(await this.agent.modelControl({ action: 'list' }), 12_000));
+    }
     if (command === '/model') {
-      const [info, currentModels] = await Promise.all([
+      const controlRequest = modelSlashRequest(rest);
+      if (controlRequest) {
+        return this.handled(taskValue(await this.agent.modelControl(controlRequest), 12_000));
+      }
+      const [info, listedModels, currentModel] = await Promise.all([
         this.agent.runtimeInfo(),
-        this.agent.availableModels(),
+        this.agent.modelControl({ action: 'list' }),
+        this.agent.modelControl({ action: 'current' }),
       ]);
-      const choices = globalModelChoices(info.configuredProviders, info.provider, currentModels);
+      const choices = modelControlChoices(listedModels);
+      const currentTarget = currentModelTarget(currentModel) ?? {
+        providerId: info.provider,
+        modelId: info.model,
+      };
       const selected = argument
-        ? resolveModelChoice(argument, choices, info.provider)
-        : await this.ui.selectModel?.(choices, { provider: info.provider, model: info.model });
+        ? resolveModelChoice(argument, choices, currentTarget.providerId)
+        : await this.ui.selectModel?.(choices, {
+            provider: currentTarget.providerId,
+            model: currentTarget.modelId,
+          });
       if (!selected) return this.ui.selectModel ? 'handled' : this.handled(`当前模型：${info.model}`);
-      if (selected.provider === info.provider) {
-        await this.agent.switchModel(selected.model);
-        return this.handled(`已切换模型：${selected.model}`);
-      }
-      if (!this.ui.switchProvider) {
-        throw new Error(`模型 ${selected.model} 属于 ${selected.provider} Provider，当前界面不支持跨 Provider 切换`);
-      }
-      await this.ui.switchProvider(selected.provider, selected.model);
+      await this.agent.modelControl({
+        action: 'use',
+        target: { providerId: selected.provider, modelId: selected.model },
+      });
       return this.handled(`已切换模型：${selected.model}（${selected.provider}）`);
     }
     if (command === '/mode') {
@@ -659,9 +747,15 @@ export class CommandHandler {
     }
     if (command === '/instructions') {
       const guidance = await this.agent.guidanceInfo();
-      if (!guidance.files.length) return this.handled('未找到 Soul 或项目指令。Soul：~/.mimi-agent/MIMI.md · 项目：AGENTS.md / CLAUDE.md');
+      if (!guidance.files.length) {
+        return this.handled(
+          '未找到 Soul、Preferences 或项目指令。'
+          + 'Soul：~/.mimi-agent/MIMI.md · Preferences：~/.mimi-agent/PREFERENCES.md · 项目：AGENTS.md / CLAUDE.md',
+        );
+      }
       return this.handled(guidance.files.map((file) =>
-        `${file.scope === 'project' ? '项目' : 'Soul'}  ${file.path}${file.truncated ? '（已截断）' : ''}`,
+        `${file.scope === 'project' ? '项目' : file.scope === 'preferences' ? 'Preferences' : 'Soul'}  `
+        + `${file.path}${file.truncated ? '（已截断）' : ''}`,
       ).join('\n'));
     }
     if (command === '/memory') {

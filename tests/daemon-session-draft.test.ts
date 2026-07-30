@@ -326,6 +326,44 @@ test('a model selection is sent to a draft without marking its first message as 
   }
 });
 
+test('structured model control is sent through the Session-scoped Daemon operation', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-model-control-ipc-'));
+  const socket = path.join(root, 'mimi.sock');
+  let invocation: Record<string, unknown> | undefined;
+  const server = new MimiIpcServer(socket, (method, params) => {
+    if (method === 'chat.invoke') {
+      invocation = params as Record<string, unknown>;
+      return { effective: 'next_run', daemonRestarted: false };
+    }
+    throw new Error(`unexpected method: ${method}`);
+  });
+  await server.start();
+  try {
+    const client = new MimiChatClient({
+      dataRoot: root,
+      daemonDataRoot: root,
+      workspaceRoot: root,
+      provider: 'openai',
+      permissionMode: 'read-only',
+    } as AppConfig);
+    const target = new RemoteCommandTarget(client, 'mimi-chat-model-control', true);
+    const request = {
+      action: 'use' as const,
+      target: { providerId: 'right', modelId: 'right-model' },
+    };
+
+    assert.deepEqual(await target.modelControl(request), {
+      effective: 'next_run',
+      daemonRestarted: false,
+    });
+    assert.equal(invocation?.operation, 'model.control');
+    assert.deepEqual(invocation?.value, request);
+    assert.equal(invocation?.sessionKey, 'mimi-chat-model-control');
+  } finally {
+    await server.close();
+  }
+});
+
 test('commands are not centrally blocked while the Session is still a draft', async () => {
   const output: string[] = [];
   let runtimeRequests = 0;
