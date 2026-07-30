@@ -188,6 +188,8 @@ test('progressive gateway discovers and invokes every authorized capability fami
   const modelFacing = builder.modelFacing([...authorized, ...gateway]);
   assert.ok(modelFacing.some((candidate) => candidate.name === 'inspect_runtime_capabilities'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'invoke_runtime_capability'));
+  assert.equal(modelFacing.some((candidate) => candidate.name === 'inspect_mimi_capabilities'), false);
+  assert.equal(modelFacing.some((candidate) => candidate.name === 'invoke_capability'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'send_owner_message'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'web_search'), false);
   const inspect = gateway.find((candidate) => candidate.name === 'inspect_runtime_capabilities') as Tool & {
@@ -197,6 +199,14 @@ test('progressive gateway discovers and invokes every authorized capability fami
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
   const context = new RunContext({});
+  assert.match(
+    String(await invoke.invoke(
+      context,
+      JSON.stringify({ name: 'computer_observe', argumentsJson: '{}' }),
+      {},
+    )),
+    /尚未通过 inspect_runtime_capabilities 精确发现/,
+  );
   for (const [source, name, result] of [
     ['builtin', 'web_search', 'web-ok'],
     ['memory', 'memory_read', 'memory-ok'],
@@ -275,6 +285,9 @@ test('runtime capability query searches connector actions through the formal cat
   const inspect = gateway.find((candidate) => candidate.name === 'inspect_runtime_capabilities') as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
+  const invoke = gateway.find((candidate) => candidate.name === 'invoke_runtime_capability') as Tool & {
+    invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
+  };
   const context = new RunContext({});
 
   for (const expected of catalog) {
@@ -292,7 +305,31 @@ test('runtime capability query searches connector actions through the formal cat
     assert.ok(found.capabilities[0]?.parameters);
     assert.equal(found.connectorCatalog.connectors[0]?.actions[0]?.name, expected.action);
     assert.equal(found.connectorCatalog.connectors[0]?.actions[0]?.capability, expected.capability);
+    assert.equal(
+      await invoke.invoke(context, JSON.stringify({
+        name: 'invoke_capability',
+        argumentsJson: JSON.stringify({
+          capability: expected.capability,
+          action: expected.action,
+          target: 'example-target',
+          payloadJson: '{}',
+        }),
+      }), {}),
+      `${expected.action}-ok`,
+    );
   }
+  assert.match(
+    String(await invoke.invoke(context, JSON.stringify({
+      name: 'invoke_capability',
+      argumentsJson: JSON.stringify({
+        capability: 'desktop.keyboard.write',
+        action: 'send_keys',
+        target: 'org.example.App',
+        payloadJson: '{}',
+      }),
+    }), {})),
+    /Connector action 尚未通过能力目录精确发现/,
+  );
 
   const absent = await inspect.invoke(
     context,

@@ -27,6 +27,42 @@ type InvokableTool = Tool & {
 
 const MAX_INDEXED_NAMES_PER_SOURCE = 12;
 
+function connectorActionKey(capability: string, action: string): string {
+  return `${capability}\u0000${action}`;
+}
+
+function connectorActionKeys(catalog: unknown): string[] {
+  if (!catalog || typeof catalog !== 'object' || Array.isArray(catalog)) return [];
+  const connectors = (catalog as Record<string, unknown>).connectors;
+  if (!Array.isArray(connectors)) return [];
+  const keys: string[] = [];
+  for (const connector of connectors) {
+    if (!connector || typeof connector !== 'object' || Array.isArray(connector)) continue;
+    const actions = (connector as Record<string, unknown>).actions;
+    if (!Array.isArray(actions)) continue;
+    for (const action of actions) {
+      if (!action || typeof action !== 'object' || Array.isArray(action)) continue;
+      const value = action as Record<string, unknown>;
+      if (typeof value.capability !== 'string' || typeof value.name !== 'string') continue;
+      keys.push(connectorActionKey(value.capability, value.name));
+    }
+  }
+  return keys;
+}
+
+function requestedConnectorAction(argumentsJson: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argumentsJson) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const value = parsed as Record<string, unknown>;
+  if (typeof value.capability !== 'string' || typeof value.action !== 'string') return undefined;
+  return connectorActionKey(value.capability, value.action);
+}
+
 function capabilitySource(name: string): CapabilitySource {
   if (name.startsWith('computer_')) return 'computer';
   if (name.startsWith('memory_') || ['remember', 'forget'].includes(name)) return 'memory';
@@ -101,6 +137,8 @@ export class ToolSetBuilder {
 
   progressiveGateway(tools: Tool[]): Tool[] {
     const byName = new Map(tools.map((candidate) => [candidate.name, candidate]));
+    const discoveredNames = new Set<string>();
+    const discoveredConnectorActions = new Set<string>();
     const entries = tools.map((candidate) => {
       const value = candidate as unknown as Record<string, unknown>;
       const descriptor = toolDescriptor(candidate.name);
@@ -153,6 +191,15 @@ export class ToolSetBuilder {
             && !directMatches.some((entry) => entry.name === connectorInvokerEntry.name)
             ? [...directMatches, connectorInvokerEntry]
             : directMatches;
+          if (name) {
+            for (const match of matches) discoveredNames.add(match.name);
+          }
+          if (connectorMatched && connectorInvokerEntry) {
+            discoveredNames.add(connectorInvokerEntry.name);
+            for (const key of connectorActionKeys(connectorCatalog)) {
+              discoveredConnectorActions.add(key);
+            }
+          }
           return {
             authorizedCount: entries.length,
             matchedCount: matches.length,
@@ -181,6 +228,21 @@ export class ToolSetBuilder {
         execute: async ({ name, argumentsJson }, context, details) => {
           const selected = byName.get(name) as InvokableTool | undefined;
           if (!selected?.invoke) throw new Error(`能力未授权、不可调用或不存在：${name}`);
+          if (!discoveredNames.has(name)) {
+            throw new Error(
+              `能力 ${name} 尚未通过 inspect_runtime_capabilities 精确发现；`
+              + '先按精确 name 查询并取得调用 schema，再调用。',
+            );
+          }
+          if (name === 'invoke_capability' && connectorInspector?.invoke) {
+            const actionKey = requestedConnectorAction(argumentsJson);
+            if (!actionKey || !discoveredConnectorActions.has(actionKey)) {
+              throw new Error(
+                'Connector action 尚未通过能力目录精确发现；'
+                + '先用 inspect_runtime_capabilities 的 connector query 取得精确 capability/action 和参数示例。',
+              );
+            }
+          }
           return selected.invoke(context as RunContext<unknown>, argumentsJson, details);
         },
       }),
@@ -192,6 +254,10 @@ export class ToolSetBuilder {
     policy?: RunToolPolicy,
     additionalNames: readonly string[] = [],
   ): Tool[] {
+    const gatewayOnly = new Set([
+      'inspect_mimi_capabilities',
+      'invoke_capability',
+    ]);
     const core = new Set([
       'read_file',
       'write_file',
@@ -201,8 +267,6 @@ export class ToolSetBuilder {
       'search_files',
       'inspect_changes',
       'run_shell',
-      'inspect_mimi_capabilities',
-      'invoke_capability',
       'inspect_runtime_capabilities',
       'invoke_runtime_capability',
       'read_context_artifact',
@@ -228,7 +292,7 @@ export class ToolSetBuilder {
       ...(policy?.allowedTools ?? []),
       ...additionalNames,
     ]);
-    return tools.filter((tool) => core.has(tool.name));
+    return tools.filter((tool) => core.has(tool.name) && !gatewayOnly.has(tool.name));
   }
 
   snapshot(input: {

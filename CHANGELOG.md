@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- enforce progressive capability discovery in Host code: keep low-level Connector
+  tools behind the unified gateway, reject hidden tools that were not precisely
+  inspected in the current Run, and reject guessed Connector capability/action
+  pairs before dispatch
 - distinguish the Darwin Shell sandbox from macOS app/signature failures in
   structured Shell results, keep screenshotless Computer actions available to
   non-vision models, and publish exact Connector target/payload examples so GUI
