@@ -45,6 +45,12 @@
 - The post-eval source already constructs both the model request and status snapshot from the same final Tool array; no production branch was needed.
 - Added two architecture scenarios (general Workstation and Plan Full Owner) proving status Tool IDs equal the actual model-facing request and available Tool items.
 
+## 2026-07-30 R6 Memory blob/provenance atomicity
+- Red: exact-repeat content from two Runs raised `Raw evidence 内容寻址冲突`; the failure-compensation scenario had no blob/reference transaction API.
+- Green: raw-evidence plus MemoryHub/compilation/maintenance focused suite passed 35/35 and `npm run check` passed.
+- Result: immutable content is stored once under `blobs/<sha256>`, each observation gets a separate payload-free provenance ref, legacy schema-v1 Markdown remains untouched, and episode catalog indexing occurs inside the same compensated raw-evidence commit.
+- Different content cannot overwrite a blob; a failed catalog callback removes newly created reference/blob state instead of leaving a dangling half-commit.
+
 ## 2026-07-30 release verification
 - `npm test` passed 745/745 with skip/todo=0; standalone `npm run build` passed.
 - First `npm run ci` stopped at dependency direction because Goal core imported the runtime failure contract.

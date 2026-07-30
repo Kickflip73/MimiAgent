@@ -109,7 +109,11 @@ test('remember and maintenance capture resolve one canonical topic and compound 
   assert.equal((current.body.match(/^#\s/gm) ?? []).length, 1);
   assert.equal((current.body.match(/^## 来源$/gm) ?? []).length, 1);
   assert.match(current.body, /不要干扰当前桌面/);
-  const rawFiles = await readdir(path.join(privateMemoryLayout(dataRoot, 'owner').rawRoot, 'user'));
+  const rawFiles = await readdir(path.join(
+    privateMemoryLayout(dataRoot, 'owner').rawRoot,
+    'refs',
+    'user',
+  ));
   assert.equal(rawFiles.length, 1);
 });
 

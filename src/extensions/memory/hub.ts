@@ -748,8 +748,9 @@ class DefaultMemoryHub implements MemoryHub {
       body: content,
       digest,
     };
-    this.privateCatalog.index(document, undefined, 'episode');
-    await this.rawEvidence.preserve(sourceRef, content);
+    await this.rawEvidence.commit(sourceRef, content, () => {
+      this.privateCatalog.index(document, undefined, 'episode');
+    });
     this.privateCatalog.pruneEpisodes();
     return ref;
   }
