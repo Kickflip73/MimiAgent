@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -83,7 +83,7 @@ class FakeDriver {
     origin: string;
     sessionTag: string;
     stableSessionCount: number;
-    messageTag: string;
+    messageTag: string | null;
     stableMessageCount: number;
     inputCount: number;
     inputTag: string | null;
@@ -91,6 +91,12 @@ class FakeDriver {
     sendButtonTag: string | null;
   } = pageShape;
   readable = true;
+  searchQuery = '';
+  searchCandidates = [{
+    sid: '777',
+    type: 'chat' as const,
+    label: 'Target Person',
+  }];
 
   async locate(_marker?: string, _allowBind = false): Promise<Record<string, unknown>> {
     return { tab: { active: false } };
@@ -163,6 +169,37 @@ class FakeDriver {
     } else if (method === 'restoreSessionScroll') {
       this.sessionScrollTop = Number(input.top);
       result = { restored: true, top: this.sessionScrollTop };
+    }
+    else if (method === 'beginTargetSearch') {
+      this.searchQuery = String(input.query);
+      result = { started: true, queryLength: this.searchQuery.length };
+    }
+    else if (method === 'targetSearchCandidates') {
+      result = {
+        matched: this.searchQuery === String(input.query),
+        candidates: this.searchCandidates.slice(0, Number(input.limit)),
+      };
+    }
+    else if (method === 'finishTargetSearch') {
+      this.searchQuery = '';
+      result = { restored: true };
+    }
+    else if (method === 'activateTargetSearchCandidate') {
+      const candidate = this.searchCandidates.find((item) => (
+        item.sid === String(input.sid) && item.type === input.type
+      ));
+      if (!candidate || this.searchQuery !== String(input.query)) {
+        result = { activated: false, reason: 'target_missing' };
+      } else {
+        this.searchQuery = '';
+        if (!this.sessions.some((item) => item.sid === candidate.sid && item.type === candidate.type)) {
+          this.sessions.push(candidate);
+          this.loadedSessionCount = this.sessions.length;
+        }
+        this.selectedSid = candidate.sid;
+        this.selectedType = candidate.type;
+        result = { activated: true, sid: candidate.sid, type: candidate.type };
+      }
     }
     else if (method === 'selectConversation') {
       const nextSid = String(input.sid);
@@ -302,13 +339,15 @@ test('Daxiang dynamically paginates all current session types and reads an uncon
   });
   assert.match(String(context.conversationId), /:789$/);
   assert.equal(driver.selectedType, 'chat');
-  await assert.rejects(() => adapter.send({
+  const unboundSend = await adapter.send({
     accountFingerprint,
     sid: '789',
     type: 'pubchat',
     text: 'must remain write-bound',
     latestFingerprint: context.latestFingerprint,
-  }), /configured allowlist/);
+  });
+  assert.equal(unboundSend.status, 'failed');
+  assert.match(String(unboundSend.error), /configured allowlist/);
 });
 
 test('Daxiang defaults to one recent page and leaves older pagination optional', async () => {
@@ -344,6 +383,74 @@ test('Daxiang defaults to one recent page and leaves older pagination optional',
   assert.equal(listed.nextCursor, '20');
   assert.match(listed.contextReadUsage, /仅供当前页信息不足/);
   assert.doesNotMatch(listed.contextReadUsage, /持续分页|直到.*null/);
+});
+
+test('Daxiang searches bounded stable candidates and restores the search field', async () => {
+  const driver = new FakeDriver();
+  driver.searchCandidates = [
+    { sid: '777', type: 'chat', label: '同名用户 A' },
+    { sid: '778', type: 'chat', label: '同名用户 B' },
+  ];
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-search-${Date.now()}.json`),
+  });
+  await adapter.health({ probe: true });
+
+  const result = await adapter.searchTargets({ query: '同名用户', limit: 10 }) as {
+    candidates: Array<{ sid: string; candidateToken: string }>;
+    exactMatchRequired: boolean;
+    usage: string;
+  };
+
+  assert.deepEqual(result.candidates.map((candidate) => candidate.sid), ['777', '778']);
+  assert.equal(new Set(result.candidates.map((candidate) => candidate.candidateToken)).size, 2);
+  assert.equal(result.exactMatchRequired, true);
+  assert.match(result.usage, /不能按显示名直接发送/);
+  assert.equal(driver.searchQuery, '');
+  assert.deepEqual(driver.selectionCalls, []);
+});
+
+test('Daxiang binds only an issued candidate token and atomically persists the stable sid', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'daxiang-bind-target-'));
+  const configFile = path.join(root, 'personal-daxiang.json');
+  await writeFile(configFile, `${JSON.stringify(config(), null, 2)}\n`, { mode: 0o600 });
+  const driver = new FakeDriver();
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    configFile,
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(root, 'cursor.json'),
+  });
+  await adapter.health({ probe: true });
+  await assert.rejects(
+    () => adapter.bindTarget({ candidateToken: 'not-issued' }),
+    /missing_or_expired/,
+  );
+  const searched = await adapter.searchTargets({ query: 'Target Person' }) as {
+    candidates: Array<{ candidateToken: string }>;
+  };
+  const bound = await adapter.bindTarget({
+    candidateToken: searched.candidates[0]?.candidateToken,
+  });
+  const persisted = parseDaxiangConfig(JSON.parse(await readFile(configFile, 'utf8')));
+  const target = persisted.watch.conversations.find((candidate) => candidate.sid === '777');
+
+  assert.equal(bound.outcome, 'confirmed');
+  assert.equal(bound.targetBindingStatus, 'bound');
+  assert.equal(target?.type, 'chat');
+  assert.equal(target?.binding?.selectedBy, 'owner');
+  assert.equal(target?.binding?.accountFingerprint, accountFingerprint);
+  assert.match(target?.binding?.authorizationRevision ?? '', /^owner-\d+-[0-9a-f-]+$/);
+  assert.equal((await stat(configFile)).mode & 0o777, 0o600);
+  assert.equal(driver.selectedSid, '777');
+  await assert.rejects(
+    () => adapter.bindTarget({ candidateToken: searched.candidates[0]?.candidateToken }),
+    /missing_or_expired/,
+  );
 });
 
 function config() {
@@ -473,7 +580,7 @@ test('Daxiang account and page changes fail closed without losing honest bounded
   assert.equal(pageHealth.outbound, 'unavailable');
 });
 
-test('Daxiang keeps bounded reads available on the session list before a composer is open', async () => {
+test('Daxiang keeps route readiness while target-scoped send preflight rejects a missing composer', async () => {
   const driver = new FakeDriver();
   driver.selfRowCount = 0;
   driver.inspectPageShape = {
@@ -496,7 +603,45 @@ test('Daxiang keeps bounded reads available on the session list before a compose
   assert.equal(health.coverage, 'bounded');
   assert.equal(health.contextRead, 'bounded');
   assert.equal(health.inbound, 'ready');
-  assert.equal(health.outbound, 'unavailable');
+  assert.equal(health.outbound, 'ready');
+  assert.equal(health.currentPageWriteReady, false);
+  const context = await adapter.getContext({
+    accountFingerprint,
+    sid: '123',
+    type: 'chat',
+    limit: 1,
+  });
+  const result = await adapter.send({
+    accountFingerprint,
+    sid: '123',
+    type: 'chat',
+    text: 'must not click without composer',
+    latestFingerprint: context.latestFingerprint,
+  });
+  assert.equal(result.status, 'failed');
+  assert.match(String(result.error), /发送结构不可用/);
+  assert.equal(driver.commits, 0);
+});
+
+test('Daxiang treats an empty conversation as the approved message-container contract', async () => {
+  const driver = new FakeDriver();
+  driver.inspectPageShape = {
+    ...pageShape,
+    stableMessageCount: 0,
+    messageTag: null,
+  };
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-empty-conversation-${Date.now()}.json`),
+  });
+
+  const health = await adapter.health({ probe: true });
+  assert.equal(health.pageAllowed, true);
+  assert.equal(health.currentPageWriteReady, true);
+  assert.equal(health.outbound, 'ready');
+  assert.equal(health.stableMessageId, true);
 });
 
 test('Daxiang keeps an observed account proof across virtualized identity absence', async () => {
@@ -783,4 +928,17 @@ test('Daxiang page bridge has no credential access or foreground activation path
   assert.match(bridge, /\(\?:you\|from-other/);
   assert.match(bridge, /page_marked_send_failed/);
   new Function(bridge);
+});
+
+test('Daxiang Chrome driver provisions its own inactive tab and never binds a visible tab', async () => {
+  const adapterSource = await readFile(
+    fileURLToPath(new URL('../examples/connectors/personal-message/daxiang-web.mjs', import.meta.url)),
+    'utf8',
+  );
+  assert.match(adapterSource, /tabs\.push\(app\.Tab\(\{ url: 'about:blank' \}\)\)/);
+  assert.match(adapterSource, /createdTab\.url = input\.origin/);
+  assert.match(adapterSource, /hostWindow\.activeTabIndex = previousActiveIndex/);
+  assert.match(adapterSource, /if \(target\.item\.active\)/);
+  assert.doesNotMatch(adapterSource, /active && target\.item\.chromeFrontmost/);
+  assert.doesNotMatch(adapterSource, /originCandidates\.length !== 1/);
 });

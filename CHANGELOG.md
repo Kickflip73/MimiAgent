@@ -39,6 +39,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaults, inject `MIMI.md` Soul first followed by core rules, Preferences,
   Runtime Context, and active Skills as pinned direct-owner context, and expose
   owner-only atomic list/add/remove tools
+- isolate Daxiang polling and context navigation in an auto-provisioned inactive
+  Chrome tab, and add bounded `search_targets` plus one-time-token
+  `bind_target` actions so models can start an owner-authorized conversation
+  without generic Browser/CUA/Shell maintenance or display-name sends
+- supervise declared read-only Connector health actions outside model Runs,
+  automatically restart only the affected Connector after bounded consecutive
+  readiness failures, and prevent business Runs from spending turns on
+  Connector infrastructure repair or crossing to another execution surface
+- preserve the owner input and already-visible assistant text when Esc interrupts
+  a Run, while continuing to discard incomplete tool protocol units so Session
+  switching keeps context without making uncertain actions replayable
+- stop exposing model-managed Connector `operationRef` fields and remove
+  Browser `observationId` write gates while retaining Host ledger no-replay
+  handling and post-write verification
 - prevent macOS Terminal.app IME crashes by disabling autonomous TUI animation
   redraws there and deferring concurrent terminal output until an active
   long-text or multiline draft reaches a safe submit/clear boundary

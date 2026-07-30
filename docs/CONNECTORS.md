@@ -101,6 +101,14 @@ Connector 应在渠道状态变化时输出就绪度；这和子进程是否存�
 
 `inbound` / `outbound` 只能是 `ready | unavailable | unknown`。可选 `reasonCode` 使用稳定的小写故障码，让 Host 区分 owner binding 缺失、页面不可读等根因，而不是只显示笼统 unavailable。`deliveryConfirmed:false` 表示 UI 自动化等执行面只能确认动作已尝试，不能确认远端实际收到。`eventAcknowledgement:true` 表示 Connector 会等待 Inbox 持久化 ACK；未声明时 Host 保持旧协议兼容。轮询 Connector 可声明 1 秒到 7 天的 `freshForMs`，并在每次成功轮询后重发同一 status 作为 heartbeat；Host 以接收时间计算 `reportedAt` / `freshUntil`，过期后即使进程仍在线也标记 `stale`，从 readiness 计数中移除并进入统一 health 风险。不能持续报告 heartbeat 的 Connector 应省略该字段，不能伪造 freshness。未上报 status 的旧 Connector 保持 `unknown`；进程离线时两项统一为 `unavailable`。因此 `online` 只用于诊断子进程，不能再被解释为渠道已经可收发。
 
+Connector 声明 effect=`read` 的 `health_check` 后，Daemon 的确定性
+`readinessMonitor` 会在独立于模型 Run 的生命周期中定时探活。探活由同一 Connector
+子进程执行，因此可以使用渠道自己的安全恢复能力；连续失败达到
+`restartAfterFailures` 时只重启该 Connector，不重放 delivery、write/unknown action
+或任何结果不确定的外部事务。监测期间若存在投递或 action，会跳过本轮而不与业务动作
+并发。没有只读健康 action 的旧 Connector 不会被猜测调用。业务模型不得调用
+`health_check`、启停或 reload 来临时维修 Connector。
+
 ## 通用本机 Webhook
 
 没有专用 stdio Bridge 时，可开启只绑定 `127.0.0.1` 的认证入口：
@@ -152,7 +160,7 @@ Connector 完成远端发送后必须确认：
 
 ## 主动事务 Action Bridge
 
-Agent 需要主动执行 Connector 事务时，依据本轮 Effective Capability Snapshot 的精确 `capability/action` 调用 `invoke_capability`。Daemon 只在恰好一个在线且新鲜的 Connector 声明该组合时执行；写或 unknown effect 还必须要求 outbound ready，零个返回 unavailable，多个返回 ambiguous，不要求模型猜 Connector ID。精确声明的 `effect=read` 动作不进入副作用账本，可在明确失败后安全重试；写或 unknown effect 必须附带稳定 `operationRef`，用系统、环境和业务资源标识同一项用户操作，不能使用 Browser `sessionRef`、窗口 ID 或临时页面 ID。切换页面、临时会话或执行路线时仍复用该引用；相同 `operationRef + action family` 已 confirmed 时复用原回执，进入 `started/uncertain` 时更换 target、payload 或临时会话也不能重放，只有 failed-safe 才能换路。底层 Task/operator 兼容面仍可使用 `connector_action`，但不再暴露给普通模型 Run。
+Agent 需要主动执行 Connector 事务时，依据本轮 Effective Capability Snapshot 的精确 `capability/action` 调用 `invoke_capability`。Daemon 只在恰好一个在线且新鲜的 Connector 声明该组合时执行；写或 unknown effect 还必须要求 outbound ready，零个返回 unavailable，多个返回 ambiguous，不要求模型猜 Connector ID。精确声明的 `effect=read` 动作不进入副作用账本，可在明确失败后安全重试；write/unknown 的业务操作身份由 Host 根据 Run 与 Tool Call 自动建立，模型不再提供 `operationRef`。相同 Host 调用已 confirmed 时复用原回执，进入 `started/uncertain` 时禁止自动重试，只有 failed-safe 才能重新执行。底层 Task/operator 兼容面仍可使用 `connector_action`，但不再暴露给普通模型 Run。
 
 个人消息的查看、读取和汇总只调用 `effect=read` 的目标目录与上下文动作。新消息 Event 由 Connector 自身的定时轮询采集；该内部同步不登记为模型 action，也不能作为普通消息读取的前置步骤。
 
@@ -199,6 +207,13 @@ unavailable 即重新停用并保留配置。恢复检查不得触发发送、�
 提前写入配置。账号或会话候选验证失败时读取失败关闭；同一资源不能降级到 Shell、
 Computer/CUA、Browser/Desktop 或其他 Connector。
 
+owner 明确要求按姓名找人或发起新会话时，`search_targets` 只在专用后台标签内驱动
+`#navSearchInput`，返回最多 20 个带稳定 numeric sid、会话类型和一次性
+`candidateToken` 的候选，并恢复原搜索框状态。它不扫描或持久化全量联系人。候选唯一，
+或 owner 已根据返回标签完成重名消歧后，`bind_target` 才会重新核对账号、后台标签、
+查询、sid 和类型，发起该会话，并把 stable sid、账号指纹和新 `authorizationRevision` 原子
+写入现有 allowlist。token 五分钟过期且单次消费；显示名不能直接绑定或发送。
+
 监听和发送仍只允许带 owner binding 的配置会话：
 
 ```json
@@ -218,22 +233,26 @@ Computer/CUA、Browser/Desktop 或其他 Connector。
 `authorizationRevision` 使 owner 的每次写目标选择可审计。缺 binding、账号变化、
 revision 无效或写目标当前不存在唯一候选时，status 返回
 `targetBindingStatus=target_not_bound`，`outbound` 不会冒充可用，但账号验证通过后的
-动态 `contextRead/coverage` 仍为 bounded。页面指纹也只影响写能力。
+动态 `contextRead/coverage` 仍为 bounded。页面指纹只在选中精确发送目标后、点击前
+执行 target-scoped preflight；专用页暂时停在会话列表或空会话不会把整个路线误判为
+不可用，目标页的输入框、发送按钮或指纹不匹配仍会在任何外部写入前失败关闭。
 
-大象 Adapter 使用已登录的 `https://x.sankuai.com/` 专用 Chrome 后台标签。它通过 Chrome Apple Events JavaScript 接口注入窄页面 Bridge，不激活 Chrome、不发送键盘鼠标事件，也不读取或导出浏览器认证资料。标签必须通过 `origin + window.name tabMarker` 唯一绑定；Chrome 在前台时，专用标签不能是当前标签，Chrome 整体处于后台时则允许该标签是窗口当前页。读取或发送结束后会恢复原会话选择；恢复失败时失败关闭。账号指纹、页面指纹、稳定 `sid` 和稳定 `mid` 任一不匹配都会停止写操作。
+大象 Adapter 使用已登录的 `https://x.sankuai.com/` 专用 Chrome 后台标签。它通过 Chrome Apple Events JavaScript 接口注入窄页面 Bridge，不激活 Chrome、不发送键盘鼠标事件，也不读取或导出浏览器认证资料。标签必须通过 `origin + window.name tabMarker` 唯一绑定，并且无论 Chrome 是否在前台都不得是窗口当前标签。读取或发送结束后会恢复专用标签内的原会话选择；恢复失败时失败关闭。账号指纹、页面指纹、稳定 `sid` 和稳定 `mid` 任一不匹配都会停止写操作。
 
 业务配置从 `DAXIANG_WEB_CONFIG` 读取，模板为
 `examples/connectors/personal-message/daxiang-web.example.json`。初次启用时先保持
 `expectedAccountFingerprint` 和 `allowedPageFingerprints` 为空，只调用
 `health_check` 的 probe 获取摘要；写回并重载后才开放动态有界读取。配置缺失、Chrome
-未运行、专用标签在 Chrome 前台时处于活动状态或 Apple Events JavaScript 未获准时，Connector
-保持 `unavailable`，不会打开或激活浏览器。
+未运行或 Apple Events JavaScript 未获准时，Connector 保持 `unavailable`，不会启动或
+激活浏览器。
 
-健康检查发现绑定标签丢失时，Adapter 会自动执行一次后台安全恢复：仅当当前恰好存在
-一个已登录、非活动的 `x.sankuai.com` 标签页时，重新写入本地 `window.name`
-标记并复核账号和页面指纹。它不会启动或激活 Chrome，不会接管活动标签，不会在匹配
-歧义、权限不足或账号/页面指纹不一致时继续，也不会在恢复过程中读取凭证或发送消息。
-诊断记录只保留故障类别以及 `recoveryAttempted/recovered` 状态。
+健康检查发现绑定标签丢失，或 owner 把专用标签点成当前标签时，Adapter 会撤销旧页的
+标记，在现有 Chrome 窗口末尾补建一个不抢焦点的后台大象标签，恢复原 active tab，
+待页面加载后写入本地 `window.name` 并复核账号和页面指纹。普通可见的大象标签永远
+不会被初始绑定；专用标签在任意一次 Bridge 调用前变成 active 都会失败关闭。它不会
+启动或激活 Chrome，不会在权限不足或账号/页面指纹不一致时继续，也不会在恢复过程中
+读取凭证或发送消息。诊断记录只保留故障类别以及
+`recoveryAttempted/recovered` 状态。
 
 大象 Event 固定使用 `source=personal-message:daxiang`，不设置 `replyTarget`。
 `send_message` 虽在 Connector action 目录登记，但通用 `connector_action` 会拒绝
@@ -559,7 +578,7 @@ Connector 默认先查找与当前 Node 可执行文件同目录的 `opencli`，
 - `frames`、`wait`：读取 iframe 目录，或有界等待 selector、text、XHR、download。
 - `network`：只返回响应 shape 目录；Connector 删除 URL query/hash，并递归裁剪 authorization、cookie、token、secret、password、body 等字段，不开放 raw body。
 
-页面写动作包括 `navigate/back/click/type/fill/select/check/uncheck/hover/focus/double_click/keys/scroll/upload/drag/dialog/execute_javascript`。除建立/释放会话外，每个写动作都必须携带最新 Observation；任意 JavaScript 因执行面最宽，只接受最新 `snapshot` 返回的 `observationId`，不能用 `find` 或 `list_tabs` 代替。Connector 先完成全部参数和本地前置条件校验，只在即将投递动作时消费该 ID；明确拒绝且未投递的参数错误可使用同一 Observation 修正，已投递后的成功、失败或超时都必须重新观察。写回执包含 `completionScope=interaction`、`businessOutcome=unverified`、`observationInvalidated` 和 `nextRead`；其中 `outcome=confirmed` 只证明这次浏览器交互已执行，不能证明网页业务事务成功。点击或双击后先 `list_tabs`，发现新 page 后按精确 page 读取；外部配置、环境、账号、权限、部署或任务变更还必须在提交前核对环境/对象/旧值，提交后回读新值。
+页面写动作包括 `navigate/back/click/type/fill/select/check/uncheck/hover/focus/double_click/keys/scroll/upload/drag/dialog/execute_javascript`。它们不要求 `observationId`；读取动作仍可返回该字段用于关联日志和回执，但新的 snapshot/find/list_tabs 不会让旧 ID 变成错误门禁。Connector 先完成全部参数和本地前置条件校验，再投递一个结构化动作。写回执包含 `completionScope=interaction`、`businessOutcome=unverified` 和 `nextRead`；其中 `outcome=confirmed` 只证明这次浏览器交互已执行，不能证明网页业务事务成功。点击或双击后先 `list_tabs`，发现新 page 后按精确 page 读取；其他写操作后重新 snapshot 并核对结果。外部配置、环境、账号、权限、部署或任务变更还必须在提交前核对环境/对象/旧值，提交后回读新值。
 
 OpenCLI 命令使用固定 argv 数组启动，不拼接 Shell。Connector 为每个逻辑任务生成 `mimi-*` 内部 session 名，不能接管 owner 直接创建的 OpenCLI session；所有 action 串行执行。命令默认 30 秒超时，可用 `OPENCLI_BROWSER_COMMAND_TIMEOUT_MS=1000..300000` 调整；stdout 默认上限 1MB，可用 `OPENCLI_BROWSER_MAX_OUTPUT_BYTES=32000..8000000` 调整。Host 的 `actionTimeoutMs` 必须不小于命令超时。
 

@@ -44,6 +44,7 @@ export class DaxiangWebAdapter {
     };
     bridgeSource: string;
     stateFile: string;
+    configFile?: string;
     diagnosticsFile?: string;
     sendObservationTimeoutMs?: number;
   });
@@ -53,6 +54,9 @@ export class DaxiangWebAdapter {
   loadState(): Promise<void>;
   health(input?: { probe?: boolean }): Promise<Record<string, unknown>>;
   getContext(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  listTargets(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  searchTargets(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  bindTarget(input?: Record<string, unknown>): Promise<Record<string, unknown>>;
   poll(): Promise<{ events: Array<Record<string, any>>; health: Record<string, unknown> }>;
   acknowledge(externalIds: string[]): Promise<{ acknowledged: string[] }>;
   send(input: Record<string, unknown>): Promise<Record<string, unknown>>;

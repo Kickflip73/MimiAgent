@@ -282,16 +282,19 @@ owner/system 以及命中 owner source policy 的 MimiAgent 事件可使用有�
 
 `get_mimi_settings` 与 `update_mimi_settings` 让 owner 通过对话调整个人画像、时区、静默时段、自治预算、告警阈值、运行超时、历史保留和简报设置。更新使用先读后写的完整快照，不会覆盖上述独立管理的人物、规则、例程和替身策略。需要临时专注时可直接说“免打扰 2 小时”，由 `snooze_mimi` 暂停非紧急自主处理和定时简报，到期自动恢复；当前 owner 命令与紧急事件照常执行，`clear_mimi_snooze` 可提前恢复。
 
-微信 Bot、邮件、Messages、新闻和天气等渠道通过隔离的 stdio Connector 接入：Daemon 负责拉起、崩溃退避重启、故障自愈跟踪、事件去重和可靠回传，Connector 只负责渠道协议。MimiAgent 会核对实时能力、跟踪到稳定恢复，并只在无法自愈或影响事务时通知；中断期间结果不确定的外部动作不会自动重放。每个 Daemon Run 都获得动态只读 `inspect_mimi_capabilities`，可小范围查看 enabled、online、readiness 和 action 目录。配置示例见 `mimi.connectors.example.json`，协议见 [docs/CONNECTORS.md](docs/CONNECTORS.md)。
+微信 Bot、邮件、Messages、新闻和天气等渠道通过隔离的 stdio Connector 接入：Daemon 负责拉起、确定性 readiness 探活、连续失败后的单 Connector 重启、崩溃退避、事件去重和可靠回传，Connector 只负责渠道协议。探活与恢复不启动模型 Run；MimiAgent 只在无法自愈或影响事务时通知，中断期间结果不确定的外部动作不会自动重放。每个 Daemon Run 都获得动态只读 `inspect_mimi_capabilities`，可小范围查看 enabled、online、readiness 和 action 目录。配置示例见 `mimi.connectors.example.json`，协议见 [docs/CONNECTORS.md](docs/CONNECTORS.md)。
 
 大象个人账号通道通过默认关闭的 `personal-daxiang` Connector 接入已登录的专用
 Chrome 后台标签，动态分页发现当前账号已有会话并提供有界读取、首次监听历史基线、
-ACK 后游标和一次性观察式发送；读取不要求预配会话 allowlist，监听和发送仍只允许
-owner 明确绑定的稳定 sid，
-账号/页面指纹未锁定或标签正在使用时失败关闭。个人 QQ、个人微信 Adapter 尚未实现，
+ACK 后游标和一次性观察式发送。专用标签由 Connector 自行补建并始终保持非活动；
+用户点开它时 Connector 会立即停止页面操作并迁移到新的后台标签，因此轮询切换会话
+不会再改变用户正在看的大象页面。读取不要求预配会话 allowlist；按姓名发起新会话使用
+`search_targets` 返回有界稳定候选，再以一次性 `candidateToken` 调用 `bind_target`，
+重名必须由 owner 消歧，显示名不能直接成为发送目标。监听和发送仍只允许 owner 明确
+绑定的稳定 sid，账号/页面指纹未锁定时失败关闭。个人 QQ、个人微信 Adapter 尚未实现，
 配置槽位无 action 且默认关闭。腾讯官方 `openclaw-weixin` 仍是独立 iLink Bot，QQ
 `qq-messenger-skill` 仍是当次 CUA 兜底，两者都不会冒充个人消息 Connector。
-owner 查询大象消息时通过 `query=大象` 发现完整 `personal-daxiang` ID，再使用
+owner 查询大象消息时通过稳定 capability 发现正式 action，再使用
 `list_targets/get_context`；`list_targets` 默认只返回最近活跃的一页，查看需注意消息时
 优先处理该页的 unread/近期会话。只有当前页信息不足或 owner 明确要求更早/全部会话时，
 才按 `nextCursor` 继续分页。该查询不会因 ID 猜错或 bounded coverage
@@ -314,7 +317,7 @@ owner 查询大象消息时通过 `query=大象` 发现完整 `personal-daxiang`
 
 `macos-desktop-connector.mjs` 通过 System Events 感知前台应用和窗口，并可激活应用、打开 URL/绝对路径、读写文本剪贴板、输入文本、发送 key code 和点击一级菜单项。`open_visible` 要求精确 bundle ID，并且只有观察到目标应用已置前且存在可见窗口才返回 `outcome=confirmed`；系统只接受打开请求但验证超时会返回 uncertain，禁止重放。剪贴板感知默认关闭，持久启停只由 operator 管理。
 
-`browser-connector.mjs` 是唯一网页语义执行面，只使用 Chrome 和 OpenCLI Browser Bridge。它提供隔离/绑定会话、DOM/AX 状态、语义 locator、标签、正文、iframe、网络 shape、表单和结构化页面动作；写入必须消费新鲜 observationId，页面变化后重新观察。MimiAgent 不再提供 Safari/JXA Browser 路径，也不通过 Shell 直接运行 OpenCLI。安装与完整动作见 [docs/CONNECTORS.md](docs/CONNECTORS.md#browser-connector)。
+`browser-connector.mjs` 是唯一网页语义执行面，只使用 Chrome 和 OpenCLI Browser Bridge。它提供隔离/绑定会话、DOM/AX 状态、语义 locator、标签、正文、iframe、网络 shape、表单和结构化页面动作；`observationId` 只作为读取回执，不再是写动作门禁，写后仍重新观察并核对结果。MimiAgent 不再提供 Safari/JXA Browser 路径，也不通过 Shell 直接运行 OpenCLI。安装与完整动作见 [docs/CONNECTORS.md](docs/CONNECTORS.md#browser-connector)。
 
 `macos-screen-connector.mjs` 使用系统 `screencapture` 和 Vision Framework 读取原生应用、画布、远程桌面等非 DOM 界面的屏幕文字。它支持显式保存 PNG、OCR 已有图片，以及临时截图后 OCR 并立即清理；默认不持续录屏、不轮询屏幕、不保存图片历史，也不增加云端 OCR 依赖。
 

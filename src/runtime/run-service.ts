@@ -159,7 +159,8 @@ export class AgentRunService {
     this.providerFailover = new ProviderFailoverCoordinator(this.providerReliability);
     this.commits = new RunCommitCoordinator({
       complete: (answer, usage) => this.agent.completeRun(answer, usage),
-      fail: (error, interrupted, usage) => this.agent.failRun(error, interrupted, usage),
+      fail: (error, interrupted, usage, interruptedAnswer) =>
+        this.agent.failRun(error, interrupted, usage, interruptedAnswer),
     });
   }
 
@@ -179,6 +180,7 @@ export class AgentRunService {
   async execute(request: AgentRunRequest, observer: AgentRunObserver = {}): Promise<AgentRunResult> {
     let stream: RunStream | undefined;
     let streamedAnswer = '';
+    let interruptedAnswer = '';
     let selectedProvider = this.providerId;
     let streamAcquired = false;
     const stopRuntimeEvents = this.agent.onRuntimeEvent((event) => observe(
@@ -231,6 +233,7 @@ export class AgentRunService {
         const sensitiveModelStream = this.agent.activeRunHasEphemeralSensitiveAccess
           && event.type === 'raw_model_stream_event';
         if (!hiddenCandidate && !sensitiveModelStream) {
+          interruptedAnswer += answerDelta(event);
           await observe(observer.onStreamEvent, safeEvent);
         }
         const progress = progressFrom(safeEvent);
@@ -275,6 +278,7 @@ export class AgentRunService {
             : safeError,
         interrupted: isRunInterrupted(error, request.signal),
         usage: usageFrom(stream),
+        interruptedAnswer,
       });
       if (streamAcquired) await commitFailure;
       else await commitFailure.catch(() => undefined);

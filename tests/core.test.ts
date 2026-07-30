@@ -27,6 +27,7 @@ import { HookBus } from '../src/runtime/hooks.js';
 import { resolveUserPreferencesFile, resolveUserSoulFile } from '../src/runtime/components.js';
 import { createPlanTools } from '../src/runtime/plan-tools.js';
 import { TerminalRunInterruptedError } from '../src/runtime/run-outcome.js';
+import { AgentRunService } from '../src/runtime/run-service.js';
 import { decideEvent } from '../src/daemon/policy.js';
 import {
   collectTrustedMcpEnvironment,
@@ -442,7 +443,7 @@ test('failed durable attempts retain owner input after legacy history cleanup ch
   }
 });
 
-test('terminal cancellation clears the checkpoint without deleting the owner task', async () => {
+test('terminal cancellation preserves visible context without retaining incomplete tool protocol', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-terminal-cancel-continuity-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const sessionId = 'terminal-cancel-continuity';
@@ -455,26 +456,52 @@ test('terminal cancellation clears the checkpoint without deleting the owner tas
     historyLimit: 40, maxTurns: 20,
   });
   const controller = new AbortController();
-  const runner = (agent as unknown as { runner: { run: (...args: unknown[]) => Promise<never> } }).runner;
-  runner.run = async () => {
-    await session.addItems([
-      { role: 'user', content: 'ORIGINAL_OWNER_TASK' },
-      { role: 'assistant', content: 'PARTIAL_ASSISTANT_OUTPUT' },
-      { type: 'function_call', name: 'side_effect', callId: 'partial-call', arguments: '{}' },
-    ] as unknown as AgentInputItem[]);
-    const cancellation = new TerminalRunInterruptedError('owner cancelled');
-    controller.abort(cancellation);
-    throw cancellation;
-  };
+  const runner = (agent as unknown as {
+    runner: { run: (...args: unknown[]) => Promise<unknown> };
+  }).runner;
+  runner.run = async () => ({
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: undefined,
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() {
+      await session.addItems([
+        { role: 'user', content: 'ORIGINAL_OWNER_TASK' },
+        { role: 'assistant', content: 'SDK_PARTIAL_ASSISTANT_OUTPUT' },
+        { type: 'function_call', name: 'side_effect', callId: 'partial-call', arguments: '{}' },
+      ] as unknown as AgentInputItem[]);
+      yield {
+        type: 'raw_model_stream_event',
+        data: { type: 'output_text_delta', delta: 'VISIBLE_PARTIAL_ASSISTANT_OUTPUT' },
+      };
+      controller.abort(new TerminalRunInterruptedError('owner cancelled'));
+      throw new Error('AbortError');
+    },
+  });
 
   try {
-    await assert.rejects(agent.stream('ORIGINAL_OWNER_TASK', controller.signal, {
-      executionKey: 'event:terminal-cancel',
-      retainExecutionLedger: true,
-      requireCompletionGate: false,
-    }), /owner cancelled/);
-    assert.deepEqual(await session.getItems(), [
+    await assert.rejects(new AgentRunService(agent).execute({
+      input: 'ORIGINAL_OWNER_TASK',
+      signal: controller.signal,
+      options: {
+        executionKey: 'event:terminal-cancel',
+        retainExecutionLedger: true,
+        requireCompletionGate: false,
+      },
+    }), /AbortError/);
+    assert.deepEqual(await new FileSession(path.join(dataRoot, 'sessions'), sessionId).getItems(), [
       { role: 'user', content: 'ORIGINAL_OWNER_TASK' },
+      {
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{
+          type: 'output_text',
+          text: '【本轮回答在中断前的可见片段；任务未完成】\nVISIBLE_PARTIAL_ASSISTANT_OUTPUT',
+        }],
+      },
     ]);
     assert.equal(await session.getCheckpoint(), undefined);
   } finally {
@@ -922,6 +949,33 @@ test('durable run recovery preserves owner inputs and removes incomplete protoco
     { role: 'user', content: 'stable history' },
     { role: 'user', content: 'send once' },
     { role: 'user', content: 'read the forwarded card' },
+  ]);
+});
+
+test('terminal interruption survives Session reopen with input and visible answer context', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-session-interrupted-context-'));
+  const session = new FileSession(root, 'interrupted-context');
+  await session.beginRun('为什么 Connector 不可用？', 'interrupted-run', undefined, true);
+
+  assert.equal(await session.rollbackRunItems(
+    'interrupted-run',
+    '我已经确认 Connector 当前离线，正在继续定位原因。',
+  ), true);
+  await session.clearRunCheckpoint('interrupted-run');
+
+  const reopened = new FileSession(root, 'interrupted-context');
+  assert.deepEqual(await reopened.getItems(), [
+    { role: 'user', content: '为什么 Connector 不可用？' },
+    {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{
+        type: 'output_text',
+        text: '【本轮回答在中断前的可见片段；任务未完成】\n'
+          + '我已经确认 Connector 当前离线，正在继续定位原因。',
+      }],
+    },
   ]);
 });
 

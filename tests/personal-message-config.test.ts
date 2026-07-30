@@ -3,7 +3,12 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { ConnectorManager, parseConnectorConfig } from '../src/daemon/connectors.js';
+import {
+  ConnectorManager,
+  connectorCapabilityActionReady,
+  parseConnectorConfig,
+  type ConnectorCapability,
+} from '../src/daemon/connectors.js';
 import { NotifierRegistry } from '../src/daemon/notifier.js';
 import { MimiStore } from '../src/daemon/store.js';
 
@@ -17,7 +22,7 @@ test('personal channel templates are disabled and only Daxiang declares actions'
   assert.ok(daxiang && qq && wechat);
   assert.equal(daxiang.enabled, false);
   assert.deepEqual(Object.keys(daxiang.actions).sort(), [
-    'get_context', 'health_check', 'list_targets', 'send_message',
+    'bind_target', 'get_context', 'health_check', 'list_targets', 'search_targets', 'send_message',
   ]);
   assert.equal(daxiang.actions.sync_now, undefined);
   assert.equal(qq.enabled, false);
@@ -43,6 +48,42 @@ test('M1 execution surfaces have stable capability, effect, and route ownership 
   assert.equal(template.connectors['macos-shortcuts']?.actions.run_shortcut?.effect, 'write');
   assert.equal(template.connectors['macos-screen']?.actions.read_screen?.effect, 'read');
   assert.equal(template.connectors['personal-daxiang']?.actions.send_message?.capability, 'personal-message.send');
+  assert.equal(template.connectors['personal-daxiang']?.actions.search_targets?.effect, 'read');
+  assert.equal(template.connectors['personal-daxiang']?.actions.bind_target?.effect, 'write');
+});
+
+test('personal target binding is available from verified inbound readiness before send is ready', () => {
+  const connector: ConnectorCapability = {
+    id: 'personal-daxiang',
+    enabled: true,
+    online: true,
+    readiness: {
+      inbound: 'ready',
+      outbound: 'unavailable',
+      accountVerified: true,
+      backgroundSafe: true,
+    },
+    source: 'personal-message:daxiang',
+    trust: 'external',
+    claimedComputerApps: [],
+    actions: [{
+      name: 'bind_target',
+      description: 'bind',
+      capability: 'personal-message.target.bind',
+      effect: 'write',
+      routeOwner: 'personal-daxiang',
+    }],
+  };
+  const action = connector.actions[0]!;
+  assert.equal(connectorCapabilityActionReady(connector, action), true);
+  assert.equal(connectorCapabilityActionReady({
+    ...connector,
+    readiness: { ...connector.readiness, accountVerified: false },
+  }, action), false);
+  assert.equal(connectorCapabilityActionReady({
+    ...connector,
+    readiness: { ...connector.readiness, backgroundSafe: false },
+  }, action), false);
 });
 
 test('generic connector_action cannot reach personal-message send_message', async () => {

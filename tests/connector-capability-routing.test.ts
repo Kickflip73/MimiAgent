@@ -46,9 +46,10 @@ test('an unknown exact Connector ID is not reported as offline', async () => {
 test('capability routing instructions use stable declarations instead of business wording', () => {
   assert.match(BASE_INSTRUCTIONS, /精确 capability\/action/);
   assert.match(BASE_INSTRUCTIONS, /直接调用 invoke_capability/);
-  assert.match(BASE_INSTRUCTIONS, /operationRef.*系统、环境和业务资源/);
+  assert.doesNotMatch(BASE_INSTRUCTIONS, /operationRef/);
+  assert.match(BASE_INSTRUCTIONS, /Host.*副作用账本/);
   assert.match(BASE_INSTRUCTIONS, /confirmed 用原回执/);
-  assert.match(BASE_INSTRUCTIONS, /禁止通过更换 operationRef、session、Tool、Connector 或执行路线重放/);
+  assert.match(BASE_INSTRUCTIONS, /禁止通过更换 session、Tool、Connector 或执行路线重放/);
   assert.match(BASE_INSTRUCTIONS, /不要.*启停或重载 Connector/);
   assert.match(BASE_INSTRUCTIONS, /uncertain 禁止.*重放/);
   assert.match(BASE_INSTRUCTIONS, /Connector 已声明并持有的资源只能走该 Connector/);
@@ -56,19 +57,21 @@ test('capability routing instructions use stable declarations instead of busines
   assert.match(BASE_INSTRUCTIONS, /CuaDriver 仅由 computer_observe\/computer_act 使用/);
   assert.match(BASE_INSTRUCTIONS, /个人消息的查看、读取或汇总只使用 effect=read/);
   assert.match(BASE_INSTRUCTIONS, /新消息 Event 同步由 Connector 内部轮询负责，不是模型 action/);
+  assert.match(BASE_INSTRUCTIONS, /personal-message\.targets\.search\/search_targets/);
+  assert.match(BASE_INSTRUCTIONS, /personal-message\.target\.bind\/bind_target/);
   assert.match(BASE_INSTRUCTIONS, /Shell 沙箱.*不是 SIP/);
   assert.match(BASE_INSTRUCTIONS, /只读诊断能力/);
   assert.match(BASE_INSTRUCTIONS, /网页 routeOwner 唯一为 Chrome Browser Connector/);
   assert.match(BASE_INSTRUCTIONS, /内网或需要浏览器登录态的 URL 直接调用 browser\.url\.read\/read_url/);
   assert.match(BASE_INSTRUCTIONS, /禁 Safari\/Shell\/OpenCLI\/CDP\/JXA/);
   assert.match(BASE_INSTRUCTIONS, /Full Owner.*browser\.page\.execute/);
-  assert.match(BASE_INSTRUCTIONS, /最新 snapshot 的 observationId/);
+  assert.doesNotMatch(BASE_INSTRUCTIONS, /最新 snapshot 的 observationId/);
   assert.match(BASE_INSTRUCTIONS, /completionScope=interaction\/businessOutcome=unverified/);
   assert.match(BASE_INSTRUCTIONS, /系统 \+ 环境\/账号 \+ 稳定业务对象 \+ 期望旧值\/新值/);
   assert.match(BASE_INSTRUCTIONS, /平台默认进入生产环境时不得先操作再切环境/);
   assert.match(BASE_INSTRUCTIONS, /已浏览\/已交互\/已提交\/已回读确认/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /禁.*任意 JavaScript/);
-  assert.match(BASE_INSTRUCTIONS, /使用最新 observationId，写后重观察/);
+  assert.match(BASE_INSTRUCTIONS, /写后重观察/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /大象|QQ|微信/);
 });
 

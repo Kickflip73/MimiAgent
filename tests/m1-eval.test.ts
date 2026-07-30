@@ -95,15 +95,15 @@ function manifest(evidenceKind: M1EvalManifest['evidenceKind'] = 'fixture'): M1E
         tags: ['fixture'],
       },
       {
-        id: 'browser.stale',
+        id: 'browser.unavailable',
         app: 'Browser',
         channel: 'browser',
-        actionFamily: 'page.read',
+        actionFamily: 'health',
         executionPath: 'connector-manager',
         risk: 'read',
-        boundaryRef: 'tests/browser-connector.test.ts#stale-observation',
+        boundaryRef: 'tests/browser-connector.test.ts#doctor-unavailable',
         expectedOutcome: 'blocked',
-        tags: ['fixture', 'stale'],
+        tags: ['fixture', 'unavailable'],
       },
     ],
   });
@@ -169,7 +169,7 @@ test('M1 report separates requested coverage from eligible execution success', a
   assert.deepEqual(report.groups.map((group) => [
     group.evidenceKind, group.app, group.actionFamily, group.executionPath, group.requested,
   ]), [
-    ['fixture', 'Browser', 'page.read', 'connector-manager', 1],
+    ['fixture', 'Browser', 'health', 'connector-manager', 1],
     ['fixture', 'Computer', 'observe', 'computer-manager', 1],
   ]);
   const accumulated = reportM1EvalRuns([run, await completedRun()]);
