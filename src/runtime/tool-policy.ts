@@ -19,6 +19,7 @@ export interface ToolDescriptor {
 type ToolDescriptorDefinition = Omit<ToolDescriptor, 'name'>;
 
 const ALL_MODES = ['general', 'plan', 'ultra'] as const satisfies readonly AgentMode[];
+const GENERAL_AND_ULTRA = ['general', 'ultra'] as const satisfies readonly AgentMode[];
 const PLAN_AND_ULTRA = ['plan', 'ultra'] as const satisfies readonly AgentMode[];
 const ULTRA_ONLY = ['ultra'] as const satisfies readonly AgentMode[];
 
@@ -133,6 +134,12 @@ const TOOL_DESCRIPTOR_DEFINITIONS = {
   request_background_task_input: { capabilities: ['state-write'], sideEffect: true },
   runtime_status: { capabilities: ['control'], modes: ALL_MODES },
   model_control: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
+  generate_image: {
+    capabilities: ['network-write'],
+    modes: GENERAL_AND_ULTRA,
+    sideEffect: true,
+    displayedOrchestrationTool: true,
+  },
   list_modes: { capabilities: ['control'], modes: ALL_MODES },
   switch_model: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
   switch_provider: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },

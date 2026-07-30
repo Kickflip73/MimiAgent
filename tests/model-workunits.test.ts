@@ -11,7 +11,7 @@ import type { ProviderDefinition, RunModelBinding } from '../src/core/model-rout
 import { runTeamWave } from '../src/extensions/team.js';
 import { createSubAgentTools } from '../src/extensions/subagents.js';
 import { ModelGateway } from '../src/runtime/model-gateway.js';
-import { MediaRuntime } from '../src/runtime/media-runtime.js';
+import { createMediaTools, MediaRuntime } from '../src/runtime/media-runtime.js';
 import { WorkUnitModelResolver } from '../src/runtime/work-unit-model-resolver.js';
 
 const provider: ProviderDefinition = {
@@ -261,6 +261,96 @@ test('Media WorkUnit sends generation only to an imageOutput model', async () =>
       modelTarget: { providerId: 'media', modelId: 'vision-only' },
       routeVersion: 3,
     }), /imageOutput|生图/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('MimiAgent media tool creates a Media WorkUnit and blocks before Provider without a compatible target', async () => {
+  const requests: Array<{ path?: string; body: string }> = [];
+  const server = http.createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push({ path: request.url, body });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ data: [{ b64_json: 'cHJvZHVjdC1pbWFnZQ==' }] }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+  const mediaProvider: ProviderDefinition = {
+    id: 'media',
+    label: 'Media',
+    transport: 'openai-responses',
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    apiKeyEnv: 'MEDIA_KEY',
+    models: [{
+      target: { providerId: 'media', modelId: 'image-output' },
+      kind: 'image-generation',
+      capabilities: { imageInput: false, imageOutput: true, toolCalling: false },
+    }],
+  };
+  try {
+    const gateway = new ModelGateway({
+      providers: [mediaProvider],
+      environment: { MEDIA_KEY: 'media-secret' },
+    });
+    const resolver = new WorkUnitModelResolver({
+      providers: [mediaProvider],
+      routing: {
+        globalDefault: { providerId: 'media', modelId: 'image-output' },
+        scenarios: {},
+      },
+    });
+    const media = new MediaRuntime(gateway, resolver);
+    const tool = createMediaTools({
+      runtime: () => media,
+      routeVersion: () => 4,
+    }).find((item) => item.name === 'generate_image');
+    assert.ok(tool && 'invoke' in tool);
+    const result = await tool.invoke(
+      new RunContext({}),
+      JSON.stringify({ prompt: 'draw a blue circle' }),
+    ) as unknown as {
+      kind: string;
+      binding: RunModelBinding;
+      artifacts: Array<{ data?: string }>;
+    };
+    assert.equal(result.kind, 'media');
+    assert.equal(result.binding.kind, 'image-generation');
+    assert.equal(result.binding.routeVersion, 4);
+    assert.equal(result.artifacts[0]?.data, 'cHJvZHVjdC1pbWFnZQ==');
+    assert.equal(requests.length, 1);
+
+    const agentOnly: ProviderDefinition = {
+      ...provider,
+      models: [provider.models[0]!],
+    };
+    const blockedGateway = new ModelGateway({
+      providers: [agentOnly],
+      environment: { FAKE_KEY: 'fake-secret' },
+    });
+    const blockedResolver = new WorkUnitModelResolver({
+      providers: [agentOnly],
+      routing: {
+        globalDefault: { providerId: 'fake', modelId: 'simple' },
+        scenarios: {},
+      },
+    });
+    const blockedTool = createMediaTools({
+      runtime: () => new MediaRuntime(blockedGateway, blockedResolver),
+      routeVersion: () => 5,
+    }).find((item) => item.name === 'generate_image');
+    assert.ok(blockedTool && 'invoke' in blockedTool);
+    const blocked = await blockedTool.invoke(
+      new RunContext({}),
+      JSON.stringify({ prompt: 'must block' }),
+    );
+    assert.match(String(blocked), /没有兼容模型|imageOutput|生图/);
+    assert.equal(requests.length, 1);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => error ? reject(error) : resolve()));

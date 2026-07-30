@@ -773,3 +773,56 @@ MIMI_BACKUP_*   -> legacy safe fallback
 3. 726 测试基线不下降，skipped=0，完成门全部通过。
 4. API key 不进入模型配置、Session、Task、Trace、IPC 日志或测试 fixture。
 5. 无副作用重放、Session FIFO、Team 并发/路径边界和 Run ownership 保持。
+
+## 十三、2026-07-30 实施后 Review 与修正门槛
+
+对提交 `310156f`、`606c353`、运行构建 `0.12.0+8ef2c7b69eab` 的只读 Review
+确认：精确 `ModelTarget`、Gateway 显式 client、Session 独立固定、Team/SubAgent
+逐任务选型、后台 credential 最小化已经成立，但以下偏差未修复前不能按本方案最终验收：
+
+1. `MediaRuntime` 只有测试直接调用，未接入 MimiAgent 工具或结构化委派入口；真实生图任务无法进入 Media WorkUnit。
+2. Anthropic/Google 原生消息转换只保留文本，注册为 `imageInput=true` 时仍会丢弃图片 block。
+3. `/model route` 只刷新发起命令的 Session actor；其他已缓存 actor 持有旧 Resolver 和 routeVersion。
+4. 上层仍以 legacy `config.provider` 决定 Hosted Tools、历史输入归一化、RunScope 和状态展示，没有完全改用本轮精确 target/transport。
+5. Claude `reasoning=high` 在未指定输出上限时形成 `max_tokens=4096`、`budget_tokens=8192`，且没有按当前模型兼容 manual/adaptive thinking。
+6. `mimi provider` 仍只有会重启的 legacy `set`，缺少 registry 的 `add/set/list/test`；基础指令仍引导旧 `switch_provider`，自然语言控制没有统一到 `model_control`。
+7. `ModelRegistration.contextWindow` 未参与 Runtime Profile；`ScenarioRoute.maxTurns/maxOutputTokens` 也未进入冻结 binding 和请求预算。
+8. README 仍声称跨 Provider `/model` 会重启，与当前 Session target 语义矛盾。
+
+Review 实测：`npm run check` 通过；模型聚焦测试 `53/53`；`npm run build`、
+`npm run test:package`、`git diff --check` 通过。全量首轮 `753/755`，两个既有 CUA
+启停/恢复用例因一次性环境争用失败，原样聚焦复跑 `2/2` 通过；不得把首轮写成
+`755/755`。当前私有 registry 只注册
+`friday/deepseek-v4-pro`、`deepseek/deepseek-v4-pro`，没有 V4 Flash、GPT、
+Claude、Gemini、Kimi、千问或 `imageOutput` 模型，因此真实运行态尚不能宣称这些
+模型和生图能力已经可用。
+
+修正完成至少需要新增并通过：
+
+- 产品入口级 Media WorkUnit 生图/无兼容模型 blocked 测试；
+- Claude/Gemini 图片 block 原生请求反向测试；
+- 两个已缓存 Session actor 修改 route 后下一 Run 同步新 routeVersion 的测试；
+- legacy 启动 Provider 与实际 target 不同时，工具面、历史归一化、状态和 Trace
+  全部以精确 target/transport 为准的测试；
+- Claude 高推理参数兼容与预算约束测试；
+- Provider registry 管理命令、自然语言 `model_control` 和 `contextWindow`/场景预算
+  真正生效的测试；
+- 最终不少于 `755` 个测试、fail/skipped/todo 均为 0，并完成 check、build、
+  package smoke、diff check；真实 Provider 与 Daemon 验收必须使用显式预算和凭据，
+  不得用 fake endpoint 冒充。
+
+### 13.1 2026-07-30 修正结果
+
+上述 8 项偏差均已落实到产品路径和回归测试：
+
+1. `generate_image` 通过真实 MimiAgent 工具面创建独立 Media WorkUnit，纯生图模型不进入 Agent loop；无兼容 target 在 Provider 前 blocked。
+2. Anthropic Messages 与 Google Generate Content 保留 data URL 图片的原生 block，远程图片 URL 不做隐式抓取。
+3. `routeVersion` 变化后，每个缓存 Session actor 在下一 Run/FIFO mutation 安全点重载；已开始的 Run 与已冻结 Team 不变。
+4. 工具面、跨 transport 历史归一化、RunScope、status 和 Trace 使用 binding 的精确 target/transport，不再以 legacy 启动 Provider 推断。
+5. Claude 高推理只按注册的协议能力生成合法 manual budget 或 adaptive thinking/effort；不支持显式要求时明确拒绝。
+6. `mimi provider add/set/list/test` 管理 registry 和 credential 引用；`model_control` 是唯一自然语言 Session/route 写入口，legacy action 不再暴露给模型。
+7. registration `contextWindow` 与 route `maxTurns/maxOutputTokens` 进入冻结 binding、ContextManager、Runner 和 Provider 请求，非法预算失败关闭。
+8. README、架构、环境示例与变更记录统一为“已注册 target 下一 Run 生效、无需重启”。
+
+最终门禁和真实运行回执以本次任务的 `PROGRESS.md` 为准；未配置 Provider 或
+`imageOutput` 服务不做猜测，也不以 fake endpoint 冒充真实可用。

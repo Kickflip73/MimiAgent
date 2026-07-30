@@ -1,7 +1,10 @@
+import { tool, type Tool } from '@openai/agents';
+import { z } from 'zod';
 import type {
   ModelTarget,
   RunModelBinding,
 } from '../core/model-routing.js';
+import { modelTargetSchema } from '../core/model-routing.js';
 import type { ModelGateway } from './model-gateway.js';
 import type { ImageGenerationResult } from './providers/types.js';
 import type { WorkUnitModelResolver } from './work-unit-model-resolver.js';
@@ -16,6 +19,7 @@ export interface MediaWorkUnitInput {
 }
 
 export interface MediaWorkUnitResult extends ImageGenerationResult {
+  kind: 'media';
   binding: RunModelBinding;
   cost: 'unknown';
 }
@@ -47,6 +51,33 @@ export class MediaRuntime {
       ...(input.size ? { size: input.size } : {}),
     }, signal);
     if (!result.artifacts.length) throw new Error('图片 Runtime 未返回 artifact');
-    return { ...result, binding, cost: 'unknown' };
+    return { ...result, kind: 'media', binding, cost: 'unknown' };
   }
+}
+
+export interface MediaToolsOptions {
+  runtime: () => MediaRuntime;
+  routeVersion: () => number;
+}
+
+export function createMediaTools(options: MediaToolsOptions): Tool[] {
+  return [
+    tool({
+      name: 'generate_image',
+      description: '创建独立 Media WorkUnit 生成或编辑图片；不会伪装成 Agent 或聊天 SubAgent。',
+      parameters: z.object({
+        prompt: z.string().trim().min(1).max(20_000),
+        image: z.string().max(20 * 1024 * 1024).optional(),
+        size: z.string().trim().min(1).max(50).optional(),
+        modelTarget: modelTargetSchema.optional(),
+      }).strict(),
+      execute: ({ prompt, image, size, modelTarget }) => options.runtime().run({
+        prompt,
+        ...(image ? { image } : {}),
+        ...(size ? { size } : {}),
+        ...(modelTarget ? { modelTarget } : {}),
+        routeVersion: options.routeVersion(),
+      }),
+    }),
+  ];
 }

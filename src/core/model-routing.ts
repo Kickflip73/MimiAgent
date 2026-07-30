@@ -29,6 +29,11 @@ export interface ModelRegistration {
   target: ModelTarget;
   kind: ModelKind;
   capabilities: ModelCapabilities;
+  reasoning?: {
+    high: 'manual' | 'adaptive';
+    supportsOff: boolean;
+    manualBudgetTokens?: number;
+  };
   contextWindow?: number;
 }
 
@@ -71,7 +76,13 @@ export type ModelControlRequest =
   | { action: 'list' | 'current' | 'routes' }
   | { action: 'inspect' | 'use'; target: ModelTarget }
   | { action: 'auto' }
-  | { action: 'route'; scenario: string; target: ModelTarget }
+  | {
+      action: 'route';
+      scenario: string;
+      target: ModelTarget;
+      maxTurns?: number;
+      maxOutputTokens?: number;
+    }
   | { action: 'route'; scenario: string; routeAuto: true }
   | { action: 'doctor'; target?: ModelTarget };
 
@@ -89,6 +100,9 @@ export interface RunModelBinding {
     | 'global-default'
     | 'safe-fallback';
   routeVersion: number;
+  contextWindow?: number;
+  maxTurns?: number;
+  maxOutputTokens?: number;
 }
 
 export const modelCapabilitiesSchema = z.object({
@@ -101,6 +115,11 @@ export const modelRegistrationSchema = z.object({
   target: modelTargetSchema,
   kind: z.enum(['agent', 'image-generation']),
   capabilities: modelCapabilitiesSchema,
+  reasoning: z.object({
+    high: z.enum(['manual', 'adaptive']),
+    supportsOff: z.boolean(),
+    manualBudgetTokens: z.number().int().min(1_024).optional(),
+  }).strict().optional(),
   contextWindow: z.number().int().positive().optional(),
 }).strict();
 
@@ -162,6 +181,8 @@ export const modelControlRequestSchema: z.ZodType<ModelControlRequest> = z.union
       action: z.literal('route'),
       scenario: modelScenarioSchema,
       target: modelTargetSchema,
+      maxTurns: z.number().int().positive().optional(),
+      maxOutputTokens: z.number().int().positive().optional(),
     }).strict(),
     z.object({
       action: z.literal('route'),
@@ -190,6 +211,9 @@ export const runModelBindingSchema = z.object({
     'safe-fallback',
   ]),
   routeVersion: z.number().int().positive(),
+  contextWindow: z.number().int().positive().optional(),
+  maxTurns: z.number().int().positive().optional(),
+  maxOutputTokens: z.number().int().positive().optional(),
 }).strict();
 
 export function modelTargetKey(target: ModelTarget): string {

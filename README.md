@@ -471,11 +471,31 @@ Ultra Team 由主 Agent 担任 lead，将工作拆成 2～6 个 `explorer / arch
 
 `trace` 适合学习和排查 Agent 执行过程，例如 `read_file` 会显示读取到的文件内容。为避免意外输出超大内容，单条详情最多展示 20000 个字符；此限制只作用于终端显示，不改变工具实际返回给模型的数据。
 
-`/model` 展示所有已配置 Provider 的模型，并标明模型所属 Provider；候选集合会合并
-`MIMI_MODELS`、`OPENAI_MODELS` 和 `DEEPSEEK_MODELS`。选择当前 Provider 的模型时只更新
-当前 Session；选择其他 Provider（例如从 DeepSeek 选择 `kimi-k3`）时，会复用已保存的
-Provider 凭证，原子更新默认模型并安全重启 Daemon。`/model <name>` 也按同一目录解析；
-未配置的模型会被拒绝，避免把模型名发送到错误的 Provider endpoint。
+`/models` 展示私有 `models.json` 中已注册的精确
+`providerId/modelId`、能力和配置状态。`/model use <providerId/modelId>` 只更新当前
+Session，`/model route <scenario> <providerId/modelId>` 更新场景路由；两者都从下一
+Run 生效，不修改活动 Provider，也不重启 Daemon。运行中的 Run 和已经冻结的 Team
+继续使用原 binding。自然语言查看或调整 Session/route 统一调用结构化
+`model_control`，不会猜测模型 ID 或能力。
+
+Provider 和模型注册由 CLI 管理，配置只保存 credential 环境变量引用，不保存 key：
+
+```bash
+mimi provider add acme \
+  --label Acme \
+  --transport openai-chat-completions \
+  --base-url https://api.example.com/v1 \
+  --api-key-env ACME_API_KEY \
+  --model exact-model-id \
+  --tool-calling true
+mimi provider list
+mimi provider test acme/exact-model-id
+mimi provider set acme/exact-model-id
+```
+
+未知能力默认 `false`；不兼容的视觉、生图或推理要求会在 Provider 调用前失败关闭。
+旧环境变量模型列表和 `mimi provider set openai|deepseek|openai-compatible ...`
+仅用于没有 registry 的 legacy 部署兼容。
 
 ## 终端展示
 

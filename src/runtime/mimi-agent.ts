@@ -60,6 +60,8 @@ import {
   modelControlRequestSchema,
   modelTargetKey,
   runModelBindingSchema,
+  type ProviderDefinition,
+  type ProviderTransport,
   type ModelTarget,
   type RunModelBinding,
   type WorkUnitModelProfile,
@@ -112,8 +114,8 @@ import { withExecutionLedger } from './tool-ledger.js';
 import { withMcpExecutionLedger } from './mcp-ledger.js';
 import { createRuntimeComponents, type RuntimeComponents } from './components.js';
 import type { ModelsConfig } from './model-config.js';
-import type { ModelGateway } from './model-gateway.js';
-import type { WorkUnitModelResolver } from './work-unit-model-resolver.js';
+import { ModelGateway } from './model-gateway.js';
+import { WorkUnitModelResolver } from './work-unit-model-resolver.js';
 import type { SessionStatePort } from './state-ports.js';
 import { createTeamWorkerTools } from './team-worker-tools.js';
 import { inputText } from './attachments.js';
@@ -151,6 +153,7 @@ import {
   withoutMimiPreferenceTools,
 } from './preference-tools.js';
 import { createModelControlTools } from './model-control-tools.js';
+import { createMediaTools, MediaRuntime } from './media-runtime.js';
 import { ModelConfigStore } from './model-config.js';
 import {
   activateEphemeralOwnerInput,
@@ -312,7 +315,8 @@ export interface AgentSessionSnapshot {
   recovery?: RunCheckpoint;
   plan: PlanStep[];
   runtime: {
-    provider: AppConfig['provider'];
+    provider: string;
+    transport?: ProviderTransport;
     model: string;
     modelTarget?: ModelTarget;
     mode: (typeof AGENT_MODES)[number];
@@ -418,13 +422,16 @@ export class MimiAgent {
   private readonly capabilityResolver = new CapabilityResolver();
   private readonly toolSetBuilder = new ToolSetBuilder();
   private readonly requestFactory = new AgentRequestFactory();
-  private readonly modelConfig: ModelsConfig;
-  private readonly modelGateway: ModelGateway;
-  private readonly modelResolver: WorkUnitModelResolver;
+  private modelConfig: ModelsConfig;
+  private modelGateway: ModelGateway;
+  private modelResolver: WorkUnitModelResolver;
   private readonly fixedModelBinding?: RunModelBinding;
   private readonly legacyModels: boolean;
   private readonly personalMessages = new PersonalMessageHub();
-  private readonly localTools: Readonly<Record<SecurityProfile, Tool[]>>;
+  private readonly localTools: Readonly<Record<SecurityProfile, {
+    hosted: Tool[];
+    portable: Tool[];
+  }>>;
   private readonly extensionTools: Tool[];
   private readonly mcpTools: Tool[];
   private session: FileSession;
@@ -434,7 +441,7 @@ export class MimiAgent {
   private readonly defaultMode: AgentMode;
   private readonly defaultOutputLevel: RuntimeOutputLevel;
   private readonly defaultModelName: string;
-  private readonly defaultModelTarget: ModelTarget;
+  private defaultModelTarget: ModelTarget;
   private permissionMode: AgentPermissionMode;
   private securityProfile: SecurityProfile;
   private defaultPermissionMode: AgentPermissionMode;
@@ -523,22 +530,25 @@ export class MimiAgent {
           : event.type === 'run_error' ? (event.interrupted ? 'turn_interrupted' : 'error') : event.type;
       await this.traces.record(event.sessionId, traceType, event);
     });
-    const createLocalTools = (access: Parameters<typeof createTools>[3]) => createTools(
+    const createLocalTools = (
+      access: Parameters<typeof createTools>[3],
+      includeOpenAIHostedTools: boolean,
+    ) => createTools(
       config.workspaceRoot,
-      config.provider === 'openai',
+      includeOpenAIHostedTools,
       privateRuntimePaths(config),
       access,
     );
     const baseShellEnvironment = createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env);
-    this.localTools = {
-      safe: createLocalTools({
+    const localToolAccess: Record<SecurityProfile, Parameters<typeof createTools>[3]> = {
+      safe: {
         readablePaths: ['.'],
         writablePaths: [],
         allowWrite: false,
         allowShell: false,
         mutationObserver: this.fileChanges,
-      }),
-      workstation: createLocalTools({
+      },
+      workstation: {
         readablePaths: ['.'],
         writablePaths: ['.'],
         allowWrite: true,
@@ -551,8 +561,8 @@ export class MimiAgent {
           ],
         } : {}),
         mutationObserver: this.fileChanges,
-      }),
-      'full-owner': createLocalTools({
+      },
+      'full-owner': {
         ...(createOptions.restrictReadsToWorkspace ? { readablePaths: ['.'] } : {}),
         allowProtectedPathShellAccess: createOptions.protectRuntimePathsFromShell !== true,
         allowShell: true,
@@ -570,7 +580,21 @@ export class MimiAgent {
           ],
         } : {}),
         mutationObserver: this.fileChanges,
-      }),
+      },
+    };
+    this.localTools = {
+      safe: {
+        hosted: createLocalTools(localToolAccess.safe, true),
+        portable: createLocalTools(localToolAccess.safe, false),
+      },
+      workstation: {
+        hosted: createLocalTools(localToolAccess.workstation, true),
+        portable: createLocalTools(localToolAccess.workstation, false),
+      },
+      'full-owner': {
+        hosted: createLocalTools(localToolAccess['full-owner'], true),
+        portable: createLocalTools(localToolAccess['full-owner'], false),
+      },
     };
     const computerTools = this.computer ? createComputerTools(this.computer, () => {
       const active = this.activeRun;
@@ -627,7 +651,8 @@ export class MimiAgent {
           if (!this.activeRun) throw new Error('当前没有可绑定的运行，无法调度操作');
           this.activeRun.pendingActions.push(action);
         },
-      }),
+      }).filter((tool) => this.legacyModels
+        || (tool.name !== 'switch_model' && tool.name !== 'switch_provider')),
       ...createModelControlTools({
         list: () => this.modelControl({ action: 'list' }),
         inspect: (target) => this.modelControl({ action: 'inspect', target }),
@@ -636,7 +661,13 @@ export class MimiAgent {
         clearSession: () => this.modelControl({ action: 'auto' }),
         routes: () => this.modelControl({ action: 'routes' }),
         setRoute: (scenario, route) => this.modelControl(route?.target
-          ? { action: 'route', scenario, target: route.target }
+          ? {
+              action: 'route',
+              scenario,
+              target: route.target,
+              ...(route.maxTurns ? { maxTurns: route.maxTurns } : {}),
+              ...(route.maxOutputTokens ? { maxOutputTokens: route.maxOutputTokens } : {}),
+            }
           : { action: 'route', scenario, routeAuto: true }),
         doctor: (target) => this.modelControl({ action: 'doctor', ...(target ? { target } : {}) }),
         assertOwner: () => {
@@ -646,13 +677,25 @@ export class MimiAgent {
           }
         },
       }),
+      ...createMediaTools({
+        runtime: () => new MediaRuntime(this.modelGateway, this.modelResolver),
+        routeVersion: () => this.modelConfig.routeVersion,
+      }),
       ...createMimiPreferenceTools(this.preferences),
     ];
   }
 
-  private registeredTools(profile = this.securityProfile): Tool[] {
+  private registeredTools(
+    profile = this.securityProfile,
+    binding = this.activeRun?.scope.modelBinding,
+  ): Tool[] {
+    const transport = binding
+      ? this.providerForTarget(binding.target).transport
+      : this.providerForTarget(this.defaultModelTarget).transport;
     return [
-      ...this.localTools[profile],
+      ...(transport === 'openai-responses'
+        ? this.localTools[profile].hosted
+        : this.localTools[profile].portable),
       ...this.extensionTools,
       ...(profile === 'full-owner' ? this.mcpTools : []),
     ];
@@ -670,6 +713,57 @@ export class MimiAgent {
 
   private modelName: string;
 
+  private providerForTarget(target: ModelTarget): ProviderDefinition {
+    const provider = this.modelConfig.providers.find((item) => item.id === target.providerId);
+    if (!provider) throw new Error(`模型 Provider 未注册：${target.providerId}`);
+    return provider;
+  }
+
+  private configuredModelProviders(): Array<{
+    id: string;
+    label: string;
+    model?: string;
+    models: string[];
+    transport?: ProviderTransport;
+    configured?: boolean;
+  }> {
+    return this.modelConfig.providers.map((provider) => ({
+      id: provider.id,
+      label: provider.label,
+      model: provider.models[0]?.target.modelId,
+      transport: provider.transport,
+      configured: Boolean(process.env[provider.apiKeyEnv]?.trim()),
+      models: provider.models.map((registration) => registration.target.modelId),
+    }));
+  }
+
+  private installModelConfiguration(next: ModelsConfig): void {
+    this.modelConfig = structuredClone(next);
+    this.modelGateway = new ModelGateway({ providers: this.modelConfig.providers });
+    this.modelResolver = new WorkUnitModelResolver({
+      providers: this.modelConfig.providers,
+      routing: this.modelConfig.routing,
+      isConfigured: (provider) => Boolean(process.env[provider.apiKeyEnv]?.trim()),
+    });
+    this.defaultModelTarget = { ...this.modelConfig.routing.globalDefault };
+  }
+
+  private async refreshModelConfiguration(): Promise<void> {
+    if (this.legacyModels || this.fixedModelBinding || !this.config.modelsConfig) return;
+    const next = await new ModelConfigStore(this.config.modelsConfig).read();
+    if (next.routeVersion === this.modelConfig.routeVersion) return;
+    this.installModelConfiguration(next);
+  }
+
+  private exactRoute(binding: RunModelBinding | undefined): {
+    provider: string;
+    transport?: ProviderTransport;
+  } {
+    if (!binding) return { provider: this.config.provider };
+    const provider = this.providerForTarget(binding.target);
+    return { provider: provider.id, transport: provider.transport };
+  }
+
   private runtimeForBinding(binding: RunModelBinding): {
     model: AgentModel;
     name: string;
@@ -679,11 +773,23 @@ export class MimiAgent {
       ? undefined
       : this.modelGateway.createAgentRuntime(binding.target, binding.reasoning);
     const profile = resolveModelProfile(this.config, binding.target.modelId);
+    const contextWindow = binding.contextWindow ?? profile.contextWindow;
+    const outputReserve = binding.maxOutputTokens
+      ?? (binding.contextWindow === undefined
+        ? profile.outputReserve
+        : Math.min(profile.outputReserve, Math.max(256, Math.floor(contextWindow * 0.1))));
+    if (outputReserve >= contextWindow) {
+      throw new Error(
+        `模型请求预算非法：maxOutputTokens=${outputReserve} 必须小于 contextWindow=${contextWindow}`,
+      );
+    }
     return {
       model: runtime?.model ?? createModel(this.config, binding.target.modelId).model,
       name: binding.target.modelId,
       profile: {
         ...profile,
+        contextWindow,
+        outputReserve,
         supportsImageInput: runtime
           ? runtime.registration.capabilities.imageInput
           : this.modelGateway.inspect(binding.target).capabilities.imageInput,
@@ -717,6 +823,7 @@ export class MimiAgent {
       scenario: 'conversation.default',
       reason: 'session-preference',
       routeVersion: this.modelConfig.routeVersion,
+      ...(registration.contextWindow ? { contextWindow: registration.contextWindow } : {}),
     };
     return this.runtimeForBinding(binding);
   }
@@ -782,6 +889,7 @@ export class MimiAgent {
 
   async stream(input: string | AgentInputItem[], signal?: AbortSignal, options?: MimiRunOptions) {
     if (this.activeRun) throw new Error('当前 Session 仍有任务运行中，请等待完成或先中止');
+    await this.refreshModelConfiguration();
     const textInput = inputText(input);
     if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
     this.lastCommittedAnswer = undefined;
@@ -822,10 +930,12 @@ export class MimiAgent {
     const routeModel = options?.providerRoute
       ? createModel(routeConfig, options.providerRoute.model)
       : this.runtimeForBinding(binding!);
+    const exactRoute = this.exactRoute(binding);
     const scope = captureRunScope({
       sessionId: this.sessionId,
       workspaceRoot: this.config.workspaceRoot,
-      provider: routeConfig.provider,
+      provider: exactRoute.provider,
+      transport: exactRoute.transport,
       model: routeModel.name,
       modelBinding: binding,
       mode: this.mode,
@@ -1444,13 +1554,13 @@ export class MimiAgent {
       sessionHistory: AgentInputItem[],
       currentInput: AgentInputItem[],
     ) => normalizeModelInput(
-      routeConfig.provider,
+      exactRoute.transport ?? routeConfig.provider,
       await contextInputCallback(prepareRunHistory(sessionHistory), currentInput),
     );
     return await this.runner.run(request.agent, input, {
       session: run.session,
       sessionInputCallback,
-      maxTurns: this.config.maxTurns,
+      maxTurns: binding?.maxTurns ?? this.config.maxTurns,
       stream: true,
       signal,
       toolExecution: { maxFunctionToolConcurrency: mode === 'ultra' ? 1 : 2 },
@@ -1551,6 +1661,7 @@ export class MimiAgent {
   }
 
   async sessionSnapshot(sessionId = this.sessionId): Promise<AgentSessionSnapshot> {
+    if (!this.activeRun) await this.refreshModelConfiguration();
     const session = this.createSession(sessionId);
     await session.ensure();
     const [items, checkpoint, preferences, summaries, plan] = await Promise.all([
@@ -1588,7 +1699,8 @@ export class MimiAgent {
       recovery: checkpoint && checkpoint.status !== 'completed' ? checkpoint : undefined,
       plan,
       runtime: {
-        provider: this.config.provider,
+        provider: actualTarget.providerId,
+        transport: this.providerForTarget(actualTarget).transport,
         model: model.name,
         modelTarget: { ...actualTarget },
         mode,
@@ -1859,22 +1971,41 @@ export class MimiAgent {
   }
 
   async runtimeInfo() {
-    const [sessionSummary, soul, preferences, projectGuidance, team, memoryStatus] = await Promise.all([
+    if (!this.activeRun) await this.refreshModelConfiguration();
+    const [
+      sessionSummary,
+      soul,
+      preferences,
+      projectGuidance,
+      team,
+      memoryStatus,
+      sessionPreferences,
+    ] = await Promise.all([
       this.session.summary(), this.soul.load(), this.preferences.load(), this.projectGuidance.load(), this.team.list(),
       this.memory.status(this.runContexts.forInspection()),
+      this.session.getPreferences(),
     ]);
     const capabilitySnapshot = this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot;
+    const binding = this.activeRun?.scope.modelBinding ?? this.modelResolver.resolve({
+      scenario: 'conversation.default',
+      sessionTarget: sessionPreferences.modelTarget ?? this.legacySessionTarget(sessionPreferences),
+      routeVersion: this.modelConfig.routeVersion,
+    });
+    const provider = this.providerForTarget(binding.target);
     return {
-      provider: this.config.provider,
-      configuredProviders: configuredProviders(),
-      model: this.modelName,
+      provider: provider.id,
+      transport: provider.transport,
+      configuredProviders: this.configuredModelProviders(),
+      model: binding.target.modelId,
+      modelTarget: binding.target,
+      modelBinding: binding,
       mode: this.currentMode,
       sessionId: this.sessionId,
       sessionTitle: sessionSummary.title,
       workspaceRoot: this.config.workspaceRoot,
       runtimeRoot: this.runtimeRoot,
       outputLevel: this.outputLevel,
-      maxTurns: this.config.maxTurns,
+      maxTurns: binding.maxTurns ?? this.config.maxTurns,
       permissionMode: this.permissionMode,
       securityProfile: this.currentSecuritySummary(),
       skillCount: capabilitySnapshot?.skills.length ?? this.skills.list().length,
@@ -1943,11 +2074,17 @@ export class MimiAgent {
       allowedCapabilities: ['state-read'],
       allowedTools: ['inspect_mimi_capabilities'],
     };
+    const binding = this.activeRun?.scope.modelBinding ?? this.modelResolver.resolve({
+      scenario: 'conversation.default',
+      routeVersion: this.modelConfig.routeVersion,
+    });
+    const route = this.exactRoute(binding);
     const scope = captureRunScope({
       sessionId: this.sessionId,
       workspaceRoot: this.config.workspaceRoot,
-      provider: this.config.provider,
-      model: this.modelName,
+      provider: route.provider,
+      transport: route.transport,
+      model: binding.target.modelId,
       mode: 'general',
       permissionMode: this.permissionMode,
       securityProfile: this.securityProfile,
@@ -1983,11 +2120,17 @@ export class MimiAgent {
       allowedTools: ['computer_observe'],
       computerAccess: 'observe',
     };
+    const binding = this.activeRun?.scope.modelBinding ?? this.modelResolver.resolve({
+      scenario: 'conversation.default',
+      routeVersion: this.modelConfig.routeVersion,
+    });
+    const route = this.exactRoute(binding);
     const scope = captureRunScope({
       sessionId: this.sessionId,
       workspaceRoot: this.config.workspaceRoot,
-      provider: this.config.provider,
-      model: this.modelName,
+      provider: route.provider,
+      transport: route.transport,
+      model: binding.target.modelId,
       mode: 'general',
       permissionMode: 'trusted',
       securityProfile: 'full-owner',
@@ -2040,6 +2183,7 @@ export class MimiAgent {
   }
 
   async modelControl(rawRequest: unknown): Promise<unknown> {
+    if (!this.activeRun) await this.refreshModelConfiguration();
     const request = modelControlRequestSchema.parse(rawRequest);
     if (request.action === 'list') {
       return Promise.all(this.modelConfig.providers.flatMap((provider) =>
@@ -2122,7 +2266,13 @@ export class MimiAgent {
       }
       const next = await new ModelConfigStore(this.config.modelsConfig).update((value) => {
         const scenarios = { ...value.routing.scenarios };
-        if ('target' in request) scenarios[request.scenario] = { target: request.target };
+        if ('target' in request) {
+          scenarios[request.scenario] = {
+            target: request.target,
+            ...(request.maxTurns ? { maxTurns: request.maxTurns } : {}),
+            ...(request.maxOutputTokens ? { maxOutputTokens: request.maxOutputTokens } : {}),
+          };
+        }
         else delete scenarios[request.scenario];
         return {
           ...value,
@@ -2130,8 +2280,7 @@ export class MimiAgent {
           routing: { ...value.routing, scenarios },
         };
       });
-      this.modelConfig.routeVersion = next.routeVersion;
-      this.modelConfig.routing.scenarios = next.routing.scenarios;
+      if (!this.activeRun) this.installModelConfiguration(next);
       return {
         scenario: request.scenario,
         route: 'target' in request ? request.target : 'auto',

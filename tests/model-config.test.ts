@@ -48,6 +48,22 @@ test('model config validates unique exact targets and fails closed on unknown ca
       }],
     }],
   }), /imageInput|imageOutput/);
+  assert.throws(() => parseModelsConfig({
+    ...base,
+    providers: [{
+      ...deepseek,
+      models: [{ ...deepseek.models[0], contextWindow: 4_096 }],
+    }],
+    routing: {
+      ...base.routing,
+      scenarios: {
+        'conversation.default': {
+          target: { providerId: 'deepseek-main', modelId: 'deepseek-v4-pro' },
+          maxOutputTokens: 4_096,
+        },
+      },
+    },
+  }), /maxOutputTokens|contextWindow|输出/);
 });
 
 test('private model config writes atomically with owner-only permissions', async () => {

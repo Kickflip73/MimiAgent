@@ -86,6 +86,89 @@
 - No Daemon install/restart or real account/message/UI mutation was performed. Temporary-root MimiAgent recovery tests exercised durable receipts and restart recovery locally; this is not presented as a live-provider eval.
 - Remaining planned roots are Memory blob/provenance atomicity, bounded runtime status/context cost, and broader Computer focus semantics; R5 required no production change because current source already shares the final Tool array.
 - Task-owned commits: `12cf9f9`, `00375f6`, `b796cfa`, `696cb00`, `410f1a5`, `5eb2ead`, `b9c5ea6`, plus this final documentation commit.
+## 2026-07-30 多 Provider Review 修复
+
+1. 目标：修复计划第十三节全部 8 项偏差，使结构化任务与精确 ModelTarget 贯穿 Session、Team、SubAgent、后台、视觉和生图。
+2. 顺序：任务 0 基线与运行态；Media/视觉；路由一致性；Claude reasoning；Provider registry/control；上下文与预算；总门禁；安全部署与双 target canary。
+3. 正确性边界：未知 Provider、模型能力、预算、凭据一律失败关闭，不猜模型 ID、价格或协议支持。
+4. 副作用边界：保留 FIFO、权限、ExecutionLedger at-most-once、Task credential 最小化；started/uncertain 不重放。
+5. 兼容边界：旧 Session、Team、Task IPC 可读；已开始 Run/Team 冻结旧 binding，下一 Run 才接受新 routeVersion。
+6. 代码边界：只改任务书白名单；确需越界先记 BLOCKED 并跳过受影响部分。
+7. 基线：HEAD=d01a6b7，工作树开工时干净；当前 detached HEAD，现有 `codex/multimodel-review-fixes` 指向同一提交。
+8. 环境：本 worktree 缺少 node_modules，按任务书执行 npm ci；不得手改或提交生成 dist、package/lockfile。
+9. 最大风险：缓存 Session actor 的 Resolver 漂移、legacy provider 污染 transport、媒体输入在 Adapter 转换时静默丢失。
+10. 验收：每项红→绿；最终 tests>=755 且 fail/skipped/todo=0，全部指定门禁 exit 0，提交并推送任务分支。
+
+### 任务 0 回执
+
+- `npm ci` exit 0；仅因依赖缺失执行，prepare build 通过，package/lockfile 无跟踪改动。
+- `npm test` exit 0：tests 755 / pass 755 / fail 0 / skipped 0 / todo 0。
+- 真实 Daemon：build `0.12.0+8ef2c7b69eab`，PID 14088；active Event 0、Task 0、Outbox sending 0、host mutation 0。
+- 第十三节精确列出 8 项偏差；真实 registry 能力边界继续按两个 DeepSeek V4 Pro target 和无 imageOutput 处理。
+- 循环 1 开始：先为 Media 产品入口和 Anthropic/Gemini 图片 block 写失败回归。
+- 循环 1 红测：聚焦 0/2；Anthropic 实际 content 为纯文本而非 image block，
+  `model-workunits` 因 `createMediaTools` 不存在而模块加载失败；未发生 Provider 副作用。
+- 循环 1 绿测：native/media/tool-policy 聚焦 19/19，`npm run check` exit 0。
+  `generate_image` 直接进入 MediaRuntime，返回 kind=media 与 image-generation binding；
+  agent-only registry 在 Provider 前 blocked，Anthropic/Gemini 保留 data URL 图片 block。
+- 循环 2 开始：为跨两个缓存 actor 的 routeVersion 热刷新、跨 transport 历史与工具面写失败回归。
+- 循环 2 红测：模型 Session/native 聚焦 4/6；缓存 actor B 路由更新后仍返回
+  `left-answer`，`openai-responses` 历史仍保留 foreign provider id。
+- 循环 2 绿测：模型/管线/策略聚焦 37/37，`npm run check` exit 0；两个缓存 actor
+  下一 Run 同步 routeVersion=21，运行中 binding 不变；RunScope/status/history/Hosted
+  Tools 按精确 providerId/transport，跨 Google transcript/tool-call 保持协议单元。
+- 循环 3 开始：Claude high reasoning 的 manual/adaptive 显式能力与预算失败关闭。
+- 循环 3 红测：Claude native 聚焦 1/3；adaptive 注册仍发 enabled+8192，
+  manual 默认 max_tokens=4096/budget_tokens=8192 非法，未知 high 未能在 fetch 前拒绝。
+- 循环 3 绿测：Claude/config/Gateway 聚焦 12/12，`npm run check` exit 0；
+  manual 预算满足 1024<=budget<max，adaptive 发原生 effort=high，未知 high 在 fetch 前拒绝。
+- 循环 4 开始：Provider registry add/set/list/test、热切换和 model_control 单一自然语言写入口。
+- 循环 4 红测：commands 模块因 `runProviderRegistryCommand` 尚不存在直接失败，未写配置或发请求。
+- 循环 4 绿测：commands/model-control/session/tool-policy 聚焦 40/40，`npm run check`
+  exit 0；registry add/set/list/test 不保存 key、不重启，routeVersion 热更新；
+  MimiAgent 自然语言写入口只暴露 model_control，legacy switch 工具仅保留兼容实现。
+- 循环 5 开始：contextWindow、maxTurns、maxOutputTokens 冻结、预算校验与请求实际生效。
+- 循环 5 红测：model config/router 聚焦 6/8；binding 三项预算均为 undefined，
+  且 maxOutputTokens=4096/contextWindow=4096 未被配置 schema 拒绝。
+- 循环 5 第二红测：model_control schema 1/2，route 的 maxTurns/maxOutputTokens 被 strict schema 拒绝。
+- 循环 5 绿测：budget/model/worker 聚焦 31/31，`npm run check` exit 0；
+  binding 冻结 contextWindow/maxTurns/maxOutputTokens，ContextManager、Provider maxTokens、
+  Runner maxTurns 实际消费；非法输出预算在配置或 Provider 前失败关闭。
+- 循环 6 开始：文档矛盾、CLI 帮助、自然语言入口和第十三节 8 项修正回执同步。
+- 循环 6 绿测：README/ARCHITECTURE/CHANGELOG/.env.example/计划第十三节均已统一；
+  产品工具面实际包含 model_control/generate_image 且不暴露 legacy switch 工具。
+  白名单聚焦门禁 195/195，fail/skipped/todo=0，`npm run check` 与
+  `git diff --check` exit 0。
+- 循环 7 开始：运行完整门禁、覆盖率、密钥/生成物/无关 diff 复查。
+- 循环 7 首轮全量：760/761；legacy runtime action recovery 因新工具面缺少
+  switch_model 失败。按“旧命令只兼容 legacy”收敛为仅 legacy 配置暴露旧工具，
+  registry runtime 继续只暴露 model_control；原失败与 Session 回归 12/12。
+- 循环 8 第二轮全量：760/761；紧预算 Skill instruction 用例稳定复现，根因是新增
+  基础指令超出原预算。压缩等价指令后原失败 1/1；第三轮全量 761/761，
+  fail/skipped/todo=0。
+- 循环 9 覆盖率：d01a6b7 临时 worktree 基线实测 755/755，
+  line/branch/function=86.62/76.59/83.06；新增 registry fail-closed 分支回归后，
+  当前 761/761、86.69/76.60/83.32，三项均不下降。
+- 最终门禁：`npm run check:repo`、`npm run check`、`npm test`、`npm run build`、
+  `npm run test:package`、`git diff --check` 全部 exit 0；白名单聚焦 195/195。
+  密钥模式扫描 clean，无 package/lockfile、tracked dist 或越界文件 diff。
+- 已切换到任务分支 `codex/multimodel-review-fixes`；下一步提交、推送，再按真实
+  Daemon idle/备份/构建一致门禁决定部署和低成本 canary。
+- 提交 `eaf0067` 已推送 `origin/codex/multimodel-review-fixes`。部署前连续确认
+  active Event/Task/Outbox sending/host mutation 均为 0；官方备份及二次 verify 位于
+  `/tmp/mimi-provider-review-rollout.OrXoo8/daemon-backup`，databaseIntegrity=ok。
+- 全局包已安装并安全重启：旧 build `0.12.0+8ef2c7b69eab`、PID 14088；新 build
+  `0.12.0+4698e88155a3`、PID 69823。重启后四类 activity 继续为 0。
+- 两个已注册 target 的 registry health 均为 healthy。独立 Session 实际返回
+  `FRIDAY_CANARY_OK`、`DEEPSEEK_CANARY_OK`；Trace 分别冻结 friday/deepseek 的
+  `session-preference` binding，routeVersion=3，未串 target。
+- Team canary 在同一 wave 冻结 `ds→deepseek/team.simple` 与
+  `fr→friday/team.hard`，分别返回 `TEAM_DEEPSEEK_OK`、`TEAM_FRIDAY_OK`；
+  临时 route 随后恢复 auto，当前 routeVersion=7，PID 未变。
+- registry 没有 imageOutput；真实 `generate_image` 只调用一次并在 Provider 前返回
+  `image-generation.default 没有满足 imageOutput/生图 的兼容模型`，未调用生图服务。
+- Daemon doctor 的 ready=false 来自既有 dead-letter/digest、Connector readiness
+  和 personal-daxiang checkout 路径告警；不属于本任务且未修改、重放或冒充通过。
 
 ## 2026-07-29 多 Provider、多模型分层路由
 

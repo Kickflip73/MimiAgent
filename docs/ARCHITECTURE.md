@@ -132,20 +132,29 @@ Messages 或 Google Generate Content adapter 创建显式 client。运行期没�
 OpenAI client。
 
 `RunModelBinding` 在 Run 开始时冻结 target、Runtime kind、reasoning、scenario、
-selection reason 与 routeVersion。Session 切换模型只影响下一 Run；第一次
+selection reason、routeVersion、contextWindow、maxTurns 与 maxOutputTokens。注册
+上下文和场景预算共同生成本轮 ContextManager 与 Provider 请求预算；非法或超过已知
+contextWindow 的预算失败关闭。Session 切换模型只影响下一 Run；第一次
 `run_team` 会在领取 worker 前用同一 route snapshot 原子冻结全部 TeamTask 的精确
 target，各 worker 随后只使用自己的 binding；SubAgent 每次委派时重新解析并创建
 自己的 Agent。图片理解要求 `imageInput`，生图/改图要求 `imageOutput`，纯图片模型
 只进入 Media Runtime，未知或不满足的硬能力失败关闭。fallback 仍只能发生在 stream、
 Tool 或其他副作用开始前，started/uncertain 不重放。
 
-Owner 私有 `models.json` 只保存 Provider 定义、精确模型注册、三项硬能力和路由，
+Owner 私有 `models.json` 只保存 Provider 定义、精确模型注册、三项硬能力、可选
+contextWindow/协议推理能力和路由，
 credential 只通过每个 Provider 的 `apiKeyEnv` 引用。文件使用严格 schema、共享锁和
 原子替换；不存在时从旧环境配置合成 legacy target，因此旧部署无需迁移即可启动。
+`mimi provider add/set/list/test` 是 registry 管理入口；已注册 target 的默认切换只
+增加 routeVersion，不重启 Daemon。每个缓存 Session actor 在下一 Run/FIFO mutation
+安全点重载新版本，已经开始的 Run/Team 仍保持旧 binding。
 Session 保存精确 target 并兼容旧 `provider/model`；后台 worker IPC 只携带已选
 Provider、模型注册与该 Provider 的 credential。Conversation、SubAgent 与 Team
 worker 都写入 `model_binding_event`；usage/receipt 记录 target、scenario、
 selection reason 和 routeVersion；没有价格表时 cost 明确为 `unknown`。
+工具面、历史归一化、RunScope、状态和 Trace 全部取本轮 target 的真实 transport，
+不得再由 legacy 启动 Provider 推断。Anthropic/Google adapter 保留原生图片 block；
+纯生图通过 `generate_image` 创建 Media WorkUnit，不伪装成 Agent tool loop。
 Daemon 根据持久 Task kind 结构化指定 `conversation.default`、`background.default`、
 `scheduled.default` 或 `memory-maintenance.default`，不能因为 Run 带有 cause 就把
 Conversation 降成 background。OpenAI-compatible Doctor 使用认证 `/models` 列表
@@ -486,6 +495,8 @@ ExecutionLedger 保护，Session 选择从下一 Run 生效且不持久化全局
 通过认证本地 Socket 把同一结构化请求送入对应 Session actor 的 FIFO mutation lane，
 不建立第二套选择逻辑，也不走 legacy 全局 Provider 切换或 Daemon 重启。合并 Function
 Tool 动作避免把八个低频命令 schema 常驻到每次模型请求。
+`switch_model`/`switch_provider` 仅保留旧 RuntimeAction 读取兼容，不出现在新模型
+工具面；Provider 注册使用 `mimi provider add/set/list/test`，自然语言不能改 registry。
 
 主运行由 `RunScope → RunStateLoader → CapabilityResolver → ContextAssembler →
 ToolSetBuilder → AgentRequestFactory → RunCommitCoordinator` 分阶段组装。Scope

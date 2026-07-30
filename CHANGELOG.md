@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- close the multi-Provider review gaps with a product `generate_image` Media
+  WorkUnit, native Anthropic/Gemini image blocks, fail-closed capability checks,
+  exact target/transport tool and transcript handling, and routeVersion refresh
+  across cached Session actors while preserving frozen in-flight Run/Team bindings
+- add strict Provider registry `add/set/list/test` commands and make
+  `model_control` the only natural-language Session/route write surface; apply
+  registered context windows and route turn/output budgets to frozen bindings,
+  ContextManager and Provider requests without restarting the Daemon
+- map Claude high reasoning through declared adapter capability to legal manual
+  thinking budgets or adaptive thinking/effort, rejecting unsupported explicit
+  reasoning instead of silently downgrading it
 - add per-Session and per-WorkUnit model routing through a provider-neutral Gateway,
   native OpenAI Responses/OpenAI-compatible/Anthropic/Gemini adapters, frozen Run
   bindings, atomically frozen Team route snapshots, independently selected
@@ -78,9 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   external actions, keep internal personal-message event polling out of the model
   action catalog, filter currently unavailable Daxiang targets, forbid Connector
   fallback suggestions, and reject model answers that only promise the next step
-- make `/model` a global selector across every configured Provider and route
-  cross-Provider model choices through the existing atomic Provider restart
-  path while preserving current-Provider model allowlists
+- make legacy `/model <name>` a global selector across configured legacy Provider
+  lists while the registry-backed `/model use/route` path switches exact targets
+  on the next Run without a Provider restart
 - make Safe, Workstation, and Full Owner the only user-facing authorization
   policies; let Workstation use the sandboxed Shell while excluding external
   transactions, remove model-facing Connector enable/reload and per-action
