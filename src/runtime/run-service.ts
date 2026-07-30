@@ -26,6 +26,10 @@ export interface AgentRunRequest {
   options?: MimiRunOptions;
 }
 
+export type ProviderReliabilityKeyResolver = (
+  request: AgentRunRequest,
+) => string | Promise<string>;
+
 export interface AgentRunResult {
   answer: string;
   effects: RuntimeEffect[];
@@ -142,6 +146,8 @@ export class AgentRunService {
   private readonly commits: RunCommitCoordinator;
   private readonly providerReliability: ProviderCircuitBreaker;
   private readonly providerId: string;
+  private readonly providerIdForRun?: ProviderReliabilityKeyResolver;
+  private lastProviderId: string;
   private readonly backupProvider?: ProviderBackupRoute;
   private readonly providerFailover: ProviderFailoverCoordinator;
 
@@ -149,11 +155,14 @@ export class AgentRunService {
     private readonly agent: MimiAgent,
     options: {
       providerId?: string;
+      providerIdForRun?: ProviderReliabilityKeyResolver;
       providerReliability?: ProviderCircuitBreaker;
       backupProvider?: ProviderBackupRoute;
     } = {},
   ) {
     this.providerId = options.providerId ?? 'configured';
+    this.providerIdForRun = options.providerIdForRun;
+    this.lastProviderId = this.providerId;
     this.providerReliability = options.providerReliability ?? new ProviderCircuitBreaker();
     this.backupProvider = options.backupProvider;
     this.providerFailover = new ProviderFailoverCoordinator(this.providerReliability);
@@ -165,12 +174,12 @@ export class AgentRunService {
   }
 
   providerHealth(): ProviderHealthSnapshot {
-    return this.providerReliability.health(this.providerId);
+    return this.providerReliability.health(this.lastProviderId);
   }
 
   providerHealthRoutes(): ProviderHealthSnapshot[] {
     return [
-      this.providerReliability.health(this.providerId),
+      this.providerReliability.health(this.lastProviderId),
       ...(this.backupProvider
         ? [this.providerReliability.health(this.backupProvider.id)]
         : []),
@@ -181,7 +190,7 @@ export class AgentRunService {
     let stream: RunStream | undefined;
     let streamedAnswer = '';
     let interruptedAnswer = '';
-    let selectedProvider = this.providerId;
+    let selectedProvider = this.lastProviderId;
     let streamAcquired = false;
     const stopRuntimeEvents = this.agent.onRuntimeEvent((event) => observe(
       observer.onRuntimeEvent,
@@ -189,8 +198,13 @@ export class AgentRunService {
     ));
     await observe(observer.onStart, request.input);
     try {
+      const providerId = this.providerIdForRun
+        ? await this.providerIdForRun(request)
+        : this.providerId;
+      this.lastProviderId = providerId;
+      selectedProvider = providerId;
       const candidates: ProviderCandidate[] = [
-        { id: this.providerId, role: 'primary' },
+        { id: providerId, role: 'primary' },
         ...(this.backupProvider
           ? [{ id: this.backupProvider.id, role: 'backup' as const }]
           : []),

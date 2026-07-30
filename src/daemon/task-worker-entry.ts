@@ -114,6 +114,10 @@ async function run(raw: unknown): Promise<void> {
     if (payload.strategy === 'team') await agent.switchMode('ultra');
     host = new MimiHost(agent, new AgentRunService(agent, {
       providerId: init.modelBinding?.target.providerId ?? init.config.provider,
+      providerIdForRun: (request) => agent.providerReliabilityKey(
+        request.modelInput ?? request.input,
+        request.options,
+      ),
       ...(init.backupProvider ? { backupProvider: init.backupProvider } : {}),
     }), { maxConcurrentSessions: 1 });
     dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {

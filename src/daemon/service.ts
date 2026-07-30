@@ -1425,6 +1425,10 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
     const backupProvider = providerBackupRouteFromEnvironment(config.provider);
     const runService = (runtime: MimiAgent) => new AgentRunService(runtime, {
       providerId: config.provider,
+      providerIdForRun: (request) => runtime.providerReliabilityKey(
+        request.modelInput ?? request.input,
+        request.options,
+      ),
       ...(backupProvider ? { backupProvider } : {}),
     });
     if (config.computer) {

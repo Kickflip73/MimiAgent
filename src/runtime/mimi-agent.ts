@@ -888,6 +888,40 @@ export class MimiAgent {
     return agent;
   }
 
+  async providerReliabilityKey(
+    input: string | AgentInputItem[],
+    options?: MimiRunOptions,
+  ): Promise<string> {
+    await this.refreshModelConfiguration();
+    if (options?.providerRoute) {
+      return `${options.providerRoute.provider}/${options.providerRoute.model ?? 'default'}`;
+    }
+    const preferences = await this.session.getPreferences();
+    return modelTargetKey(this.resolveRunModelBinding(input, options, preferences).target);
+  }
+
+  private resolveRunModelBinding(
+    input: string | AgentInputItem[],
+    options: MimiRunOptions | undefined,
+    preferences: SessionPreferences,
+  ): RunModelBinding {
+    const scenario = options?.scenario
+      ?? (options?.cause ? 'background.default' : 'conversation.default');
+    return this.fixedModelBinding ?? this.modelResolver.resolve({
+      scenario,
+      profile: {
+        ...options?.modelProfile,
+        requirements: {
+          ...options?.modelProfile?.requirements,
+          ...(containsImageInput(input) ? { imageInput: true } : {}),
+          toolCalling: options?.modelProfile?.requirements?.imageOutput ? false : true,
+        },
+      },
+      sessionTarget: preferences.modelTarget ?? this.legacySessionTarget(preferences),
+      routeVersion: this.modelConfig.routeVersion,
+    });
+  }
+
   async stream(input: string | AgentInputItem[], signal?: AbortSignal, options?: MimiRunOptions) {
     if (this.activeRun) throw new Error('当前 Session 仍有任务运行中，请等待完成或先中止');
     await this.refreshModelConfiguration();
@@ -915,19 +949,7 @@ export class MimiAgent {
     }
     const binding = options?.providerRoute
       ? undefined
-      : this.fixedModelBinding ?? this.modelResolver.resolve({
-          scenario,
-          profile: {
-            ...options?.modelProfile,
-            requirements: {
-              ...options?.modelProfile?.requirements,
-              ...(containsImageInput(input) ? { imageInput: true } : {}),
-              toolCalling: options?.modelProfile?.requirements?.imageOutput ? false : true,
-            },
-          },
-          sessionTarget: preferences.modelTarget ?? this.legacySessionTarget(preferences),
-          routeVersion: this.modelConfig.routeVersion,
-        });
+      : this.resolveRunModelBinding(input, options, preferences);
     const routeModel = options?.providerRoute
       ? createModel(routeConfig, options.providerRoute.model)
       : this.runtimeForBinding(binding!);
@@ -2210,9 +2232,11 @@ export class MimiAgent {
           id: provider.id,
           label: provider.label,
           transport: provider.transport,
+          ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
+          ...(provider.region ? { region: provider.region } : {}),
+          apiKeyEnv: provider.apiKeyEnv,
           configured: Boolean(process.env[provider.apiKeyEnv]?.trim()),
         },
-        health: await this.modelGateway.health(request.target),
       };
     }
     if (request.action === 'current') {

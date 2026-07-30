@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- scope Provider circuit breakers to the resolved `providerId/modelId` for each
+  Run, so a model-specific 429 on a shared gateway does not block other models
+  while repeated requests to the limited model remain fenced
 - move non-profile external-action safeguards out of model instructions and into
   Host/tool code: hide internal Connector actions, add business-only owner
   messaging, bind Computer observations internally, classify ordinary uncertain

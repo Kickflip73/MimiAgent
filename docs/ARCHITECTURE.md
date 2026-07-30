@@ -646,8 +646,9 @@ Tool 或 ActionIntent 已成功执行但结果超过账本上限时，`Execution
 
 ### Provider 与资源 SLO
 
-Provider 429、余额、网络和 5xx 使用确定性分类和每 Provider 熔断状态。429/余额立即
-open；普通瞬时失败达到阈值后 open；恢复只允许一个 half-open probe。主备协调器最多
+Provider 429、余额、网络和 5xx 使用确定性分类和每个精确模型目标
+`providerId/modelId` 的熔断状态，避免同一网关下一个模型的独立限额连带封禁其他模型。
+429/余额立即 open；普通瞬时失败达到阈值后 open；恢复只允许一个 half-open probe。主备协调器最多
 接受一个 primary 和一个 backup，每个 route 一轮最多尝试一次。`AgentRunService` 只在
 SDK streaming handle 尚未形成时允许走 backup；handle 一旦形成，即使尚未看到 Tool
 事件也不再切换；只有 stream 正常迭代结束、`completed` 完成且终态校验通过后才记录

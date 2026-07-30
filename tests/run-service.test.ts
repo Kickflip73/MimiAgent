@@ -271,6 +271,49 @@ test('shared run service opens Provider circuit on 429 and blocks retry storms',
   assert.equal(service.providerHealth().state, 'open');
 });
 
+test('shared run service isolates model-scoped rate limits within one Provider', async () => {
+  const breaker = new ProviderCircuitBreaker({ failureThreshold: 1, openMs: 60_000 });
+  let target = 'friday/kimi-k3';
+  const attempts: string[] = [];
+  const stream = {
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: 'available',
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() { /* no events */ },
+  };
+  const agent = {
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => {
+      attempts.push(target);
+      if (target === 'friday/kimi-k3') {
+        throw Object.assign(new Error('project (kimi-k3) TPM rate limit'), { status: 429 });
+      }
+      return stream;
+    },
+    recordEvent: async () => undefined,
+    completeRun: async () => [],
+    failRun: async () => undefined,
+  } as unknown as MimiAgent;
+  const service = new AgentRunService(agent, {
+    providerId: 'openai-compatible',
+    providerIdForRun: () => target,
+    providerReliability: breaker,
+  });
+
+  await assert.rejects(service.execute({ input: '你好' }), /TPM rate limit/);
+  target = 'friday/gpt-4o';
+  const result = await service.execute({ input: '你好' });
+
+  assert.equal(result.answer, 'available');
+  assert.deepEqual(attempts, ['friday/kimi-k3', 'friday/gpt-4o']);
+  assert.equal(breaker.health('friday/kimi-k3').state, 'open');
+  assert.equal(breaker.health('friday/gpt-4o').state, 'closed');
+  assert.equal(service.providerHealth().provider, 'friday/gpt-4o');
+});
+
 test('shared run service uses one configured backup only before a stream starts', async () => {
   const attempts: string[] = [];
   let failed = false;
