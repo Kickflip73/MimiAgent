@@ -271,7 +271,11 @@ export class ContextManager {
     return this.buildInstructionsResult(parts, tokenBudget).text;
   }
 
-  buildInstructionsResult(parts: ContextParts, tokenBudget = this.instructionTokenBudget): BuiltInstructions {
+  buildInstructionsResult(
+    parts: ContextParts,
+    tokenBudget = this.instructionTokenBudget,
+    requiredTokenBudget = tokenBudget,
+  ): BuiltInstructions {
     const required: Array<{ id: ContextSectionId; text: string; itemCount?: number }> = [];
     if (parts.identity) {
       required.push({ id: 'soul', text: parts.identity });
@@ -287,7 +291,7 @@ export class ContextManager {
       required.push({ id: 'active-skills', text: parts.activeSkills });
     }
     const requiredTokens = required.reduce((total, candidate) => total + estimateTokens(candidate.text), 0);
-    if (requiredTokens > tokenBudget) {
+    if (requiredTokens > requiredTokenBudget) {
       throw new ContextProtocolBudgetError(
         'Soul、基础指令、Preferences、Runtime Context 与 active-skills 完整正文超出 instruction budget；'
         + '请精简 MIMI.md、用户级指令、停用 Skill、缩短 Skill 或使用更大上下文模型',
@@ -354,7 +358,7 @@ export class ContextManager {
       ...(candidate.itemCount === undefined ? {} : { itemCount: candidate.itemCount }),
       truncated: false,
     }));
-    let remaining = Math.max(0, tokenBudget - requiredTokens);
+    let remaining = Math.max(0, Math.max(tokenBudget, requiredTokens) - requiredTokens);
     for (const candidate of candidates) {
       if (remaining <= 0) break;
       const originalTokens = estimateTokens(candidate.text);

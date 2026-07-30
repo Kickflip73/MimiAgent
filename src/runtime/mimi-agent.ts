@@ -1275,6 +1275,10 @@ export class MimiAgent {
         directOwnerRun && (soul.instructions || preferences.instructions) ? 0.4 : 0.35
       )) + ownerGuidanceReserve,
     );
+    const requiredInstructionBudget = Math.max(
+      instructionBudget,
+      budget.inputBudget - estimateTokens(input) - 512,
+    );
     const invocation = parseSkillInvocation(
       textInput,
       options?.cause === undefined || options.cause.trust === 'owner',
@@ -1364,7 +1368,7 @@ export class MimiAgent {
       goal,
       teamSummary: activeTeamSummary,
       recoverySummary: resumesCheckpoint ? recoverySummary(recovery) : '',
-    }, instructionBudget);
+    }, instructionBudget, requiredInstructionBudget);
     const instructions = builtInstructions.text;
     const historyBudget = Math.min(
       Math.max(0, budget.inputBudget - estimateTokens(instructions)),
