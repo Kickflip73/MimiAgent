@@ -249,10 +249,12 @@ Attention Engine 是同步、确定性的 Host 层分类器，不是第二个模
 
 来源 `trust` 只作为 provenance 标签，授权由本机 event policy 决定；它绝不因消息自称 owner/trusted 而扩大部署权限。owner/system 在部署权限内工作；其他 provenance 默认受限，只有 Host 用 source/kind/actor/conversation 命中本机 owner source policy 时才获得固定 `reply | work` 档位。后台 Task 不把 provenance 改写成 owner，而是从被保留且确认为 conversation root 的来源 Event 与当前 source policy 重新计算授权；policy 被删除、root/parent 缺失或引用 Task 而非 conversation root 时失败关闭，即使 Task 自带 owner provenance 也不能绕过。外部正文始终只作为数据并记录 provenance。
 
-Connector Action Bridge 把外部凭证保留在 Kernel 监督的隔离 Connector 子进程中。一个 Daemon 数据根只有一个 Connector Manager/broker；Conversation actor 与后台 Task worker 都不能各自拉起同一渠道或复制凭证。每个 action 声明稳定 `capability` 与 `effect`；Run 开始时 Host 把精确 `capability/action`、readiness 和唯一 selected route 投影进 Effective Capability Snapshot，模型通过 `invoke_capability` 调用，不猜 Connector ID，也不能启停或重载 Connector。Manager 在 dispatch 前重新检查唯一就绪路线，零路线和多路线都失败关闭。旧 `claimedComputerApps` 只保留读取兼容，不再形成整应用授权边界；Computer 保留控制面保护和精确目标校验。超时或子进程退出时不自动重放。
+Connector Action Bridge 把外部凭证保留在 Kernel 监督的隔离 Connector 子进程中。一个 Daemon 数据根只有一个 Connector Manager/broker；Conversation actor 与后台 Task worker 都不能各自拉起同一渠道或复制凭证。每个 action 声明稳定 `capability`、`effect` 和 `modelVisible`；只有模型可见的业务 action 进入 Effective Capability Snapshot，内部探活、目标绑定发送和协议动作留在 Host。Manager 在 dispatch 前完成权限、唯一路线、就绪度、幂等与结果分级。旧 `claimedComputerApps` 只保留读取兼容，不再形成整应用授权边界；Computer 保留控制面保护和精确目标校验。超时或子进程退出时不自动重放。
 
-`personal-*` Connector 的写 action 是例外：通用 `connector_action` 确定性拒绝
-`send_message`。Dispatcher 只能从当前个人消息 Event、精确 Source Policy 和实时
+`personal-*` Connector 的 `send_message/send_to_owner` 是 Host 内部 action：
+`modelVisible:false` 让通用 Connector 目录和执行工具都无法触达。Owner 自发消息只
+暴露 `send_owner_message(channel,text)`，Host 绑定账号与 owner 自会话。Dispatcher
+仍只能从当前个人消息 Event、精确 Source Policy 和实时
 readiness 生成临时 `PersonalMessageScope`，其中 callback 已绑定 Connector、账号
 与稳定会话；Runtime 只把两个窄工具加入当前主 Agent，不传给 SubAgent、Team worker
 或独立后台 Task。token 绑定 Run、Event、渠道、账号、会话、最新消息指纹和五分钟
@@ -496,7 +498,10 @@ ExecutionLedger 保护，Session 选择从下一 Run 生效且不持久化全局
 不重启 Daemon。CLI 的 `/models` 与 `/model current/inspect/use/auto/routes/route/doctor`
 通过认证本地 Socket 把同一结构化请求送入对应 Session actor 的 FIFO mutation lane，
 不建立第二套选择逻辑，也不走 legacy 全局 Provider 切换或 Daemon 重启。合并 Function
-Tool 动作避免把八个低频命令 schema 常驻到每次模型请求。
+Tool 动作避免把八个低频命令 schema 常驻到每次模型请求。`inspect` 直接投影
+Provider endpoint、region、credential 环境变量名和是否已配置，但绝不返回
+credential 原值，也不会发起 Provider 请求；实时健康检查只由 `doctor` 执行。
+模型无需也不得为排查 Provider 配置读取私有 `models.json` 或枚举环境。
 `switch_model`/`switch_provider` 仅保留旧 RuntimeAction 读取兼容，不出现在新模型
 工具面；Provider 注册使用 `mimi provider add/set/list/test`，自然语言不能改 registry。
 
@@ -613,7 +618,8 @@ digest 和 policy revision 建立 at-most-once fence。同一业务引用跨 Too
   才能重新执行。
 - Full Owner 的精确目标动作不再要求第二次一次性审批；Observation 新鲜度、窗口漂移、
   控制面保护、应用 allowlist、动作预算和前后台状态仍由 ComputerManager 在真正执行前
-  自动校验，这些是机械安全约束，不能扩大 Security。
+  自动校验。`computer_observe/computer_act` 不向模型暴露 Observation 或授权句柄，
+  Manager 自动绑定本轮最新的有效窗口观察。
 - personal message 的 `contextToken` 只授权实际 send Tool，读取上下文不误占 Intent；
   它与 Computer 写动作都在原 Tool ledger 外层进入同一 Intent fence；传统
   call receipt 仍保留为 Completion evidence。

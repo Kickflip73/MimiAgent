@@ -186,7 +186,7 @@ async function handleAction(message) {
       candidateToken: message.target,
     });
   }
-  if (!['get_context', 'send_message'].includes(message.action)) {
+  if (!['get_context', 'send_message', 'send_to_owner'].includes(message.action)) {
     throw new Error(`unsupported action: ${message.action}`);
   }
   if (message.action === 'get_context') {
@@ -205,6 +205,26 @@ async function handleAction(message) {
       sid: target.sid,
       type: target.type,
       latestFingerprint: payload.latestFingerprint,
+      text: payload.text,
+    });
+  }
+  if (message.action === 'send_to_owner') {
+    const health = await adapter.health({ probe: true });
+    const target = adapter.config?.selfConversation;
+    if (!health.accountVerified || !health.accountFingerprint || !target) {
+      throw new Error('owner account or self conversation is not ready');
+    }
+    const context = await adapter.getContext({
+      accountFingerprint: health.accountFingerprint,
+      sid: target.sid,
+      type: target.type,
+      limit: 1,
+    });
+    return adapter.send({
+      accountFingerprint: health.accountFingerprint,
+      sid: target.sid,
+      type: target.type,
+      latestFingerprint: context.latestFingerprint,
       text: payload.text,
     });
   }

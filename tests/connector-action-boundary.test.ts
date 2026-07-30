@@ -35,6 +35,7 @@ function capability(
     capability: string;
     effect: 'read' | 'write' | 'unknown';
     routeOwner: string;
+    modelVisible?: boolean;
   }> = [{
     name: 'send_message',
     description: 'send a message',
@@ -202,6 +203,101 @@ test('model-facing host tools expose only inspect and capability invocation with
   assert.ok(Number(large.originalBytes) > 32_000);
   assert.equal(requests.length, 4);
   assert.equal(observed.length, 4);
+});
+
+test('internal Connector actions stay out of the model catalog and owner messaging has business-only inputs', async () => {
+  const capabilities = [capability('personal-daxiang', [
+    {
+      name: 'get_context',
+      description: 'read context',
+      capability: 'personal-message.context.read',
+      effect: 'read',
+      routeOwner: 'personal-daxiang',
+    },
+    {
+      name: 'send_to_owner',
+      description: 'host internal owner send',
+      capability: 'personal-message.owner.send',
+      effect: 'write',
+      routeOwner: 'personal-daxiang',
+      modelVisible: false,
+    },
+  ])];
+  const requests: ConnectorActionRequest[] = [];
+  const manager = {
+    configPath: '/fixture/connectors.json',
+    listCapabilities: () => capabilities,
+    executePersonalMessageAction: async (request: ConnectorActionRequest) => {
+      requests.push(request);
+      return {
+        status: 'observed',
+        messageId: 'daxiang-message-1',
+        deliveryConfirmed: false,
+      };
+    },
+  } as unknown as ConnectorManager;
+
+  const tools = createConnectorHostTools(manager, undefined, { allowOwnerMessage: true });
+  const catalog = await invoke(tools, 'inspect_mimi_capabilities', {}) as ConnectorCapabilitySnapshot;
+  assert.deepEqual(catalog.availableCapabilities, ['personal-message.context.read']);
+  assert.deepEqual(catalog.connectors[0]?.actions.map((action) => action.name), ['get_context']);
+  assert.deepEqual(tools.map((item) => item.name), [
+    'inspect_mimi_capabilities',
+    'invoke_capability',
+    'send_owner_message',
+  ]);
+  const disabledTools = createConnectorHostTools({
+    ...manager,
+    listCapabilities: () => [{ ...capabilities[0]!, enabled: false }],
+  } as unknown as ConnectorManager, undefined, { allowOwnerMessage: true });
+  assert.equal(disabledTools.some((item) => item.name === 'send_owner_message'), false);
+
+  const receipt = await invoke(tools, 'send_owner_message', {
+    channel: 'daxiang',
+    text: 'owner visible text',
+  }) as Record<string, unknown>;
+  assert.equal(receipt.outcome, 'confirmed');
+  assert.equal(receipt.operationId, 'daxiang-message-1');
+  assert.deepEqual(requests, [{
+    connector: 'personal-daxiang',
+    action: 'send_to_owner',
+    target: 'owner',
+    payload: { text: 'owner visible text' },
+  }]);
+});
+
+test('owner messaging preserves failed-safe and uncertain Connector outcomes', async () => {
+  const result = { current: 'failed' };
+  const manager = {
+    configPath: '/fixture/connectors.json',
+    listCapabilities: () => [capability('personal-daxiang', [{
+      name: 'send_to_owner',
+      description: 'host internal owner send',
+      capability: 'personal-message.owner.send',
+      effect: 'write',
+      routeOwner: 'personal-daxiang',
+      modelVisible: false,
+    }])],
+    executePersonalMessageAction: async () => result.current === 'failed'
+      ? { status: 'failed', error: 'rejected before dispatch' }
+      : { status: 'uncertain', error: 'connection ended after dispatch' },
+  } as unknown as ConnectorManager;
+  const tools = createConnectorHostTools(manager, undefined, { allowOwnerMessage: true });
+
+  const failedRaw = await invoke(tools, 'send_owner_message', {
+    channel: 'daxiang',
+    text: 'first',
+  });
+  const failed = JSON.parse(String(failedRaw)) as Record<string, unknown>;
+  assert.equal(failed.mimiStatus, 'action_failed_safe');
+  result.current = 'uncertain';
+  const uncertainRaw = await invoke(tools, 'send_owner_message', {
+    channel: 'daxiang',
+    text: 'second',
+  });
+  const uncertain = JSON.parse(String(uncertainRaw)) as Record<string, unknown>;
+  assert.equal(uncertain.mimiStatus, 'action_uncertain');
+  assert.equal(uncertain.retryable, false);
 });
 
 test('read capability receipts are confirmed from the declared effect', async () => {

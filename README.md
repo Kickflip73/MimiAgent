@@ -23,7 +23,7 @@ MimiAgent 不是一次性工具调用样例，也不想变成重量级工作流�
 - 可热重载 Standing Orders，按来源、人物和会话执行长期替身决策
 - owner-managed People aliases，把同一人物的邮件、IM 和群聊事件统一到连续 Session 与长期记忆
 - owner 对话内可创建一次性后续唤醒和周期巡检，支持查询、取消与崩溃重试去重
-- Effective Capability Snapshot + `invoke_capability`，按精确 capability/action 直达唯一已就绪 Connector
+- 高层业务工具 + Effective Capability Snapshot；内部 Connector action 不进入模型目录
 - 信息雷达持续汇聚 RSS/Atom 与多地点天气风险，低价值信号自动进入简报
 - 文件活动雷达持续感知 Downloads、Desktop、共享落盘目录和自动化输出
 - Apple Mail 未读感知、搜索整理、附件收发与读取、发送、回复、旗标、移动、删除、草稿全链路 action
@@ -287,6 +287,8 @@ ACK 后游标和一次性观察式发送。专用标签由 Connector 自行补�
 绑定的稳定 sid，账号/页面指纹未锁定时失败关闭。个人 QQ、个人微信 Adapter 尚未实现，
 配置槽位无 action 且默认关闭。腾讯官方 `openclaw-weixin` 仍是独立 iLink Bot，QQ
 `qq-messenger-skill` 仍是当次 CUA 兜底，两者都不会冒充个人消息 Connector。
+向 owner 自己发送时模型只调用 `send_owner_message(channel,text)`；自会话、账号、
+最新上下文和一次性发送由 Host 与 Connector 内部完成。
 owner 查询大象消息时通过稳定 capability 发现正式 action，再使用
 `list_targets/get_context`；`list_targets` 默认只返回最近活跃的一页，查看需注意消息时
 优先处理该页的 unread/近期会话。只有当前页信息不足或 owner 明确要求更早/全部会话时，
@@ -402,7 +404,7 @@ Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Con
 |---|---|
 | `/model [name]` | 查看或切换所有已配置 Provider 的模型；无参数时使用全局选择器 |
 | `/models`、`/model current` | 列出精确 target/硬能力，或查看当前 Session、下一 Run 与最近 binding |
-| `/model inspect <target>`、`/model doctor [target]` | 查看注册信息或执行无副作用健康检查 |
+| `/model inspect <target>`、`/model doctor [target]` | 查看注册信息、Provider endpoint、credential 环境变量名/配置状态（不返回原值），或执行无副作用健康检查 |
 | `/model use <target>`、`/model auto` | 固定或清除当前 Session target；只影响下一 Run，不重启 Daemon |
 | `/model routes`、`/model route <scenario> <target\|auto>` | 查看、修改或清除持久场景路由 |
 | `/mode [name]` | 在 `general`、`plan`、`ultra` 之间切换 |

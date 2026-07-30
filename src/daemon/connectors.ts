@@ -52,6 +52,7 @@ const connectorSchema = z.object({
         .max(120)
         .optional(),
       effect: z.enum(['read', 'write', 'unknown']).default('unknown'),
+      modelVisible: z.boolean().default(true),
     }).strict(),
   ).default({}),
 }).strict();
@@ -181,6 +182,7 @@ export interface ConnectorCapability {
     capability: string;
     effect: 'read' | 'write' | 'unknown';
     routeOwner: string;
+    modelVisible?: boolean;
   }>;
 }
 
@@ -396,6 +398,7 @@ class ConnectorProcess implements NotificationSink {
         capability: value.capability ?? `connector.${this.id}.${name}`,
         effect: value.effect,
         routeOwner: this.id,
+        modelVisible: value.modelVisible,
       })),
     };
   }
@@ -999,11 +1002,6 @@ export class ConnectorManager {
   }
 
   async executeAction(request: ConnectorActionRequest): Promise<unknown> {
-    if (request.connector.startsWith('personal-') && request.action === 'send_message') {
-      throw new Error(
-        `Connector ${request.connector} 的 send_message 只能由 PersonalMessageHub 的绑定回调调用`,
-      );
-    }
     return this.executeRegisteredAction(request);
   }
 
@@ -1014,7 +1012,9 @@ export class ConnectorManager {
   }> {
     const catalog = this.listCapabilities();
     const declared = catalog.flatMap((connector) => connector.actions
-      .filter((action) => action.name === request.action && action.capability === request.capability)
+      .filter((action) => action.modelVisible !== false
+        && action.name === request.action
+        && action.capability === request.capability)
       .map((action) => ({ connector, action })));
     if (declared.length === 0) {
       throw new ActionFailedSafeError(
@@ -1041,11 +1041,6 @@ export class ConnectorManager {
       );
     }
     const selected = ready[0]!;
-    if (selected.connector.id.startsWith('personal-') && request.action === 'send_message') {
-      throw new Error(
-        `Connector ${selected.connector.id} 的 send_message 只能由 PersonalMessageHub 的绑定回调调用`,
-      );
-    }
     const result = await this.executeRegisteredAction({
       connector: selected.connector.id,
       action: request.action,
@@ -1118,14 +1113,18 @@ export class ConnectorManager {
       'bind_target',
       'get_context',
       'send_message',
+      'send_to_owner',
       'health_check',
     ].includes(request.action)) {
       throw new Error(`个人消息 Connector 不允许 action ${request.action}`);
     }
-    return this.executeRegisteredAction(request);
+    return this.executeRegisteredAction(request, true);
   }
 
-  private executeRegisteredAction(request: ConnectorActionRequest): Promise<unknown> {
+  private executeRegisteredAction(
+    request: ConnectorActionRequest,
+    allowInternal = false,
+  ): Promise<unknown> {
     const connector = this.connectors.get(request.connector);
     if (!connector) throw new ActionFailedSafeError(`未找到 Connector ${request.connector}`);
     const capability = connector.capability();
@@ -1133,6 +1132,11 @@ export class ConnectorManager {
     if (!action) {
       throw new ActionFailedSafeError(
         `Connector ${request.connector} 未声明 action ${request.action}`,
+      );
+    }
+    if (!action.modelVisible && !allowInternal) {
+      throw new ActionFailedSafeError(
+        `Connector ${request.connector} 的 action ${request.action} 是 Host 内部能力`,
       );
     }
     if (action.capability.startsWith('desktop.')) {
@@ -1147,6 +1151,11 @@ export class ConnectorManager {
           + `${request.connector} 不得跨执行面接管`,
         );
       }
+    }
+    if (!connectorCapabilityActionReady(capability, action)) {
+      throw new ActionFailedSafeError(
+        `Connector ${request.connector} 的 action ${request.action} 当前未就绪`,
+      );
     }
     if (!request.connector.startsWith('personal-')) {
       return connector.executeAction(request.action, request.target, request.payload);

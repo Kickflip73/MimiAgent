@@ -35,8 +35,7 @@ export type SourcePolicyAccess = typeof SOURCE_POLICY_ACCESS_LEVELS[number];
 const DAEMON_EXECUTION_CONTRACT = [
   '你是长期在线的 MimiAgent，正在作为 owner 的个人代理处理一个事件。',
   '在当前授权和明确范围内优先直接完成可执行事项，而不是只给建议或重复请求确认；使用工具后只陈述实际结果。',
-  '调用已配置 Connector 能力时，先依据本轮 Effective Capability Snapshot 选择精确 capability/action，再使用 invoke_capability；Connector 的探活、恢复和子进程重启由 Daemon Supervisor 负责，当前业务 Run 不调用 health_check 或临时排查 Connector 基础设施。Connector 已持有的资源不得改用或建议 Browser、Computer/CUA、Shell、MCP，Memory 和历史也不能覆盖 routeOwner。',
-  '个人消息的查看、读取或汇总只允许调用 effect=read 的目标目录和上下文动作；新消息 Event 同步由 Connector 内部轮询负责，不是模型 action，也不能作为读取消息的前置步骤。',
+  '调用模型当前可见的高层业务工具并只提供业务参数；未暴露的内部字段和内部 action 不属于模型工作流。',
   '若事务依赖未来时间或外部变化，建立一次后续唤醒或带明确结束条件的持续监控；把未来仍有价值的稳定决策、偏好和承诺写入长期记忆。',
   '若当前 owner 命令是在取消或替换刚才被打断的任务，先检查当前 Session 活动，并取消对应的 interrupted 旧任务，避免它稍后恢复执行。',
   '需要恢复较早进展时检查当前 Session 活动；自主巡检没有新变化、风险、动作或待关注事项时安静完成。',
@@ -96,6 +95,7 @@ const WORK_SOURCE_POLICY_TOOLS = [
   'inspect_processes', 'run_shell',
   'http_get', 'web_search', 'http_request',
   'inspect_mimi_capabilities', 'invoke_capability',
+  'send_owner_message',
   'memory_search', 'memory_read', 'memory_links', 'memory_ingest',
   'list_skills', 'use_skill', 'read_skill_resource',
   'prepare_task', 'finish_task',
@@ -132,6 +132,7 @@ const PERSONAL_MESSAGE_AUTO_TOOLS = [
 const WORK_SOURCE_POLICY_SIDE_EFFECT_TOOLS = [
   'write_file', 'edit_file', 'move_file', 'run_shell', 'http_request',
   'invoke_capability', 'memory_ingest',
+  'send_owner_message',
   'update_plan', 'set_goal', 'update_goal',
   'schedule_mimi_follow_up', 'schedule_mimi_watch', 'complete_current_mimi_schedule',
   'cancel_mimi_schedule', 'cancel_interrupted_mimi_task',
@@ -228,14 +229,13 @@ function connectorHealthPlaybook(event: EventEnvelope): string {
     return [
       '## MimiAgent Connector 自愈执行剧本',
       '这是 Daemon Host 产生的可信 Connector 离线事件。先用 inspect_mimi_capabilities 核对 connectorId 的实时状态；若已经在线，取消同一 Connector 的失效恢复 Watch 并安静完成。',
-      '若 automaticRestart=true，Host 已在指数退避重启，不要并发 reload 或反复启停；先用 list_mimi_schedules 避免重复，再建立一个检查该 Connector 恢复在线的 schedule_mimi_watch。若 automaticRestart=false 且错误不是配置错误或 ENOENT，可执行最多一次 disable→enable 的有界重启；配置/命令缺失则直接给 owner 精确修复信息。',
-      'Connector 中断时失败或结果不确定的 delivery/action 绝不自动重放。只有确认未执行的幂等读取可换在线能力继续；否则保留失败记录并说明影响。只有无法自动恢复、影响正在进行的事务或需要 owner 动作时才通知。',
+      'Connector 的恢复由 Supervisor 执行；只根据结构化状态说明当前业务影响。尚未恢复时建立一个检查该 Connector 恢复在线的 schedule_mimi_watch；配置或命令缺失则给 owner 精确修复信息。',
     ].join('\n');
   }
   if (status === 'recovered') {
     return [
       '## MimiAgent Connector 自愈执行剧本',
-      '这是 Daemon Host 产生的可信稳定恢复事件。核对 connectorId 已在线，取消同一 Connector 的恢复 Watch，并检查当前 Session 是否有被中断且仍可安全继续的工作。不要重放任何结果不确定的外部 action 或 delivery；没有遗留影响时调用 finish_mimi_silently，仅在恢复解决了 owner 可感知的问题时简短汇报。',
+      '这是 Daemon Host 产生的可信稳定恢复事件。核对 connectorId 已在线，取消同一 Connector 的恢复 Watch，并检查当前 Session 是否有待继续的业务工作。没有遗留影响时调用 finish_mimi_silently，仅在恢复解决了 owner 可感知的问题时简短汇报。',
     ].join('\n');
   }
   return '';
@@ -260,13 +260,13 @@ function systemHealthPlaybook(event: EventEnvelope): string {
   if (type === 'network_offline') {
     return [
       '## MimiAgent 本机资源自愈执行剧本',
-      '先用 network_status 复核；若已恢复则安静完成。仍离线时检查接口、默认路由和 DNS，最多执行一次不会丢失用户状态的可逆修复，并建立一个以网络恢复为结束条件的 Watch。网络中断期间失败或结果不确定的外部事务不要自动重放。',
+      '先用 network_status 复核；若已恢复则安静完成。仍离线时检查接口、默认路由和 DNS，并建立一个以网络恢复为结束条件的 Watch。',
     ].join('\n');
   }
   if (type === 'network_restored') {
     return [
       '## MimiAgent 本机资源自愈执行剧本',
-      '确认网络稳定，取消相关恢复 Watch；只继续明确未执行或幂等的读取任务，不重放结果不确定的外部事务。没有遗留影响时调用 finish_mimi_silently。',
+      '确认网络稳定，取消相关恢复 Watch，并检查是否有待继续的业务工作。没有遗留影响时调用 finish_mimi_silently。',
     ].join('\n');
   }
   return '';
@@ -400,7 +400,7 @@ export function decideEvent(
       ? '当前后台任务声明 workspaceAccess=read：只能读取、分析和更新自身 Plan/Goal/checkpoint；不得使用 Shell、写文件、发起任意写网络或 Connector 事务、继续委派后台任务或运行 Team builder。'
       : '',
     mayAct && backgroundTask && !readOnlyTask && !ownerWriteTask
-      ? '当前后台任务来自非 owner conversation root：可完成本地工作，但不持有 Connector 外部事务权限。不要尝试调用 connector_action；任务结果仍会由可靠 Outbox 返回原会话。'
+      ? '当前后台任务来自非 owner conversation root：使用本轮可见工具完成工作，任务结果会由可靠 Outbox 返回原会话。'
       : '',
     memoryMaintenance
       ? [

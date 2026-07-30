@@ -973,6 +973,7 @@ export class DaxiangWebAdapter {
               deliveryConfirmed: false,
               accountVerified: true,
               targetVerified: true,
+              messageId: String(observed.message.mid),
               evidence: `new stable message id ${observed.message.mid} observed once`,
             };
           }

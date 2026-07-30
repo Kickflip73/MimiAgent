@@ -24,6 +24,14 @@ export const runFinalizationRecordSchema = z.object({
 export type ToolExecutionManifestEntry = z.infer<typeof toolExecutionManifestEntrySchema>;
 export type RunFinalizationRecord = z.infer<typeof runFinalizationRecordSchema>;
 
+export function executionCompletionDecision(
+  calls: readonly ExecutionCallRecord[],
+): 'uncertain' | undefined {
+  return calls.some((call) => call.status === 'uncertain' || call.status === 'started')
+    ? 'uncertain'
+    : undefined;
+}
+
 function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }

@@ -45,6 +45,7 @@ import type { PreferenceStore } from '../core/preferences.js';
 import { PlanStore, type PlanStep } from '../core/plan.js';
 import {
   createRunFinalization,
+  executionCompletionDecision,
   runFinalizationRecordSchema,
   type RunFinalizationRecord,
 } from '../core/run-finalization.js';
@@ -2536,9 +2537,14 @@ export class MimiAgent {
         completionGate: gate,
       }, run.runId);
     }
+    const evidenceRunId = run.options?.executionKey ?? run.runId;
+    const initialExecutionCalls = await this.ledger.listCalls(run.sessionId, evidenceRunId);
+    const implicitDecision = gate ? undefined : executionCompletionDecision(initialExecutionCalls);
     const committedAnswer = gate && gate.decision !== 'pass'
       ? incompleteCompletionAnswer(gate)
-      : safeAnswer;
+      : implicitDecision === 'uncertain'
+        ? `业务目标未确认完成：本轮至少一个外部动作结果不确定，Host 已停止同一动作的自动重放。\n\n${safeAnswer}`
+        : safeAnswer;
     this.activeRun = undefined;
     const validUsage = this.validUsage(usage, run.scope.modelBinding);
     const executionKey = run.options?.executionKey;
@@ -2555,10 +2561,11 @@ export class MimiAgent {
         run.sessionId,
         executionKey ?? run.runId,
       );
+      const completionDecision = gate?.decision ?? executionCompletionDecision(executionCalls);
       const finalization = createRunFinalization({
         runId: run.runId,
         answer: committedAnswer,
-        ...(gate ? { completionDecision: gate.decision } : {}),
+        ...(completionDecision ? { completionDecision } : {}),
         calls: executionCalls,
       });
       await this.runCommits.prepare({
@@ -2566,7 +2573,7 @@ export class MimiAgent {
         runId: run.runId,
         ...(executionKey ? { executionKey } : {}),
         answerDigest: runAnswerDigest(committedAnswer),
-        ...(gate ? { completionDecision: gate.decision } : {}),
+        ...(completionDecision ? { completionDecision } : {}),
         runtimeActions: actions.map((action) => ({ ...action })),
         finalization,
       });

@@ -293,7 +293,6 @@ type ComputerObserveInput =
     }
   | {
       scope: 'region';
-      observationId: string;
       rect: { x: number; y: number; width: number; height: number };
     }
   | {
@@ -315,7 +314,7 @@ type ComputerObserveInput =
 - `targets` 只返回有界摘要，不启动应用。
 - `window` 至少提供 `bundleId` 或 `pid`；多窗口时返回候选并要求精确选择，不猜测。
 - `includeScreenshot` 默认关闭；AX 语义不足时才请求图片。
-- `region` 映射 Cua `zoom`，只允许裁剪当前 Run 的有效窗口 Observation。
+- `region` 映射 Cua `zoom`，Manager 自动绑定当前 Run 最新的有效窗口 Observation。
 - `desktop` 映射 `get_desktop_state`，需要当前 Run 的 `foreground` 档位；结果建立桌面级 Observation，后续桌面坐标动作必须引用它。
 - `driver` 映射 `health_report`、`check_permissions({prompt:false})`、`get_config` 和 `get_recording_state`。只读观察永远不能弹出 TCC 权限框。
 - `session` 映射 `get_session_state` 和 agent cursor state，但不向模型暴露内部 session id。
@@ -326,7 +325,6 @@ type ComputerObserveInput =
 
 ```json
 {
-  "observationId": "obs-uuid",
   "capturedAt": "2026-07-20T12:00:00.000Z",
   "expiresAt": "2026-07-20T12:00:30.000Z",
   "target": {
@@ -364,7 +362,6 @@ type ComputerActInput =
       };
     }
   | {
-      observationId: string;
       action:
         | {
             type: 'click';
@@ -415,7 +412,7 @@ type AgentCursorStyle = {
 
 约束：
 
-- 目标 UI 的元素/坐标动作必须引用当前 Run 的有效 `observationId`；控制面动作引用当前 Run 的 Cua session。
+- 目标 UI 的元素/坐标动作由 Manager 自动绑定当前 Run 最新的有效窗口 Observation；模型接口不接收 Observation 或授权句柄。
 - 新 Observation 会替换同窗口旧 Observation；成功动作立即使引用的 Observation 失效。
 - `elementIndex` 优先走 AX；坐标始终是目标窗口截图的局部像素坐标。
 - `dispatch` 默认 `background`。模型请求 `foreground` 只表达执行意图，不能绕过 Run authority；缺少授权时返回 `approval_required`。
@@ -612,11 +609,10 @@ interface LedgerAwareTool {
 
 Backend 响应也必须经过固定结果映射；即使驱动回显输入参数，`computer_act` 输出也不能包含输入明文。
 
-`observationId` 作为 `targetEvidenceRef`；owner Run 的结构化 `background` 能力负责
-授权，ComputerManager 负责在执行时验证该 Observation 仍新鲜且目标未漂移。
-高风险动作若携带 `authorizationId`，Host 必须把它解析成与当前 ActionIntent 精确绑定、
-未过期且未消费的一次性授权；无法解析时在 Backend 调用前失败关闭。精确 bundleId、
-不携带 URL 的低风险 `launch_app` 仍保留已认证 owner 的 guarded 快速通道。
+ComputerManager 在 Host 内部把最新 Observation 记录为 `targetEvidenceRef`，并在执行时
+验证其仍新鲜且目标未漂移。模型输入和输出都不暴露 `observationId` 或
+`authorizationId`。精确 bundleId、不携带 URL 的低风险 `launch_app` 仍保留已认证
+owner 的 guarded 快速通道。
 
 ### 12.3 Computer artifact
 

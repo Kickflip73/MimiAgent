@@ -23,7 +23,10 @@ test('personal channel templates are disabled and only Daxiang declares actions'
   assert.equal(daxiang.enabled, false);
   assert.deepEqual(Object.keys(daxiang.actions).sort(), [
     'bind_target', 'get_context', 'health_check', 'list_targets', 'search_targets', 'send_message',
+    'send_to_owner',
   ]);
+  assert.equal(daxiang.actions.send_message?.modelVisible, false);
+  assert.equal(daxiang.actions.send_to_owner?.modelVisible, false);
   assert.equal(daxiang.actions.sync_now, undefined);
   assert.equal(qq.enabled, false);
   assert.deepEqual(qq.actions, {});
@@ -101,7 +104,7 @@ test('generic connector_action cannot reach personal-message send_message', asyn
         profileId: 'owner',
         restart: false,
         actions: {
-          send_message: { description: 'bound only' },
+          send_message: { description: 'bound only', modelVisible: false },
           get_context: { description: 'read' },
         },
       },
@@ -115,7 +118,7 @@ test('generic connector_action cannot reach personal-message send_message', asyn
       action: 'send_message',
       target: '123',
       payload: { text: 'hello' },
-    }), /PersonalMessageHub/);
+    }), /Host 内部能力/);
     await assert.rejects(() => manager.executePersonalMessageAction({
       connector: 'personal-daxiang',
       action: 'unknown',

@@ -160,7 +160,12 @@ Connector 完成远端发送后必须确认：
 
 ## 主动事务 Action Bridge
 
-Agent 需要主动执行 Connector 事务时，依据本轮 Effective Capability Snapshot 的精确 `capability/action` 调用 `invoke_capability`。Daemon 只在恰好一个在线且新鲜的 Connector 声明该组合时执行；写或 unknown effect 还必须要求 outbound ready，零个返回 unavailable，多个返回 ambiguous，不要求模型猜 Connector ID。精确声明的 `effect=read` 动作不进入副作用账本，可在明确失败后安全重试；write/unknown 的业务操作身份由 Host 根据 Run 与 Tool Call 自动建立，模型不再提供 `operationRef`。相同 Host 调用已 confirmed 时复用原回执，进入 `started/uncertain` 时禁止自动重试，只有 failed-safe 才能重新执行。底层 Task/operator 兼容面仍可使用 `connector_action`，但不再暴露给普通模型 Run。
+Agent 主动执行 Connector 事务时只调用模型目录中的业务 capability。Action 可用
+`modelVisible:false` 标记为 Host 内部动作，不会进入 Snapshot，也不能通过
+`invoke_capability` 或 `connector_action` 直达。Daemon 在程序内完成唯一路线、就绪度、
+effect、幂等和失败分级；模型不接触 `operationRef`、探活、内部目标句柄或重放流程。
+普通 Run 只要存在 `started/uncertain` 外部动作，最终回执就固定为
+`completionDecision=uncertain`，Host 会把答案改写为“业务目标未确认完成”。
 
 个人消息的查看、读取和汇总只调用 `effect=read` 的目标目录与上下文动作。新消息 Event 由 Connector 自身的定时轮询采集；该内部同步不登记为模型 action，也不能作为普通消息读取的前置步骤。
 
@@ -255,8 +260,10 @@ revision 无效或写目标当前不存在唯一候选时，status 返回
 `recoveryAttempted/recovered` 状态。
 
 大象 Event 固定使用 `source=personal-message:daxiang`，不设置 `replyTarget`。
-`send_message` 虽在 Connector action 目录登记，但通用 `connector_action` 会拒绝
-个人消息写 action；只有当前 Run 的 `PersonalMessageHub` 绑定 callback 可以调用。
+`send_message` 与 `send_to_owner` 都以 `modelVisible:false` 登记为内部动作，通用
+Connector 工具不会展示或调用。Owner Run 只看到 `send_owner_message(channel,text)`；
+Host 固定选择 `personal-<channel>` 与 owner 自会话，Connector 自行读取最新上下文后
+执行一次发送。
 Hub 先由 `get_personal_message_context` 生成最长五分钟、绑定 Run/账号/会话/最新消息
 指纹的 HMAC token，再由 `send_personal_message` 单次消费。发送后只能观察到新
 outgoing `data-mid`，所以首版结果固定为 `observed` 且
@@ -658,7 +665,7 @@ Tool 不经过此 Shell 沙箱，继续使用结构化 capability、精确 targe
 Terminal、Codex、VS Code、JetBrains 等控制面应用仍不能成为 Computer 写目标；
 Connector 的旧应用声明不再粗粒度封锁 Chrome 等完整应用。
 
-`invoke_capability` 返回 `outcome=confirmed` 时，ExecutionLedger 会附加可验证的
+`invoke_capability` 或高层业务工具返回 `outcome=confirmed` 时，ExecutionLedger 会附加可验证的
 `execution:*` 回执；PersonalMessage/Computer ActionIntent 返回 `action-intent:*` 回执。
 普通 Plan 的外部事务步骤只有引用这些已落账的 confirmed receipt 才能标记 completed。
 `accepted`、timeout、uncertain、Shell exit code 或自然语言“已完成”都不能充当外部事务
