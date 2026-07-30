@@ -51,10 +51,11 @@ test('Browser Connector exposes bounded OpenCLI Chrome sessions without observat
 import { appendFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(${JSON.stringify(commandLog)}, JSON.stringify(args) + '\\n');
-if (args[0] === 'doctor') {
-  process.stdout.write('Everything looks good!\\n');
+if (args[0] === 'daemon' && args[1] === 'status') {
+  process.stdout.write('Daemon: running (PID 123)\\nExtension: connected (v1.0.22)\\n');
   process.exit(0);
 }
+if (args[0] === 'doctor') throw new Error('doctor must not be invoked');
 const [, session, command, subcommand, ...rest] = args;
 if (!session.startsWith('mimi-')) throw new Error('unexpected session');
 if (command === 'open') process.stdout.write(JSON.stringify({ url: subcommand, page: 'page-1' }));
@@ -125,6 +126,15 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
       backgroundSafe: true,
     });
 
+    const health = await call('health', 'doctor', 'health', {});
+    assert.equal(health.ok, true, health.error);
+    assert.deepEqual(health.result, {
+      daemon: 'running',
+      extension: 'connected',
+      ready: true,
+      probe: 'daemon_status',
+    });
+
     const authenticatedPage = await call(
       'read-url',
       'read_url',
@@ -145,6 +155,13 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     assert.equal(opened.result?.kind, 'owned');
     const sessionRef = String(opened.result?.sessionRef);
     assert.match(sessionRef, /^browser:/);
+
+    const foreground = await call('foreground', 'open_session', 'foreground', {
+      url: 'https://example.com',
+      window: 'foreground',
+    });
+    assert.equal(foreground.ok, false);
+    assert.match(foreground.error ?? '', /foreground browser sessions are disabled/);
 
     const snapshot = await call('snapshot', 'snapshot', sessionRef, {
       source: 'dom',
@@ -261,18 +278,20 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line) as string[]);
-    assert.ok(commands.some((args) => args[0] === 'doctor'));
+    assert.ok(commands.some((args) => args[0] === 'daemon' && args[1] === 'status'));
+    assert.ok(commands.every((args) => args[0] !== 'doctor'));
     assert.ok(commands.some((args) => args[1]?.startsWith('mimi-read-') && args[2] === 'open'));
     assert.ok(commands.some((args) => args[1]?.startsWith('mimi-read-') && args[2] === 'extract'));
     assert.ok(commands.some((args) => args[1]?.startsWith('mimi-read-') && args[2] === 'close'));
     assert.ok(commands.some((args) => args.includes('--window') && args.includes('background')));
+    assert.ok(commands.every((args) => !args.includes('foreground')));
     assert.ok(commands.every((args) => !args.some((arg) => /safari|osascript/i.test(arg))));
   } finally {
     await stop(child);
   }
 });
 
-test('Browser Connector reports unavailable when OpenCLI doctor cannot start', async () => {
+test('Browser Connector reports unavailable when OpenCLI status cannot start', async () => {
   const connector = fileURLToPath(
     new URL('../examples/connectors/browser-connector.mjs', import.meta.url),
   );
@@ -310,6 +329,48 @@ test('Browser Connector reports unavailable when OpenCLI doctor cannot start', a
       backgroundSafe: true,
       reasonCode: 'opencli_unavailable',
     });
+  } finally {
+    await stop(child);
+  }
+});
+
+test('Browser Connector reports unavailable when OpenCLI extension is disconnected', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'browser-connector-status-'));
+  const mockOpenCli = path.join(root, 'mock-opencli.mjs');
+  await writeFile(mockOpenCli, `#!/usr/bin/env node
+process.stdout.write('Daemon: running (PID 123)\\nExtension: disconnected\\n');
+`);
+  await chmod(mockOpenCli, 0o755);
+
+  const connector = fileURLToPath(
+    new URL('../examples/connectors/browser-connector.mjs', import.meta.url),
+  );
+  const child = spawn(process.execPath, [connector], {
+    env: {
+      ...process.env,
+      OPENCLI_BIN: mockOpenCli,
+      OPENCLI_BROWSER_COMMAND_TIMEOUT_MS: '1000',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const messages: Message[] = [];
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+    while (stdout.includes('\n')) {
+      const newline = stdout.indexOf('\n');
+      const line = stdout.slice(0, newline).trim();
+      stdout = stdout.slice(newline + 1);
+      if (line) messages.push(JSON.parse(line) as Message);
+    }
+  });
+  try {
+    const deadline = Date.now() + 2_000;
+    while (!messages.some((message) => message.type === 'status') && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(messages.find((message) => message.type === 'status')?.outbound, 'unavailable');
   } finally {
     await stop(child);
   }

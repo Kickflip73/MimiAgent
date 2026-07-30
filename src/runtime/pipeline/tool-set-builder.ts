@@ -112,6 +112,8 @@ export class ToolSetBuilder {
         parameters: value.parameters,
       };
     });
+    const connectorInspector = byName.get('inspect_mimi_capabilities') as InvokableTool | undefined;
+    const connectorInvokerEntry = entries.find((entry) => entry.name === 'invoke_capability');
     return [
       tool({
         name: 'inspect_runtime_capabilities',
@@ -121,14 +123,36 @@ export class ToolSetBuilder {
           name: z.string().trim().min(1).max(200).optional(),
           query: z.string().trim().min(1).max(100).optional(),
         }).strict(),
-        execute: ({ source, name, query }) => {
+        execute: async ({ source, name, query }, context, details) => {
           if (name && !byName.has(name)) throw new Error(`能力未授权或不存在：${name}`);
           const normalizedQuery = query?.toLowerCase();
-          const matches = entries.filter((entry) =>
+          const directMatches = entries.filter((entry) =>
             (!source || entry.source === source)
             && (!name || entry.name === name)
             && (!normalizedQuery
               || `${entry.name} ${entry.description}`.toLowerCase().includes(normalizedQuery)));
+          const connectorCatalog = query
+            && !name
+            && (!source || source === 'connector')
+            && connectorInspector?.invoke
+            && connectorInvokerEntry
+            ? await connectorInspector.invoke(
+                context as RunContext<unknown>,
+                JSON.stringify({ query }),
+                details,
+              )
+            : undefined;
+          const connectorMatched = connectorCatalog !== undefined
+            && connectorCatalog !== null
+            && typeof connectorCatalog === 'object'
+            && !Array.isArray(connectorCatalog)
+            && (connectorCatalog as Record<string, unknown>).filterMatched === true
+            && Number((connectorCatalog as Record<string, unknown>).actions) > 0;
+          const matches = connectorMatched
+            && connectorInvokerEntry
+            && !directMatches.some((entry) => entry.name === connectorInvokerEntry.name)
+            ? [...directMatches, connectorInvokerEntry]
+            : directMatches;
           return {
             authorizedCount: entries.length,
             matchedCount: matches.length,
@@ -136,12 +160,13 @@ export class ToolSetBuilder {
               name: entry.name,
               source: entry.source,
               effect: entry.effect,
-              ...(name ? {
+              ...(name || (connectorMatched && entry.name === connectorInvokerEntry?.name) ? {
                 description: entry.description,
                 parameters: entry.parameters,
                 invokeWith: 'invoke_runtime_capability',
               } : {}),
             })),
+            ...(connectorCatalog === undefined ? {} : { connectorCatalog }),
             truncated: matches.length > 100,
           };
         },

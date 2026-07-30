@@ -1,44 +1,90 @@
 ---
 name: web-research
-description: 使用内置 web_search 工具检索最新互联网资料并进行多来源信息调研
+description: Use when researching information that requires current internet data — news, recent events, live prices, latest documentation, or topics beyond your knowledge cutoff
 ---
 
 # Web Research
 
-使用 MimiAgent 内置的 `web_search` 工具进行互联网搜索。OpenAI 使用托管搜索，DeepSeek 默认使用本地 Bing 适配器；两者使用相同工具名。
+## Overview
 
-## 使用方式
+Extend your knowledge with live internet data. This is a source-gathering skill, not a reasoning skill — your job is to find, evaluate, and synthesize what's online, then deliver a conclusion grounded in that evidence.
 
-直接调用 `web_search` 工具：
+## When to Use
 
+- Question is about events after your knowledge cutoff
+- Topic changes rapidly (prices, APIs, regulations, products)
+- Owner asks for "latest", "current", "news about", or "what's happening with"
+- Internal/private knowledge search is exhausted and the answer is public
+
+**Don't use for:** Things already in your Memory, topics with known stable answers, or internal-only information.
+
+## Search Strategy
+
+### 1. Query Design
+- Start with specific, narrow queries — broad searches return noise
+- Use exact phrases in quotes for technical terms
+- Add `site:` to scope to authoritative domains when known
+- If first search returns nothing useful, change angle, not just keywords
+
+### 2. Source Evaluation
+Accept a result as evidence only when:
+- **Attribution**: Author/organization is identifiable
+- **Currency**: Published or updated within a relevant timeframe
+- **Corroboration**: At least one other independent source agrees on the key claim
+- **No obvious commercial or ideological conflict**
+
+**Red flags**: No author, no date, sensational language, "sponsored" markers, circular citations.
+
+### 3. Result Triage
 ```
-工具名: web_search
-参数:
-  query: 搜索关键词（尽量精确）
-  num: 返回结果数量（1-10，默认5）
+Search results → Scan titles/snippets → Open promising 3-5 → Read → Extract claims
+Don't open results beyond page 2 unless the first page was entirely wrong.
 ```
 
-## 搜索技巧
+### 4. Cross-Reference
+- Search with different terms to confirm the same finding
+- If sources disagree, search specifically for the disagreement
+- State contradictions in output with your resolution reasoning
 
-### 关键词优化
-- 中文搜索用中文关键词
-- 技术问题用英文关键词（结果更精准）
-- 加限定词：`tutorial`、`docs`、`example`、`vs`、`alternative`
+## Synthesis Rules
 
-### 结果解读
+- Lead with the conclusion, not the search process
+- Every factual claim links to a specific source
+- Distinguish fact from opinion: "X announced" vs "analyst Y believes"
+- If you couldn't verify, say so: "Could not confirm from independent sources"
 
-每个结果包含：
-- 标题（通常是文章标题或网站名）
-- 链接（原始 URL）
-- 摘要（页面描述或片段）
+## Output Format
 
-### 信息验证
-- 优先查看官方文档/官网
-- 核实信息后用 `http_request` 打开具体页面获取详细内容
-- 关键事实交叉验证
+```markdown
+## [Question]
 
-## 局限
+### Answer
+[1-3 sentence direct answer, with confidence level]
 
-- 不同 Provider 的搜索来源和排序可能不同
-- 搜索结果不含发布时间
-- 如配置了 `GOOGLE_CSE_API_KEY` + `GOOGLE_CSE_CX`，会自动用 Google（质量更好）
+### Key Evidence
+- [Claim] — [Source](URL), [date]
+- [Claim] — [Source](URL), [date]
+
+### Uncertainty / Conflicts
+[If any sources disagree, state the conflict and your resolution]
+
+### Sources
+1. [Title] — [URL]
+2. [Title] — [URL]
+```
+
+## Token & Context Budget
+
+- Don't read full articles when snippets answer the question — save full reads for critical evidence
+- Stop after 3 rounds of searches if findings converge
+- If page requires login/paywall, note it and look for alternative sources
+
+## Common Mistakes
+
+| Mistake | Fix |
+|---------|-----|
+| Searching once and stopping | Cross-validate with different query angles |
+| Trusting snippet text alone | Open and read the actual page for key claims |
+| Accepting SEO spam as fact | Check attribution, date, and corroboration |
+| Ignoring date of publication | State article dates. Old articles on fast-moving topics are misleading. |
+| Scrolling past page 2 | Change query, don't scroll deeper. |

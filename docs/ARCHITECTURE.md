@@ -405,7 +405,7 @@ Ultra 仍是一个主 Runner 和单一 Session。主 Agent 是 lead，负责目�
 | Ultra Team | 当前大型 Run 内可并行的明确子任务 | 是 | 最多 4 个 worker Runner | lead 当轮整合 |
 | Background Task | 长程、多阶段、持续等待，或用户不需要立即看到结果 | 否 | 持久 Event + 独立 Task Session + OS 子进程 | Outbox 主动通知 |
 
-主 Agent 应先判断交互预期：简单问答、短操作和用户明确等待当前结果的工作留在 Conversation actor；其余调用 `delegate_background_task`，收到 `taskId` 后立即结束当前委派动作，不轮询、不在前台重复执行。委派参数只包含可独立执行的 objective、可选 success criteria/必要上下文、single/team strategy 和 priority。写入使用来源 Event 的 ExecutionLedger 与稳定语义键，模型重试不会重复创建同一任务。
+主 Agent 应先判断交互预期：简单问答、短操作和用户明确等待当前结果的工作留在 Conversation actor；其余调用 `delegate_background_task`，收到 `taskId` 后立即结束当前委派动作，不轮询、不在前台重复执行。委派参数包含可独立执行的 objective、可选 success criteria/必要上下文、single/team strategy、priority，以及仅在用户明确指定时使用的精确 `modelTarget { providerId, modelId }`。Mimi Task 省略 target 时服从 `background.default` 场景路由；显式 target 作为严格 WorkUnit 路由优先于场景配置，并在未注册、无凭据或能力不兼容时失败关闭。Codex Task 不接受 Mimi modelTarget。写入使用来源 Event 的 ExecutionLedger 与稳定语义键，模型重试不会重复创建同一任务。
 
 Task worker 的外部事务权限由仍存在的 conversation root 确定，而不是由 Task payload 自报。只有 owner-root write Task 可通过 Kernel Broker 执行 `connector_action`；非 owner-root Task 的工具目录会同步隐藏该 action，避免模型调用一个确定会失败的能力。Task 的完成、失败和阻塞通知不依赖该 action，始终由 Kernel Outbox 按原 reply route 可靠投递。
 

@@ -1,14 +1,24 @@
 {
   "mcpServers": {
-    "xiaohongshu-mcp": {
-      "url": "http://localhost:18060/mcp",
-      "description": "小红书 MCP 服务 - 搜索/发布/互动"
-    },
     "cua-driver": {
-      "command": "${HOME}/.local/bin/cua-driver",
-      "args": ["mcp"],
-      "allowedEnv": ["HOME"],
-      "description": "Cua Driver - 后台桌面操控，支持 macOS Accessibility/Screen Recording"
+      "command": "/Users/liuyuran/.local/bin/cua-driver-mcp-wrapper.sh",
+      "args": [],
+      "description": "Cua Driver - 后台桌面操控。需先启动 CuaDriver.app（可设登录项自动启动）"
+    },
+    "codebase-memory": {
+      "command": "/Users/liuyuran/.local/bin/codebase-memory-mcp",
+      "args": [],
+      "description": "代码智能引擎 - 索引仓库、搜索代码结构、架构分析、ADR管理"
+    },
+    "apple-calendar": {
+      "command": "npx",
+      "args": ["-y", "mcp-server-apple-events"],
+      "description": "Apple 日历/提醒事项 - macOS EventKit 原生对接"
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"],
+      "description": "微软 Playwright 浏览器自动化 - browser Connector 备用方案"
     }
   }
 }

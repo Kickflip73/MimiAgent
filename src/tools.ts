@@ -10,6 +10,7 @@ import { codeInterpreterTool, tool, webSearchTool } from '@openai/agents';
 import { Agent as HttpAgent, fetch } from 'undici';
 import { z } from 'zod';
 import { DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES } from './core/execution-ledger.js';
+import { PRE_MIMI_DATA_DIRECTORY } from './core/mimi-legacy.js';
 import { withExclusiveFileLock } from './core/state-file.js';
 import { diagnoseWrittenFiles } from './runtime/file-diagnostics.js';
 import type { FileMutationObserver } from './core/file-change-journal.js';
@@ -22,7 +23,7 @@ const MAX_HTTP_REDIRECTS = 5;
 const MAX_PROCESS_SNAPSHOT_BYTES = 1_000_000;
 const PROCESS_SNAPSHOT_TIMEOUT_MS = 10_000;
 const SKIPPED_DIRECTORIES = new Set([
-  '.git', 'node_modules', 'dist',
+  '.git', '.mimi-agent', PRE_MIMI_DATA_DIRECTORY, 'node_modules', 'dist',
 ]);
 
 function resolvePath(workspaceRoot: string, requestedPath: string): string {
@@ -878,6 +879,8 @@ function ripgrepBaseArgs(workspaceRoot: string, options: FileSearchLimits): stri
   const args = [
     '--hidden', '--max-filesize', '200K',
     '--glob', '!.git/**',
+    '--glob', '!.mimi-agent/**',
+    '--glob', `!${PRE_MIMI_DATA_DIRECTORY}/**`,
     '--glob', '!node_modules/**',
     '--glob', '!dist/**',
   ];
@@ -991,9 +994,9 @@ export async function inspectWorkspaceChanges(
   signal?: AbortSignal,
   excludedPaths: string[] = [],
 ): Promise<WorkspaceChanges> {
-  const exclusions = [...new Set(
-    excludedPaths.map((value) => value.split(path.sep).join('/')).filter((value) => value && value !== '.')
-  )];
+  const exclusions = [...new Set([
+    '.mimi-agent', PRE_MIMI_DATA_DIRECTORY, ...excludedPaths,
+  ].map((value) => value.split(path.sep).join('/')).filter((value) => value && value !== '.'))];
   const pathspec = [
     '--', ...(paths.length ? paths : ['.']),
     ...exclusions.flatMap((value) => [`:(exclude)${value}`, `:(exclude)${value}/**`]),

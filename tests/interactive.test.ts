@@ -190,6 +190,26 @@ test('recognizes the command-enter modifier sequence when meta is unavailable', 
   terminal.close();
 });
 
+test('recognizes raw command-enter sequences before readline splits them', () => {
+  for (const sequence of ['\x1b\r', '\x1b[13;9u', '\x1b[27;9;13~']) {
+    const input = new FakeInput();
+    const output = new FakeOutput();
+    const submissions: Array<{ line: string; intent: string }> = [];
+    const terminal = new InteractiveTerminal([], input as never, output as never);
+    terminal.start({
+      onLine: (line, intent) => submissions.push({ line, intent }),
+      onEscape: () => undefined,
+      onExit: () => undefined,
+    });
+
+    input.write('立即调整');
+    input.write(sequence);
+
+    assert.deepEqual(submissions, [{ line: '立即调整', intent: 'steer' }], JSON.stringify(sequence));
+    terminal.close();
+  }
+});
+
 test('clears editable input with double escape without cancelling the active task', () => {
   const input = new FakeInput();
   const output = new FakeOutput();
@@ -593,7 +613,7 @@ test('preserves a bracketed-paste end marker split across data chunks', async ()
   terminal.close();
 });
 
-test('shows the current plan above the input and collapses it after completion', () => {
+test('shows the current plan above the input and hides it after completion', () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   output.columns = 44;
@@ -621,8 +641,7 @@ test('shows the current plan above the input and collapses it after completion',
     { id: 'build', description: '实现任务面板', status: 'completed' },
   ]);
   plain = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-  assert.match(plain, /✓ 任务 2\/2 · 已全部完成/);
-  assert.doesNotMatch(plain, /●|○/);
+  assert.doesNotMatch(plain, /任务 2\/2|检查机制|实现任务面板|●|○/);
   terminal.close();
 });
 

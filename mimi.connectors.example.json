@@ -309,9 +309,9 @@
       "actionTimeoutMs": 300000,
       "claimedComputerApps": ["com.google.Chrome"],
       "actions": {
-        "doctor": { "description": "只读检查 OpenCLI daemon、Chrome 扩展和 Browser Bridge 连通性；target=health，payloadJson={}", "capability": "browser.health.read", "effect": "read" },
+        "doctor": { "description": "通过 daemon status 静默检查 OpenCLI daemon 和 Chrome 扩展连接，不创建浏览器窗口或页面；target=health，payloadJson={}", "capability": "browser.health.read", "effect": "read" },
         "read_url": { "description": "通过 Chrome 当前 profile 和登录态在后台读取单个绝对 http/https URL，返回首个 Markdown 分块后自动释放临时会话；target 为 URL，payload 可含 selector、chunkSize、start", "capability": "browser.url.read", "effect": "read" },
-        "open_session": { "description": "创建 Mimi 独占的 Chrome 会话并打开 http/https URL；target 为会话标签，payload 包含 url，可选 window=background|foreground；返回不透明 sessionRef", "capability": "browser.session.write", "effect": "write" },
+        "open_session": { "description": "强制在后台创建 Mimi 独占的 Chrome 会话并打开 http/https URL；target 为会话标签，payload 包含 url，可选 window=background；foreground 请求会被拒绝；返回不透明 sessionRef", "capability": "browser.session.write", "effect": "write" },
         "bind_session": { "description": "把当前 Chrome 标签绑定为 Mimi 会话；target 为会话标签，payload={}；返回不透明 sessionRef，不拥有或关闭用户标签", "capability": "browser.session.write", "effect": "write" },
         "close_session": { "description": "释放 sessionRef；独占会话关闭，绑定会话只 unbind；target 为 sessionRef，payload={}", "capability": "browser.session.write", "effect": "write" },
         "probe_tabs": { "description": "只读统计当前 Connector 已持有的会话和标签，不创建、绑定、激活或泄露页面内容；target=all，payload={}", "capability": "browser.tabs.read", "effect": "read" },

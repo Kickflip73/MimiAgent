@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- let durable Mimi background tasks carry an explicit exact
+  `providerId/modelId` target through delegation, persistence, worker routing,
+  and task inspection while retaining `background.default` routing when omitted
+  and rejecting Mimi Provider targets for the independent Codex executor
+- recognize raw `Command+Enter` modifier sequences before Node readline can
+  split or discard them, preserving ordinary `Enter` FIFO behavior
+- reject successful completion of an ordinary Run that still owns active Plan
+  steps, return actionable `update_plan` validation errors, and remove the
+  persistent TUI Plan panel once every step is complete
 - keep `/sessions` selection and TUI history snapshots responsive while the
   selected Session is running, without bypassing serialization for mutations
 - remove the accidental default 32-call and 500K cumulative-input run caps;
@@ -22,8 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - separate consumed Tool artifacts, durable work snapshots, and 80% dialogue
   compression so 1M-window runs can read hash-verified canonical results without
   replaying effects; add policy-preserving progressive discovery for hidden
-  builtin, MCP, Computer, Memory, Goal, Skill, and Connector capabilities; store
-  Memory embeddings per chunk with page aggregation and relevance/diversity MMR
+  builtin, MCP, Computer, Memory, Goal, Skill, and Connector capabilities,
+  including generic Connector action metadata lookup through the unified
+  capability gateway; store Memory embeddings per chunk with page aggregation
+  and relevance/diversity MMR
 - derive a bounded Context View before every model call while retaining the
   canonical Session, add 70% work snapshots and 80% semantic compression with
   intact recent turns and tool protocol units, progressively disclose Skill and

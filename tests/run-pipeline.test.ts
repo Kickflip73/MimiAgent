@@ -224,6 +224,108 @@ test('progressive gateway discovers and invokes every authorized capability fami
   );
 });
 
+test('runtime capability query searches connector actions through the formal catalog', async () => {
+  const builder = new ToolSetBuilder();
+  const catalog = [
+    {
+      query: 'render_document',
+      connector: 'document-worker',
+      action: 'render_document',
+      capability: 'documents.render',
+    },
+    {
+      query: 'audio.transcribe',
+      connector: 'speech-worker',
+      action: 'transcribe',
+      capability: 'audio.transcribe',
+    },
+  ];
+  const inspectConnector = sdkTool({
+    name: 'inspect_mimi_capabilities',
+    description: '读取 Connector 目录。',
+    parameters: z.object({ query: z.string().optional() }),
+    execute: async ({ query }) => {
+      const matched = catalog.find((candidate) => candidate.query === query);
+      return {
+        filterMatched: Boolean(matched),
+        actions: matched ? 1 : 0,
+        connectors: matched ? [{
+          id: matched.connector,
+          actions: [{
+            name: matched.action,
+            capability: matched.capability,
+            effect: 'write',
+          }],
+        }] : [],
+      };
+    },
+  });
+  const invokeConnector = sdkTool({
+    name: 'invoke_capability',
+    description: '调用当前目录中的一项 Connector 业务能力。',
+    parameters: z.object({
+      capability: z.string(),
+      action: z.string(),
+      target: z.string(),
+      payloadJson: z.string(),
+    }),
+    execute: async ({ action }) => `${action}-ok`,
+  });
+  const gateway = builder.progressiveGateway([inspectConnector, invokeConnector]);
+  const inspect = gateway.find((candidate) => candidate.name === 'inspect_runtime_capabilities') as Tool & {
+    invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
+  };
+  const context = new RunContext({});
+
+  for (const expected of catalog) {
+    const found = await inspect.invoke(
+      context,
+      JSON.stringify({ source: 'connector', query: expected.query }),
+      {},
+    ) as {
+      matchedCount: number;
+      capabilities: Array<{ name: string; parameters?: unknown }>;
+      connectorCatalog: { connectors: Array<{ actions: Array<{ name: string; capability: string }> }> };
+    };
+    assert.equal(found.matchedCount, 1);
+    assert.equal(found.capabilities[0]?.name, 'invoke_capability');
+    assert.ok(found.capabilities[0]?.parameters);
+    assert.equal(found.connectorCatalog.connectors[0]?.actions[0]?.name, expected.action);
+    assert.equal(found.connectorCatalog.connectors[0]?.actions[0]?.capability, expected.capability);
+  }
+
+  const absent = await inspect.invoke(
+    context,
+    JSON.stringify({ source: 'connector', query: 'missing' }),
+    {},
+  ) as { matchedCount: number; connectorCatalog: { filterMatched: boolean } };
+  assert.equal(absent.matchedCount, 0);
+  assert.equal(absent.connectorCatalog.filterMatched, false);
+
+  const disabledInspector = sdkTool({
+    name: 'inspect_mimi_capabilities',
+    description: '读取 Connector 目录。',
+    parameters: z.object({ query: z.string().optional() }),
+    execute: async () => ({
+      filterMatched: true,
+      actions: 0,
+      connectors: [{ id: 'disabled-connector', actions: [] }],
+    }),
+  });
+  const disabledGateway = builder.progressiveGateway([disabledInspector, invokeConnector]);
+  const inspectDisabled = disabledGateway.find(
+    (candidate) => candidate.name === 'inspect_runtime_capabilities',
+  ) as Tool & {
+    invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
+  };
+  const disabled = await inspectDisabled.invoke(
+    context,
+    JSON.stringify({ source: 'connector', query: 'disabled-connector' }),
+    {},
+  ) as { matchedCount: number };
+  assert.equal(disabled.matchedCount, 0);
+});
+
 test('progressive snapshot indexes every hidden capability family without disclosing schemas', () => {
   const builder = new ToolSetBuilder();
   const make = (name: string, description = `SECRET_DESCRIPTION_${name}`) => sdkTool({

@@ -31,16 +31,16 @@ export function loadDaxiangConfig(file: string): Promise<{ file: string; config:
 
 export class ChromeJxaDriver {
   constructor(options?: { command?: string; timeoutMs?: number });
-  locate(marker: string, allowBind?: boolean): Promise<Record<string, unknown>>;
-  execute(marker: string, script: string, allowBind?: boolean): Promise<{ value?: unknown }>;
+  locate(marker: string): Promise<Record<string, unknown>>;
+  execute(marker: string, script: string): Promise<{ value?: unknown }>;
 }
 
 export class DaxiangWebAdapter {
   constructor(options: {
     config: DaxiangWebConfig;
     driver: {
-      locate(marker: string, allowBind?: boolean): Promise<unknown>;
-      execute(marker: string, script: string, allowBind?: boolean): Promise<{ value?: unknown }>;
+      locate(marker: string): Promise<unknown>;
+      execute(marker: string, script: string): Promise<{ value?: unknown }>;
     };
     bridgeSource: string;
     stateFile: string;

@@ -417,7 +417,14 @@ export function privateRuntimePaths(
   config: Pick<AppConfig, 'workspaceRoot' | 'dataRoot' | 'daemonDataRoot'>,
   homeDirectory = os.homedir(),
 ): string[] {
-  return [];
+  return [...new Set([
+    config.dataRoot,
+    config.daemonDataRoot,
+    path.join(config.workspaceRoot, '.mimi-agent'),
+    path.join(config.workspaceRoot, PRE_MIMI_DATA_DIRECTORY),
+    path.join(homeDirectory, '.mimi-agent'),
+    path.join(homeDirectory, PRE_MIMI_DATA_DIRECTORY),
+  ].filter((value): value is string => Boolean(value)).map((value) => path.resolve(value)))];
 }
 
 export function adoptWorkspaceConfig(

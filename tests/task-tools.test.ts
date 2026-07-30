@@ -97,6 +97,34 @@ test('repeated background delegation returns the same durable task', async () =>
       (store.getTask(first.taskId)?.objective as Record<string, unknown>).requiredCapabilities,
       ['workspace.read', 'workspace.write', 'shell.execute'],
     );
+    const targeted = await invoke(tools, 'delegate_background_task', {
+      ...input,
+      objective: 'Implement the game MVP with Kimi',
+      executor: 'mimi',
+      modelTarget: {
+        providerId: 'friday',
+        modelId: 'kimi-k3',
+      },
+    }) as { taskId: string; requestedModelTarget?: unknown };
+    assert.deepEqual(targeted.requestedModelTarget, {
+      providerId: 'friday',
+      modelId: 'kimi-k3',
+    });
+    assert.deepEqual(
+      (store.getTask(targeted.taskId)?.objective as Record<string, unknown>).modelProfile,
+      {
+        modelTarget: {
+          providerId: 'friday',
+          modelId: 'kimi-k3',
+        },
+      },
+    );
+
+    const summary = backgroundTaskSummary(store.getTask(targeted.taskId)!);
+    assert.deepEqual(summary.requestedModelTarget, {
+      providerId: 'friday',
+      modelId: 'kimi-k3',
+    });
 
     const incompatible = await invoke(tools, 'delegate_background_task', {
       objective: 'Use the desktop to submit a form',
@@ -105,6 +133,18 @@ test('repeated background delegation returns the same durable task', async () =>
       requiredCapabilities: ['computer.act'],
     });
     assert.match(JSON.stringify(incompatible), /不具备必需能力.*computer\.act/);
+
+    const codexModelTarget = await invoke(tools, 'delegate_background_task', {
+      objective: 'Run Codex with a Mimi Provider target',
+      executor: 'codex',
+      modelTarget: {
+        providerId: 'friday',
+        modelId: 'kimi-k3',
+      },
+      workspaceAccess: 'write',
+      requiredCapabilities: ['workspace.read', 'workspace.write', 'shell.execute'],
+    });
+    assert.match(JSON.stringify(codexModelTarget), /modelTarget.*executor=mimi/);
 
     const outputJsonlPath = path.join(root, 'events.jsonl');
     await writeFile(outputJsonlPath, `${JSON.stringify({

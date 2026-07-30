@@ -2838,6 +2838,17 @@ export class MimiAgent {
     const run = this.activeRun;
     if (!run) throw new Error('没有正在运行的任务可完成');
     const safeAnswer = redactActiveEphemeralText(answer, run.ephemeralSensitiveAccess);
+    if (run.planOwned && !run.completionRequired) {
+      const steps = await (run.plans ?? this.plans).get();
+      const incomplete = steps.filter((step) => step.status !== 'completed');
+      if (incomplete.length > 0) {
+        throw new Error(
+          `本轮 Plan 尚未完成，拒绝把 Run 标记为完成：${incomplete
+            .map((step) => `${step.id}=${step.status}`)
+            .join(', ')}`,
+        );
+      }
+    }
     let gate: CompletionGateDecision | undefined;
     if (run.completionRequired) {
       const evaluated = await this.evaluateRunCompletion(

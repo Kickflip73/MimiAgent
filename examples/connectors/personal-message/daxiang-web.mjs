@@ -203,12 +203,6 @@ function run(argv) {
   var input = JSON.parse(argv[0]);
   var app = Application('Google Chrome');
   if (!app.running()) throw new Error('Google Chrome is not running');
-  var chromeFrontmost = true;
-  try {
-    chromeFrontmost = Boolean(
-      Application('System Events').applicationProcesses.byName('Google Chrome').frontmost()
-    );
-  } catch (_) {}
   var windows = app.windows();
   var markerCandidates = [];
   for (var wi = 0; wi < windows.length; wi += 1) {
@@ -225,28 +219,11 @@ function run(argv) {
         window: wi + 1,
         tab: ti + 1,
         active: active,
-        chromeFrontmost: chromeFrontmost,
         marker: marker,
         url: url
       };
       if (marker === input.marker) markerCandidates.push({ item: item, tab: tab });
     }
-  }
-  if (markerCandidates.length === 1 && markerCandidates[0].item.active && input.allowBind) {
-    execute(markerCandidates[0].tab, 'window.name = ""; window.name');
-    markerCandidates = [];
-  }
-  if (!markerCandidates.length && input.allowBind) {
-    if (!windows.length) throw new Error('Google Chrome has no window for a Daxiang dedicated tab');
-    var hostWindow = windows[0];
-    var previousActiveIndex = Number(safe(function() { return hostWindow.activeTabIndex(); }, 1));
-    hostWindow.tabs.push(app.Tab({ url: 'about:blank' }));
-    try { hostWindow.activeTabIndex = previousActiveIndex; } catch (_) {}
-    var createdTabs = hostWindow.tabs();
-    var createdTab = createdTabs[createdTabs.length - 1];
-    execute(createdTab, 'window.name = ' + JSON.stringify(input.marker) + '; window.name');
-    createdTab.url = input.origin;
-    throw new Error('Daxiang dedicated tab provisioned; retry after page load');
   }
   if (markerCandidates.length !== 1) throw new Error('Daxiang bound tab is missing or ambiguous');
   var target = markerCandidates[0];
@@ -314,16 +291,16 @@ export class ChromeJxaDriver {
     this.timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
   }
 
-  async locate(marker, allowBind = false) {
-    return this.#call({ origin: ORIGIN, marker, allowBind });
+  async locate(marker) {
+    return this.#call({ origin: ORIGIN, marker });
   }
 
-  async execute(marker, script, allowBind = false) {
-    return this.#call({ origin: ORIGIN, marker, allowBind, script });
+  async execute(marker, script) {
+    return this.#call({ origin: ORIGIN, marker, script });
   }
 
   async refresh(marker) {
-    return this.#call({ origin: ORIGIN, marker, allowBind: false, refresh: true });
+    return this.#call({ origin: ORIGIN, marker, refresh: true });
   }
 
   async #call(input) {
@@ -469,11 +446,10 @@ export class DaxiangWebAdapter {
 
   async health({ probe = false } = {}) {
     try {
-      await this.driver.locate(this.config.tabMarker, probe);
+      await this.driver.locate(this.config.tabMarker);
       let inspect = await this.#bridgeCall(
         'inspect',
         { selfSid: this.config.selfConversation.sid },
-        probe,
       );
       const navigationStartedAt = Date.parse(String(inspect.navigationStartedAt || ''));
       let sessionRefreshedAt;
@@ -601,35 +577,6 @@ export class DaxiangWebAdapter {
       const category = errorCategory(error);
       if (category === 'chrome_not_running' || category === 'dedicated_tab_unavailable') {
         this.verifiedAccountFingerprint = undefined;
-      }
-      if (!probe && ['dedicated_tab_unavailable', 'dedicated_tab_active'].includes(category)) {
-        await this.#recordDiagnostics({
-          checkedAt: now,
-          coverage: 'unavailable',
-          accountVerified: false,
-          backgroundSafe: false,
-          errorCategory: category,
-          recoveryAttempted: true,
-          recovered: false,
-        });
-        const recovered = await this.health({ probe: true });
-        const recoverySucceeded = recovered.accountVerified === true
-          && recovered.inbound === 'ready';
-        this.lastHealth = {
-          ...recovered,
-          recoveryAttempted: true,
-          recovered: recoverySucceeded,
-        };
-        await this.#recordDiagnostics({
-          checkedAt: new Date().toISOString(),
-          coverage: this.lastHealth.coverage,
-          accountVerified: this.lastHealth.accountVerified,
-          backgroundSafe: this.lastHealth.backgroundSafe,
-          ...(this.lastHealth.errorCategory ? { errorCategory: this.lastHealth.errorCategory } : {}),
-          recoveryAttempted: true,
-          recovered: recoverySucceeded,
-        });
-        return this.lastHealth;
       }
       this.lastHealth = {
         available: false,
@@ -1261,25 +1208,23 @@ export class DaxiangWebAdapter {
     return false;
   }
 
-  async #bridgeCall(method, input, allowBind = false) {
+  async #bridgeCall(method, input) {
     const invocation = `JSON.stringify(window.__mimiDaxiangBridge.${method}(${JSON.stringify(input)}))`;
     const guardedInvocation = `typeof window.__mimiDaxiangBridge === 'object' ? ${invocation} : '__MIMI_DAXIANG_BRIDGE_MISSING__'`;
     if (!this.bridgeReady) {
-      await this.driver.execute(this.config.tabMarker, this.bridgeSource, allowBind);
+      await this.driver.execute(this.config.tabMarker, this.bridgeSource);
       this.bridgeReady = true;
     }
     let result = await this.driver.execute(
       this.config.tabMarker,
       guardedInvocation,
-      allowBind,
     );
     if (result?.value === '__MIMI_DAXIANG_BRIDGE_MISSING__') {
-      await this.driver.execute(this.config.tabMarker, this.bridgeSource, allowBind);
+      await this.driver.execute(this.config.tabMarker, this.bridgeSource);
       this.bridgeReady = true;
       result = await this.driver.execute(
         this.config.tabMarker,
         invocation,
-        false,
       );
     }
     const value = result?.value;

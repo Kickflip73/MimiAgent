@@ -230,6 +230,30 @@ test('background routing sends only the selected Provider and credential to a wo
       target: { providerId: 'right', modelId: 'right-model' },
       apiKey: 'right-fixture-key',
     });
+
+    const exactTask = task('exact-routed-task', 'isolated_worker');
+    exactTask.objective = {
+      objective: 'build game',
+      modelProfile: {
+        modelTarget: { providerId: 'left', modelId: 'left-model' },
+      },
+    };
+    const exact = await resolveTaskModel({
+      provider: 'openai',
+      modelsConfig,
+      workspaceRoot: root,
+      dataRoot: path.join(root, 'data'),
+      skillsRoot: path.join(root, 'skills'),
+      mcpConfig: path.join(root, 'mcp.json'),
+      historyLimit: 40,
+      maxTurns: null,
+    }, exactTask as never);
+    assert.deepEqual(exact.binding.target, {
+      providerId: 'left',
+      modelId: 'left-model',
+    });
+    assert.equal(exact.binding.reason, 'explicit-work-unit');
+    assert.equal(exact.configuration.providers[0]?.id, 'left');
   } finally {
     if (saved.left === undefined) delete process.env.TASK_LEFT_KEY;
     else process.env.TASK_LEFT_KEY = saved.left;

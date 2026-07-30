@@ -110,7 +110,9 @@ Connector 声明 effect=`read` 的 `health_check` 后，Daemon 的确定性
 `health_check`、启停或 reload 来临时维修 Connector。
 
 `personal-daxiang` 的 Supervisor 每 10 秒执行上述只读探活，Connector 自身每 30 秒
-轮询已绑定会话。DOM、账号和目标可读只能证明页面结构仍可用，不能单独证明网页长连接
+轮询已绑定会话。探活和轮询只允许读取已有的非活动专用标签；标签缺失、歧义或变成活动
+标签时必须 fail closed，不得创建 `about:blank`、新窗口、新标签，不得激活 Chrome 或
+切换当前标签。DOM、账号和目标可读只能证明页面结构仍可用，不能单独证明网页长连接
 仍然健康；因此只读 `health_check probe` 会在专用后台标签连续运行满 10 分钟后，于
 Connector 没有进行中的 action/delivery 时执行一次有界同 URL 刷新，重新安装观察器，
 并在刷新后的账号、页面指纹和目标绑定再次通过后才恢复 ready。刷新失败只会让
@@ -586,16 +588,16 @@ Actions：
 
 ```bash
 npm install -g @jackwener/opencli
-opencli doctor
+opencli daemon status
 ```
 
-`opencli doctor` 必须确认 daemon、Chrome 扩展和 connectivity 都可用。Connector 启动时执行同一只读检查；失败时进程保持在线但上报 `outbound=unavailable` 和 `reasonCode=opencli_unavailable`，不会把缺失依赖误报成浏览器可用。
+`opencli daemon status` 必须显示 daemon 为 `running`、Chrome 扩展为 `connected`。Connector 启动时只执行这项无页面副作用的状态检查，不调用会创建 Browser session 的 `opencli doctor`；失败时进程保持在线但上报 `outbound=unavailable` 和 `reasonCode=opencli_unavailable`，不会把缺失依赖误报成浏览器可用。
 Connector 默认先查找与当前 Node 可执行文件同目录的 `opencli`，以兼容 launchd 的最小 PATH；若 OpenCLI 安装在其他位置，通过 `OPENCLI_BIN` 提供绝对路径。
 
 会话动作：
 
 - `read_url`：通过 Chrome 当前 profile 和登录态在后台打开单个 URL，提取首个 Markdown 分块后自动释放临时会话；内网或需要 SSO 的只读页面优先使用这个单 action。
-- `open_session`：创建 Mimi 独占的 Chrome 会话，打开绝对 http/https URL；默认 `window=background`，返回不透明 `sessionRef`。
+- `open_session`：创建 Mimi 独占的 Chrome 会话，打开绝对 http/https URL；强制使用 `window=background`，显式 `foreground` 请求会被拒绝，返回不透明 `sessionRef`。
 - `bind_session`：绑定 owner 当前 Chrome 标签以复用人工完成的登录、SSO 或页面定位；绑定会话不会拥有或关闭用户标签。
 - `close_session`：独占会话执行 close，绑定会话只 unbind。Connector/Daemon 正常退出时也会尽力释放仍持有的会话。
 - `probe_tabs`：只返回 Connector 当前持有的会话/标签计数，供只读 canary 使用，不创建、绑定、激活或泄露页面内容。
@@ -661,6 +663,12 @@ Actions：
 只有 `owner/system` 事件可在当前部署权限内直接工作。其余 provenance（包括 `trusted/external/public`）默认只开放当前 attempt 内的静默投递控制，不提供通用网络读取，避免来源内容借 `http_get` 探测 localhost、内网或云 metadata；它们也不可读取 Session 历史/归档/恢复点、Memory、本地文件或持久状态，不可使用 Shell、MCP、状态写入或外部事务。精确匹配 owner source policy 后，默认 `access=reply` 只开放当前人物 Session 的有界上下文和自动回复；只有显式 `access=work` 才开放静态工作工具。来源正文始终作为不可信 user input，不能提升档位或扩大工具范围；常驻执行契约仍由 Host 单独提供。
 
 Connector 仍是首层信任边界：只接入你愿意处理的来源，限制 IM 白名单，且只在 `envAllowlist` 中提供必要凭证。需要代 owner 执行本地或外部事务的控制入口必须在 Host 侧完成认证并明确配置为 `owner`；`trusted` 只记录 provenance，不会提权，事件正文也不能自行改变该标签。
+
+统一能力目录查询 Connector 时会委托正式的 `inspect_mimi_capabilities` 目录按 action
+名称、描述和稳定 capability 检索。命中后返回匹配的 Connector action 以及
+`invoke_capability` 的真实调用 schema；因此 progressive disclosure 不能再把未直接
+展示的 action 误报成能力不存在。该桥接适用于所有 Connector 声明，不依赖 owner 文本、
+业务关键词、具体应用或目标路径。
 
 ## Capability owner 与跨路径防重
 

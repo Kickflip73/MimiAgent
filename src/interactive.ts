@@ -42,11 +42,19 @@ interface InteractiveTerminalOptions {
 }
 
 type Key = { name?: string; ctrl?: boolean; shift?: boolean; meta?: boolean; sequence?: string };
+type InputHandlers = {
+  onLine: (line: string, intent: InputSubmitIntent) => void;
+  onEscape: () => void;
+  onExit: () => void;
+  onModeCycle?: () => void;
+};
 
 const clearLine = '\r\x1b[2K';
 const selectionCursor = '\x1b[96m›\x1b[0m';
 const doubleEscapeWindowMs = 350;
 const maxVisibleInputRows = 10;
+const commandEnterSequences = new Set(['\x1b\r', '\x1b\n', '\x1b[13;9u', '\x1b[27;9;13~']);
+const shiftEnterSequences = new Set(['\x1b[13;2u', '\x1b[27;2;13~']);
 export const MIMI_IDLE_BLINK_INTERVAL_MS = 6_000;
 export const MIMI_IDLE_BLINK_DURATION_MS = 1_000;
 
@@ -125,14 +133,11 @@ export class InteractiveTerminal {
     this.idleBlinkDurationMs = options.idleBlinkDurationMs ?? MIMI_IDLE_BLINK_DURATION_MS;
   }
 
-  start(handlers: {
-    onLine: (line: string, intent: InputSubmitIntent) => void;
-    onEscape: () => void;
-    onExit: () => void;
-    onModeCycle?: () => void;
-  }): void {
+  start(handlers: InputHandlers): void {
     this.started = true;
-    this.pasteDataListener = (chunk) => this.handlePasteData(chunk);
+    this.pasteDataListener = (chunk) => {
+      if (!this.handleModifiedEnterData(chunk, handlers)) this.handlePasteData(chunk);
+    };
     this.input.prependListener('data', this.pasteDataListener);
     this.resizeListener = () => this.redraw();
     this.output.on('resize', this.resizeListener);
@@ -194,20 +199,7 @@ export class InteractiveTerminal {
           || key.sequence === '\x1b[27;9;13~'
           ? 'steer'
           : 'enqueue';
-        const line = (this.suggestions[this.completionIndex]?.value ?? this.buffer.join('')).trim();
-        this.cancelInputRedraw();
-        this.eraseUi();
-        this.output.write('\n');
-        this.outputOpen = false;
-        this.buffer = [];
-        this.cursor = 0;
-        this.completionIndex = 0;
-        if (line) {
-          this.history.push(line);
-          this.historyIndex = this.history.length;
-        }
-        if (!this.flushDeferredWrites()) this.draw();
-        if (line) handlers.onLine(line, intent);
+        this.submitInput(handlers, intent);
         return;
       }
       if (key.name === 'tab' && this.suggestions.length) {
@@ -488,6 +480,39 @@ export class InteractiveTerminal {
       }
     }
     if (changed) this.redrawAfterInput();
+  }
+
+  private handleModifiedEnterData(chunk: Buffer | string, handlers: InputHandlers): boolean {
+    if (this.bracketPaste) return false;
+    const value = chunk.toString();
+    if (shiftEnterSequences.has(value)) {
+      this.suppressPasteKeypress = true;
+      queueMicrotask(() => { this.suppressPasteKeypress = false; });
+      this.insertText('\n');
+      return true;
+    }
+    if (!commandEnterSequences.has(value)) return false;
+    this.suppressPasteKeypress = true;
+    queueMicrotask(() => { this.suppressPasteKeypress = false; });
+    this.submitInput(handlers, 'steer');
+    return true;
+  }
+
+  private submitInput(handlers: InputHandlers, intent: InputSubmitIntent): void {
+    const line = (this.suggestions[this.completionIndex]?.value ?? this.buffer.join('')).trim();
+    this.cancelInputRedraw();
+    this.eraseUi();
+    this.output.write('\n');
+    this.outputOpen = false;
+    this.buffer = [];
+    this.cursor = 0;
+    this.completionIndex = 0;
+    if (line) {
+      this.history.push(line);
+      this.historyIndex = this.history.length;
+    }
+    if (!this.flushDeferredWrites()) this.draw();
+    if (line) handlers.onLine(line, intent);
   }
 
   private markerPrefixLength(value: string, marker: string): number {
@@ -819,9 +844,7 @@ export class InteractiveTerminal {
     if (!this.tasks.length) return [];
     const completed = this.tasks.filter((task) => task.status === 'completed').length;
     const width = Math.max(4, (this.output.columns ?? 80) - 1);
-    if (completed === this.tasks.length) {
-      return [`\x1b[92m${this.truncateDisplay(`✓ 任务 ${completed}/${this.tasks.length} · 已全部完成`, width)}\x1b[0m`];
-    }
+    if (completed === this.tasks.length) return [];
     const runningIndex = this.tasks.findIndex((task) => task.status === 'running');
     const pendingIndex = this.tasks.findIndex((task) => task.status !== 'completed');
     const activeIndex = runningIndex >= 0 ? runningIndex : Math.max(0, pendingIndex);

@@ -1,67 +1,73 @@
 ---
-name: "pdf"
-description: "Use when tasks involve reading, creating, or reviewing PDF files where rendering and layout matter; prefer visual checks by rendering pages (Poppler) and use Python tools such as `reportlab`, `pdfplumber`, and `pypdf` for generation and extraction."
+name: pdf
+description: Use when creating, reading, merging, splitting, or extracting content from PDF files — generating reports, filling forms, extracting text, or manipulating page structure
 ---
 
+# PDF Documents
 
-# PDF Skill
+## Overview
 
-## When to use
-- Read or review PDF content where layout and visuals matter.
-- Create PDFs programmatically with reliable formatting.
-- Validate final rendering before delivery.
+Create, read, and manipulate PDF files. Use `reportlab` for generation (layout control), `pdfplumber` for extraction (text, tables), and `pypdf` for manipulation (merge, split, rotate).
 
-## Workflow
-1. Prefer visual review: render PDF pages to PNGs and inspect them.
-   - Use `pdftoppm` if available.
-   - If unavailable, install Poppler or ask the user to review the output locally.
-2. Use `reportlab` to generate PDFs when creating new documents.
-3. Use `pdfplumber` (or `pypdf`) for text extraction and quick checks; do not rely on it for layout fidelity.
-4. After each meaningful update, re-render pages and verify alignment, spacing, and legibility.
+## When to Use
 
-## Temp and output conventions
-- Use `tmp/pdfs/` for intermediate files; delete when done.
-- Write final artifacts under `output/pdf/` when working in this repo.
-- Keep filenames stable and descriptive.
+- Generating PDF reports with precise layout (tables, headers, footers)
+- Extracting text or table data from existing PDFs
+- Merging multiple PDFs into one document
+- Splitting PDFs into individual pages
+- Rotating, cropping, or reordering pages
+- Filling PDF form fields
 
-## Dependencies (install if missing)
-Prefer `uv` for dependency management.
+**Don't use for:** Simple text output (use write_file or docx), image-heavy documents (consider pptx), or scanned PDF OCR (use specialized tools).
 
-Python packages:
-```
-uv pip install reportlab pdfplumber pypdf
-```
-If `uv` is unavailable:
-```
-python3 -m pip install reportlab pdfplumber pypdf
-```
-System tools (for rendering):
-```
-# macOS (Homebrew)
-brew install poppler
+## Quick Start
 
-# Ubuntu/Debian
-sudo apt-get install -y poppler-utils
-```
+```python
+# Generate PDF
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+c = canvas.Canvas("output.pdf", pagesize=A4)
+c.drawString(100, 750, "Hello World")
+c.save()
 
-If installation isn't possible in this environment, tell the user which dependency is missing and how to install it locally.
+# Extract text
+import pdfplumber
+with pdfplumber.open("input.pdf") as pdf:
+    for page in pdf.pages:
+        print(page.extract_text())
 
-## Environment
-No required environment variables.
-
-## Rendering command
-```
-pdftoppm -png $INPUT_PDF $OUTPUT_PREFIX
+# Merge PDFs
+from pypdf import PdfWriter, PdfReader
+writer = PdfWriter()
+for path in ["doc1.pdf", "doc2.pdf"]:
+    writer.append(path)
+writer.write("merged.pdf")
 ```
 
-## Quality expectations
-- Maintain polished visual design: consistent typography, spacing, margins, and section hierarchy.
-- Avoid rendering issues: clipped text, overlapping elements, broken tables, black squares, or unreadable glyphs.
-- Charts, tables, and images must be sharp, aligned, and clearly labeled.
-- Use ASCII hyphens only. Avoid U+2011 (non-breaking hyphen) and other Unicode dashes.
-- Citations and references must be human-readable; never leave tool tokens or placeholder strings.
+## Key Operations
 
-## Final checks
-- Do not deliver until the latest PNG inspection shows zero visual or formatting defects.
-- Confirm headers/footers, page numbering, and section transitions look polished.
-- Keep intermediate files organized or remove them after final approval.
+| Task | Library | Approach |
+|------|---------|----------|
+| Generate new PDF | reportlab | `canvas.Canvas()` + `drawString/drawCentredString` |
+| Generate table layout | reportlab | `Table(data)` with `TableStyle` |
+| Extract text | pdfplumber | `page.extract_text()` |
+| Extract tables | pdfplumber | `page.extract_tables()` |
+| Merge PDFs | pypdf | `PdfWriter.append()` → `write()` |
+| Split pages | pypdf | `PdfWriter.add_page(page)` per page |
+| Rotate pages | pypdf | `page.rotate(angle)` |
+| Fill forms | pypdf | `reader.get_fields()` → `writer.update_page_form_field_values()` |
+
+## Installation
+
+```bash
+pip install reportlab pdfplumber pypdf
+```
+
+## Common Mistakes
+
+| Mistake | Fix |
+|---------|-----|
+| Text clipped at page edges | Check margins; A4 content area is ~595×842 points with margins |
+| Wrong library for task | reportlab = create, pdfplumber = read, pypdf = manipulate |
+| Non-UTF8 text in reportlab | Register TTF fonts: `pdfmetrics.registerFont(TTFont(...))` |
+| Merging preserves form data | Use `writer.add_page()` not `writer.append()` if stripping forms |

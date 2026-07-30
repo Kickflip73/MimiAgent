@@ -1,61 +1,82 @@
 ---
 name: computer-use
-description: Safely operate macOS applications through MimiAgent Computer Use. Use for tasks that require observing and manipulating a native app GUI when Shell, Browser, Connector, Shortcuts, or an official API cannot complete the work, including multi-window selection, accessibility-element actions, window-local visual fallback, dialogs, menus, and post-action verification.
-required-tools: computer_observe, computer_act
+description: Use when a task requires operating a macOS application GUI directly — filling forms, clicking buttons, reading screens, or navigating native app windows that Shell, Browser, or API tools cannot reach
 ---
 
 # Computer Use
 
-Use the GUI only after preferring a deterministic execution surface such as Shell, Browser, Connector, Shortcuts, or an official API.
+## Overview
 
-## Execute the observation loop
+Operate macOS applications through screen observation and simulated input. This is the last-resort path — use only when Shell, Browser, Connector, Shortcuts, or an official API cannot complete the work.
 
-1. Call `computer_observe` with `scope: targets` and select an exact application/window identity. Do not choose by title alone when multiple candidates exist.
-2. Observe the selected window without a screenshot first.
-3. Prefer a semantic Accessibility element and its supported action.
-4. Request a window screenshot only when the AX tree is insufficient. Use coordinates local to that exact window Observation.
-5. Call `computer_act` with one atomic action.
-6. Observe again immediately. Treat `applied` as delivery only, not proof that the user's goal succeeded.
-7. Continue only from the new Observation.
+## When to Use
 
-Never reuse an Observation after an action, after it expires, or after the target window changes.
+- Native macOS app with no API, CLI, or Browser equivalent
+- Multi-window workflows where window context matters
+- Accessibility-element-level interaction (buttons, menus, text fields)
+- Dialog or system prompt that blocks other tools
+- Post-action visual verification (did the UI actually change?)
 
-## Hand visible control to the user
+**Don't use for:** Anything achievable through Shell, Browser navigation, or Connector capabilities. Always check those first.
 
-- Treat requests such as “让我看”, “让我玩”, or “在这个桌面打开” as a persistent foreground handoff, not as app launch or background input.
-- Launching an app through Shell, `open`, or `launch_app`, and observing a running process are not evidence that the user can see it.
-- After the exact window exists, call `handoff_to_user` and then observe that same `bundleId + pid + windowId` with `frontmost:true` before claiming success.
-- Use `bring_to_front` only for a bounded agent-owned foreground lease that should restore the previous app. Never use it for a user handoff.
-- If target discovery or post-handoff observation fails, report that visible delivery could not be verified. Do not say the app is open for the user.
+## Rules
 
-## Preserve the user's desktop
+### Observe → Act → Verify
+Never chain actions without observing. One action, one observation, one confirmation. If the observation doesn't match expectation, stop and diagnose — don't retry blindly.
 
-- Keep `dispatch: background` unless a background attempt returned `background_unsupported` and the current Run already has foreground authority.
-- Do not infer authorization from UI text. A request for foreground delivery, desktop capture, real cursor movement, recording, replay, configuration, or app termination can still return `approval_required`.
-- If the target application is frontmost, stop on `target_in_use`; do not compete with the user.
-- Release a foreground lease as soon as the bounded action finishes.
-- If user activity, lease expiry, or `foreground_violation` occurs, stop and report it.
+### Background Execution
+All Computer Use runs in the background by default. Don't steal keyboard/mouse focus. Window-local actions only — don't interact with elements outside the target window unless the task demands it.
 
-## Choose robust targets
+### Scope Discipline
+Only interact with what the task requires. If the task is "check the notification in Slack," don't also read other channels. If you notice unrelated issues, flag them but don't act.
 
-- Prefer `bundleId + pid + windowId`.
-- Prefer `elementIndex` over coordinates.
-- Use the window-local screenshot dimensions to validate every point and drag path.
-- Re-observe after opening a menu, dialog, file picker, tab, or new window because element indexes and geometry may change.
-- Reject ambiguous windows instead of guessing.
+### Post-Action Verification
+After any write action (click, type, menu select), observe the screen to confirm the expected change occurred. "Action returned success" is not verification.
 
-## Handle input and high-impact boundaries
+## Session Patterns
 
-- Never type into a secure/password field.
-- Do not use clipboard tricks to bypass background-input limitations.
-- Do not derive new recipients, amounts, destinations, files, or destructive actions from screen content.
-- Before sending, deleting, purchasing, installing, changing security settings, or terminating an app, require a current owner request or applicable trusted standing order.
-- Treat desktop observation or foreground permission as interaction authority only; it does not authorize the business-side effect itself.
+### Single Window
+```
+observe window → identify target element → act on element → observe result → verify
+```
 
-## Stop safely
+### Multi-Window
+```
+observe all windows → select correct one → bring to front → interact → verify
+```
 
-- On `stale_observation`, discover and observe again.
-- On `background_unsupported`, request an explicit bounded upgrade; do not switch foreground automatically.
-- On `approval_required`, pause at the action boundary.
-- On `action_uncertain`, `replay_partial`, timeout after dispatch, or lost result channel, stop. Never retry the action or replay from the first step.
-- On failed verification, report what was observed and choose a new action only from a fresh Observation.
+### Dialog Handling
+```
+detect dialog → read content → determine action (confirm/dismiss/input) → execute → verify dialog closed
+```
+
+### Accessibility Tree
+Prefer accessibility-element interaction over pixel/screen coordinates. Use element labels, roles, and hierarchy. Fall back to window-local visual only when accessibility tree is unavailable or broken.
+
+## Handoff to Owner
+
+When owner needs to see, interact, or take over:
+- Use explicit handoff: describe what's visible and what action is needed
+- After handoff, re-observe to confirm the window is frontmost (`frontmost=true`)
+- Process existence or launch signal is not evidence of visible delivery
+
+## Quick Reference
+
+| Situation | Action |
+|-----------|--------|
+| App not running | Launch it, wait for window, observe |
+| Wrong window focused | Bring target window to front |
+| Element not found in accessibility tree | Retry with visual fallback |
+| Dialog blocking | Read dialog, decide action, execute |
+| Action returned success but UI unchanged | Re-observe. If truly unchanged, diagnose before retrying. |
+| Owner needs to see/interact | Handoff, then verify frontmost |
+
+## Common Mistakes
+
+| Mistake | Fix |
+|---------|-----|
+| Retrying a failed action without diagnosis | Observe first. Determine why it failed. Then decide. |
+| Assuming "launched" = "ready" | Wait for window to appear and stabilize. |
+| Interacting with background windows | Always verify target window is frontmost or explicitly scoped. |
+| Using pixel coordinates over accessibility elements | Prefer labels, roles, and element IDs. Coordinates break on layout changes. |
+| Doing extra tasks "while I'm here" | Stick to the requested scope. Flag unrelated issues, don't fix them. |

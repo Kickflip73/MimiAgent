@@ -14,6 +14,28 @@ export interface PlanToolOptions {
   verifyExternalReceiptRef?: (reference: string) => boolean | Promise<boolean>;
 }
 
+function planToolError(error: unknown): string {
+  const original = error !== null && typeof error === 'object' && 'originalError' in error
+    ? error.originalError
+    : undefined;
+  const issues = original !== null && typeof original === 'object' && 'issues' in original
+    && Array.isArray(original.issues)
+    ? original.issues
+      .map((issue) => {
+        if (issue === null || typeof issue !== 'object') return '';
+        const path = 'path' in issue && Array.isArray(issue.path) ? issue.path.join('.') : '';
+        const message = 'message' in issue && typeof issue.message === 'string' ? issue.message : '';
+        return [path, message].filter(Boolean).join(': ');
+      })
+      .filter(Boolean)
+    : [];
+  if (issues.length > 0) {
+    return `update_plan 参数不合法：${issues.join('；')}`;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return `update_plan 执行失败：${message}`;
+}
+
 export function createPlanTools(store: PlanStore, options: PlanToolOptions = {}): Tool[] {
   const completion = z.discriminatedUnion('kind', [
     z.object({
@@ -53,6 +75,7 @@ export function createPlanTools(store: PlanStore, options: PlanToolOptions = {})
       name: 'update_plan',
       description: '为多步骤任务创建或更新执行计划。completed 不是自由标签：内部步骤必须附带真实 evidenceRefs；外部事务必须附带正式工具返回的 action-intent:* 或 execution:* receiptRefs，并由 Host 验证为 confirmed。已完成步骤不能静默删除、重开或替换证据；需要重做时创建新的 Goal/Plan revision。简单问题无需使用。',
       parameters: z.object({ steps: z.array(step).max(20) }),
+      errorFunction: (_context, error) => planToolError(error),
       execute: async ({ steps }) => {
         for (const candidate of steps) {
           if (candidate.status !== 'completed' || candidate.completion?.kind !== 'external_action') continue;

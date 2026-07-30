@@ -917,7 +917,7 @@ test('Daxiang adapter baselines history, emits new bounded events, and advances 
   assert.doesNotMatch(await readFile(stateFile, 'utf8'), /hello|new message|Owner Self/);
 });
 
-test('Daxiang health automatically rebinds one safe background tab without foreground activation', async () => {
+test('Daxiang health fails closed when its dedicated background tab is missing', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'daxiang-recovery-'));
   const diagnosticsFile = path.join(root, 'diagnostics.json');
   class RecoverableDriver extends FakeDriver {
@@ -925,8 +925,7 @@ test('Daxiang health automatically rebinds one safe background tab without foreg
 
     override async locate(_marker?: string, allowBind = false): Promise<Record<string, unknown>> {
       this.locateModes.push(allowBind);
-      if (!allowBind) throw new Error('Daxiang bound tab is missing or ambiguous');
-      return { tab: { active: false } };
+      throw new Error('Daxiang bound tab is missing or ambiguous');
     }
   }
   const driver = new RecoverableDriver();
@@ -939,13 +938,13 @@ test('Daxiang health automatically rebinds one safe background tab without foreg
   });
 
   const health = await adapter.health();
-  assert.equal(health.accountVerified, true);
-  assert.equal(health.recoveryAttempted, true);
-  assert.equal(health.recovered, true);
-  assert.deepEqual(driver.locateModes, [false, true]);
+  assert.equal(health.accountVerified, false);
+  assert.equal(health.backgroundSafe, false);
+  assert.equal(health.errorCategory, 'dedicated_tab_unavailable');
+  assert.deepEqual(driver.locateModes, [false]);
   const diagnostics = JSON.parse(await readFile(diagnosticsFile, 'utf8')) as Record<string, unknown>;
-  assert.equal(diagnostics.recoveryAttempted, true);
-  assert.equal(diagnostics.recovered, true);
+  assert.equal(diagnostics.backgroundSafe, false);
+  assert.equal(diagnostics.errorCategory, 'dedicated_tab_unavailable');
 });
 
 test('Daxiang send clicks once and reports observed rather than confirmed', async () => {
@@ -1074,15 +1073,16 @@ test('Daxiang page bridge has no credential access or foreground activation path
   new Function(bridge);
 });
 
-test('Daxiang Chrome driver provisions its own inactive tab and never binds a visible tab', async () => {
+test('Daxiang Chrome driver never provisions or activates a user tab during background work', async () => {
   const adapterSource = await readFile(
     fileURLToPath(new URL('../examples/connectors/personal-message/daxiang-web.mjs', import.meta.url)),
     'utf8',
   );
-  assert.match(adapterSource, /tabs\.push\(app\.Tab\(\{ url: 'about:blank' \}\)\)/);
-  assert.match(adapterSource, /createdTab\.url = input\.origin/);
-  assert.match(adapterSource, /hostWindow\.activeTabIndex = previousActiveIndex/);
+  assert.doesNotMatch(adapterSource, /about:blank/);
+  assert.doesNotMatch(adapterSource, /tabs\.push/);
+  assert.doesNotMatch(adapterSource, /activeTabIndex\s*=/);
+  assert.doesNotMatch(adapterSource, /System Events/);
+  assert.doesNotMatch(adapterSource, /chromeFrontmost/);
   assert.match(adapterSource, /if \(target\.item\.active\)/);
-  assert.doesNotMatch(adapterSource, /active && target\.item\.chromeFrontmost/);
-  assert.doesNotMatch(adapterSource, /originCandidates\.length !== 1/);
+  assert.doesNotMatch(adapterSource, /allowBind/);
 });

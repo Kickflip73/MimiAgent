@@ -11,6 +11,10 @@ import {
   sanitizeSensitiveData,
   sanitizeSensitiveText,
 } from '../core/data-sanitizer.js';
+import {
+  modelTargetSchema,
+  type ModelTarget,
+} from '../core/model-routing.js';
 import type { EventCancelResult } from './dispatcher.js';
 import type { ImmutableEvent, ReplyRoute, TaskRecord } from './types.js';
 import { MimiStore } from './store.js';
@@ -33,6 +37,8 @@ const delegationSchema = z.object({
     .describe('single 由一个 Task Lead 完成；可安全拆分的大型任务才使用 team'),
   executor: z.enum(['mimi', 'codex']).default('mimi')
     .describe('mimi（默认）由 MimiAgent 执行；codex 由独立 Codex CLI 进程自主执行，MimiAgent 只登记、启动和追踪'),
+  modelTarget: modelTargetSchema.optional()
+    .describe('仅当用户明确指定 Mimi 后台任务模型时填写精确 providerId/modelId；省略时按 background.default 场景路由。只适用于 executor=mimi'),
   workspaceAccess: z.enum(['read', 'write']).default('write')
     .describe('write（默认）可修改工作区且独占执行；read 只读工作区，可与其他只读后台任务并行'),
   requiredCapabilities: z.array(
@@ -81,6 +87,9 @@ function taskPrompt(input: z.infer<typeof delegationSchema>): string {
     input.context ? `\n## 必要上下文\n${input.context}` : '',
     `\n## 执行策略\n${input.strategy}`,
     `\n## 执行器\n${input.executor}`,
+    input.modelTarget
+      ? `\n## 指定模型\n${input.modelTarget.providerId}/${input.modelTarget.modelId}`
+      : '',
     `\n## 工作区访问\n${input.workspaceAccess}`,
     `\n## 必需能力\n${input.requiredCapabilities.join(', ')}`,
   ].filter(Boolean).join('\n');
@@ -116,6 +125,7 @@ export interface BackgroundTaskSummary {
   objective?: string;
   strategy?: string;
   executor: 'mimi' | 'codex';
+  requestedModelTarget?: ModelTarget;
   workspaceAccess: 'read' | 'write';
   sessionId?: string;
   originSessionId?: string;
@@ -223,6 +233,11 @@ export function backgroundTaskSummary(task: TaskRecord): BackgroundTaskSummary {
   const payload = task.objective && typeof task.objective === 'object'
     ? task.objective as Record<string, unknown>
     : {};
+  const modelProfile = payload.modelProfile && typeof payload.modelProfile === 'object'
+    && !Array.isArray(payload.modelProfile)
+    ? payload.modelProfile as Record<string, unknown>
+    : {};
+  const requestedModelTarget = modelTargetSchema.safeParse(modelProfile.modelTarget);
   const retrying = task.status === 'queued' || task.status === 'running';
   return {
     taskId: task.id,
@@ -232,6 +247,7 @@ export function backgroundTaskSummary(task: TaskRecord): BackgroundTaskSummary {
       : undefined,
     strategy: typeof payload.strategy === 'string' ? payload.strategy : undefined,
     executor: task.executor === 'codex' ? 'codex' : 'mimi',
+    requestedModelTarget: requestedModelTarget.success ? requestedModelTarget.data : undefined,
     workspaceAccess: task.workspaceAccess === 'read' ? 'read' : 'write',
     sessionId: task.sessionKey,
     originSessionId: typeof payload.originSessionId === 'string' ? payload.originSessionId : undefined,
@@ -382,6 +398,11 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
       parameters: delegationSchema,
       execute: async (input) => {
         const normalized = delegationSchema.parse(input);
+        if (normalized.executor === 'codex' && normalized.modelTarget) {
+          throw new Error(
+            'modelTarget 只适用于 executor=mimi；Codex executor 不使用 Mimi Provider registry',
+          );
+        }
         const availableCapabilities = delegatedCapabilities(
           normalized,
           context.connectorCapabilities ?? [],
@@ -423,6 +444,9 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
             ...(normalized.context ? { context: normalized.context } : {}),
             strategy: normalized.strategy,
             executor: normalized.executor,
+            ...(normalized.modelTarget
+              ? { modelProfile: { modelTarget: normalized.modelTarget } }
+              : {}),
             workspaceAccess: normalized.workspaceAccess,
             requiredCapabilities: normalized.requiredCapabilities,
             ...(context.workspaceRoot ? { workspaceRoot: context.workspaceRoot } : {}),
@@ -440,6 +464,7 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
           status: inserted.status,
           workspaceAccess: normalized.workspaceAccess,
           executor: normalized.executor,
+          requestedModelTarget: normalized.modelTarget,
           accepted: true,
           message: '后台任务已持久化并接手；完成、失败或需要输入时 MimiAgent 会主动通知。',
         };

@@ -361,6 +361,27 @@ function runOpenCli(args, options = {}) {
   });
 }
 
+async function inspectOpenCliStatus() {
+  const result = await runOpenCli(
+    ['daemon', 'status'],
+    { timeoutMs: Math.min(commandTimeoutMs, 15_000) },
+  );
+  const text = typeof result?.text === 'string' ? result.text : '';
+  const daemonRunning = /^Daemon:\s+running\b/im.test(text);
+  const extensionConnected = /^Extension:\s+connected\b/im.test(text);
+  if (!daemonRunning || !extensionConnected) {
+    throw new OpenCliError(
+      `OpenCLI is unavailable: daemon=${daemonRunning ? 'running' : 'not_running'}, `
+        + `extension=${extensionConnected ? 'connected' : 'disconnected'}`,
+      false,
+    );
+  }
+  return {
+    daemon: 'running',
+    extension: 'connected',
+  };
+}
+
 function browserArgs(session, command) {
   return ['browser', session.opencliSession, ...command];
 }
@@ -420,11 +441,9 @@ async function createSession(kind, target, payload) {
   };
   sessions.set(ref, session);
   if (kind === 'owned') {
-    if (payload.window !== undefined
-      && payload.window !== 'background'
-      && payload.window !== 'foreground') {
+    if (payload.window !== undefined && payload.window !== 'background') {
       sessions.delete(ref);
-      throw new Error('payload.window must be background or foreground');
+      throw new Error('payload.window must be background; foreground browser sessions are disabled');
     }
     try {
       const result = await runOpenCli([
@@ -433,7 +452,7 @@ async function createSession(kind, target, payload) {
         'open',
         url(payload.url),
         '--window',
-        payload.window === 'foreground' ? 'foreground' : 'background',
+        'background',
       ], { uncertainOnFailure: true });
       return {
         sessionRef: ref,
@@ -771,8 +790,13 @@ async function execute(message) {
   if (!ACTIONS.has(message.action)) throw new Error(`unsupported action: ${message.action}`);
   const payload = payloadObject(message.payload);
   if (message.action === 'doctor') {
-    const result = await runOpenCli(['doctor'], { timeoutMs: Math.min(commandTimeoutMs, 15_000) });
-    return { type: 'action_result', id: message.id, ok: true, result: { ...result, ready: true } };
+    const status = await inspectOpenCliStatus();
+    return {
+      type: 'action_result',
+      id: message.id,
+      ok: true,
+      result: { ...status, ready: true, probe: 'daemon_status' },
+    };
   }
   if (message.action === 'read_url') {
     const result = await readUrl(message.target, payload);
@@ -848,7 +872,7 @@ process.stdin.on('data', (chunk) => {
 
 async function reportReadiness() {
   try {
-    await runOpenCli(['doctor'], { timeoutMs: Math.min(commandTimeoutMs, 15_000) });
+    await inspectOpenCliStatus();
     write({
       type: 'status',
       inbound: 'unavailable',
@@ -858,7 +882,7 @@ async function reportReadiness() {
       backgroundSafe: true,
     });
   } catch (error) {
-    process.stderr.write(`[browser] OpenCLI doctor failed: ${errorText(error)}\n`);
+    process.stderr.write(`[browser] OpenCLI status check failed: ${errorText(error)}\n`);
     write({
       type: 'status',
       inbound: 'unavailable',
