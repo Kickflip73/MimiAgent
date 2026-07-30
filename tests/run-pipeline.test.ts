@@ -182,11 +182,13 @@ test('progressive gateway discovers and invokes every authorized capability fami
     make('list_skills', 'skill-ok'),
     make('custom_mcp_lookup', 'mcp-ok'),
     make('invoke_capability', 'connector-ok'),
+    make('send_owner_message', 'owner-message-ok'),
   ];
   const gateway = builder.progressiveGateway(authorized);
   const modelFacing = builder.modelFacing([...authorized, ...gateway]);
   assert.ok(modelFacing.some((candidate) => candidate.name === 'inspect_runtime_capabilities'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'invoke_runtime_capability'));
+  assert.equal(modelFacing.some((candidate) => candidate.name === 'send_owner_message'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'web_search'), false);
   const inspect = gateway.find((candidate) => candidate.name === 'inspect_runtime_capabilities') as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
@@ -203,6 +205,7 @@ test('progressive gateway discovers and invokes every authorized capability fami
     ['skill', 'list_skills', 'skill-ok'],
     ['mcp', 'custom_mcp_lookup', 'mcp-ok'],
     ['connector', 'invoke_capability', 'connector-ok'],
+    ['connector', 'send_owner_message', 'owner-message-ok'],
   ]) {
     const catalog = await inspect.invoke(context, JSON.stringify({ name }), {});
     assert.match(JSON.stringify(catalog), new RegExp(`"source":"${source}"`));
@@ -219,6 +222,64 @@ test('progressive gateway discovers and invokes every authorized capability fami
     )),
     /未授权/,
   );
+});
+
+test('progressive snapshot indexes every hidden capability family without disclosing schemas', () => {
+  const builder = new ToolSetBuilder();
+  const make = (name: string, description = `SECRET_DESCRIPTION_${name}`) => sdkTool({
+    name,
+    description,
+    parameters: z.object({ secret: z.string().optional() }),
+    execute: async () => name,
+  });
+  const visible = [
+    make('inspect_runtime_capabilities'),
+    make('invoke_runtime_capability'),
+  ];
+  const hidden = [
+    make('http_request'),
+    make('computer_observe'),
+    make('memory_read'),
+    make('show_goal'),
+    make('use_skill'),
+    make('send_owner_message'),
+    ...Array.from({ length: 20 }, (_, index) => make(`mcp_fixture__action_${String(index).padStart(2, '0')}`)),
+  ];
+  const snapshot = builder.snapshot({
+    runId: 'progressive-index',
+    policyRevision: 'full-owner:general',
+    tools: visible,
+    authorizedTools: [...visible, ...hidden],
+    observedAt: '2026-07-30T00:00:00.000Z',
+  });
+
+  assert.equal(snapshot.hiddenToolCount, hidden.length);
+  assert.deepEqual(
+    snapshot.hiddenTools.map((group) => ({
+      source: group.source,
+      count: group.count,
+      truncated: group.truncated,
+    })),
+    [
+      { source: 'builtin', count: 1, truncated: false },
+      { source: 'computer', count: 1, truncated: false },
+      { source: 'connector', count: 1, truncated: false },
+      { source: 'goal', count: 1, truncated: false },
+      { source: 'mcp', count: 20, truncated: true },
+      { source: 'memory', count: 1, truncated: false },
+      { source: 'skill', count: 1, truncated: false },
+    ],
+  );
+  assert.deepEqual(
+    snapshot.hiddenTools.find((group) => group.source === 'connector')?.names,
+    ['send_owner_message'],
+  );
+  assert.equal(snapshot.hiddenTools.find((group) => group.source === 'mcp')?.names.length, 12);
+  const rendered = renderEffectiveCapabilitySnapshot(snapshot);
+  assert.match(rendered, /send_owner_message/);
+  assert.match(rendered, /inspect_runtime_capabilities/);
+  assert.match(rendered, /Connector 摘要只含公开 action/);
+  assert.doesNotMatch(rendered, /SECRET_DESCRIPTION|secret/);
 });
 
 test('real MCP tools are host-materialized behind the gateway with exact schema and ledger semantics', async () => {
@@ -334,6 +395,7 @@ test('capability snapshot is deterministic and distinguishes readiness terminolo
     runId: 'run-fixed',
     policyRevision: 'guarded:v1',
     tools: [tool('b'), tool('a'), tool('a')],
+    authorizedTools: [tool('b'), tool('a'), tool('hidden-host-tool')],
     skills: ['skill-b', 'skill-a'],
     observedAt: '2026-07-27T00:00:00.000Z',
     items: [{
@@ -354,6 +416,8 @@ test('capability snapshot is deterministic and distinguishes readiness terminolo
   assert.equal(first.snapshotDigest, second.snapshotDigest);
   assert.equal(first.toolSetDigest, second.toolSetDigest);
   assert.deepEqual(first.tools, ['a', 'b']);
+  assert.equal(first.hiddenToolCount, 1);
+  assert.deepEqual(first.hiddenTools[0]?.names, ['hidden-host-tool']);
   assert.equal(first.items.find((item) => item.kind === 'connector')?.freshness, 'unknown');
   const rendered = renderEffectiveCapabilitySnapshot(first);
   assert.match(rendered, /desktop\.items\.open-visible/);

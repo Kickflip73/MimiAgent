@@ -50,6 +50,8 @@ for (const scenario of [
     });
 
     assert.deepEqual(snapshot.tools, [...request.toolNames].sort());
+    assert.equal(snapshot.hiddenToolCount, 0);
+    assert.deepEqual(snapshot.hiddenTools, []);
     assert.deepEqual(
       snapshot.items
         .filter((item) => item.kind === 'tool' && item.availability === 'available')

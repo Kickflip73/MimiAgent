@@ -36,6 +36,14 @@ export type CapabilityCoverage =
   | 'metadata_only'
   | 'unavailable'
   | 'unknown';
+export type CapabilitySource = 'builtin' | 'mcp' | 'computer' | 'memory' | 'goal' | 'skill' | 'connector';
+
+export interface ProgressiveCapabilityGroup {
+  source: CapabilitySource;
+  count: number;
+  names: readonly string[];
+  truncated: boolean;
+}
 
 export interface EffectiveCapabilityItem {
   id: string;
@@ -66,6 +74,8 @@ export interface EffectiveCapabilitySnapshot {
   snapshotDigest: string;
   observedAt: string;
   tools: readonly string[];
+  hiddenToolCount: number;
+  hiddenTools: readonly Readonly<ProgressiveCapabilityGroup>[];
   skills: readonly string[];
   items: readonly Readonly<EffectiveCapabilityItem>[];
 }
@@ -74,6 +84,7 @@ export interface EffectiveCapabilitySnapshotInput {
   runId: string;
   policyRevision: string;
   toolNames: readonly string[];
+  hiddenTools?: readonly ProgressiveCapabilityGroup[];
   skillNames?: readonly string[];
   observedAt?: string;
   items?: readonly EffectiveCapabilityItem[];
@@ -91,6 +102,16 @@ export function createEffectiveCapabilitySnapshot(
   input: EffectiveCapabilitySnapshotInput,
 ): Readonly<EffectiveCapabilitySnapshot> {
   const tools = canonicalNames(input.toolNames);
+  const hiddenTools = [...(input.hiddenTools ?? [])]
+    .map((group) => ({
+      source: group.source,
+      count: group.count,
+      names: Object.freeze(canonicalNames(group.names)),
+      truncated: group.truncated,
+    }))
+    .filter((group) => group.count > 0)
+    .sort((left, right) => left.source.localeCompare(right.source));
+  const hiddenToolCount = hiddenTools.reduce((total, group) => total + group.count, 0);
   const skills = canonicalNames(input.skillNames ?? []);
   const explicit = new Map((input.items ?? []).map((item) => [`${item.kind}:${item.id}`, item]));
   const generated: EffectiveCapabilityItem[] = [
@@ -125,6 +146,8 @@ export function createEffectiveCapabilitySnapshot(
     toolSetDigest,
     observedAt: input.observedAt ?? new Date().toISOString(),
     tools,
+    hiddenToolCount,
+    hiddenTools,
     skills,
     items: generated,
   };
@@ -132,6 +155,7 @@ export function createEffectiveCapabilitySnapshot(
     ...snapshotCore,
     snapshotDigest: digest(snapshotCore),
     tools: Object.freeze(tools),
+    hiddenTools: Object.freeze(hiddenTools.map((group) => Object.freeze(group))),
     skills: Object.freeze(skills),
     items: Object.freeze(generated.map((item) => Object.freeze({ ...item }))),
   };
@@ -153,14 +177,19 @@ export function renderEffectiveCapabilitySnapshot(
       capabilities: item.capabilities,
       actionCount: item.actionCount,
     }));
-  if (routedItems.length === 0) return '';
+  if (routedItems.length === 0 && snapshot.hiddenToolCount === 0) return '';
   return [
     '## Effective Capability Snapshot',
-    '这是本轮开始前由可信宿主生成的 Connector 摘要。需要执行时先用 inspect_mimi_capabilities 按 connector 或 capability 精确查询 action，再用 invoke_capability 调用；unavailable/unknown 不得尝试启用 Connector 或猜测替代路线。',
+    '可信 Host 统一能力索引：hiddenTools 已授权、仅隐藏 schema；使用前以 inspect_runtime_capabilities 按 source/name/query 查询，再由 invoke_runtime_capability 调用。Connector 摘要只含公开 action，缺项不代表其他 Host 能力不存在；判定不可用或换路前必须查统一目录，unavailable/unknown 禁止猜替代路线。',
     JSON.stringify({
       schemaVersion: snapshot.schemaVersion,
       policyRevision: snapshot.policyRevision,
       snapshotDigest: snapshot.snapshotDigest,
+      ...(snapshot.hiddenToolCount > 0 ? { progressiveDisclosure: {
+        visibleToolCount: snapshot.tools.length,
+        hiddenToolCount: snapshot.hiddenToolCount,
+        hiddenTools: snapshot.hiddenTools,
+      } } : {}),
       routedItems,
     }),
   ].join('\n');

@@ -153,7 +153,6 @@ test('safely checkpoints at the configured model-call limit without dropping pro
     historyLimit: 40,
     contextWindow: 128_000,
     maxTurns: 2,
-    maxRunInputTokens: 500_000,
   }, 'limited');
   const session = (agent as unknown as { session: FileSession }).session;
   const runner = (agent as unknown as {
@@ -205,18 +204,18 @@ test('safely checkpoints at the configured model-call limit without dropping pro
   };
 
   try {
-    await assert.rejects(agent.stream('bounded work'), /达到 2 次模型调用上限/);
+    await assert.rejects(agent.stream('bounded work'), /达到操作员配置的 2 次模型调用上限/);
     const checkpoint = await session.getCheckpoint();
     assert.equal(checkpoint?.status, 'interrupted');
-    assert.match(checkpoint?.error ?? '', /达到 2 次模型调用上限/);
+    assert.match(checkpoint?.error ?? '', /达到操作员配置的 2 次模型调用上限/);
     assertNoOrphanToolUnits(await session.getItems());
   } finally {
     await agent.close();
   }
 });
 
-test('safely checkpoints before cumulative model input exceeds the configured limit', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-context-input-limit-'));
+test('does not stop a run based on cumulative model input or call count by default', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-context-unlimited-run-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const agent = await MimiAgent.create({
     provider: 'openai',
@@ -226,9 +225,8 @@ test('safely checkpoints before cumulative model input exceeds the configured li
     mcpConfig: path.join(root, 'mcp.json'),
     historyLimit: 40,
     contextWindow: 128_000,
-    maxTurns: 32,
-    maxRunInputTokens: 100,
-  }, 'input-limited');
+    maxTurns: null,
+  }, 'unlimited');
   const session = (agent as unknown as { session: FileSession }).session;
   const runner = (agent as unknown as {
     runner: {
@@ -254,17 +252,21 @@ test('safely checkpoints before cumulative model input exceeds the configured li
       await options.session.getItems(),
       [],
     );
-    await options.callModelInputFilter({
-      modelData: { input: modelInput, instructions: runtimeAgent.instructions },
-    });
+    let cumulativeEstimate = 0;
+    for (let call = 0; call < 12; call += 1) {
+      const view = await options.callModelInputFilter({
+        modelData: { input: modelInput, instructions: runtimeAgent.instructions },
+      });
+      cumulativeEstimate += estimateTokens(view.input) + estimateTokens(view.instructions ?? '');
+    }
+    assert.ok(cumulativeEstimate > 500_000);
     return {};
   };
 
   try {
-    await assert.rejects(agent.stream('bounded work'), /累计模型输入估算 \d+ tokens 超过 100 上限/);
+    await agent.stream('x'.repeat(200_000));
     const checkpoint = await session.getCheckpoint();
-    assert.equal(checkpoint?.status, 'interrupted');
-    assert.match(checkpoint?.error ?? '', /累计模型输入估算 \d+ tokens 超过 100 上限/);
+    assert.notEqual(checkpoint?.status, 'interrupted');
   } finally {
     await agent.close();
   }
@@ -301,7 +303,7 @@ test('synthetic tool long run reduces cumulative model input by at least 70%', (
   assert.ok(reduction >= 0.7, `expected >=70% reduction, got ${(reduction * 100).toFixed(2)}%`);
 });
 
-test('real 1M view consumes each tool result once and stays below the 500K run cap', () => {
+test('real 1M view consumes each tool result once and avoids cumulative context amplification', () => {
   const manager = new ContextManager(200, 1_048_576);
   const capacity = 962_068;
   const history: AgentInputItem[] = [

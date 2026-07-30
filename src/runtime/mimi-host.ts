@@ -36,6 +36,8 @@ interface SessionActor {
   agent: MimiAgent;
   runs: HostedRunExecutor;
   lane: Promise<void>;
+  activeRuns: number;
+  inspections: Set<Promise<unknown>>;
   pending: number;
   lastUsed: number;
 }
@@ -136,6 +138,8 @@ export class MimiHost {
       agent,
       runs,
       lane: Promise.resolve(),
+      activeRuns: 0,
+      inspections: new Set(),
       pending: 0,
       lastUsed: Date.now(),
     };
@@ -179,42 +183,47 @@ export class MimiHost {
       ? AbortSignal.any([request.signal, controller.signal])
       : controller.signal;
 
-    return this.actorFor(request.sessionId, request.workspaceRoot).then((actor) => this.enqueue(actor, async () => {
-      const release = await this.slots.acquire(signal);
-      try {
-        if (signal.aborted) throw signal.reason ?? new Error(`Execution ${executionId} 已取消`);
-        await this.ensureWorkspace(actor, request.workspaceRoot);
-        await this.selectSession(actor.agent, request.sessionId);
-        signal.throwIfAborted();
-        const receipt = request.options?.executionKey
-          ? await actor.agent.completedExecution?.(request.sessionId, request.options.executionKey)
-          : undefined;
-        signal.throwIfAborted();
-        if (receipt) {
-          const recovered = {
-            answer: receipt.answer,
-            effects: receipt.effects ?? [],
-            finalization: receipt.finalization,
-            usage: receipt.usage,
-            delivery: receipt.delivery,
-          } satisfies AgentRunResult;
-          await this.observe(observer.onStart, request.input);
+    return this.actorFor(request.sessionId, request.workspaceRoot).then((actor) => {
+      actor.activeRuns += 1;
+      return this.enqueue(actor, async () => {
+        const release = await this.slots.acquire(signal);
+        try {
+          if (signal.aborted) throw signal.reason ?? new Error(`Execution ${executionId} 已取消`);
+          await this.ensureWorkspace(actor, request.workspaceRoot);
+          await this.selectSession(actor.agent, request.sessionId);
           signal.throwIfAborted();
-          await this.observe(observer.onComplete, recovered);
+          const receipt = request.options?.executionKey
+            ? await actor.agent.completedExecution?.(request.sessionId, request.options.executionKey)
+            : undefined;
           signal.throwIfAborted();
-          return recovered;
+          if (receipt) {
+            const recovered = {
+              answer: receipt.answer,
+              effects: receipt.effects ?? [],
+              finalization: receipt.finalization,
+              usage: receipt.usage,
+              delivery: receipt.delivery,
+            } satisfies AgentRunResult;
+            await this.observe(observer.onStart, request.input);
+            signal.throwIfAborted();
+            await this.observe(observer.onComplete, recovered);
+            signal.throwIfAborted();
+            return recovered;
+          }
+          const result = await actor.runs.execute({
+            input: request.input,
+            signal,
+            options: request.options,
+          }, observer);
+          signal.throwIfAborted();
+          return result;
+        } finally {
+          release();
         }
-        const result = await actor.runs.execute({
-          input: request.input,
-          signal,
-          options: request.options,
-        }, observer);
-        signal.throwIfAborted();
-        return result;
-      } finally {
-        release();
-      }
-    }, request.sessionId)).finally(() => this.pending.delete(executionId));
+      }, request.sessionId).finally(() => {
+        actor.activeRuns = Math.max(0, actor.activeRuns - 1);
+      });
+    }).finally(() => this.pending.delete(executionId));
   }
 
   mutate<T>(
@@ -255,11 +264,20 @@ export class MimiHost {
 
   snapshot(sessionId: string): Promise<AgentSessionSnapshot> {
     this.assertOpen();
-    return this.actorFor(sessionId).then((actor) => this.enqueue(
-      actor,
-      () => actor.agent.sessionSnapshot(sessionId),
-      sessionId,
-    ));
+    return this.actorFor(sessionId).then((actor) => {
+      if (actor.activeRuns === 0) {
+        return this.enqueue(
+          actor,
+          () => actor.agent.sessionSnapshot(sessionId),
+          sessionId,
+        );
+      }
+      return this.inspect(
+        actor,
+        () => actor.agent.sessionSnapshot(sessionId),
+        sessionId,
+      );
+    });
   }
 
   listSessionSummaries(): Promise<SessionSummary[]> {
@@ -286,6 +304,7 @@ export class MimiHost {
     }
     const actors = await Promise.all([...new Set(this.actors.values())]);
     await Promise.all(actors.map((actor) => actor.lane));
+    await Promise.all(actors.flatMap((actor) => [...actor.inspections]));
     const agents = [...new Set([...actors.map((actor) => actor.agent), this.agent])];
     await Promise.all(agents.map((runtime) => runtime.close()));
     await Promise.all([...this.actorClosures]);
@@ -309,6 +328,8 @@ export class MimiHost {
         agent: runtime.agent,
         runs: runtime.runs ?? new AgentRunService(runtime.agent),
         lane: Promise.resolve(),
+        activeRuns: 0,
+        inspections: new Set(),
         pending: 0,
         lastUsed: Date.now(),
       } satisfies SessionActor;
@@ -339,6 +360,7 @@ export class MimiHost {
     const previous = actor.agent;
     const runtime = await this.options.createSessionRuntime(actor.sessionId, resolved);
     runtime.agent.bindSessionActor(actor.sessionId);
+    await Promise.allSettled([...actor.inspections]);
     actor.workspaceRoot = resolved;
     actor.agent = runtime.agent;
     actor.runs = runtime.runs ?? new AgentRunService(runtime.agent);
@@ -355,6 +377,23 @@ export class MimiHost {
     const task = actor.lane.then(operation, operation);
     actor.lane = task.then(() => undefined, () => undefined);
     return task.finally(() => {
+      actor.pending = Math.max(0, actor.pending - 1);
+      actor.lastUsed = Date.now();
+      this.evictIdleActors();
+    });
+  }
+
+  private inspect<T>(
+    actor: SessionActor,
+    operation: () => Promise<T>,
+    reservationSessionId = actor.sessionId,
+  ): Promise<T> {
+    actor.pending += 1;
+    this.releaseActorReservation(reservationSessionId);
+    const inspection = Promise.resolve().then(operation);
+    actor.inspections.add(inspection);
+    return inspection.finally(() => {
+      actor.inspections.delete(inspection);
       actor.pending = Math.max(0, actor.pending - 1);
       actor.lastUsed = Date.now();
       this.evictIdleActors();

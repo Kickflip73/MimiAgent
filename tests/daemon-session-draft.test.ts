@@ -232,7 +232,6 @@ test('a draft can list and select an existing Session without materializing itse
       id: 'existing', title: 'MimiAgent 会话管理', preview: '继续讨论',
       updatedAt: new Date(0).toISOString(), turns: 2, recoverable: false,
     }];
-    if (method === 'chat.invoke') return { sessionId: 'existing' };
     throw new Error(`unexpected method: ${method}`);
   });
   await server.start();
@@ -254,7 +253,7 @@ test('a draft can list and select an existing Session without materializing itse
     await target.switchSession('existing');
     assert.equal(target.currentSessionId, 'existing');
     assert.equal(target.sessionReady, true);
-    assert.deepEqual(methods, ['chat.bootstrap', 'chat.sessions', 'chat.sessions', 'chat.invoke']);
+    assert.deepEqual(methods, ['chat.bootstrap', 'chat.sessions', 'chat.sessions']);
   } finally {
     await server.close();
   }

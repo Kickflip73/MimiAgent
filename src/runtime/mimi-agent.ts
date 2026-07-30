@@ -1486,6 +1486,7 @@ export class MimiAgent {
         runPolicy ? 'run-policy' : 'default-policy',
       ].join(':'),
       tools: modelTools,
+      authorizedTools: allTools,
       skills: availableSkillNames,
       items: [
         ...(options?.capabilityItems ?? []),
@@ -1725,17 +1726,13 @@ export class MimiAgent {
         ? [...prepareRunHistory(sessionHistory), ...currentInput]
         : currentInput,
     );
-    const modelCallLimit = binding?.maxTurns ?? this.config.maxTurns ?? 32;
-    const runInputLimit = this.config.maxRunInputTokens ?? 500_000;
+    const modelCallLimit = binding?.maxTurns ?? this.config.maxTurns;
     let modelCalls = initialSemanticUsages.reduce((total, usage) => total + usage.requests, 0);
-    let cumulativeModelInputTokens = initialSemanticUsages
-      .reduce((total, usage) => total + usage.inputTokens, 0);
     let runCompressionEvents = 0;
     let runUsage: { add(usage: Usage): void } | undefined;
     const pendingSemanticUsages: Usage[] = [...initialSemanticUsages];
     const recordSemanticUsage = (usage: Usage): void => {
       modelCalls += usage.requests;
-      cumulativeModelInputTokens += usage.inputTokens;
       if (runUsage) runUsage.add(usage);
       else pendingSemanticUsages.push(usage);
     };
@@ -1755,8 +1752,7 @@ export class MimiAgent {
         + estimateTokens(modelData.instructions ?? '');
       if (rawViewTokens / Math.max(1, budget.inputBudget) >= 0.7
         && semanticSummarizer
-        && modelCalls < modelCallLimit
-        && cumulativeModelInputTokens + rawViewTokens <= runInputLimit) {
+        && (modelCallLimit === null || modelCalls < modelCallLimit)) {
         try {
           semanticSnapshot = await context.prepareSemanticSnapshot(modelData.input, semanticSummarizer, {
             persistedSnapshot: persistedContextSnapshot,
@@ -1793,21 +1789,16 @@ export class MimiAgent {
           seedSnapshot: contextSnapshotSeed,
         },
       );
-      const requestInputTokens = view.effectiveTokens + budget.toolSchemaTokens;
-      const projectedInputTokens = cumulativeModelInputTokens + requestInputTokens;
-      if (modelCalls >= modelCallLimit || projectedInputTokens > runInputLimit) {
-        const reason = modelCalls >= modelCallLimit
-          ? `达到 ${modelCallLimit} 次模型调用上限`
-          : `累计模型输入估算 ${projectedInputTokens} tokens 超过 ${runInputLimit} 上限`;
+      if (modelCallLimit !== null && modelCalls >= modelCallLimit) {
+        const reason = `达到操作员配置的 ${modelCallLimit} 次模型调用上限`;
         await run.session.updateRunProgress(
-          '已安全暂停：长跑保护',
+          '已安全暂停：操作员限制',
           `${reason}；canonical Session 和完整工具协议单元已保留，uncertain 动作不得重放`,
           run.runId,
         );
         throw new RunContextLimitReachedError(reason);
       }
       modelCalls += 1;
-      cumulativeModelInputTokens = projectedInputTokens;
       runCompressionEvents += view.records.length;
       this.lastCompressionCount = runCompressionEvents;
       if (canReadSessionContext && view.consumedArtifactRefs.length) {

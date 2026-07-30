@@ -10,8 +10,10 @@ import {
 } from '../tool-policy.js';
 import {
   createEffectiveCapabilitySnapshot,
+  type CapabilitySource,
   type EffectiveCapabilityItem,
   type EffectiveCapabilitySnapshot,
+  type ProgressiveCapabilityGroup,
 } from './capability-resolver.js';
 import { toolDescriptor } from '../tool-policy.js';
 
@@ -23,7 +25,9 @@ type InvokableTool = Tool & {
   ) => Promise<unknown>;
 };
 
-function capabilitySource(name: string): 'builtin' | 'mcp' | 'computer' | 'memory' | 'goal' | 'skill' | 'connector' {
+const MAX_INDEXED_NAMES_PER_SOURCE = 12;
+
+function capabilitySource(name: string): CapabilitySource {
   if (name.startsWith('computer_')) return 'computer';
   if (name.startsWith('memory_') || ['remember', 'forget'].includes(name)) return 'memory';
   if (name.includes('goal') || name.includes('plan') || ['prepare_task', 'finish_task'].includes(name)) return 'goal';
@@ -69,6 +73,32 @@ export function withoutPersonalMessageFallbackHistory(items: AgentInputItem[]): 
 }
 
 export class ToolSetBuilder {
+  hiddenCapabilityGroups(
+    authorizedTools: readonly Tool[],
+    modelTools: readonly Tool[],
+  ): ProgressiveCapabilityGroup[] {
+    const visible = new Set(modelTools.map((candidate) => candidate.name));
+    const grouped = new Map<CapabilitySource, string[]>();
+    for (const candidate of authorizedTools) {
+      if (visible.has(candidate.name)) continue;
+      const source = capabilitySource(candidate.name);
+      const names = grouped.get(source) ?? [];
+      names.push(candidate.name);
+      grouped.set(source, names);
+    }
+    return [...grouped.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([source, values]) => {
+        const names = [...new Set(values)].sort();
+        return {
+          source,
+          count: names.length,
+          names: names.slice(0, MAX_INDEXED_NAMES_PER_SOURCE),
+          truncated: names.length > MAX_INDEXED_NAMES_PER_SOURCE,
+        };
+      });
+  }
+
   progressiveGateway(tools: Tool[]): Tool[] {
     const byName = new Map(tools.map((candidate) => [candidate.name, candidate]));
     const entries = tools.map((candidate) => {
@@ -180,6 +210,7 @@ export class ToolSetBuilder {
     runId: string;
     policyRevision: string;
     tools: readonly Tool[];
+    authorizedTools?: readonly Tool[];
     skills?: readonly string[];
     observedAt?: string;
     items?: readonly EffectiveCapabilityItem[];
@@ -188,6 +219,9 @@ export class ToolSetBuilder {
       runId: input.runId,
       policyRevision: input.policyRevision,
       toolNames: input.tools.map((tool) => tool.name),
+      hiddenTools: input.authorizedTools
+        ? this.hiddenCapabilityGroups(input.authorizedTools, input.tools)
+        : [],
       skillNames: input.skills,
       observedAt: input.observedAt,
       items: input.items,

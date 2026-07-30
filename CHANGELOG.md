@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- keep `/sessions` selection and TUI history snapshots responsive while the
+  selected Session is running, without bypassing serialization for mutations
+- remove the accidental default 32-call and 500K cumulative-input run caps;
+  normal conversations are unlimited again unless an operator explicitly sets
+  `MIMI_MAX_TURNS`, while every individual request still fits its model context
 - replace fixed sentence extraction with a Provider-backed, no-tool semantic
   snapshot seam that makes 70% checkpoint preparation non-blocking and validates
   covered canonical prefixes before 80% compression; materialize native MCP
@@ -23,9 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   canonical Session, add 70% work snapshots and 80% semantic compression with
   intact recent turns and tool protocol units, progressively disclose Skill and
   Connector capabilities, recall only relevant bounded memories, separate
-  actual/cumulative/view/reserve context metrics, and safely checkpoint
-  conversations at 32 calls or 500K cumulative estimated input tokens
+  actual/cumulative/view/reserve context metrics, and keep every individual
+  request inside its model context window without imposing a cumulative Run cap
 - stabilize Daxiang owner messaging when delivery receipts change during a read,
+  index every authorized hidden Host capability by source and bounded exact names
+  so progressive disclosure cannot make a model mistake an omitted schema or
+  intentionally hidden Connector action for missing runtime support,
   remove duplicate pre-send context navigation, and classify all failures before
   the single send click as failed-safe instead of uncertain; synchronize React
   textarea tracking so a DOM-verified draft is also accepted by the page state,

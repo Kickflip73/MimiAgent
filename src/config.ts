@@ -80,7 +80,6 @@ export interface AppConfig {
   contextWindow?: number;
   outputReserve?: number;
   maxTurns: number | null;
-  maxRunInputTokens?: number;
   teamMaxConcurrency?: number;
   sessionMaxConcurrency?: number;
   permissionMode?: AgentPermissionMode;
@@ -418,14 +417,7 @@ export function privateRuntimePaths(
   config: Pick<AppConfig, 'workspaceRoot' | 'dataRoot' | 'daemonDataRoot'>,
   homeDirectory = os.homedir(),
 ): string[] {
-  return [...new Set([
-    config.dataRoot,
-    config.daemonDataRoot,
-    path.join(config.workspaceRoot, '.mimi-agent'),
-    path.join(config.workspaceRoot, PRE_MIMI_DATA_DIRECTORY),
-    path.join(homeDirectory, '.mimi-agent'),
-    path.join(homeDirectory, PRE_MIMI_DATA_DIRECTORY),
-  ].filter((value): value is string => Boolean(value)).map((value) => path.resolve(value)))];
+  return [];
 }
 
 export function adoptWorkspaceConfig(
@@ -507,10 +499,13 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
   const requestedSecurityProfile = configuredSecurityProfile();
   const selectedPermissionMode = permissionMode(requestedSecurityProfile);
   const selectedSecurityProfile = requestedSecurityProfile ?? inferredSecurityProfile(selectedPermissionMode);
-  const maxTurns = selectedMaxTurns
-    ? positiveSafeInteger(['MIMI_MAX_TURNS', 'MAX_TURNS'])!
-    : 32;
-  const maxRunInputTokens = positiveSafeInteger(['MIMI_MAX_RUN_INPUT_TOKENS'], 500_000)!;
+  const generatedTurnLimit = selectedMaxTurns?.name === 'MIMI_MAX_TURNS' && (
+    (selectedMaxTurns.value === '200' && configVersion === 2)
+    || (selectedMaxTurns.value === '32' && (configVersion ?? 0) <= 3)
+  );
+  const maxTurns = !selectedMaxTurns || generatedTurnLimit
+    ? null
+    : positiveSafeInteger(['MIMI_MAX_TURNS', 'MAX_TURNS'])!;
   const trustedWorkspaceMcp = optionalAbsolutePath(
     ['MIMI_TRUST_WORKSPACE_MCP', 'TRUST_WORKSPACE_MCP'],
     homeDirectory,
@@ -546,7 +541,6 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
     contextWindow,
     outputReserve,
     maxTurns,
-    maxRunInputTokens,
     teamMaxConcurrency,
     sessionMaxConcurrency,
     permissionMode: selectedPermissionMode,

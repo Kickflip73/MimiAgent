@@ -337,33 +337,28 @@ test('migrates old template workspace defaults without overriding versioned rest
   }
 });
 
-test('defaults conversation runs to 32 model calls while preserving explicit operator limits', () => {
+test('leaves conversation runs unlimited unless an operator configures a turn limit', () => {
   const previousTurns = process.env.MIMI_MAX_TURNS;
-  const previousInputTokens = process.env.MIMI_MAX_RUN_INPUT_TOKENS;
   const previousVersion = process.env.MIMI_CONFIG_VERSION;
   try {
     delete process.env.MIMI_MAX_TURNS;
-    delete process.env.MIMI_MAX_RUN_INPUT_TOKENS;
     const defaults = loadConfig(ISOLATED_HOME);
-    assert.equal(defaults.maxTurns, 32);
-    assert.equal(defaults.maxRunInputTokens, 500_000);
+    assert.equal(defaults.maxTurns, null);
 
     process.env.MIMI_CONFIG_VERSION = '2';
-    process.env.MIMI_MAX_TURNS = '32';
-    assert.equal(loadConfig(ISOLATED_HOME).maxTurns, 32);
+    process.env.MIMI_MAX_TURNS = '200';
+    assert.equal(loadConfig(ISOLATED_HOME).maxTurns, null);
 
     process.env.MIMI_MAX_TURNS = '120';
     assert.equal(loadConfig(ISOLATED_HOME).maxTurns, 120);
-    process.env.MIMI_MAX_RUN_INPUT_TOKENS = '750000';
-    assert.equal(loadConfig(ISOLATED_HOME).maxRunInputTokens, 750_000);
-    process.env.MIMI_CONFIG_VERSION = '4';
+    process.env.MIMI_CONFIG_VERSION = '3';
     process.env.MIMI_MAX_TURNS = '32';
+    assert.equal(loadConfig(ISOLATED_HOME).maxTurns, null);
+    process.env.MIMI_CONFIG_VERSION = '4';
     assert.equal(loadConfig(ISOLATED_HOME).maxTurns, 32);
   } finally {
     if (previousTurns === undefined) delete process.env.MIMI_MAX_TURNS;
     else process.env.MIMI_MAX_TURNS = previousTurns;
-    if (previousInputTokens === undefined) delete process.env.MIMI_MAX_RUN_INPUT_TOKENS;
-    else process.env.MIMI_MAX_RUN_INPUT_TOKENS = previousInputTokens;
     if (previousVersion === undefined) delete process.env.MIMI_CONFIG_VERSION;
     else process.env.MIMI_CONFIG_VERSION = previousVersion;
   }

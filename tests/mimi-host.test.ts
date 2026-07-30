@@ -174,6 +174,39 @@ test('reads TUI snapshots from the requested keyed Session actor', async () => {
   await host.close();
 });
 
+test('reads a TUI snapshot without waiting for the active Session run', async () => {
+  const releaseRun = deferred();
+  const runStarted = deferred();
+  const snapshotRead = deferred();
+  const agent = {
+    currentSessionId: 'session-a',
+    switchSession: async () => undefined,
+    sessionSnapshot: async (sessionId: string) => {
+      snapshotRead.resolve();
+      return { sessionId, context: { status: { value: 42 } } };
+    },
+    listSessionSummaries: async () => [],
+    close: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, {
+    execute: async () => {
+      runStarted.resolve();
+      await releaseRun.promise;
+      return { answer: 'done', effects: [] };
+    },
+  });
+
+  const run = host.execute({ sessionId: 'session-a', input: 'work' });
+  await runStarted.promise;
+  const snapshot = host.snapshot('session-a');
+  await snapshotRead.promise;
+  assert.equal((await snapshot).sessionId, 'session-a');
+
+  releaseRun.resolve();
+  assert.equal((await run).answer, 'done');
+  await host.close();
+});
+
 test('rebuilds a Session runtime when its resolved workspace changes', async () => {
   const created: string[] = [];
   const closed: string[] = [];

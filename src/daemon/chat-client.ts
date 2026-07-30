@@ -486,7 +486,6 @@ export class RemoteCommandTarget implements CommandTarget {
   async switchSession(sessionId: string): Promise<void> {
     const exists = (await this.client.listSessions()).some((session) => session.id === sessionId);
     if (!exists) throw new Error(`Session ${sessionId} 不存在`);
-    await this.client.invoke('runtime', undefined, sessionId);
     this.sessionId = sessionId;
     this.materialized = true;
   }
