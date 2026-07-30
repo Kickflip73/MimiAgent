@@ -44,8 +44,8 @@ test('progress guidance treats active Codex evidence as authoritative over an ol
   assert.equal(summary.execution?.leaseActive, true);
   assert.equal(summary.error, undefined);
   assert.match(summary.previousAttemptError ?? '', /SIGKILL/);
-  assert.match(BASE_INSTRUCTIONS, /codex\.latestActivity/);
-  assert.match(BASE_INSTRUCTIONS, /previousAttemptError.*绝不能/);
+  assert.match(BASE_INSTRUCTIONS, /active lease、持续更新的日志和 latest activity 优先于 previousAttemptError/);
+  assert.match(BASE_INSTRUCTIONS, /终态 error\/result 才是本次结果/);
 });
 
 test('repeated background delegation returns the same durable task', async () => {

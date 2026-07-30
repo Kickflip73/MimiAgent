@@ -47,20 +47,24 @@ test('an unknown exact Connector ID is not reported as offline', async () => {
   assert.doesNotMatch(JSON.stringify(result), /routeOwner|自动降级/);
 });
 
-test('model instructions contain business usage rather than host safety workflows', () => {
+test('model instructions drive verified business outcomes through discoverable capabilities', () => {
+  assert.match(BASE_INSTRUCTIONS, /经过验证的结果/);
   assert.match(BASE_INSTRUCTIONS, /高层业务工具/);
   assert.match(BASE_INSTRUCTIONS, /只提供业务参数/);
-  assert.match(BASE_INSTRUCTIONS, /send_owner_message/);
+  assert.match(BASE_INSTRUCTIONS, /inspect_runtime_capabilities/);
+  assert.match(BASE_INSTRUCTIONS, /invoke_runtime_capability/);
+  assert.match(BASE_INSTRUCTIONS, /不猜工具名、内部字段、action 或替代路线/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /operationRef/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /observationId|candidateToken|routeOwner/);
-  assert.doesNotMatch(BASE_INSTRUCTIONS, /uncertain 禁止|禁止.*重放|副作用账本/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /探活|health_check/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /PersonalMessageHub/);
-  assert.match(BASE_INSTRUCTIONS, /深度测评.*先读取相关源代码、测试、架构文档/);
-  assert.match(BASE_INSTRUCTIONS, /不重叠文件集合/);
-  assert.match(BASE_INSTRUCTIONS, /源码验证、测试结果、已安装版本和真实运行证据/);
-  assert.match(BASE_INSTRUCTIONS, /Shell 沙箱.*不是 SIP/);
+  assert.match(BASE_INSTRUCTIONS, /深度测评.*相关源码、测试、架构文档和当前 Git\/运行状态/);
+  assert.match(BASE_INSTRUCTIONS, /不重叠集合/);
+  assert.match(BASE_INSTRUCTIONS, /源码验证、测试结果、已安装版本与真实运行证据/);
+  assert.match(BASE_INSTRUCTIONS, /Shell 沙箱边界.*不等于 SIP/);
   assert.match(BASE_INSTRUCTIONS, /只读诊断能力/);
+  assert.match(BASE_INSTRUCTIONS, /结果 uncertain 时先做只读核对/);
+  assert.match(BASE_INSTRUCTIONS, /不跨 Connector、Browser、Computer、Shell 或其他路径重复同一业务动作/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /大象|QQ|微信/);
 });
 

@@ -8,8 +8,8 @@ import { resolveTaskWorkspace } from '../src/runtime/workspace-resolution.js';
 
 test('documents structured workspace ownership without natural-language routing', () => {
   assert.match(BASE_INSTRUCTIONS, /工作区只来自可信 Host 的结构化字段/);
-  assert.match(BASE_INSTRUCTIONS, /不会从 owner 自由文本中提取项目名/);
-  assert.match(BASE_INSTRUCTIONS, /Memory 和历史中的旧路径只作为线索/);
+  assert.match(BASE_INSTRUCTIONS, /不得从 owner 自由文本、Memory 或历史旧路径推断、创建或静默切换工作区/);
+  assert.match(BASE_INSTRUCTIONS, /旧路径只作为待核实线索/);
 });
 
 test('uses the requested workspace supplied by the trusted CLI payload', async () => {
