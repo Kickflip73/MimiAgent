@@ -36,6 +36,8 @@ function capability(
     effect: 'read' | 'write' | 'unknown';
     routeOwner: string;
     modelVisible?: boolean;
+    targetExample?: string;
+    payloadExampleJson?: string;
   }> = [{
     name: 'send_message',
     description: 'send a message',
@@ -66,7 +68,15 @@ test('capability snapshot filters exact ids and actions while bounding the catal
   const capabilities = [
     capability('mail', [
       { name: 'list', description: 'list inbox', capability: 'mail.list.read', effect: 'read', routeOwner: 'mail' },
-      { name: 'send', description: 'deliver owner mail', capability: 'mail.send', effect: 'write', routeOwner: 'mail' },
+      {
+        name: 'send',
+        description: 'deliver owner mail',
+        capability: 'mail.send',
+        effect: 'write',
+        routeOwner: 'mail',
+        targetExample: 'owner@example.com',
+        payloadExampleJson: '{"subject":"hello"}',
+      },
     ]),
     {
       ...capability('stale', [{
@@ -103,6 +113,8 @@ test('capability snapshot filters exact ids and actions while bounding the catal
   const actionMatch = connectorCapabilitySnapshot(manager, { query: 'deliver' });
   assert.equal(actionMatch.total, 1);
   assert.deepEqual(actionMatch.connectors[0]?.actions.map((action) => action.name), ['send']);
+  assert.equal(actionMatch.connectors[0]?.actions[0]?.targetExample, 'owner@example.com');
+  assert.equal(actionMatch.connectors[0]?.actions[0]?.payloadExampleJson, '{"subject":"hello"}');
   assert.equal(connectorCapabilitySnapshot(manager, { query: 'stale' }).total, 1);
   const businessWordMiss = connectorCapabilitySnapshot(manager, { query: 'multica' });
   assert.equal(businessWordMiss.total, 0);

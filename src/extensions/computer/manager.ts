@@ -123,7 +123,10 @@ export class ComputerManager {
     this.authorize(authority, requiresAccess(input));
     if ((('includeScreenshot' in input && input.includeScreenshot) || input.scope === 'region')
       && authority.supportsImageInput === false) {
-      throw new Error('vision_unavailable：当前模型未声明图像输入能力');
+      throw new Error(
+        'vision_unavailable：当前模型未声明图像输入能力；仅截图和 region 观察不可用，'
+        + '仍可使用 targets、includeScreenshot=false 的语义窗口观察，以及无需观察的 launch_app',
+      );
     }
     if (input.scope === 'targets') {
       const targets = await this.backend.listTargets(input, signal);

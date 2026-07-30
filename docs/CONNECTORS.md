@@ -45,7 +45,7 @@ delivery/action 时切换，避免中断结果不确定的真实事务；繁忙�
 }
 ```
 
-Daemon 只向子进程传递 `PATH`、`HOME`、locale、临时目录和 `envAllowlist` 明确列出的变量，不会把整份模型密钥环境泄漏给 Connector。`actions` 是能力发现目录：每项除描述外可声明稳定 `capability` 与 `effect=read|write|unknown`；未声明 capability 的兼容配置使用 `connector.<id>.<action>`，不从描述或业务词推断。未声明的 action 不会发给子进程。旧 `claimedComputerApps` 只做配置读取与诊断兼容，不再粗粒度封锁整个应用；Computer 仍保护控制面并在每次动作前校验精确目标。`syncTemplateActions` 默认开启，随升级补齐内置 action 和稳定元数据。`trust` 是 Host 认定的 event provenance，不是来源自称即可获得的授权。
+Daemon 只向子进程传递 `PATH`、`HOME`、locale、临时目录和 `envAllowlist` 明确列出的变量，不会把整份模型密钥环境泄漏给 Connector。`actions` 是能力发现目录：每项除描述外可声明稳定 `capability` 与 `effect=read|write|unknown`；参数容易混淆时应同时声明 `targetExample` 和有效 JSON 字符串 `payloadExampleJson`，统一能力目录会把这两个调用契约原样交给模型。未声明 capability 的兼容配置使用 `connector.<id>.<action>`，不从描述或业务词推断。未声明的 action 不会发给子进程。旧 `claimedComputerApps` 只做配置读取与诊断兼容，不再粗粒度封锁整个应用；Computer 仍保护控制面并在每次动作前校验精确目标。`syncTemplateActions` 默认开启，随升级补齐内置 action 和稳定元数据。`trust` 是 Host 认定的 event provenance，不是来源自称即可获得的授权。
 
 `healthEvents` 默认开启。Connector 异常退出或启动失败时，Host 会把一条 `system:connector-health` 告警先写入 Inbox，再沿用 Attention、Agent 与 Outbox 处理；正常 daemon 停止和 disabled Connector 不产生告警。自动重启期间的连续失败属于同一个故障窗口，不重复告警；子进程连续存活 `healthStabilityMs`（默认 5 秒）后才生成一次恢复事件。MimiAgent 会先核对实时能力：自动重启中的故障只建立一个恢复 Watch，未启用自动重启的瞬时故障最多执行一次启停恢复，配置或命令缺失则给出精确修复信息；已恢复且没有遗留影响时静默结束。中断期间结果不确定的 delivery/action 永不自动重放。诊断 Event 只保存有界错误类别；完整子进程错误仍留在本机 daemon stderr。
 

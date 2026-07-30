@@ -178,9 +178,17 @@ function truncate(value: string, limit = MAX_SHELL_OUTPUT): string {
   return `${value.slice(0, limit)}\n...[输出已截断，共 ${value.length} 字符]`;
 }
 
-function boundShellResult(
-  result: { exitCode: number; stdout: string; stderr: string },
-): { exitCode: number; stdout: string; stderr: string } {
+interface ShellCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  executionBoundary?: {
+    kind: 'darwin-sandbox';
+    unavailableCapabilities: ['gui-automation', 'launch-services', 'apple-events'];
+  };
+}
+
+function boundShellResult(result: ShellCommandResult): ShellCommandResult {
   const serializedBytes = (candidate: typeof result): number =>
     Buffer.byteLength(JSON.stringify([candidate]), 'utf8');
   if (serializedBytes(result) <= DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES) return result;
@@ -1217,18 +1225,32 @@ export async function runShellCommand(
   blockedUnixSocketPaths: string[] = [],
   blockedLocalTcpPorts: number[] = [],
   sensitiveValues: readonly string[] = [],
-): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+): Promise<ShellCommandResult> {
+  const executionBoundary = process.platform === 'darwin'
+    ? {
+        kind: 'darwin-sandbox' as const,
+        unavailableCapabilities: [
+          'gui-automation',
+          'launch-services',
+          'apple-events',
+        ] as ['gui-automation', 'launch-services', 'apple-events'],
+      }
+    : undefined;
+  const result = (value: { exitCode: number; stdout: string; stderr: string }) => ({
+    ...value,
+    ...(executionBoundary ? { executionBoundary } : {}),
+  });
   if (/(?:^|[;&|()\s])(?:nohup|disown|setsid)(?:$|[;&|()\s])/u.test(command)
     || /(^|[^&])&(?!&)(?:\s*(?:#.*)?)$/u.test(command)
     || /(^|[^&])&(?!&)[\s;]+disown(?:\s|;|$)/u.test(command)) {
-    return {
+    return result({
       exitCode: 1,
       stdout: '',
       stderr: 'run_shell 不允许创建脱离 MimiAgent 管理的后台进程；请使用 delegate_background_task 提交可跟踪的后台任务',
-    };
+    });
   }
   if (protectedPaths.length && process.platform !== 'darwin') {
-    return { exitCode: 1, stdout: '', stderr: '当前平台缺少私有目录沙箱，已禁用 Shell 工具以保护 Session 隔离' };
+    return result({ exitCode: 1, stdout: '', stderr: '当前平台缺少私有目录沙箱，已禁用 Shell 工具以保护 Session 隔离' });
   }
   const canonicalProtectedPaths = await Promise.all(protectedPaths.map(async (protectedPath) => {
     try {
@@ -1268,7 +1290,7 @@ export async function runShellCommand(
 
   if (signal?.aborted) {
     const message = signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? '命令已取消');
-    return { exitCode: 1, stdout: '', stderr: message };
+    return result({ exitCode: 1, stdout: '', stderr: message });
   }
 
   return new Promise((resolve) => {
@@ -1307,11 +1329,11 @@ export async function runShellCommand(
         );
       const stdout = redact(Buffer.concat(stdoutChunks).toString('utf8'));
       const stderr = redact(Buffer.concat(stderrChunks).toString('utf8'));
-      resolve(boundShellResult({
+      resolve(boundShellResult(result({
         exitCode: terminating || spawnError ? 1 : (closeCode ?? 1),
         stdout: truncate(stdout),
         stderr: truncate([stderr, terminationMessage, spawnError?.message].filter(Boolean).join('\n')),
-      }));
+      })));
     };
 
     const kill = (force = false): boolean => {

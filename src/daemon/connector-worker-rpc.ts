@@ -81,6 +81,8 @@ export const connectorCapabilitySnapshotSchema = z.object({
       capability: z.string().regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/).max(120),
       effect: z.enum(['read', 'write', 'unknown']),
       routeOwner: identifier,
+      targetExample: z.string().min(1).max(500).optional(),
+      payloadExampleJson: z.string().min(2).max(2_000).optional(),
     }).strict()).max(100),
   }).strict()).max(50),
 }).strict().superRefine((snapshot, context) => {

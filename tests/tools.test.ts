@@ -299,6 +299,10 @@ test('Darwin Shell sandbox blocks direct and interpreter-mediated system automat
     10,
   );
   assert.notEqual(direct.exitCode, 0);
+  assert.deepEqual(direct.executionBoundary, {
+    kind: 'darwin-sandbox',
+    unavailableCapabilities: ['gui-automation', 'launch-services', 'apple-events'],
+  });
 
   const script = [
     'const { spawnSync } = require("node:child_process");',
@@ -311,6 +315,7 @@ test('Darwin Shell sandbox blocks direct and interpreter-mediated system automat
     10,
   );
   assert.equal(indirect.exitCode, 73);
+  assert.equal(indirect.executionBoundary?.kind, 'darwin-sandbox');
 });
 
 test('Shell propagates a failed pipeline stage instead of reporting empty success', async () => {

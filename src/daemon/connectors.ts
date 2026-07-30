@@ -14,6 +14,14 @@ import {
 import { MimiStore } from './store.js';
 import type { EventActor, EventConversation, EventKind, EventTrust, OutboxMessage } from './types.js';
 
+const payloadExampleJsonSchema = z.string().min(2).max(2_000).superRefine((value, context) => {
+  try {
+    JSON.parse(value);
+  } catch {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'payloadExampleJson 必须是有效 JSON' });
+  }
+});
+
 const connectorSchema = z.object({
   enabled: z.boolean().default(true),
   command: z.string().min(1),
@@ -53,6 +61,8 @@ const connectorSchema = z.object({
         .optional(),
       effect: z.enum(['read', 'write', 'unknown']).default('unknown'),
       modelVisible: z.boolean().default(true),
+      targetExample: z.string().min(1).max(500).optional(),
+      payloadExampleJson: payloadExampleJsonSchema.optional(),
     }).strict(),
   ).default({}),
 }).strict();
@@ -183,6 +193,8 @@ export interface ConnectorCapability {
     effect: 'read' | 'write' | 'unknown';
     routeOwner: string;
     modelVisible?: boolean;
+    targetExample?: string;
+    payloadExampleJson?: string;
   }>;
 }
 
@@ -399,6 +411,8 @@ class ConnectorProcess implements NotificationSink {
         effect: value.effect,
         routeOwner: this.id,
         modelVisible: value.modelVisible,
+        targetExample: value.targetExample,
+        payloadExampleJson: value.payloadExampleJson,
       })),
     };
   }

@@ -69,7 +69,7 @@ export function createComputerTools(
   };
   const observe = tool({
     name: 'computer_observe',
-    description: '只读发现本机应用/窗口、观察目标窗口元素或按需获取局部图像。',
+    description: '只读发现本机应用/窗口、观察目标窗口元素或按需获取局部图像。模型不支持图像输入时使用 targets 或 includeScreenshot=false 的语义观察。',
     parameters: nonStrictToolSchema(observeToolParameters),
     // The public schema intentionally contains optional fields. Keep SDK strict
     // conversion from rejecting otherwise valid schemas across patch releases;
@@ -105,7 +105,7 @@ export function createComputerTools(
   });
   const act = tool({
     name: 'computer_act',
-    description: '执行一个原子电脑动作。UI 动作自动绑定本轮最新的有效窗口观察。',
+    description: '执行一个原子电脑动作。UI 动作自动绑定本轮最新的有效窗口观察；launch_app 只需精确 bundleId，不依赖截图或既有观察。',
     parameters: nonStrictToolSchema(actToolParameters),
     strict: false,
     execute: (input, _context, details) => {

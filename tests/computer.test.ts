@@ -236,9 +236,12 @@ test('rejects unsafe target state, coordinates, secure fields, and unapproved es
 
 test('enforces image capability and application allowlist', async () => {
   const { manager, authority } = await fixture({ supportsImageInput: false, allowedApps: ['com.example.other'] });
-  await assert.rejects(() => manager.observe(authority, {
-    scope: 'window', target: { bundleId: target.bundleId }, includeScreenshot: true, maxElements: 400, maxDepth: 12,
-  }), /vision_unavailable/);
+  await assert.rejects(
+    () => manager.observe(authority, {
+      scope: 'window', target: { bundleId: target.bundleId }, includeScreenshot: true, maxElements: 400, maxDepth: 12,
+    }),
+    /vision_unavailable.*includeScreenshot=false.*launch_app/,
+  );
   await assert.rejects(() => observeWindow(manager, authority), /computerApps allowlist/);
   await assert.rejects(
     () => observeWindow(manager, { ...authority, allowedApps: [] }),

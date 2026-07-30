@@ -50,6 +50,12 @@ test('M1 execution surfaces have stable capability, effect, and route ownership 
   }
   assert.equal(template.connectors['macos-shortcuts']?.actions.run_shortcut?.effect, 'write');
   assert.equal(template.connectors['macos-screen']?.actions.read_screen?.effect, 'read');
+  assert.equal(template.connectors['macos-desktop']?.actions.activate_app?.targetExample, 'org.example.App');
+  assert.equal(template.connectors['macos-desktop']?.actions.activate_app?.payloadExampleJson, '{}');
+  assert.match(
+    template.connectors['macos-desktop']?.actions.open_visible?.payloadExampleJson ?? '',
+    /bundleId/,
+  );
   assert.equal(template.connectors['personal-daxiang']?.actions.send_message?.capability, 'personal-message.send');
   assert.equal(template.connectors['personal-daxiang']?.actions.search_targets?.effect, 'read');
   assert.equal(template.connectors['personal-daxiang']?.actions.bind_target?.effect, 'write');

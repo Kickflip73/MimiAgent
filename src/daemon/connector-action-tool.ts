@@ -94,6 +94,8 @@ export interface ConnectorCapabilitySnapshot {
       capability: string;
       effect: 'read' | 'write' | 'unknown';
       routeOwner: string;
+      targetExample?: string;
+      payloadExampleJson?: string;
     }>;
   }>;
 }
@@ -245,6 +247,8 @@ export function connectorCapabilitySnapshot(
         capability: action.capability,
         effect: action.effect,
         routeOwner: action.routeOwner,
+        ...(action.targetExample ? { targetExample: action.targetExample } : {}),
+        ...(action.payloadExampleJson ? { payloadExampleJson: action.payloadExampleJson } : {}),
       };
     });
     remainingActions -= actions.length;
@@ -372,7 +376,7 @@ export function createInvokeCapabilityTool(
 ): Tool {
   const capabilityTool = tool({
     name: 'invoke_capability',
-    description: '调用当前目录中的一项 Connector 业务能力。',
+    description: '调用当前目录中的一项 Connector 业务能力。必须使用目录返回的精确 action、targetExample 和 payloadExampleJson；不得猜字段或用相邻 action 替代。',
     parameters: z.object({
       capability: z.string()
         .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)

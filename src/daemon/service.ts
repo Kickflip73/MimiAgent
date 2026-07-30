@@ -817,7 +817,9 @@ async function mergeTemplateActions(
           && (currentAction.description !== packagedAction.description
             || (currentAction.capability === undefined && packagedAction.capability !== undefined)
             || (currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown')
-            || currentAction.modelVisible !== packagedAction.modelVisible);
+            || currentAction.modelVisible !== packagedAction.modelVisible
+            || currentAction.targetExample !== packagedAction.targetExample
+            || currentAction.payloadExampleJson !== packagedAction.payloadExampleJson);
       })
       : [];
     const missingEnv = (REQUIRED_CONNECTOR_ENV[id] ?? []).filter((name) => (
@@ -849,6 +851,12 @@ async function mergeTemplateActions(
           : {}),
         ...(currentAction.modelVisible !== packagedAction.modelVisible
           ? { modelVisible: packagedAction.modelVisible }
+          : {}),
+        ...(currentAction.targetExample !== packagedAction.targetExample
+          ? { targetExample: packagedAction.targetExample }
+          : {}),
+        ...(currentAction.payloadExampleJson !== packagedAction.payloadExampleJson
+          ? { payloadExampleJson: packagedAction.payloadExampleJson }
           : {}),
       }];
     }));

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- distinguish the Darwin Shell sandbox from macOS app/signature failures in
+  structured Shell results, keep screenshotless Computer actions available to
+  non-vision models, and publish exact Connector target/payload examples so GUI
+  app activation does not guess fields or fall back through Shell
 - let durable Mimi background tasks carry an explicit exact
   `providerId/modelId` target through delegation, persistence, worker routing,
   and task inspection while retaining `background.default` routing when omitted
