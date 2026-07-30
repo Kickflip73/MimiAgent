@@ -1,5 +1,7 @@
 # Blocked
 
+- **2026-07-30 initial test baseline dependency prerequisite**: this worktree has no usable local `node_modules`; `npm run check` exits 127 with `tsc: command not found`, and the selected ten focused test files fail in the loader with `ERR_MODULE_NOT_FOUND: tsx` before executing any tests. This is not classified as a source regression. Continue read-only analysis and restore only lockfile-declared dependencies with `npm ci`; do not change `package.json` or `package-lock.json`.
+
 - **2026-07-30 多 Provider Review 修复：当前无实施 blocker。** 开工时的 detached
   HEAD 已安全切换到既有任务分支 `codex/multimodel-review-fixes`；依赖安装未产生
   package/lockfile 或 tracked dist 改动。真实部署/canary 仍严格服从运行面 idle、

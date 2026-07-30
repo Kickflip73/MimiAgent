@@ -150,21 +150,42 @@ export class CuaDriverClient implements ComputerBackend {
       const pid = finite(app.pid);
       if (pid > 0) appByPid.set(pid, app);
     }
-    const normalized = (Array.isArray(windows) ? windows : []).map((value): ComputerTargetSummary => {
+    const candidates = (Array.isArray(windows) ? windows : []).map((value) => {
       const window = record(value);
       const pid = finite(window.pid);
       const app = appByPid.get(pid) ?? {};
       const bounds = record(window.bounds);
       return {
-        bundleId: String(app.bundle_id ?? window.bundle_id ?? ''),
-        pid,
-        windowId: finite(window.window_id),
-        appName: String(window.app_name ?? app.name ?? ''),
-        title: String(window.title ?? ''),
-        bounds: { x: finite(bounds.x), y: finite(bounds.y), width: finite(bounds.width), height: finite(bounds.height) },
-        frontmost: app.active === true,
+        target: {
+          bundleId: String(app.bundle_id ?? window.bundle_id ?? ''),
+          pid,
+          windowId: finite(window.window_id),
+          appName: String(window.app_name ?? app.name ?? ''),
+          title: String(window.title ?? ''),
+          bounds: { x: finite(bounds.x), y: finite(bounds.y), width: finite(bounds.width), height: finite(bounds.height) },
+        },
+        appActive: app.active === true,
+        windowFrontmost: typeof window.frontmost === 'boolean' ? window.frontmost : undefined,
       };
-    }).filter((target) => target.pid > 0 && target.windowId > 0 && target.bundleId);
+    }).filter(({ target }) => target.pid > 0 && target.windowId > 0 && target.bundleId);
+    const exactFrontmost = candidates.filter((candidate) => candidate.windowFrontmost === true);
+    const soleActiveWindow = exactFrontmost.length === 0
+      ? candidates.filter((candidate) => candidate.appActive)
+      : [];
+    const normalized = candidates.map(({ target, appActive, windowFrontmost }): ComputerTargetSummary => {
+      let frontmost: boolean | undefined;
+      if (exactFrontmost.length === 1) {
+        frontmost = exactFrontmost[0]!.target.pid === target.pid
+          && exactFrontmost[0]!.target.windowId === target.windowId;
+      } else if (exactFrontmost.length > 1) {
+        frontmost = appActive || windowFrontmost === true ? undefined : false;
+      } else if (!appActive) {
+        frontmost = false;
+      } else if (soleActiveWindow.length === 1 && windowFrontmost !== false) {
+        frontmost = true;
+      }
+      return { ...target, ...(frontmost === undefined ? {} : { frontmost }) };
+    });
     const needle = query.query?.toLowerCase();
     return normalized.filter((target) => !needle || `${target.bundleId} ${target.appName} ${target.title}`.toLowerCase().includes(needle)).slice(0, query.limit);
   }

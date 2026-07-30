@@ -653,6 +653,57 @@ printf '{"content":[],"structuredContent":{"ready":true}}\\n'
   assert.equal((await client.health()).version, '0.12.3');
 });
 
+test('Cua target discovery does not mark every window of the active app frontmost', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-focus-ambiguous-'));
+  const fixture = path.join(root, 'cua-driver');
+  await writeFile(fixture, `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  process.stdout.write('cua-driver 0.12.3\\n');
+  process.exit(0);
+}
+const name = process.argv[3] || '';
+const structuredContent = name === 'list_apps'
+  ? [{ pid: 41, bundle_id: 'com.example.active', name: 'Active', active: true }, { pid: 42, bundle_id: 'com.example.idle', name: 'Idle', active: false }]
+  : [
+      { pid: 41, window_id: 1, title: 'First', bounds: { x: 0, y: 0, width: 400, height: 300 } },
+      { pid: 41, window_id: 2, title: 'Second', bounds: { x: 10, y: 10, width: 400, height: 300 } },
+      { pid: 42, window_id: 3, title: 'Idle', bounds: { x: 20, y: 20, width: 400, height: 300 } }
+    ];
+process.stdout.write(JSON.stringify({ content: [], structuredContent }) + '\\n');
+`, { mode: 0o700 });
+  const targets = await new CuaDriverClient(fixture, 2_000).listTargets({ limit: 10 });
+
+  assert.equal(targets.filter((candidate) => candidate.frontmost === true).length, 0);
+  assert.equal(targets.find((candidate) => candidate.windowId === 1)?.frontmost, undefined);
+  assert.equal(targets.find((candidate) => candidate.windowId === 2)?.frontmost, undefined);
+  assert.equal(targets.find((candidate) => candidate.windowId === 3)?.frontmost, false);
+});
+
+test('Cua target discovery preserves one exact window-level frontmost signal', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-focus-exact-'));
+  const fixture = path.join(root, 'cua-driver');
+  await writeFile(fixture, `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  process.stdout.write('cua-driver 0.12.3\\n');
+  process.exit(0);
+}
+const name = process.argv[3] || '';
+const structuredContent = name === 'list_apps'
+  ? [{ pid: 51, bundle_id: 'com.example.editor', name: 'Editor', active: true }]
+  : [
+      { pid: 51, window_id: 4, title: 'Draft', frontmost: false, bounds: { x: 0, y: 0, width: 400, height: 300 } },
+      { pid: 51, window_id: 5, title: 'Final', frontmost: true, bounds: { x: 10, y: 10, width: 400, height: 300 } }
+    ];
+process.stdout.write(JSON.stringify({ content: [], structuredContent }) + '\\n');
+`, { mode: 0o700 });
+  const targets = await new CuaDriverClient(fixture, 2_000).listTargets({ limit: 10 });
+
+  assert.deepEqual(
+    targets.map((candidate) => ({ windowId: candidate.windowId, frontmost: candidate.frontmost })),
+    [{ windowId: 4, frontmost: false }, { windowId: 5, frontmost: true }],
+  );
+});
+
 test('Cua lifecycle starts a missing daemon and restores it after a crash', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-lifecycle-'));
   const state = path.join(root, 'daemon-ready');

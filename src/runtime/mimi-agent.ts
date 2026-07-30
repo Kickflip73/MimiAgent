@@ -43,6 +43,11 @@ import {
 } from '../core/memory.js';
 import type { PreferenceStore } from '../core/preferences.js';
 import { PlanStore, type PlanStep } from '../core/plan.js';
+import {
+  createRunFinalization,
+  runFinalizationRecordSchema,
+  type RunFinalizationRecord,
+} from '../core/run-finalization.js';
 import { runAnswerDigest, type RunCommitJournal } from '../core/run-commit-journal.js';
 import { FileChangeJournal } from '../core/file-change-journal.js';
 import {
@@ -205,6 +210,7 @@ export interface ContextUsageSnapshot {
 export interface CompletedExecutionReceipt {
   runId: string;
   answer: string;
+  finalization: RunFinalizationRecord;
   usage?: ContextUsageSnapshot;
   actions?: RuntimeAction[];
   effects?: RuntimeEffect[];
@@ -239,6 +245,8 @@ const contextUsageSchema = z.object({
 const completedExecutionReceiptSchema = z.object({
   runId: z.string().min(1).max(200),
   answer: z.string(),
+  // Optional only when decoding receipts written before finalization manifests.
+  finalization: runFinalizationRecordSchema.optional(),
   usage: contextUsageSchema.optional(),
   actions: z.array(runtimeActionSchema).max(20).default([]),
   delivery: z.object({
@@ -447,6 +455,7 @@ export class MimiAgent {
   private modelProfile: ModelProfile;
   private lastUsage?: ContextUsageSnapshot;
   private lastCommittedAnswer?: string;
+  private lastFinalization?: RunFinalizationRecord;
   private lastModelBinding?: RunModelBinding;
   private readonly runtimeRoot = path.resolve(fileURLToPath(new URL('../../', import.meta.url)));
 
@@ -630,7 +639,7 @@ export class MimiAgent {
         },
       }),
       ...createRuntimeControlTools({
-        status: () => this.runtimeInfo(),
+        status: (projection) => this.runtimeStatus(projection),
         models: () => this.availableModels(),
         providers: () => configuredProviders(),
         modes: () => this.availableModes(),
@@ -884,6 +893,7 @@ export class MimiAgent {
     const textInput = inputText(input);
     if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
     this.lastCommittedAnswer = undefined;
+    this.lastFinalization = undefined;
     const preferences = await this.session.getPreferences();
     const routeConfig = options?.providerRoute
       ? { ...this.config, provider: options.providerRoute.provider }
@@ -1098,8 +1108,7 @@ export class MimiAgent {
       : undefined;
     const resumesGoal = activeStoredGoal !== undefined && (
       (resumesCheckpoint && recovery.goalCreatedAt === activeStoredGoal.createdAt)
-      || options?.resumeState === true
-      || textInput.trim() === activeStoredGoal.objective.trim());
+      || options?.resumeState === true);
     const goal = resumesGoal ? activeStoredGoal : undefined;
     run.completionRequired = completionToolsAllowed && resumesGoal;
     if (resumesGoal && activeStoredGoal.completionContract) {
@@ -1223,19 +1232,16 @@ export class MimiAgent {
       ...(completionToolsAllowed ? createCompletionTools({
         prepare: async (contract) => {
           if (this.activeRun !== run) throw new Error('Completion Contract 所属 Run 已失效');
-          if (!run.goalCreatedAt) throw new Error('普通任务不使用 Completion Contract；请先显式调用 set_goal 创建持久 Goal');
           const accepted = assertCompletionContractForTask(contract, run.completionContract);
           run.completionRequired = true;
           run.completionContract = accepted;
           run.completionReport = undefined;
-          await Promise.all([
-            run.session.updateRunCompletion({
-              completionContract: accepted,
-              completionReport: undefined,
-              completionGate: undefined,
-            }, run.runId),
-            runPlans.setGoalCompletionContract(accepted),
-          ]);
+          await run.session.updateRunCompletion({
+            completionContract: accepted,
+            completionReport: undefined,
+            completionGate: undefined,
+          }, run.runId);
+          if (run.goalCreatedAt) await runPlans.setGoalCompletionContract(accepted);
         },
         finish: async (report) => {
           if (this.activeRun !== run) throw new Error('Completion Gate 所属 Run 已失效');
@@ -1379,6 +1385,10 @@ export class MimiAgent {
         directOwnerRun && (soul.instructions || preferences.instructions) ? 0.4 : 0.35
       )) + ownerGuidanceReserve,
     );
+    const requiredInstructionBudget = Math.max(
+      instructionBudget,
+      budget.inputBudget - estimateTokens(input) - 512,
+    );
     const invocation = parseSkillInvocation(
       textInput,
       options?.cause === undefined || options.cause.trust === 'owner',
@@ -1461,14 +1471,14 @@ export class MimiAgent {
       skillCatalog: canReadLocal && skillsDisclosed ? this.skills.catalog({
         canReadLocal,
         availableTools: run.availableToolNames,
-      }) : '',
+      }, { includeLocations: false }) : '',
       activeSkills,
       memories,
       plan: activePlan,
       goal,
       teamSummary: activeTeamSummary,
       recoverySummary: resumesCheckpoint ? recoverySummary(recovery) : '',
-    }, instructionBudget);
+    }, instructionBudget, requiredInstructionBudget);
     const instructions = builtInstructions.text;
     const historyBudget = Math.min(
       Math.max(0, budget.inputBudget - estimateTokens(instructions)),
@@ -2018,6 +2028,43 @@ export class MimiAgent {
     };
   }
 
+  async runtimeStatus(projection: 'summary' | 'detail' = 'summary') {
+    if (projection === 'detail') {
+      return {
+        schemaVersion: 1 as const,
+        projection,
+        ...await this.runtimeInfo(),
+      };
+    }
+    const capabilitySnapshot = this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot;
+    return {
+      schemaVersion: 1 as const,
+      projection,
+      provider: this.config.provider,
+      configuredProviders: configuredProviders().map((provider) => ({
+        id: provider.id,
+        models: provider.models,
+      })),
+      model: this.modelName,
+      mode: this.currentMode,
+      sessionId: this.sessionId,
+      workspaceRoot: this.config.workspaceRoot,
+      outputLevel: this.outputLevel,
+      permissionMode: this.permissionMode,
+      securityProfile: this.currentSecuritySummary(),
+      computer: this.securityProfile === 'full-owner'
+        ? this.computer?.status() ?? { configured: false, backend: undefined }
+        : { configured: false, backend: undefined },
+      capability: capabilitySnapshot ? {
+        runId: capabilitySnapshot.runId,
+        policyRevision: capabilitySnapshot.policyRevision,
+        toolSetDigest: capabilitySnapshot.toolSetDigest,
+        snapshotDigest: capabilitySnapshot.snapshotDigest,
+        tools: capabilitySnapshot.tools,
+      } : undefined,
+    };
+  }
+
   currentCapabilitySnapshot(): Readonly<EffectiveCapabilitySnapshot> | undefined {
     return this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot;
   }
@@ -2504,6 +2551,16 @@ export class MimiAgent {
         executionKey,
         retainExecutionLedger: run.options?.retainExecutionLedger === true,
       });
+      const executionCalls = await this.ledger.listCalls(
+        run.sessionId,
+        executionKey ?? run.runId,
+      );
+      const finalization = createRunFinalization({
+        runId: run.runId,
+        answer: committedAnswer,
+        ...(gate ? { completionDecision: gate.decision } : {}),
+        calls: executionCalls,
+      });
       await this.runCommits.prepare({
         sessionId: run.sessionId,
         runId: run.runId,
@@ -2511,12 +2568,13 @@ export class MimiAgent {
         answerDigest: runAnswerDigest(committedAnswer),
         ...(gate ? { completionDecision: gate.decision } : {}),
         runtimeActions: actions.map((action) => ({ ...action })),
+        finalization,
       });
       if (run.options?.retainExecutionLedger && executionKey) {
-        const executionCalls = await this.ledger.listCalls(run.sessionId, executionKey);
         const receipt = {
           runId: run.runId,
           answer: committedAnswer,
+          finalization,
           usage: validUsage,
           actions,
           delivery: await run.options.completionDelivery?.(executionCalls),
@@ -2529,6 +2587,7 @@ export class MimiAgent {
         }
       }
       await this.runCommits.advance(run.sessionId, run.runId, 'receipt_committed');
+      await this.traces.record(run.sessionId, 'run_finalization', finalization);
       completed = await run.session.completeRun(committedAnswer, run.runId);
       if (completed?.runId !== run.runId || completed.status !== 'completed') {
         throw new Error(`Run ${run.runId} 已失效，拒绝用旧结果完成当前 Session`);
@@ -2561,6 +2620,7 @@ export class MimiAgent {
     this.lastUsage = validUsage;
     this.applyManifestActual(validUsage);
     this.lastCommittedAnswer = committedAnswer;
+    this.lastFinalization = (await this.runCommits.get(run.sessionId, run.runId))?.finalization;
     await this.computer?.endRun(run.runId);
     await this.hooks.emit({ type: 'run_end', sessionId: run.sessionId, answer: committedAnswer });
     if (!run.options?.retainExecutionLedger) {
@@ -2585,6 +2645,10 @@ export class MimiAgent {
 
   get completedRunAnswer(): string | undefined {
     return this.lastCommittedAnswer;
+  }
+
+  get completedRunFinalization(): RunFinalizationRecord | undefined {
+    return this.lastFinalization;
   }
 
   get activeRunHasEphemeralSensitiveAccess(): boolean {
@@ -2693,14 +2757,29 @@ export class MimiAgent {
   ): Promise<CompletedExecutionReceipt | undefined> {
     const stored = await this.ledger.getReceipt<unknown>(sessionId, executionKey);
     if (!stored) return undefined;
-    const receipt = completedExecutionReceiptSchema.parse(stored);
+    const legacyReceipt = completedExecutionReceiptSchema.parse(stored);
     const journal = await this.runCommits.findByExecutionKey(sessionId, executionKey);
+    const receipt: CompletedExecutionReceipt = {
+      ...legacyReceipt,
+      actions: legacyReceipt.actions ?? [],
+      finalization: legacyReceipt.finalization
+        ?? journal?.finalization
+        ?? createRunFinalization({
+          runId: legacyReceipt.runId,
+          answer: legacyReceipt.answer,
+          calls: await this.ledger.listCalls(sessionId, executionKey),
+        }),
+    };
     if (journal && journal.answerDigest !== runAnswerDigest(receipt.answer)) {
       throw new Error(`Execution ${executionKey} 的完成回执与提交日志摘要不一致`);
     }
+    if (journal?.finalization
+      && JSON.stringify(journal.finalization) !== JSON.stringify(receipt.finalization)) {
+      throw new Error(`Execution ${executionKey} 的工具事实与提交日志不一致`);
+    }
     await this.createSession(sessionId).reconcileCompletedRun(receipt.answer, receipt.runId);
     if (journal) await this.runCommits.advance(sessionId, receipt.runId, 'session_committed');
-    const effects = await this.runtimeActions.apply(receipt.actions, sessionId, executionKey);
+    const effects = await this.runtimeActions.apply(receipt.actions ?? [], sessionId, executionKey);
     if (journal) await this.runCommits.advance(sessionId, receipt.runId, 'effects_applied');
     return { ...receipt, effects };
   }

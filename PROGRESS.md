@@ -1,5 +1,91 @@
 # Progress
 
+## 2026-07-30 systemic architecture repair kickoff
+- Goal: reduce the deep live-eval failures to shared architectural causes, then repair at least the first three with generic red-to-green contracts.
+- Priority: real completion/runtime stability, then state consistency/diagnostics, then cost, then breadth.
+- Branch: created `codex/mimi-systemic-architecture-repair` from detached `325af70` before task-owned file changes.
+- Baseline ownership: all inherited tracked and untracked working-tree changes remain user-owned and must be preserved.
+- Evidence: all eight frozen eval inputs exist under the read-only `20260729-deep-live-eval` directory.
+- Baseline failure: `npm run check` exited 127 (`tsc` missing); 10 focused files loaded 0 tests because `tsx` was missing.
+- Largest risk: overlapping inherited runtime changes make per-file attribution and independent commits harder; use path-level diff review and narrow staging.
+- Next: restore lockfile-declared dependencies without changing manifests, rerun baseline, freeze the root-cause plan, then implement in dependency order.
+
+## 2026-07-30 restored code baseline
+- `npm ci` restored 115 lockfile-declared packages and its prepare build passed; manifests and lockfile were not changed.
+- `npm run check` passed after dependency restore.
+- Focused baseline passed 121/121 across Daemon store/recovery/retry, Goal completion, Ledger, Memory, run pipeline/service, and tool policy; skip/todo=0.
+
+## 2026-07-30 root-cause plan frozen
+- Five evidence/source chains are reconciled into eight generic roots in `docs/plans/20260730-MimiAgent-systemic-architecture-repair.md`.
+- Implementation order is R1 lifecycle truth, R2 typed failure disposition, R3 atomic revisioned Goal, then R4 canonical finalization/Tool manifest.
+- The plan explicitly treats the maintenance/exit adjacency as non-causal and separates frozen eval builds from the current source baseline.
+
+## 2026-07-30 R1 daemon lifecycle truth
+- Red: `tests/daemon-lifecycle.test.ts` failed at load because the durable lifecycle contract did not exist.
+- Green: lifecycle unit + Daemon CLI/IPC/build/recovery focused suite passed 30/30; `npm run check` passed.
+- Result: owner shutdown, signal/failure, orphan recovery, supervisor/build/pid/worker and offline last-state diagnostics now share one bounded atomic epoch history; no Task replay was added.
+
+## 2026-07-30 R2 typed failure disposition
+- Red: the retry-policy test could not load the missing typed failure contract.
+- Green: typed state-conflict/unsupported and structured transient scenarios passed; focused retry/recovery/provider/run-service suite passed 31/31 and `npm run check` passed.
+- Result: retry now consumes phase/kind/retryable/dispatchStarted, typed facts outrank transport status, unclassified errors execute once, and natural-language error text no longer routes retries.
+
+## 2026-07-30 R3 atomic revisioned Goal
+- Red: both aggregate scenarios failed because `createGoal`/revision CAS did not exist.
+- Green: conflict-create/stale-update and continue/cancel scenarios passed 2/2; expanded Goal/Completion/core/run suite passed 113/113 and `npm run check` passed.
+- Result: prepared Contract + Goal setup is one PlanStore commit; active Goals cannot be overwritten, mutations require goalId/revision, cancel is explicit/idempotent, and free-text equality no longer grants resume ownership.
+
+## 2026-07-30 R4 canonical finalization and Tool manifest
+- Red: both file-mutation and shell/external-effect scenarios failed to load because no finalization projection existed.
+- Green: finalization/journal/run-service/recovery/dispatcher focused suite passed 29/29 and `npm run check` passed.
+- Result: ExecutionLedger remains the raw Tool fact source; one payload-free digest manifest and answer digest are persisted identically in the commit journal, completion receipt, trace, Agent result, and durable Task result.
+- Recovery rejects receipt/journal drift; tests prove file/edit and shell/uncertain variants, receipt-to-trace equality, and Task propagation without copying raw arguments, outputs, or errors.
+
+## 2026-07-30 R5 capability snapshot contract audit
+- The post-eval source already constructs both the model request and status snapshot from the same final Tool array; no production branch was needed.
+- Added two architecture scenarios (general Workstation and Plan Full Owner) proving status Tool IDs equal the actual model-facing request and available Tool items.
+
+## 2026-07-30 R6 Memory blob/provenance atomicity
+- Red: exact-repeat content from two Runs raised `Raw evidence 内容寻址冲突`; the failure-compensation scenario had no blob/reference transaction API.
+- Green: raw-evidence plus MemoryHub/compilation/maintenance focused suite passed 35/35 and `npm run check` passed.
+- Result: immutable content is stored once under `blobs/<sha256>`, each observation gets a separate payload-free provenance ref, legacy schema-v1 Markdown remains untouched, and episode catalog indexing occurs inside the same compensated raw-evidence commit.
+- Different content cannot overwrite a blob; a failed catalog callback removes newly created reference/blob state instead of leaving a dangling half-commit.
+
+## 2026-07-30 R7 bounded runtime status and default catalog cost
+- Red: both status scenarios passed the parsed `{}` object into the old full-status callback; explicit `projection: detail` had no structural effect.
+- Green: summary/detail, Skill catalog cost, Skills, capability, and Tool focused suite passed 60/60 and `npm run check` passed.
+- Result: `runtime_status` defaults to a summary that does not load Session summary, Memory status, Guidance files, Team state, or full capability items; diagnostic detail requires the explicit enum field.
+- The summary retains the exact final Tool names/digests. Model-facing Skill discovery keeps names/descriptions but removes diagnostic source IDs and absolute paths; the 20-Skill cost contract is at most 60% of the previous catalog while the diagnostic catalog remains unchanged.
+
+## 2026-07-30 R8 Computer frontmost normalization
+- Red: an active App with two windows produced two `frontmost=true` targets; an exact window-level false/true pair was flattened to true/true.
+- Green: both normalization scenarios and the complete Computer suite passed 30/30; `npm run check` passed.
+- Result: target discovery accepts only one exact window-level frontmost signal, leaves ambiguous active-App windows unknown, and marks inactive windows false. Background observation/action now requires an explicitly false focus state instead of treating unknown as safe.
+- Scope: the repair stays inside Cua target normalization and ComputerManager focus checks; it adds no foreground action, approval, permission, dependency, or driver retry.
+
+## 2026-07-30 resumed final verification
+- The earlier handoff was premature because R6-R8 were still listed as remaining. Execution resumed without changing the acceptance criteria.
+- R6, R7, and R8 are now implemented with generic red-to-green contracts. Full `npm test`, standalone build, and final `npm run ci` are pending on this complete source state.
+
+## 2026-07-30 complete-source final verification
+- `npm test` passed 754/754 with fail/skip/todo=0; standalone `npm run build` passed.
+- The first complete-source CI run had one timing-only Cua lifecycle startup failure under coverage (753/754); the unchanged focused coverage scenario then passed, so no assertion or production timeout was changed.
+- The clean CI rerun passed repository/release/dependency/asset checks, typecheck, 754/754 coverage tests with fail/skip/todo=0, 86.85% lines / 76.94% branches / 83.77% functions, build, and package smoke.
+- No live Daemon restart/install, account access, real message, permission change, or GUI mutation was performed. All end-to-end-style verification used isolated temporary roots and fixture driver processes.
+- Final task-owned commits through implementation: `12cf9f9`, `00375f6`, `b796cfa`, `696cb00`, `410f1a5`, `5eb2ead`, `b9c5ea6`, `67d0478`, `11e020a`, `5b90f85`, `9238dfe`, plus the final progress commit.
+
+## 2026-07-30 release verification
+- `npm test` passed 745/745 with skip/todo=0; standalone `npm run build` passed.
+- First `npm run ci` stopped at dependency direction because Goal core imported the runtime failure contract.
+- Moved the typed failure disposition to core with a runtime compatibility export; repository hygiene, release consistency, dependency direction, asset boundaries, typecheck, and the 10 affected focused tests now pass.
+- Final CI rerun remains pending.
+
+## 2026-07-30 final verification and handoff
+- Final `npm run ci` passed: repository/release/dependency/asset checks, typecheck, 747/747 coverage tests with skip/todo=0, 86.70% lines / 76.95% branches / 83.68% functions, build, and package smoke.
+- Standalone evidence also passed: focused R1 30/30, R2 31/31, R3 113/113, R4 29/29, capability contract 2/2, `npm test` 745/745, and `npm run build`.
+- No Daemon install/restart or real account/message/UI mutation was performed. Temporary-root MimiAgent recovery tests exercised durable receipts and restart recovery locally; this is not presented as a live-provider eval.
+- Remaining planned roots are Memory blob/provenance atomicity, bounded runtime status/context cost, and broader Computer focus semantics; R5 required no production change because current source already shares the final Tool array.
+- Task-owned commits: `12cf9f9`, `00375f6`, `b796cfa`, `696cb00`, `410f1a5`, `5eb2ead`, `b9c5ea6`, plus this final documentation commit.
 ## 2026-07-30 多 Provider Review 修复
 
 1. 目标：修复计划第十三节全部 8 项偏差，使结构化任务与精确 ModelTarget 贯穿 Session、Team、SubAgent、后台、视觉和生图。

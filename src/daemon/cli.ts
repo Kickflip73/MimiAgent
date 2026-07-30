@@ -247,8 +247,25 @@ export async function runDaemonCommand(config: AppConfig, args: string[]): Promi
       else process.stdout.write(formatDaemonStatus(status));
     } catch (error) {
       if (!unavailableDaemon(error)) throw error;
-      if (args.includes('--json')) output({ running: false });
-      else process.stdout.write('MimiAgent 后台状态\n────────────────────────────────\n状态       ○ 未运行\n\n启动：mimi daemon start\n');
+      const [{ DaemonLifecycleStore }, { mimiPaths: resolvePaths }] = await Promise.all([
+        import('./lifecycle.js'),
+        import('./client-runtime.js'),
+      ]);
+      const lifecycle = await new DaemonLifecycleStore(resolvePaths(config).lifecycle)
+        .latest()
+        .catch(() => undefined);
+      if (args.includes('--json')) output({ running: false, ...(lifecycle ? { lifecycle } : {}) });
+      else process.stdout.write([
+        'MimiAgent 后台状态',
+        '────────────────────────────────',
+        '状态       ○ 未运行',
+        lifecycle
+          ? `上次生命周期 ${lifecycle.phase} · ${lifecycle.reason ?? '无终态原因'} · ${lifecycle.updatedAt}`
+          : '上次生命周期 无记录',
+        '',
+        '启动：mimi daemon start',
+        '',
+      ].join('\n'));
     }
     return;
   }

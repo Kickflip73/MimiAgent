@@ -40,9 +40,10 @@ export const runtimeEffectSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('exit_requested') }).strict(),
 ]);
 export type RuntimeEffect = z.infer<typeof runtimeEffectSchema>;
+export type RuntimeStatusProjection = 'summary' | 'detail';
 
 export interface RuntimeControls {
-  status: () => unknown | Promise<unknown>;
+  status: (projection: RuntimeStatusProjection) => unknown | Promise<unknown>;
   models: () => string[];
   providers: () => ConfiguredProvider[];
   modes: () => Array<{ id: string; label: string; description: string }>;
@@ -55,9 +56,12 @@ export function createRuntimeControlTools(controls: RuntimeControls): Tool[] {
   return [
     tool({
       name: 'runtime_status',
-      description: '查看 MimiAgent 当前模型、模式、输出等级、Session、工作区、运行时代码目录和扩展状态。',
-      parameters: z.object({}),
-      execute: controls.status,
+      description: '查看 MimiAgent 当前有界运行摘要；只有诊断时才显式请求 detail。',
+      parameters: z.object({
+        projection: z.enum(['summary', 'detail']).default('summary')
+          .describe('summary 为默认有界状态；detail 才加载 Memory、Guidance、Team 等诊断详情'),
+      }),
+      execute: ({ projection }) => controls.status(projection),
     }),
     tool({
       name: 'switch_model',

@@ -54,6 +54,7 @@ export const MIMI_BUILD_VERSION = computeMimiBuildVersion(fileURLToPath(import.m
 export interface MimiPaths {
   root: string;
   database: string;
+  lifecycle: string;
   socket: string;
   stdoutLog: string;
   stderrLog: string;
@@ -81,6 +82,7 @@ export function mimiPaths(config: AppConfig): MimiPaths {
   return {
     root,
     database: compatibleFile('mimi.db', PRE_MIMI_DAEMON_FILES.database),
+    lifecycle: path.join(root, 'lifecycle.json'),
     socket: compatibleFile('mimi.sock', PRE_MIMI_DAEMON_FILES.socket),
     stdoutLog: compatibleFile('mimi.out.log', PRE_MIMI_DAEMON_FILES.stdoutLog),
     stderrLog: compatibleFile('mimi.err.log', PRE_MIMI_DAEMON_FILES.stderrLog),

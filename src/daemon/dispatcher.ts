@@ -42,6 +42,7 @@ import type { PersonalMessageScope } from '../runtime/personal-message-hub.js';
 type MaybePromise<T> = T | Promise<T>;
 
 export interface DispatcherOptions {
+  workerId?: string;
   pollMs?: number;
   leaseMs?: number;
   maxAttempts?: number;
@@ -114,7 +115,7 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 export class MimiDispatcher {
-  readonly workerId = `${process.pid}-${randomUUID().slice(0, 8)}`;
+  readonly workerId: string;
   readonly startedAt = new Date().toISOString();
   private readonly host: MimiHost;
   private readonly loopController = new AbortController();
@@ -136,6 +137,7 @@ export class MimiDispatcher {
     private readonly connectors?: ConnectorManager,
     private readonly options: DispatcherOptions = {},
   ) {
+    this.workerId = options.workerId ?? `${process.pid}-${randomUUID().slice(0, 8)}`;
     this.host = agentOrHost instanceof MimiHost ? agentOrHost : new MimiHost(agentOrHost);
     this.delivery = new OutboxDeliveryCoordinator(this.store, this.notifier, this.workerId);
   }
@@ -660,6 +662,7 @@ export class MimiDispatcher {
         answer: result.answer,
         sessionId: sessionEffect?.type === 'session_changed' ? sessionEffect.sessionId : decision.sessionId,
         effects: result.effects,
+        finalization: result.finalization,
         usage: result.usage,
         ...(deliveryControl.suppressed ? {
           delivery: { suppressed: true, reason: deliveryControl.reason },

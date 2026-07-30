@@ -270,15 +270,21 @@ export class SkillLoader {
     }
   }
 
-  catalog(accessOrTools?: readonly string[] | SkillRunAccess): string {
+  catalog(
+    accessOrTools?: readonly string[] | SkillRunAccess,
+    options: { includeLocations?: boolean } = {},
+  ): string {
     const access = normalizeAccess(accessOrTools);
+    const includeLocations = options.includeLocations !== false;
     return [...this.skills.values()]
       .filter((skill) => this.evaluateAvailability(skill, access).available)
-      .map((skill) => [
-        `- ${skill.name}: ${skill.description}`,
-        `  source: ${skill.source.id}`,
-        `  location: ${skill.file}`,
-      ].join('\n'))
+      .map((skill) => includeLocations
+        ? [
+            `- ${skill.name}: ${skill.description}`,
+            `  source: ${skill.source.id}`,
+            `  location: ${skill.file}`,
+          ].join('\n')
+        : `- ${skill.name}: ${skill.description}`)
       .join('\n');
   }
 

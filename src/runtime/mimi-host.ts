@@ -194,6 +194,7 @@ export class MimiHost {
           const recovered = {
             answer: receipt.answer,
             effects: receipt.effects ?? [],
+            finalization: receipt.finalization,
             usage: receipt.usage,
             delivery: receipt.delivery,
           } satisfies AgentRunResult;
