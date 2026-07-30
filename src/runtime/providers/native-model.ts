@@ -9,6 +9,7 @@ import {
   type StreamEvent,
 } from '@openai/agents';
 import type { ReasoningIntent } from '../../core/model-routing.js';
+import type { ModelRegistration } from '../../core/model-routing.js';
 
 type NativeProtocol = 'anthropic' | 'google';
 
@@ -18,6 +19,7 @@ interface NativeModelOptions {
   apiKey: string;
   modelId: string;
   reasoning: ReasoningIntent;
+  reasoningCapability?: ModelRegistration['reasoning'];
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -33,6 +35,65 @@ function contentText(content: unknown): string {
     const value = record(part);
     return typeof value.text === 'string' ? value.text : '';
   }).filter(Boolean).join('\n');
+}
+
+function dataImage(value: unknown): { mediaType: string; data: string } | undefined {
+  if (typeof value !== 'string') return undefined;
+  const match = /^data:([^;,]+);base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
+  if (!match) return undefined;
+  return { mediaType: match[1]!, data: match[2]! };
+}
+
+function anthropicContent(content: unknown): string | Array<Record<string, unknown>> {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const result: Array<Record<string, unknown>> = [];
+  for (const part of content) {
+    const value = record(part);
+    if (typeof value.text === 'string') {
+      result.push({ type: 'text', text: value.text });
+      continue;
+    }
+    if (value.type !== 'input_image') continue;
+    const image = dataImage(value.image);
+    if (!image) {
+      throw new Error('Anthropic 图片输入只接受 data URL；请求未发送');
+    }
+    result.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: image.mediaType,
+        data: image.data,
+      },
+    });
+  }
+  return result;
+}
+
+function googleParts(content: unknown): Array<Record<string, unknown>> {
+  if (typeof content === 'string') return [{ text: content }];
+  if (!Array.isArray(content)) return [];
+  const result: Array<Record<string, unknown>> = [];
+  for (const part of content) {
+    const value = record(part);
+    if (typeof value.text === 'string') {
+      result.push({ text: value.text });
+      continue;
+    }
+    if (value.type !== 'input_image') continue;
+    const image = dataImage(value.image);
+    if (!image) {
+      throw new Error('Gemini 图片输入只接受 data URL；请求未发送');
+    }
+    result.push({
+      inlineData: {
+        mimeType: image.mediaType,
+        data: image.data,
+      },
+    });
+  }
+  return result;
 }
 
 function requestItems(input: ModelRequest['input']): AgentInputItem[] {
@@ -68,7 +129,7 @@ function anthropicMessages(input: ModelRequest['input']): Array<Record<string, u
         }],
       });
     } else if (value.role === 'user' || value.role === 'assistant') {
-      messages.push({ role: value.role, content: contentText(value.content) });
+      messages.push({ role: value.role, content: anthropicContent(value.content) });
     }
   }
   return messages;
@@ -103,7 +164,7 @@ function googleContents(input: ModelRequest['input']): Array<Record<string, unkn
     } else if (value.role === 'user' || value.role === 'assistant') {
       contents.push({
         role: value.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: contentText(value.content) }],
+        parts: googleParts(value.content),
       });
     }
   }
@@ -154,6 +215,30 @@ export class NativeJsonAgentModel implements Model {
 
   private async anthropicResponse(request: ModelRequest): Promise<ModelResponse> {
     const tools = functionTools(request);
+    const maxTokens = request.modelSettings.maxTokens ?? 4_096;
+    const capability = this.options.reasoningCapability;
+    let thinking: Record<string, unknown> | undefined;
+    let outputConfig: Record<string, unknown> | undefined;
+    if (this.options.reasoning === 'high') {
+      if (!capability) throw new Error('Claude reasoning=high 的推理能力未知或未注册；请求未发送');
+      if (capability.high === 'adaptive') {
+        thinking = { type: 'adaptive' };
+        outputConfig = { effort: 'high' };
+      } else {
+        const budgetTokens = capability.manualBudgetTokens ?? Math.min(8_192, maxTokens - 1);
+        if (budgetTokens < 1_024 || budgetTokens >= maxTokens) {
+          throw new Error(
+            `Claude manual thinking 预算非法：budget_tokens=${budgetTokens} 必须 >=1024 且小于 max_tokens=${maxTokens}`,
+          );
+        }
+        thinking = { type: 'enabled', budget_tokens: budgetTokens };
+      }
+    } else if (this.options.reasoning === 'off') {
+      if (!capability?.supportsOff) {
+        throw new Error('Claude reasoning=off 未注册为受支持能力；请求未发送');
+      }
+      thinking = { type: 'disabled' };
+    }
     const response = await fetch(`${this.options.baseUrl}/messages`, {
       method: 'POST',
       headers: {
@@ -163,7 +248,7 @@ export class NativeJsonAgentModel implements Model {
       },
       body: JSON.stringify({
         model: this.options.modelId,
-        max_tokens: request.modelSettings.maxTokens ?? 4_096,
+        max_tokens: maxTokens,
         ...(request.systemInstructions ? { system: request.systemInstructions } : {}),
         messages: anthropicMessages(request.input),
         ...(tools.length ? {
@@ -173,9 +258,8 @@ export class NativeJsonAgentModel implements Model {
             input_schema: item.parameters,
           })),
         } : {}),
-        ...(this.options.reasoning === 'high'
-          ? { thinking: { type: 'enabled', budget_tokens: 8_192 } }
-          : this.options.reasoning === 'off' ? { thinking: { type: 'disabled' } } : {}),
+        ...(thinking ? { thinking } : {}),
+        ...(outputConfig ? { output_config: outputConfig } : {}),
       }),
       signal: request.signal,
     });

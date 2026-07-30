@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import type { MimiAgent } from '../src/agent.js';
 import { CommandHandler } from '../src/commands.js';
 import { SECURITY_PROFILES, type SecurityProfile } from '../src/config.js';
 import { AGENT_MODES } from '../src/runtime/instructions.js';
 import type { MemoryRef } from '../src/core/memory.js';
+import { runProviderRegistryCommand } from '../src/provider-config.js';
 
 function fakeAgent(): MimiAgent {
   return {
@@ -126,6 +130,97 @@ function fakeAgent(): MimiAgent {
     }),
   } as unknown as MimiAgent;
 }
+
+test('provider registry add/set/list/test manages models.json without secrets or restart', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-provider-registry-'));
+  const modelsFile = path.join(root, 'models.json');
+  const environment = { TEST_PROVIDER_KEY: '' };
+  await assert.rejects(
+    runProviderRegistryCommand([
+      'add', 'invalid', '--label', 'Invalid', '--transport', 'google-generate-content',
+      '--api-key-env', 'TEST_PROVIDER_KEY', '--model', 'missing-url',
+    ], modelsFile, environment),
+    /需要显式 --base-url/,
+  );
+  await assert.rejects(
+    runProviderRegistryCommand([
+      'add', 'invalid', '--label', 'Invalid', '--transport', 'google-generate-content',
+      '--base-url', 'file:///tmp/provider', '--api-key-env', 'TEST_PROVIDER_KEY',
+      '--model', 'bad-url',
+    ], modelsFile, environment),
+    /必须使用 http 或 https/,
+  );
+  await assert.rejects(
+    runProviderRegistryCommand([
+      'add', 'invalid', '--label', 'Invalid', '--transport', 'google-generate-content',
+      '--base-url', 'https://example.com', '--api-key-env', 'not-an-env',
+      '--model', 'bad-env',
+    ], modelsFile, environment),
+    /必须是环境变量名/,
+  );
+  assert.deepEqual(await runProviderRegistryCommand([
+    'add',
+    'test-provider',
+    '--label', 'Test Provider',
+    '--transport', 'google-generate-content',
+    '--base-url', 'https://generativelanguage.googleapis.com/v1beta',
+    '--api-key-env', 'TEST_PROVIDER_KEY',
+    '--model', 'gemini-explicit',
+    '--kind', 'agent',
+    '--image-input', 'true',
+    '--image-output', 'false',
+    '--tool-calling', 'true',
+    '--context-window', '100000',
+  ], modelsFile, environment), {
+    action: 'added',
+    target: { providerId: 'test-provider', modelId: 'gemini-explicit' },
+    routeVersion: 1,
+    daemonRestarted: false,
+  });
+  const contents = await readFile(modelsFile, 'utf8');
+  assert.match(contents, /"apiKeyEnv": "TEST_PROVIDER_KEY"/);
+  assert.doesNotMatch(contents, /fixture-secret|apiKey":/);
+  await assert.rejects(
+    runProviderRegistryCommand([
+      'add',
+      'test-provider',
+      '--label', 'Test Provider',
+      '--transport', 'google-generate-content',
+      '--base-url', 'https://generativelanguage.googleapis.com/v1beta',
+      '--api-key-env', 'TEST_PROVIDER_KEY',
+      '--model', 'gemini-explicit',
+    ], modelsFile, environment),
+    /已注册/,
+  );
+
+  const listed = await runProviderRegistryCommand(
+    ['list'],
+    modelsFile,
+    environment,
+  ) as {
+    providers: Array<{ id: string; configured: boolean }>;
+  };
+  assert.deepEqual(listed.providers.map((provider) => ({
+    id: provider.id,
+    configured: provider.configured,
+  })), [{ id: 'test-provider', configured: false }]);
+
+  assert.deepEqual(await runProviderRegistryCommand([
+    'set',
+    'test-provider/gemini-explicit',
+  ], modelsFile, environment), {
+    action: 'set',
+    target: { providerId: 'test-provider', modelId: 'gemini-explicit' },
+    routeVersion: 2,
+    daemonRestarted: false,
+  });
+  const tested = await runProviderRegistryCommand([
+    'test',
+    'test-provider/gemini-explicit',
+  ], modelsFile, environment) as { status: string; error?: string };
+  assert.equal(tested.status, 'unconfigured');
+  assert.match(tested.error ?? '', /TEST_PROVIDER_KEY/);
+});
 
 test('handles status and high-frequency inspection commands', async () => {
   const output: string[] = [];

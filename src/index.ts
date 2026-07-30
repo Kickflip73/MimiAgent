@@ -6,6 +6,7 @@ import { daemonHelp, runDaemonCommand } from './daemon/cli.js';
 import {
   parseProviderSetRequest,
   persistProviderConfiguration,
+  runProviderRegistryCommand,
 } from './provider-config.js';
 
 async function version(): Promise<string> {
@@ -20,7 +21,12 @@ function cliHelp(): string {
 用法：
   mimi                    开始对话
   mimi "任务"             执行单次任务
-  mimi provider set ...    原子配置模型 Provider 并重启
+  mimi provider add ...    注册 Provider/模型（只保存 credential 环境变量引用）
+  mimi provider set <providerId/modelId>
+                           更新 registry 全局默认 target，不重启
+  mimi provider list       查看 registry
+  mimi provider test <providerId/modelId>
+                           测试已注册 target
   mimi --help             查看帮助
   mimi --version          查看版本
 
@@ -45,6 +51,18 @@ async function main(): Promise<void> {
   }
   loadEnvironment();
   if (args[0] === 'provider') {
+    const legacySet = args[1] === 'set'
+      && ['openai', 'deepseek', 'openai-compatible'].includes(args[2] ?? '');
+    if (!legacySet) {
+      const config = loadConfig();
+      if (!config.modelsConfig) throw new Error('未解析 models.json 路径');
+      console.log(JSON.stringify(
+        await runProviderRegistryCommand(args.slice(1), config.modelsConfig),
+        null,
+        2,
+      ));
+      return;
+    }
     const request = parseProviderSetRequest(args.slice(1));
     const persisted = await persistProviderConfiguration(request);
     const config = loadConfig();

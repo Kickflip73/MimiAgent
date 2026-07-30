@@ -27,6 +27,7 @@ export const modelsConfigSchema = z.object({
 }).strict().superRefine((value, context) => {
   const providerIds = new Set<string>();
   const targets = new Set<string>();
+  const contextWindows = new Map<string, number>();
   for (const [providerIndex, provider] of value.providers.entries()) {
     if (providerIds.has(provider.id)) {
       context.addIssue({
@@ -53,6 +54,7 @@ export const modelsConfigSchema = z.object({
         });
       }
       targets.add(key);
+      if (model.contextWindow !== undefined) contextWindows.set(key, model.contextWindow);
       if (model.kind === 'image-generation'
         && (!model.capabilities.imageOutput || model.capabilities.toolCalling)) {
         context.addIssue({
@@ -84,6 +86,24 @@ export const modelsConfigSchema = z.object({
         message: `路由引用未注册 target：${modelTargetKey(target)}`,
         path: ['routing'],
       });
+    }
+  }
+  for (const [scenario, route] of Object.entries(value.routing.scenarios)) {
+    if (route.maxOutputTokens === undefined) continue;
+    const targetsForRoute = route.target
+      ? [route.target]
+      : route.candidates?.length
+        ? route.candidates
+        : [value.routing.globalDefault];
+    for (const target of targetsForRoute) {
+      const contextWindow = contextWindows.get(modelTargetKey(target));
+      if (contextWindow !== undefined && route.maxOutputTokens >= contextWindow) {
+        context.addIssue({
+          code: 'custom',
+          message: `场景 ${scenario} 的 maxOutputTokens 必须小于模型 contextWindow`,
+          path: ['routing', 'scenarios', scenario, 'maxOutputTokens'],
+        });
+      }
     }
   }
 });

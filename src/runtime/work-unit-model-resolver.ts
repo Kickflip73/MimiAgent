@@ -115,6 +115,14 @@ export class WorkUnitModelResolver {
         }
         continue;
       }
+      if (route?.maxOutputTokens !== undefined
+        && registered.registration.contextWindow !== undefined
+        && route.maxOutputTokens >= registered.registration.contextWindow) {
+        throw new Error(
+          `场景 ${input.scenario} 的 maxOutputTokens=${route.maxOutputTokens}`
+          + ` 必须小于模型 contextWindow=${registered.registration.contextWindow}`,
+        );
+      }
       return Object.freeze({
         target: Object.freeze({ ...candidate.target }),
         kind: registered.registration.kind,
@@ -123,6 +131,11 @@ export class WorkUnitModelResolver {
         ...(input.profile?.complexity ? { complexity: input.profile.complexity } : {}),
         reason: candidate.reason,
         routeVersion: input.routeVersion,
+        ...(registered.registration.contextWindow
+          ? { contextWindow: registered.registration.contextWindow }
+          : {}),
+        ...(route?.maxTurns ? { maxTurns: route.maxTurns } : {}),
+        ...(route?.maxOutputTokens ? { maxOutputTokens: route.maxOutputTokens } : {}),
       });
     }
     throw new Error(

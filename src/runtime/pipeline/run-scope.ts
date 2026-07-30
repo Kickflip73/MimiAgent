@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type {
   AgentPermissionMode,
-  AppConfig,
   SecurityProfile,
 } from '../../config.js';
 import type { AgentMode } from '../instructions.js';
 import type { RunModelBinding } from '../../core/model-routing.js';
+import type { ProviderTransport } from '../../core/model-routing.js';
 
 export interface RunScopeCause {
   eventId: string;
@@ -25,7 +25,8 @@ export interface RunScope {
   readonly sessionId: string;
   readonly profileId: string;
   readonly workspaceRoot: string;
-  readonly provider: AppConfig['provider'];
+  readonly provider: string;
+  readonly transport?: ProviderTransport;
   readonly model: string;
   readonly modelBinding?: Readonly<RunModelBinding>;
   readonly mode: AgentMode;
@@ -39,7 +40,8 @@ export interface RunScope {
 export interface RunScopeInput {
   sessionId: string;
   workspaceRoot: string;
-  provider: AppConfig['provider'];
+  provider: string;
+  transport?: ProviderTransport;
   model: string;
   modelBinding?: RunModelBinding;
   mode: AgentMode;
@@ -63,6 +65,7 @@ export function captureRunScope(input: RunScopeInput): RunScope {
     profileId: cause?.profileId ?? 'owner',
     workspaceRoot: input.workspaceRoot,
     provider: input.provider,
+    transport: input.transport,
     model: input.model,
     modelBinding: input.modelBinding
       ? Object.freeze({
