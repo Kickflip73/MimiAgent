@@ -1,4 +1,6 @@
+import type { AgentInputItem } from '@openai/agents';
 import type { RunMemoryContext } from '../core/memory.js';
+import type { Goal } from '../core/plan.js';
 
 export interface RunContextCause {
   eventId: string;
@@ -37,10 +39,31 @@ export class RunContextBuilder {
     return `本轮触发来源：${safe(cause.source)}，事件 ${safe(cause.eventId)}，信任等级 ${cause.trust}${actor}${conversation}${person}。${warning}`;
   }
 
-  memoryQuery(input: string, cause?: RunContextCause): string {
-    return [input, cause?.source, cause?.actor, cause?.conversation, cause?.personId, cause?.personName]
-      .filter((value): value is string => Boolean(value))
-      .join(' ');
+  memoryQuery(
+    input: string,
+    _cause?: RunContextCause,
+    state?: { goal?: Readonly<Goal>; history: readonly AgentInputItem[] },
+  ): string {
+    const intent = input.trim();
+    if (!/^(?:继续|接着|然后呢|continue|go on)[。.！!]?$/iu.test(intent)) return intent;
+    const recent = (state?.history ?? []).filter((item) => {
+      const value = item as unknown as Record<string, unknown>;
+      return value.type === 'message' || (!value.type && (value.role === 'user' || value.role === 'assistant'));
+    }).slice(-4).map((item) => {
+      const value = item as unknown as Record<string, unknown>;
+      const content = value.content;
+      if (typeof content === 'string') return content.replace(/\s+/g, ' ').trim();
+      if (Array.isArray(content)) return content.map((part) => {
+        const record = part as Record<string, unknown>;
+        return typeof record.text === 'string' ? record.text : '';
+      }).filter(Boolean).join(' ');
+      return '';
+    }).filter(Boolean);
+    return [
+      intent,
+      state?.goal?.objective ? `Goal: ${state.goal.objective}` : '',
+      recent.length ? `最近两轮: ${recent.join(' | ')}` : '',
+    ].filter(Boolean).join('\n');
   }
 
   forRun(run: MemoryRunIdentity, cause?: RunContextCause): RunMemoryContext {

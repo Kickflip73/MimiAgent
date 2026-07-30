@@ -48,7 +48,11 @@ type DaxiangSessionType = 'chat' | 'groupchat' | 'pubchat' | 'collectchat';
 
 class FakeDriver {
   commits = 0;
+  contextReads = 0;
+  refreshes = 0;
+  navigationStartedAt = Date.now();
   observeStatus: 'observed' | 'failed' | 'pending' = 'observed';
+  varyReceiptOnRead = false;
   candidateMatched = true;
   candidateType: DaxiangSessionType | undefined;
   missingCandidateSids = new Set<string>();
@@ -73,7 +77,7 @@ class FakeDriver {
     actorId: 'actor-1',
     text: 'hello',
     occurredAt: '2026-07-27T10:00:00.000Z',
-    receipt: null,
+    receipt: null as string | null,
   }];
   selfRowCount = 1;
   selfIdentityLabel: string | null = selfLabel;
@@ -102,6 +106,12 @@ class FakeDriver {
     return { tab: { active: false } };
   }
 
+  async refresh(_marker: string): Promise<Record<string, unknown>> {
+    this.refreshes += 1;
+    this.navigationStartedAt = Date.now();
+    return { tab: { active: false }, refreshed: true };
+  }
+
   async execute(_marker: string, script: string): Promise<{ value: string | null }> {
     const invocation = /__mimiDaxiangBridge\.([a-zA-Z]+)\((\{.*\})\)\)/.exec(script);
     const method = invocation?.[1];
@@ -120,6 +130,7 @@ class FakeDriver {
         readable: this.readable,
         sendStructureReady: this.inspectPageShape.inputCount === 1,
         selected: { sid: this.selectedSid, type: this.selectedType },
+        navigationStartedAt: new Date(this.navigationStartedAt).toISOString(),
       };
     } else if (method === 'installObserver') result = { installed: true };
     else if (method === 'drain') result = [];
@@ -211,17 +222,28 @@ class FakeDriver {
       result = { selected: true, changed };
     }
     else if (method === 'readCurrentConversation') {
+      this.contextReads += 1;
       const requestedSid = String(input.sid);
       const requestedType = input.type as DaxiangSessionType;
       result = {
         matched: requestedSid === this.selectedSid && requestedType === this.selectedType,
         sid: requestedSid,
         type: requestedType,
-        messages: this.messages,
+        messages: this.messages.map((message) => ({
+          ...message,
+          ...(this.varyReceiptOnRead ? { receipt: String(this.contextReads) } : {}),
+        })),
         capturedAt: '2026-07-27T10:00:01.000Z',
         readStateChanged: 'unknown',
       };
-    } else if (method === 'prepareSend') result = { prepared: true };
+    } else if (method === 'prepareSend') {
+      result = {
+        prepared: String(input.sid) === this.selectedSid && input.type === this.selectedType,
+        ...(String(input.sid) === this.selectedSid && input.type === this.selectedType
+          ? {}
+          : { reason: 'target_not_selected' }),
+      };
+    }
     else if (method === 'commitSend') {
       this.commits += 1;
       result = { dispatched: true, repeated: false };
@@ -348,6 +370,36 @@ test('Daxiang dynamically paginates all current session types and reads an uncon
   });
   assert.equal(unboundSend.status, 'failed');
   assert.match(String(unboundSend.error), /configured allowlist/);
+});
+
+test('Daxiang bounded context loads a virtualized exact target before reading it', async () => {
+  const driver = new FakeDriver();
+  driver.sessions = [
+    { sid: '456', type: 'groupchat', label: 'Recent group' },
+    { sid: '123', type: 'chat', label: 'Owner Self' },
+  ];
+  driver.loadedSessionCount = 1;
+  driver.sessionLoadBatch = 1;
+  driver.selectedSid = '456';
+  driver.selectedType = 'groupchat';
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-virtualized-target-${Date.now()}.json`),
+  });
+  await adapter.health({ probe: true });
+
+  const context = await adapter.getContext({
+    accountFingerprint,
+    sid: '123',
+    type: 'chat',
+    limit: 1,
+  });
+
+  assert.match(String(context.conversationId), /:123$/);
+  assert.equal(driver.loadedSessionCount, 2);
+  assert.equal(driver.sessionScrollTop, 24);
 });
 
 test('Daxiang defaults to one recent page and leaves older pagination optional', async () => {
@@ -736,6 +788,69 @@ test('Daxiang bounds context as structured newest messages before the generic to
   assert.equal(messages.at(-1)?.id, '10014');
 });
 
+test('Daxiang context stabilization ignores mutable delivery receipts', async () => {
+  const driver = new FakeDriver();
+  driver.varyReceiptOnRead = true;
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-receipt-stability-${Date.now()}.json`),
+    conversationReadTimeoutMs: 500,
+  });
+  await adapter.health({ probe: true });
+
+  const context = await adapter.getContext({
+    accountFingerprint,
+    sid: '123',
+    type: 'chat',
+    limit: 1,
+  });
+
+  const messages = context.messages as Array<{ id: string }>;
+  assert.equal(messages[0]?.id, '9001');
+  assert.ok(driver.contextReads < 5);
+});
+
+test('Daxiang probe refreshes an old dedicated web session once before reporting ready', async () => {
+  const driver = new FakeDriver();
+  driver.navigationStartedAt = Date.now() - 60_000;
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-session-refresh-${Date.now()}.json`),
+    sessionRefreshIntervalMs: 1_000,
+    sessionRefreshSettleMs: 1,
+  });
+
+  const first = await adapter.health({ probe: true });
+  const second = await adapter.health({ probe: true });
+
+  assert.equal(first.outbound, 'ready');
+  assert.equal(second.outbound, 'ready');
+  assert.match(String(first.sessionNavigationStartedAt), /^20\d\d-/);
+  assert.equal(driver.refreshes, 1);
+});
+
+test('Daxiang ordinary reads never refresh an old dedicated web session', async () => {
+  const driver = new FakeDriver();
+  driver.navigationStartedAt = Date.now() - 60_000;
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-session-read-${Date.now()}.json`),
+    sessionRefreshIntervalMs: 1_000,
+    sessionRefreshSettleMs: 1,
+  });
+
+  const health = await adapter.health();
+
+  assert.equal(health.outbound, 'ready');
+  assert.equal(driver.refreshes, 0);
+});
+
 test('Daxiang rejects a configured binding that is absent or type-mismatched on the current page', async () => {
   for (const [index, mutate] of [
     (driver: FakeDriver) => { driver.candidateMatched = false; },
@@ -860,6 +975,27 @@ test('Daxiang send clicks once and reports observed rather than confirmed', asyn
   assert.equal(result.deliveryConfirmed, false);
 });
 
+test('Daxiang owner send performs one stabilized context read before clicking', async () => {
+  const driver = new FakeDriver();
+  driver.selectedSid = '456';
+  driver.selectedType = 'groupchat';
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(os.tmpdir(), `daxiang-owner-send-${Date.now()}.json`),
+  });
+
+  const result = await adapter.sendToOwner('通道闭环测试');
+
+  assert.equal(driver.commits, 1);
+  assert.ok(driver.contextReads <= 10);
+  assert.deepEqual(driver.selectionCalls, ['chat:123', 'groupchat:456']);
+  assert.equal(driver.selectedSid, '456');
+  assert.equal(driver.selectedType, 'groupchat');
+  assert.equal(result.status, 'observed');
+});
+
 test('Daxiang send reports an explicit page failure without clicking again', async () => {
   const driver = new FakeDriver();
   driver.observeStatus = 'failed';
@@ -927,6 +1063,14 @@ test('Daxiang page bridge has no credential access or foreground activation path
   assert.match(bridge, /\(\?:me\|from-me/);
   assert.match(bridge, /\(\?:you\|from-other/);
   assert.match(bridge, /page_marked_send_failed/);
+  assert.match(bridge, /function setTextareaValue/);
+  assert.match(bridge, /element\.focus\(\)/);
+  assert.match(bridge, /setTextareaValue\(inputElement, text\)/);
+  assert.match(bridge, /_valueTracker\?\.setValue/);
+  assert.match(bridge, /draft_changed_before_commit/);
+  assert.match(bridge, /beforeCount: current\.messages\.length/);
+  assert.match(bridge, /message\.mid && message\.direction === 'outgoing'/);
+  assert.match(bridge, /navigationStartedAt/);
   new Function(bridge);
 });
 

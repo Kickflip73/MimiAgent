@@ -255,7 +255,11 @@ export class MimiHost {
 
   snapshot(sessionId: string): Promise<AgentSessionSnapshot> {
     this.assertOpen();
-    return this.agent.sessionSnapshot(sessionId);
+    return this.actorFor(sessionId).then((actor) => this.enqueue(
+      actor,
+      () => actor.agent.sessionSnapshot(sessionId),
+      sessionId,
+    ));
   }
 
   listSessionSummaries(): Promise<SessionSummary[]> {

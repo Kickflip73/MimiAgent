@@ -47,6 +47,9 @@ export class DaxiangWebAdapter {
     configFile?: string;
     diagnosticsFile?: string;
     sendObservationTimeoutMs?: number;
+    conversationReadTimeoutMs?: number;
+    sessionRefreshIntervalMs?: number;
+    sessionRefreshSettleMs?: number;
   });
   static create(options?: Record<string, unknown>): Promise<DaxiangWebAdapter>;
   readonly config: DaxiangWebConfig;
@@ -60,6 +63,7 @@ export class DaxiangWebAdapter {
   poll(): Promise<{ events: Array<Record<string, any>>; health: Record<string, unknown> }>;
   acknowledge(externalIds: string[]): Promise<{ acknowledged: string[] }>;
   send(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  sendToOwner(text: string): Promise<Record<string, unknown>>;
 }
 
 export const BRIDGE_FILE: string;

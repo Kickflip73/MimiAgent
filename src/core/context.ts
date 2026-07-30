@@ -1,7 +1,12 @@
 import type { AgentInputItem, SessionInputCallback } from '@openai/agents';
+import { createHash } from 'node:crypto';
 import type { MemoryCard } from './memory.js';
 import type { Goal, PlanStep } from './plan.js';
-import type { ContextArchive } from './session.js';
+import type {
+  ContextArchive,
+  ContextToolArtifact,
+  ContextWorkSnapshot,
+} from './session.js';
 
 export interface ContextParts {
   baseInstructions: string;
@@ -40,6 +45,7 @@ export type ContextSectionId =
   | 'memory-cards'
   | 'skill-catalog'
   | 'active-skills'
+  | 'work-snapshot'
   | 'archive'
   | 'recent-history'
   | 'current-input'
@@ -54,7 +60,14 @@ export interface ContextSectionUsage {
 }
 
 export interface ContextCompressionRecord {
-  strategy: 'microcompact' | 'collapse' | 'full-compact' | 'turn-truncation' | 'input-fit';
+  strategy:
+    | 'microcompact'
+    | 'collapse'
+    | 'full-compact'
+    | 'turn-truncation'
+    | 'input-fit'
+    | 'semantic-summary'
+    | 'tool-result-summary';
   affectedItems: number;
   beforeTokens: number;
   afterTokens: number;
@@ -95,6 +108,41 @@ export interface EffectiveHistoryResult {
   records: ContextCompressionRecord[];
   rawTokens: number;
   effectiveTokens: number;
+}
+
+export type WorkSnapshot = Omit<ContextWorkSnapshot, 'updatedAt' | 'runId'>;
+
+export type WorkSnapshotContent = Omit<WorkSnapshot, 'coveredItems' | 'sourceDigest'>;
+
+export interface ContextSemanticSummaryRequest {
+  input: AgentInputItem[];
+  previous?: ContextWorkSnapshot;
+  seed: Partial<WorkSnapshotContent>;
+  maxSnapshotTokens: number;
+}
+
+export interface ContextSemanticSummarizer {
+  summarize(request: ContextSemanticSummaryRequest): Promise<WorkSnapshotContent>;
+}
+
+export interface ModelContextView {
+  input: AgentInputItem[];
+  instructions?: string;
+  snapshot?: WorkSnapshot;
+  records: ContextCompressionRecord[];
+  rawTokens: number;
+  effectiveTokens: number;
+  usageRatio: number;
+  consumedArtifactRefs: string[];
+}
+
+export interface ModelContextViewOptions {
+  consumedArtifactRefs?: ReadonlySet<string>;
+  toolArtifacts?: readonly ContextToolArtifact[];
+  persistedSnapshot?: ContextWorkSnapshot;
+  semanticSnapshot?: WorkSnapshot;
+  seedSnapshot?: Partial<WorkSnapshotContent>;
+  firstPassToolResultLimitTokens?: number;
 }
 
 export interface BuiltInstructions {
@@ -139,7 +187,8 @@ export class ContextManager {
 
   requestBudget(toolSchemas: unknown): RequestBudget {
     const toolSchemaTokens = estimateTokens(toolSchemas);
-    // Covers provider/SDK message wrappers and MCP tools whose schemas are resolved lazily.
+    // Covers provider/SDK message wrappers. MCP tools are host-materialized before
+    // this calculation, so there is no hidden schema allowance in this reserve.
     const protocolReserveTokens = Math.max(1_000, Math.floor(this.contextWindow * 0.02));
     const inputBudget = this.contextWindow - this.outputReserveTokens - toolSchemaTokens - protocolReserveTokens;
     if (inputBudget < 256) throw new Error('模型上下文窗口不足以容纳工具定义和输出预留');
@@ -153,6 +202,156 @@ export class ContextManager {
   }
 
   readonly sessionInput: SessionInputCallback = async (history, input) => this.effectiveHistory(history, input);
+
+  startOfLastUserTurn(input: AgentInputItem[]): number {
+    for (let index = input.length - 1; index >= 0; index -= 1) {
+      if (this.itemRole(input[index]!) === 'user') return index;
+    }
+    return -1;
+  }
+
+  async prepareSemanticSnapshot(
+    input: AgentInputItem[],
+    summarizer: ContextSemanticSummarizer,
+    options: Pick<ModelContextViewOptions, 'persistedSnapshot' | 'seedSnapshot'> = {},
+  ): Promise<WorkSnapshot> {
+    const coveredItems = this.startOfRecentTurns(input, 3);
+    const sourceDigest = this.sourceDigest(input.slice(0, coveredItems));
+    const persisted = options.persistedSnapshot;
+    if (persisted
+      && persisted.coveredItems === coveredItems
+      && persisted.sourceDigest === sourceDigest) {
+      return this.snapshotContent(persisted, coveredItems, sourceDigest);
+    }
+    const maxSnapshotTokens = Math.max(2_000, Math.floor(this.contextWindow * 0.08));
+    const content = this.normalizeSnapshot(await summarizer.summarize({
+      input: structuredClone(input.slice(0, coveredItems)),
+      previous: persisted ? structuredClone(persisted) : undefined,
+      seed: structuredClone(options.seedSnapshot ?? {}),
+      maxSnapshotTokens,
+    }), options.seedSnapshot);
+    const requiredReferences = this.requiredOpaqueReferences(input.slice(0, coveredItems));
+    content.references = [...new Set([...content.references, ...requiredReferences])];
+    const snapshot = { ...content, coveredItems, sourceDigest };
+    if (estimateTokens(this.renderWorkSnapshot(snapshot)) > maxSnapshotTokens) {
+      throw new ContextProtocolBudgetError(
+        '模型生成的语义工作快照超过有界快照预算；canonical Session 已保留',
+      );
+    }
+    return snapshot;
+  }
+
+  modelContextView(
+    input: AgentInputItem[],
+    instructions?: string,
+    capacityTokens = Math.max(1, this.contextWindow - this.outputReserveTokens),
+    options: ModelContextViewOptions = {},
+  ): ModelContextView {
+    const rawTokens = estimateTokens(input) + estimateTokens(instructions ?? '');
+    const usageRatio = rawTokens / Math.max(1, capacityTokens);
+    let summarizedTools = this.summarizeConsumedToolResults(input, options);
+    if (estimateTokens(summarizedTools.items) + estimateTokens(instructions ?? '') > capacityTokens) {
+      summarizedTools = this.summarizeConsumedToolResults(input, {
+        ...options,
+        firstPassToolResultLimitTokens: 0,
+      });
+    }
+    const snapshot = usageRatio >= 0.7
+      ? this.verifiedSnapshot(input, options.semanticSnapshot ?? options.persistedSnapshot)
+      : undefined;
+    if (usageRatio < 0.8) {
+      const effectiveTokens = estimateTokens(summarizedTools.items) + estimateTokens(instructions ?? '');
+      if (effectiveTokens > capacityTokens) {
+        throw new ContextProtocolBudgetError(
+          `工具结果有界化后模型视图仍需 ${effectiveTokens} tokens，超过 ${capacityTokens} 输入预算；`
+          + 'canonical Session 已保留，请通过 Context Artifact 分步读取',
+        );
+      }
+      return {
+        input: summarizedTools.items,
+        instructions,
+        snapshot,
+        records: summarizedTools.record ? [summarizedTools.record] : [],
+        rawTokens,
+        effectiveTokens,
+        usageRatio,
+        consumedArtifactRefs: summarizedTools.consumedArtifactRefs,
+      };
+    }
+
+    const effectiveSnapshot = snapshot?.coveredItems ? snapshot : undefined;
+    if (!effectiveSnapshot) {
+      const effectiveTokens = estimateTokens(summarizedTools.items) + estimateTokens(instructions ?? '');
+      if (effectiveTokens > capacityTokens) {
+        throw new ContextProtocolBudgetError(
+          `没有可验证语义快照且当前模型视图需 ${effectiveTokens} tokens，超过 ${capacityTokens} 输入预算；`
+          + 'canonical Session 已保留，拒绝用字符裁剪冒充语义摘要',
+        );
+      }
+      return {
+        input: summarizedTools.items,
+        instructions,
+        records: summarizedTools.record ? [summarizedTools.record] : [],
+        rawTokens,
+        effectiveTokens,
+        usageRatio,
+        consumedArtifactRefs: summarizedTools.consumedArtifactRefs,
+      };
+    }
+    const older = summarizedTools.items.slice(0, effectiveSnapshot.coveredItems);
+    const retained = summarizedTools.items.slice(effectiveSnapshot.coveredItems);
+    const snapshotText = this.renderWorkSnapshot(effectiveSnapshot);
+    const modelInstructions = [instructions, snapshotText].filter(Boolean).join('\n\n');
+    const effectiveTokens = estimateTokens(retained) + estimateTokens(modelInstructions);
+    const safeUncompressedTokens = estimateTokens(summarizedTools.items) + estimateTokens(instructions ?? '');
+    if (safeUncompressedTokens <= capacityTokens && effectiveTokens >= safeUncompressedTokens) {
+      return {
+        input: summarizedTools.items,
+        instructions,
+        snapshot: effectiveSnapshot,
+        records: summarizedTools.record ? [summarizedTools.record] : [],
+        rawTokens,
+        effectiveTokens: safeUncompressedTokens,
+        usageRatio,
+        consumedArtifactRefs: summarizedTools.consumedArtifactRefs,
+      };
+    }
+    const records: ContextCompressionRecord[] = [{
+      strategy: 'semantic-summary',
+      affectedItems: older.length,
+      beforeTokens: estimateTokens(older),
+      afterTokens: estimateTokens(snapshotText),
+    }];
+    if (summarizedTools.record) records.push(summarizedTools.record);
+    if (effectiveTokens > capacityTokens) {
+      if (safeUncompressedTokens <= capacityTokens) {
+        return {
+          input: summarizedTools.items,
+          instructions,
+          snapshot: effectiveSnapshot,
+          records: summarizedTools.record ? [summarizedTools.record] : [],
+          rawTokens,
+          effectiveTokens: safeUncompressedTokens,
+          usageRatio,
+          consumedArtifactRefs: summarizedTools.consumedArtifactRefs,
+        };
+      }
+      throw new ContextProtocolBudgetError(
+        `语义压缩后模型视图仍需 ${effectiveTokens} tokens，超过 ${capacityTokens} 输入预算；`
+        + 'canonical Session 已保留，请拆分当前请求或减少最新协议单元',
+      );
+    }
+    return {
+      input: retained,
+      instructions: modelInstructions,
+      snapshot: effectiveSnapshot,
+      records,
+      rawTokens,
+      effectiveTokens,
+      usageRatio,
+      consumedArtifactRefs: summarizedTools.consumedArtifactRefs,
+    };
+  }
 
   inputCallback(archive?: ContextArchive, tokenBudget?: number): SessionInputCallback {
     return async (history, input) => this.effectiveHistory(history, input, archive, tokenBudget);
@@ -405,7 +604,7 @@ export class ContextManager {
     const starts = history
       .map((item, index) => this.itemRole(item) === 'user' ? index : -1)
       .filter((index) => index >= 0);
-    const keepFullFrom = starts.length > 2 ? starts.at(-2)! : 0;
+    const keepFullFrom = starts.length > 3 ? starts.at(-3)! : 0;
     return history.map((item, index) => {
       const value = item as unknown as Record<string, unknown>;
       if (index >= keepFullFrom || value.type !== 'function_call_result') return item;
@@ -413,9 +612,229 @@ export class ContextManager {
       if (output.length <= 800) return item;
       return {
         ...value,
-        output: `[较早工具结果已压缩，原始内容保存在 Session] ${output.slice(0, 760)}...`,
+        output: this.toolResultSummary(value, undefined, true),
       } as unknown as AgentInputItem;
     });
+  }
+
+  private normalizeSnapshot(
+    candidate: WorkSnapshotContent,
+    seed: Partial<WorkSnapshotContent> = {},
+  ): WorkSnapshotContent {
+    const keys: Array<keyof WorkSnapshotContent> = [
+      'goal',
+      'progress',
+      'completed',
+      'decisions',
+      'constraints',
+      'openQuestions',
+      'evidence',
+      'keyFacts',
+      'references',
+    ];
+    const snapshot = {} as WorkSnapshotContent;
+    for (const key of keys) {
+      const values = [...(seed[key] ?? []), ...(Array.isArray(candidate[key]) ? candidate[key] : [])];
+      snapshot[key] = [...new Set(values
+        .filter((value): value is string => typeof value === 'string')
+        .map((value) => value.replace(/\s+/g, ' ').trim())
+        .filter(Boolean))];
+    }
+    return snapshot;
+  }
+
+  private snapshotContent(
+    snapshot: ContextWorkSnapshot,
+    coveredItems: number,
+    sourceDigest: string,
+  ): WorkSnapshot {
+    return {
+      goal: [...snapshot.goal],
+      progress: [...snapshot.progress],
+      completed: [...snapshot.completed],
+      decisions: [...snapshot.decisions],
+      constraints: [...snapshot.constraints],
+      openQuestions: [...snapshot.openQuestions],
+      evidence: [...snapshot.evidence],
+      keyFacts: [...snapshot.keyFacts],
+      references: [...snapshot.references],
+      coveredItems,
+      sourceDigest,
+    };
+  }
+
+  private verifiedSnapshot(
+    history: AgentInputItem[],
+    snapshot?: ContextWorkSnapshot | WorkSnapshot,
+  ): WorkSnapshot | undefined {
+    if (!snapshot || snapshot.coveredItems < 0 || snapshot.coveredItems > history.length) return undefined;
+    const recentStart = this.startOfRecentTurns(history, 3);
+    if (snapshot.coveredItems > recentStart) return undefined;
+    const digest = this.sourceDigest(history.slice(0, snapshot.coveredItems));
+    return digest === snapshot.sourceDigest
+      ? this.snapshotContent(snapshot as ContextWorkSnapshot, snapshot.coveredItems, snapshot.sourceDigest)
+      : undefined;
+  }
+
+  private sourceDigest(items: AgentInputItem[]): string {
+    return `sha256:${createHash('sha256').update(JSON.stringify(items)).digest('hex')}`;
+  }
+
+  private requiredOpaqueReferences(value: unknown): string[] {
+    const text = JSON.stringify(value);
+    if (!text) return [];
+    const patterns = [
+      /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/giu,
+      /\b(?:call|run|task|session|operation|artifact|trace|opaque)[-_][A-Za-z0-9._:-]{4,}\b/gu,
+      /https?:\/\/[^\s"'<>\\]+/gu,
+    ];
+    return [...new Set(patterns.flatMap((pattern) => text.match(pattern) ?? []))];
+  }
+
+  private renderWorkSnapshot(snapshot: WorkSnapshot): string {
+    const sections: Array<[string, string[]]> = [
+      ['目标', snapshot.goal],
+      ['进度', snapshot.progress],
+      ['已完成', snapshot.completed],
+      ['决策', snapshot.decisions],
+      ['约束', snapshot.constraints],
+      ['未决问题', snapshot.openQuestions],
+      ['证据/Artifact', snapshot.evidence],
+      ['关键事实/实体/数值', snapshot.keyFacts],
+      ['稳定引用', snapshot.references],
+    ];
+    return [
+      '工作快照（派生模型视图；canonical Session 未改写）：',
+      ...sections.map(([label, values]) => `${label}：${values.length ? values.join(' | ') : '无'}`),
+    ].join('\n');
+  }
+
+  private summarizeConsumedToolResults(
+    history: AgentInputItem[],
+    options: ModelContextViewOptions,
+  ): {
+    items: AgentInputItem[];
+    record?: ContextCompressionRecord;
+    consumedArtifactRefs: string[];
+  } {
+    let summarized = 0;
+    const beforeTokens = estimateTokens(history);
+    const consumedArtifactRefs: string[] = [];
+    const artifacts = options.toolArtifacts ?? [];
+    const firstPassLimit = options.firstPassToolResultLimitTokens ?? 8_000;
+    const resultCount = history.filter((item) =>
+      (item as unknown as Record<string, unknown>).type === 'function_call_result').length;
+    let latestResult = -1;
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      if ((history[index] as unknown as Record<string, unknown>).type === 'function_call_result') {
+        latestResult = index;
+        break;
+      }
+    }
+    const items = history.map((item, index) => {
+      const value = item as unknown as Record<string, unknown>;
+      if (value.type !== 'function_call_result') return item;
+      const artifact = this.toolArtifact(value, artifacts);
+      if (artifact) consumedArtifactRefs.push(artifact.ref);
+      const output = this.extractText(value.output);
+      const wasConsumed = artifact
+        ? options.consumedArtifactRefs?.has(artifact.ref) === true
+        : resultCount > 1 || index !== latestResult;
+      if (!wasConsumed && estimateTokens(output) <= firstPassLimit) return item;
+      summarized += 1;
+      return {
+        ...value,
+        output: this.toolResultSummary(value, artifact?.ref),
+      } as unknown as AgentInputItem;
+    });
+    return {
+      items,
+      consumedArtifactRefs: [...new Set(consumedArtifactRefs)],
+      ...(summarized ? {
+        record: {
+          strategy: 'tool-result-summary' as const,
+          affectedItems: summarized,
+          beforeTokens,
+          afterTokens: estimateTokens(items),
+        },
+      } : {}),
+    };
+  }
+
+  private toolArtifact(
+    result: Record<string, unknown>,
+    artifacts: readonly ContextToolArtifact[],
+  ): ContextToolArtifact | undefined {
+    const callId = String(result.callId ?? result.call_id ?? '');
+    if (!callId) return undefined;
+    const outputDigest = `sha256:${createHash('sha256')
+      .update(JSON.stringify(result.output ?? null))
+      .digest('hex')}`;
+    return artifacts.find((artifact) =>
+      artifact.callId === callId && artifact.outputDigest === outputDigest);
+  }
+
+  private toolResultSummary(
+    result: Record<string, unknown>,
+    artifactRef?: string,
+    olderHistory = false,
+  ): string {
+    const output = result.output;
+    const digest = createHash('sha256').update(this.extractText(output)).digest('hex').slice(0, 16);
+    const facts: string[] = [];
+    const visit = (value: unknown, path: string, depth: number): void => {
+      if (facts.length >= 6 || depth > 3) return;
+      if (value === null || typeof value === 'boolean' || typeof value === 'number') {
+        facts.push(`${path || 'value'}=${String(value)}`);
+        return;
+      }
+      if (typeof value === 'string') {
+        const statements = value.split(/(?:\r?\n)+|(?<=[。！？.!?])\s*/u)
+          .map((statement) => statement.trim())
+          .filter(Boolean);
+        for (const statement of statements) {
+          if (facts.length >= 6) break;
+          if (statement.length <= 120) facts.push(`${path || 'text'}=${statement}`);
+        }
+        return;
+      }
+      if (Array.isArray(value)) {
+        facts.push(`${path || 'items'}.count=${value.length}`);
+        value.slice(0, 2).forEach((entry, index) => visit(entry, `${path || 'items'}[${index}]`, depth + 1));
+        return;
+      }
+      if (value && typeof value === 'object') {
+        for (const [key, entry] of Object.entries(value)) {
+          if (facts.length >= 6) break;
+          visit(entry, path ? `${path}.${key}` : key, depth + 1);
+        }
+      }
+    };
+    visit(output, '', 0);
+    const refs = this.stableReferences(result);
+    return [
+      `[${olderHistory ? '较早工具结果已压缩；' : ''}已消费工具结果的有界语义摘要 ref=${artifactRef ?? `tool-result:sha256:${digest}`}]`,
+      ...facts,
+      ...(!olderHistory && refs.length ? [`references=${refs.join(',')}`] : []),
+      artifactRef
+        ? `完整结果保存在 canonical Session；需要时调用 read_context_artifact(ref="${artifactRef}") 只读回取。`
+        : '完整结果保存在 canonical Session；此摘要不可用于重放副作用。',
+      '摘要和引用均不可用于重放副作用。',
+    ].join('\n');
+  }
+
+  private stableReferences(value: unknown): string[] {
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    if (!text) return [];
+    const patterns = [
+      /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/giu,
+      /\b(?:call|run|task|session|operation|artifact|trace)[-_][A-Za-z0-9._:-]{4,}\b/gu,
+      /\b[A-Za-z][A-Za-z0-9_.]*-[A-Za-z0-9_.-]+\b/gu,
+      /\b\d+(?:\.\d+)?(?:ms|s|m|h|d|KB|MB|GB|%|tokens?)?\b/gu,
+      /https?:\/\/[^\s"'<>]+/gu,
+      /(?:\/[A-Za-z0-9._-]+){2,}/gu,
+    ];
+    return [...new Set(patterns.flatMap((pattern) => text.match(pattern) ?? []))].slice(0, 24);
   }
 
   private historyStart(history: AgentInputItem[], tokenBudget = this.historyTokenBudget): number {
@@ -516,13 +935,14 @@ export class ContextManager {
     const type = typeof value.type === 'string' ? value.type : undefined;
     if (role === 'user' || role === 'assistant') {
       const label = role === 'user' ? '用户' : '助手';
-      return `${label}: ${this.extractText(value.content).slice(0, 1_000)}`;
+      return `${label}: ${this.semanticStatements(this.extractText(value.content)).join(' | ')}`;
     }
     if (type === 'function_call') {
-      return `工具调用: ${String(value.name ?? 'unknown')} ${String(value.arguments ?? '').slice(0, 500)}`;
+      const refs = this.stableReferences(value);
+      return `工具调用: ${String(value.name ?? 'unknown')}${refs.length ? ` refs=${refs.join(',')}` : ''}`;
     }
     if (type === 'function_call_result') {
-      return `工具结果: ${String(value.name ?? 'unknown')} ${this.extractText(value.output).slice(0, 700)}`;
+      return `工具结果: ${String(value.name ?? 'unknown')} ${this.toolResultSummary(value)}`;
     }
     return '';
   }
@@ -535,12 +955,35 @@ export class ContextManager {
   }
 
   private mergeSummary(previous: string, addition: string): string {
-    const merged = [previous, addition].filter(Boolean).join('\n');
-    const limit = Math.min(16_000, Math.floor(this.contextWindow * 0.08));
-    if (merged.length <= limit) return merged;
-    const head = Math.floor(limit * 0.3);
-    const tail = limit - head - 32;
-    return `${merged.slice(0, head)}\n...[中间归档已省略]...\n${merged.slice(-tail)}`;
+    const entries = [...new Set([previous, addition]
+      .flatMap((part) => part.split('\n'))
+      .map((entry) => entry.trim())
+      .filter(Boolean))];
+    const tokenLimit = Math.max(256, Math.floor(this.contextWindow * 0.08));
+    const selected: string[] = [];
+    for (const entry of entries.reverse()) {
+      if (estimateTokens([...selected, entry].join('\n')) > tokenLimit) continue;
+      selected.unshift(entry);
+    }
+    return selected.join('\n');
+  }
+
+  private semanticStatements(text: string, limit = 8): string[] {
+    const statements = [...new Set(text
+      .split(/(?:\r?\n)+|(?<=[。！？.!?])\s*/u)
+      .map((statement) => statement.replace(/\s+/g, ' ').trim())
+      .filter(Boolean))];
+    if (statements.length > limit) {
+      throw new ContextProtocolBudgetError(
+        '语义摘要候选超过可靠事实容量；canonical Session 已保留，拒绝按关键词或字符位置丢弃内容',
+      );
+    }
+    if (statements.some((statement) => estimateTokens(statement) > 2_000)) {
+      throw new ContextProtocolBudgetError(
+        '存在无法可靠语义切分的超长陈述；canonical Session 已保留，拒绝字符裁剪',
+      );
+    }
+    return statements;
   }
 
   private extractText(content: unknown): string {

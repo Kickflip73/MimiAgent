@@ -6,7 +6,12 @@ import {
   type ConnectorCapabilitySnapshot,
 } from '../src/daemon/connector-action-tool.js';
 import type { ConnectorManager } from '../src/daemon/connectors.js';
+import { estimateTokens } from '../src/core/context.js';
 import { BASE_INSTRUCTIONS } from '../src/runtime/instructions.js';
+import {
+  createEffectiveCapabilitySnapshot,
+  renderEffectiveCapabilitySnapshot,
+} from '../src/runtime/pipeline/capability-resolver.js';
 
 function snapshot(connectors: ConnectorCapabilitySnapshot['connectors']): ConnectorCapabilitySnapshot {
   return {
@@ -124,7 +129,7 @@ test('effective capability items preserve Connector availability, readiness, fre
   ]);
 });
 
-test('effective capability operations carry bounded Connector-declared invocation usage', () => {
+test('initial capability summary exposes groups and counts without action descriptions', () => {
   const manager = {
     listCapabilities: () => [{
       id: 'messages',
@@ -141,10 +146,43 @@ test('effective capability operations carry bounded Connector-declared invocatio
     }],
   } as ConnectorManager;
 
-  assert.deepEqual(connectorEffectiveCapabilityItems(manager)[0]?.operations, [{
-    capability: 'personal-message.context.read',
-    action: 'get_context',
-    effect: 'read',
-    usage: '先使用 list_targets，再把返回的稳定 target 传入；payload 限制为有界条数',
-  }]);
+  const item = connectorEffectiveCapabilityItems(manager)[0];
+  assert.deepEqual(item?.capabilities, ['personal-message.context.read']);
+  assert.equal(item?.actionCount, 1);
+  assert.equal(item?.operations, undefined);
+  assert.doesNotMatch(JSON.stringify(item), /先使用 list_targets/);
+});
+
+test('17-Connector initial summary stays below 1K tokens and hides disabled action descriptions', () => {
+  const manager = {
+    listCapabilities: () => Array.from({ length: 17 }, (_, connectorIndex) => ({
+      id: `connector-${connectorIndex}`,
+      enabled: connectorIndex !== 16,
+      online: connectorIndex !== 16,
+      readiness: {
+        inbound: connectorIndex !== 16 ? 'ready' : 'unavailable',
+        outbound: connectorIndex !== 16 ? 'ready' : 'unavailable',
+        coverage: 'bounded',
+      },
+      actions: Array.from({ length: 7 }, (_, actionIndex) => ({
+        name: `action-${actionIndex}`,
+        description: connectorIndex === 16
+          ? `DISABLED_ACTION_DESCRIPTION_${actionIndex}`
+          : `available action ${actionIndex}`,
+        capability: `group-${actionIndex % 2}.read`,
+        effect: 'read',
+        routeOwner: `connector-${connectorIndex}`,
+      })),
+    })),
+  } as ConnectorManager;
+  const items = connectorEffectiveCapabilityItems(manager);
+  const rendered = renderEffectiveCapabilitySnapshot(createEffectiveCapabilitySnapshot({
+    runId: 'summary-run',
+    policyRevision: 'owner',
+    toolNames: ['inspect_mimi_capabilities', 'invoke_capability'],
+    items,
+  }));
+  assert.ok(estimateTokens(rendered) <= 1_000);
+  assert.doesNotMatch(rendered, /available action|DISABLED_ACTION_DESCRIPTION/);
+  assert.equal(items.at(-1)?.actionCount, 0);
 });

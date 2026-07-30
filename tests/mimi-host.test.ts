@@ -139,6 +139,41 @@ test('runs different Session actors concurrently while preserving each Session F
   await host.close();
 });
 
+test('reads TUI snapshots from the requested keyed Session actor', async () => {
+  const primary = {
+    currentSessionId: 'session-a',
+    bindSessionActor: () => undefined,
+    switchSession: async () => undefined,
+    sessionSnapshot: async () => assert.fail('primary actor must not answer session-b snapshot'),
+    listSessionSummaries: async () => [],
+    close: async () => undefined,
+  } as unknown as MimiAgent;
+  const secondary = {
+    currentSessionId: 'session-b',
+    bindSessionActor: (sessionId: string) => assert.equal(sessionId, 'session-b'),
+    switchSession: async () => undefined,
+    sessionSnapshot: async (sessionId: string) => ({
+      sessionId,
+      context: { status: { value: 42 } },
+    }),
+    listSessionSummaries: async () => [],
+    close: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(primary, {
+    execute: async () => ({ answer: 'unused', effects: [] }),
+  }, {
+    createSessionRuntime: async () => ({
+      agent: secondary,
+      runs: { execute: async () => ({ answer: 'unused', effects: [] }) },
+    }),
+  });
+
+  const snapshot = await host.snapshot('session-b');
+  assert.equal(snapshot.sessionId, 'session-b');
+  assert.equal(snapshot.context.status.value, 42);
+  await host.close();
+});
+
 test('rebuilds a Session runtime when its resolved workspace changes', async () => {
   const created: string[] = [];
   const closed: string[] = [];

@@ -46,7 +46,6 @@ for (const scenario of [
       model: 'gpt-test',
       instructions: 'system',
       tools: actualTools,
-      mcpServers: [],
       outputReserve: 1_000,
     });
 

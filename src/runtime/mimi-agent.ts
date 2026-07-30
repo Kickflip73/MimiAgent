@@ -5,9 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import {
   getAllMcpTools,
+  RunContext,
   Runner,
+  tool,
   type AgentInputItem,
   type Tool,
+  type Usage,
 } from '@openai/agents';
 import { z } from 'zod';
 import {
@@ -23,8 +26,10 @@ import {
   ContextManager,
   estimateTokens,
   type ContextManifest,
+  type ContextSemanticSummarizer,
   type ContextStats,
   type MimiContextStatus,
+  type WorkSnapshot,
 } from '../core/context.js';
 import { ProjectGuidanceLoader, SoulLoader } from '../core/guidance.js';
 import { ExecutionLedger, type ExecutionCallRecord } from '../core/execution-ledger.js';
@@ -73,6 +78,7 @@ import {
   registerSessionRunOwner,
   type RunCheckpoint,
   type ActivatedSkill,
+  type ContextWorkSnapshot,
   type SessionPreferences,
   type SessionSummary,
 } from '../core/session.js';
@@ -113,7 +119,8 @@ import {
   type ToolCapability,
 } from './tool-policy.js';
 import { withExecutionLedger } from './tool-ledger.js';
-import { withMcpExecutionLedger } from './mcp-ledger.js';
+import { materializeMcpTools } from './mcp-ledger.js';
+import { ModelContextSemanticSummarizer } from './context-semantic-summarizer.js';
 import { createRuntimeComponents, type RuntimeComponents } from './components.js';
 import type { ModelsConfig } from './model-config.js';
 import { ModelGateway } from './model-gateway.js';
@@ -207,6 +214,10 @@ export interface ContextUsageSnapshot {
   scenario?: string;
   selectionReason?: RunModelBinding['reason'];
   cost?: 'unknown';
+}
+
+class RunContextLimitReachedError extends Error {
+  readonly name = 'RunContextLimitReachedError';
 }
 
 export interface CompletedExecutionReceipt {
@@ -343,6 +354,7 @@ export interface MimiAgentCreateOptions {
   releaseMcpEnvironmentAfterConnect?: boolean;
   modelConfiguration?: ModelsConfig;
   modelBinding?: RunModelBinding;
+  contextSemanticSummarizer?: ContextSemanticSummarizer;
 }
 
 export const READ_ONLY_EVENT_CAPABILITIES = [
@@ -454,12 +466,14 @@ export class MimiAgent {
   private lastContextTokens = 0;
   private lastContextStats?: ContextStats;
   private lastContextManifest?: ContextManifest;
+  private lastCompressionCount = 0;
   private modelProfile: ModelProfile;
   private lastUsage?: ContextUsageSnapshot;
   private lastCommittedAnswer?: string;
   private lastFinalization?: RunFinalizationRecord;
   private lastModelBinding?: RunModelBinding;
   private readonly runtimeRoot = path.resolve(fileURLToPath(new URL('../../', import.meta.url)));
+  private readonly contextSemanticSummarizer?: ContextSemanticSummarizer;
 
   private constructor(
     private readonly config: AppConfig,
@@ -473,6 +487,7 @@ export class MimiAgent {
     this.fixedModelBinding = createOptions.modelBinding
       ? runModelBindingSchema.parse(structuredClone(createOptions.modelBinding))
       : undefined;
+    this.contextSemanticSummarizer = createOptions.contextSemanticSummarizer;
     this.legacyModels = components.legacyModels;
     this.context = components.context;
     this.soul = components.soul;
@@ -1089,8 +1104,8 @@ export class MimiAgent {
     const memoryContext = this.runContexts.forRun(run, options?.cause);
     const state = await new RunStateLoader({
       hotProfile: () => this.memory.hotProfile(memoryContext),
-      searchMemories: () => this.memory.search(
-        this.runContexts.memoryQuery(textInput, options?.cause),
+      searchMemories: (recallState) => this.memory.search(
+        this.runContexts.memoryQuery(textInput, options?.cause, recallState),
         memoryContext,
       ),
       loadPlan: () => runPlans.get(),
@@ -1146,14 +1161,41 @@ export class MimiAgent {
     const checkpointWithoutGoal = resumesCheckpoint && !activeStoredGoal && !recovery.goalCreatedAt;
     const activePlan = resumesGoal || checkpointWithoutGoal ? plan : [];
     const activeTeamSummary = resumesGoal || checkpointWithoutGoal ? teamSummary : '';
+    let persistedContextSnapshot = canReadSessionContext
+      ? await run.session.getContextWorkSnapshot()
+      : undefined;
+    const contextSnapshotSeed = {
+      goal: goal ? [goal.objective] : [],
+      progress: activePlan
+        .filter((step) => step.status === 'running' || step.status === 'pending')
+        .map((step) => step.description),
+      completed: activePlan.filter((step) => step.status === 'completed').map((step) => step.description),
+      decisions: [],
+      constraints: goal?.acceptanceCriteria?.map((criterion) => criterion.description) ?? [],
+      openQuestions: [
+        ...(goal?.nextAction ? [goal.nextAction] : []),
+        ...activePlan.filter((step) => step.status === 'failed').map((step) => step.description),
+      ],
+      evidence: [
+        ...(goal?.completionEvidence ? [goal.completionEvidence] : []),
+        ...activePlan.flatMap((step) => {
+          if (!step.completion) return [];
+          return step.completion.kind === 'internal'
+            ? step.completion.evidenceRefs
+            : step.completion.receiptRefs;
+        }),
+      ],
+      keyFacts: [],
+      references: [
+        ...(goal?.id ? [goal.id] : []),
+        ...activePlan.map((step) => step.id),
+      ],
+    };
     run.planOwned = Boolean((resumesGoal || checkpointWithoutGoal) && plan.length);
     run.teamOwned = Boolean((resumesGoal || checkpointWithoutGoal) && teamSummary);
     run.goalCreatedAt = goal?.createdAt;
     await run.session.updateRunGoalOwnership(run.goalCreatedAt, run.runId);
-    const archive = canReadSessionContext
-      ? context.compactArchive(history, storedArchive, 'collapse')
-      : undefined;
-    if (archive && archive !== storedArchive) await run.session.setContextArchive(archive);
+    const archive = canReadSessionContext ? storedArchive : undefined;
     const subAgentTools = createSubAgentTools({
       mode,
       model,
@@ -1239,6 +1281,17 @@ export class MimiAgent {
     const runTools = [
       ...scopedTools,
       ...memoryTools,
+      tool({
+        name: 'read_context_artifact',
+        description: '按本轮 Context View 中的稳定 ref 只读回取当前 Session、当前 Run 的 canonical 工具结果；跨 Session/Run 或伪造 ref 会失败关闭。',
+        parameters: z.object({
+          ref: z.string().regex(/^context-artifact:[0-9a-f-]{36}$/),
+        }).strict(),
+        execute: async ({ ref }) => {
+          if (this.activeRun !== run) throw new Error('Context Artifact 所属 Run 已失效');
+          return run.session.readContextToolArtifact(ref, run.runId);
+        },
+      }),
       ...(options?.personalMessage
         ? this.personalMessages.createTools(options.personalMessage, run.runId)
         : []),
@@ -1290,7 +1343,7 @@ export class MimiAgent {
       securityProfile,
       runPolicy,
     );
-    const allTools = withExecutionLedger(
+    const localTools = withExecutionLedger(
       preparedTools,
       this.ledger,
       () => ({
@@ -1355,7 +1408,67 @@ export class MimiAgent {
         sanitizeError: (error) => this.redactRunError(error, run.ephemeralSensitiveAccess),
       }),
     );
-    run.availableToolNames = allTools.map((tool) => tool.name);
+    const mcpAllowed = mode !== 'plan'
+      && securityProfile === 'full-owner'
+      && runPolicy?.allowMcp !== false
+      && !personalConnectorOnly;
+    const mcpRunIdentity = () => ({
+      sessionId: run.sessionId,
+      runId: run.options?.executionKey ?? run.runId,
+      semanticCallIds: Boolean(run.options?.executionKey),
+      authorizeSideEffect: async (toolName: string, argumentsJson: string) => {
+        if (this.activeRun !== run) {
+          throw new Error('MCP 副作用调用所属 Run 已失效或已被新的 owner 工作单元取代');
+        }
+        if (containsActiveEphemeralValue(argumentsJson, run.ephemeralSensitiveAccess)) {
+          throw new Error('临时敏感原值不得进入 MCP 参数或执行账本');
+        }
+        const active = run;
+        if (active.completionRequired && !active.completionContract) {
+          throw new Error(`执行 ${toolName} 前必须先调用 prepare_task 建立完整验收标准`);
+        }
+        await active.options?.authorizeSideEffect?.(toolName, argumentsJson);
+        if (this.activeRun !== run) {
+          throw new Error('MCP 副作用授权期间 Run 已被取代；动作未 dispatch');
+        }
+      },
+      sanitizeResult: <T>(value: T) => redactActiveEphemeralData(value, run.ephemeralSensitiveAccess),
+      sanitizeError: (error: unknown) => this.redactRunError(error, run.ephemeralSensitiveAccess),
+    });
+    const mcpTools = mcpAllowed
+      ? await materializeMcpTools({
+          servers: this.mcp.servers,
+          ledger: this.ledger,
+          currentRun: mcpRunIdentity,
+          model,
+          reservedTools: localTools,
+        })
+      : [];
+    const catalogTools = [...localTools, ...mcpTools];
+    const allTools = await this.requestFactory.create({
+      model,
+      instructions: '',
+      tools: catalogTools,
+      outputReserve: modelProfile.outputReserve,
+    }).agent.getAllTools(new RunContext({}));
+    const progressiveGatewayTools = this.toolSetBuilder.progressiveGateway(allTools);
+    const modelTools = this.toolSetBuilder.modelFacing(
+      [...allTools, ...progressiveGatewayTools],
+      runPolicy,
+      options?.personalMessage
+        ? ['get_personal_message_context', 'send_personal_message']
+        : mode === 'ultra'
+          ? [
+              'set_team_tasks',
+              'show_team_tasks',
+              'claim_team_task',
+              'update_team_task',
+              'retry_team_task',
+              'run_team',
+            ]
+          : [],
+    );
+    run.availableToolNames = allTools.map((candidate) => candidate.name);
     const availableSkillNames = this.skills.list()
       .filter((candidate) => {
         const skill = this.skills.get(candidate.name);
@@ -1372,7 +1485,7 @@ export class MimiAgent {
         mode,
         runPolicy ? 'run-policy' : 'default-policy',
       ].join(':'),
-      tools: allTools,
+      tools: modelTools,
       skills: availableSkillNames,
       items: [
         ...(options?.capabilityItems ?? []),
@@ -1392,7 +1505,7 @@ export class MimiAgent {
       ],
     });
     this.lastCapabilitySnapshot = run.capabilitySnapshot;
-    const toolSchemas = allTools.map((tool) => {
+    const toolSchemas = modelTools.map((tool) => {
       const value = tool as unknown as Record<string, unknown>;
       return { name: value.name, description: value.description, parameters: value.parameters };
     });
@@ -1491,11 +1604,11 @@ export class MimiAgent {
         outputLevel: this.outputLevel,
       }) : '',
       projectGuidance: canReadLocal ? projectGuidance.instructions : '',
-      historySummary: archive?.summary ?? '',
+      historySummary: '',
       skillCatalog: canReadLocal && skillsDisclosed ? this.skills.catalog({
         canReadLocal,
         availableTools: run.availableToolNames,
-      }, { includeLocations: false }) : '',
+      }, { includeLocations: true }) : '',
       activeSkills,
       memories,
       plan: activePlan,
@@ -1504,16 +1617,83 @@ export class MimiAgent {
       recoverySummary: resumesCheckpoint ? recoverySummary(recovery) : '',
     }, instructionBudget, requiredInstructionBudget);
     const instructions = builtInstructions.text;
-    const historyBudget = Math.min(
-      Math.max(0, budget.inputBudget - estimateTokens(instructions)),
-      focusedOwnerRun ? 8_000 : Number.POSITIVE_INFINITY,
-    );
     const currentContextInput = typeof input === 'string'
       ? [{ role: 'user', content: input } as AgentInputItem]
       : input;
-    const effectiveResult = context.effectiveHistoryResult(history, currentContextInput, archive, historyBudget);
+    const semanticSummarizer = this.contextSemanticSummarizer
+      ?? (typeof model === 'string' ? undefined : new ModelContextSemanticSummarizer(model));
+    const drainSemanticUsages = (): Usage[] => semanticSummarizer instanceof ModelContextSemanticSummarizer
+      ? semanticSummarizer.drainUsages()
+      : [];
+    const initialSemanticUsages: Usage[] = [];
+    const initialContextInput = [...history, ...currentContextInput];
+    let initialSemanticSnapshot: WorkSnapshot | ContextWorkSnapshot | undefined = persistedContextSnapshot;
+    if ((estimateTokens(initialContextInput) + estimateTokens(instructions))
+      / Math.max(1, budget.inputBudget) >= 0.7
+      && semanticSummarizer) {
+      try {
+        initialSemanticSnapshot = await context.prepareSemanticSnapshot(
+          initialContextInput,
+          semanticSummarizer,
+          {
+            persistedSnapshot: persistedContextSnapshot,
+            seedSnapshot: contextSnapshotSeed,
+          },
+        );
+        if (canReadSessionContext) {
+          await run.session.setContextWorkSnapshot(initialSemanticSnapshot, run.runId);
+          persistedContextSnapshot = {
+            ...initialSemanticSnapshot,
+            runId: run.runId,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+      } catch {
+        // Preparatory semantic checkpoint failures are non-blocking while the
+        // canonical-derived request still fits or an older snapshot verifies.
+      } finally {
+        initialSemanticUsages.push(...drainSemanticUsages());
+      }
+    }
+    this.lastCompressionCount = 0;
+    const initialArtifacts = canReadSessionContext
+      ? await run.session.registerContextToolArtifacts(history, run.runId)
+      : [];
+    if (initialArtifacts.length) {
+      await run.session.markContextToolArtifactsConsumed(
+        initialArtifacts.map((artifact) => artifact.ref),
+        run.runId,
+      );
+    }
+    const consumedArtifactRefs = new Set(initialArtifacts.map((artifact) => artifact.ref));
+    const initialView = context.modelContextView(
+      initialContextInput,
+      instructions,
+      budget.inputBudget,
+      {
+        consumedArtifactRefs,
+        toolArtifacts: initialArtifacts,
+        persistedSnapshot: persistedContextSnapshot,
+        semanticSnapshot: initialSemanticSnapshot,
+        seedSnapshot: contextSnapshotSeed,
+      },
+    );
+    if (initialView.snapshot && canReadSessionContext) {
+      await run.session.setContextWorkSnapshot(initialView.snapshot, run.runId);
+      persistedContextSnapshot = {
+        ...initialView.snapshot,
+        runId: run.runId,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    const effectiveResult = {
+      items: initialView.input,
+      records: initialView.records,
+      rawTokens: initialView.rawTokens,
+      effectiveTokens: initialView.effectiveTokens,
+    };
     const effectiveHistory = effectiveResult.items;
-    this.lastContextTokens = budget.toolSchemaTokens + budget.protocolReserveTokens
+    this.lastContextTokens = budget.toolSchemaTokens
       + estimateTokens(instructions) + estimateTokens(effectiveHistory);
     this.lastContextStats = context.stats(history, effectiveHistory, archive, 1);
     this.lastContextStats.effectiveTokens = this.lastContextTokens;
@@ -1530,73 +1710,181 @@ export class MimiAgent {
     const request = this.requestFactory.create({
       model,
       instructions,
-      tools: allTools,
+      tools: modelTools,
       outputReserve: modelProfile.outputReserve,
       focusedOutputLimit: focusedOwnerRun ? 4_096 : undefined,
       reasoning: run.scope.modelBinding?.reasoning,
-      // Plan mode keeps only the explicit read-only MCP resource wrappers above.
-      mcpServers: mode === 'plan'
-        || securityProfile !== 'full-owner'
-        || runPolicy?.allowMcp === false
-        || personalConnectorOnly
-        ? []
-        : withMcpExecutionLedger(this.mcp.servers, this.ledger, () => ({
-            sessionId: run.sessionId,
-            runId: run.options?.executionKey ?? run.runId,
-            semanticCallIds: Boolean(run.options?.executionKey),
-            authorizeSideEffect: async (toolName, argumentsJson) => {
-              if (this.activeRun !== run) {
-                throw new Error('MCP 副作用调用所属 Run 已失效或已被新的 owner 工作单元取代');
-              }
-              if (containsActiveEphemeralValue(argumentsJson, run.ephemeralSensitiveAccess)) {
-                throw new Error('临时敏感原值不得进入 MCP 参数或执行账本');
-              }
-              const active = run;
-              if (active.completionRequired && !active.completionContract) {
-                throw new Error(`执行 ${toolName} 前必须先调用 prepare_task 建立完整验收标准`);
-              }
-              await active.options?.authorizeSideEffect?.(toolName, argumentsJson);
-              if (this.activeRun !== run) {
-                throw new Error('MCP 副作用授权期间 Run 已被取代；动作未 dispatch');
-              }
-            },
-            sanitizeResult: (value) => redactActiveEphemeralData(value, run.ephemeralSensitiveAccess),
-            sanitizeError: (error) => this.redactRunError(error, run.ephemeralSensitiveAccess),
-          })),
     });
     await run.session.updateRunProgress('模型执行中', undefined, run.runId);
-    const contextInputCallback = canReadSessionContext
-      ? async (sessionHistory: AgentInputItem[], currentInput: AgentInputItem[]) => context.effectiveHistory(
-          sessionHistory,
-          currentInput,
-          archive,
-          historyBudget,
-        )
-      : async (_history: AgentInputItem[], currentInput: AgentInputItem[]) =>
-          context.effectiveHistory([], currentInput, undefined, historyBudget);
     const sessionInputCallback = async (
       sessionHistory: AgentInputItem[],
       currentInput: AgentInputItem[],
     ) => normalizeModelInput(
       exactRoute.transport ?? routeConfig.provider,
-      await contextInputCallback(prepareRunHistory(sessionHistory), currentInput),
+      canReadSessionContext
+        ? [...prepareRunHistory(sessionHistory), ...currentInput]
+        : currentInput,
     );
-    return await this.runner.run(request.agent, input, {
+    const modelCallLimit = binding?.maxTurns ?? this.config.maxTurns ?? 32;
+    const runInputLimit = this.config.maxRunInputTokens ?? 500_000;
+    let modelCalls = initialSemanticUsages.reduce((total, usage) => total + usage.requests, 0);
+    let cumulativeModelInputTokens = initialSemanticUsages
+      .reduce((total, usage) => total + usage.inputTokens, 0);
+    let runCompressionEvents = 0;
+    let runUsage: { add(usage: Usage): void } | undefined;
+    const pendingSemanticUsages: Usage[] = [...initialSemanticUsages];
+    const recordSemanticUsage = (usage: Usage): void => {
+      modelCalls += usage.requests;
+      cumulativeModelInputTokens += usage.inputTokens;
+      if (runUsage) runUsage.add(usage);
+      else pendingSemanticUsages.push(usage);
+    };
+    const callModelInputFilter = async ({
+      modelData,
+    }: {
+      modelData: { input: AgentInputItem[]; instructions?: string };
+    }) => {
+      const artifacts = canReadSessionContext
+        ? await run.session.registerContextToolArtifacts(modelData.input, run.runId)
+        : [];
+      for (const artifact of artifacts) {
+        if (artifact.consumedAt) consumedArtifactRefs.add(artifact.ref);
+      }
+      let semanticSnapshot: WorkSnapshot | ContextWorkSnapshot | undefined = persistedContextSnapshot;
+      const rawViewTokens = estimateTokens(modelData.input)
+        + estimateTokens(modelData.instructions ?? '');
+      if (rawViewTokens / Math.max(1, budget.inputBudget) >= 0.7
+        && semanticSummarizer
+        && modelCalls < modelCallLimit
+        && cumulativeModelInputTokens + rawViewTokens <= runInputLimit) {
+        try {
+          semanticSnapshot = await context.prepareSemanticSnapshot(modelData.input, semanticSummarizer, {
+            persistedSnapshot: persistedContextSnapshot,
+            seedSnapshot: contextSnapshotSeed,
+          });
+          for (const usage of drainSemanticUsages()) {
+            recordSemanticUsage(usage);
+          }
+          if (canReadSessionContext) {
+            await run.session.setContextWorkSnapshot(semanticSnapshot, run.runId);
+            persistedContextSnapshot = {
+              ...semanticSnapshot,
+              runId: run.runId,
+              updatedAt: new Date().toISOString(),
+            };
+          }
+        } catch {
+          for (const usage of drainSemanticUsages()) {
+            recordSemanticUsage(usage);
+          }
+          // A 70% checkpoint is preparatory. A previously verified snapshot or the
+          // still-fitting canonical-derived view remains safe; fitting is checked below.
+        }
+      }
+      const view = context.modelContextView(
+        modelData.input,
+        modelData.instructions,
+        budget.inputBudget,
+        {
+          consumedArtifactRefs,
+          toolArtifacts: artifacts,
+          persistedSnapshot: persistedContextSnapshot,
+          semanticSnapshot,
+          seedSnapshot: contextSnapshotSeed,
+        },
+      );
+      const requestInputTokens = view.effectiveTokens + budget.toolSchemaTokens;
+      const projectedInputTokens = cumulativeModelInputTokens + requestInputTokens;
+      if (modelCalls >= modelCallLimit || projectedInputTokens > runInputLimit) {
+        const reason = modelCalls >= modelCallLimit
+          ? `达到 ${modelCallLimit} 次模型调用上限`
+          : `累计模型输入估算 ${projectedInputTokens} tokens 超过 ${runInputLimit} 上限`;
+        await run.session.updateRunProgress(
+          '已安全暂停：长跑保护',
+          `${reason}；canonical Session 和完整工具协议单元已保留，uncertain 动作不得重放`,
+          run.runId,
+        );
+        throw new RunContextLimitReachedError(reason);
+      }
+      modelCalls += 1;
+      cumulativeModelInputTokens = projectedInputTokens;
+      runCompressionEvents += view.records.length;
+      this.lastCompressionCount = runCompressionEvents;
+      if (canReadSessionContext && view.consumedArtifactRefs.length) {
+        await run.session.markContextToolArtifactsConsumed(view.consumedArtifactRefs, run.runId);
+        view.consumedArtifactRefs.forEach((ref) => consumedArtifactRefs.add(ref));
+      }
+      if (canReadSessionContext && view.snapshot) {
+        await run.session.setContextWorkSnapshot(view.snapshot, run.runId);
+        persistedContextSnapshot = {
+          ...view.snapshot,
+          runId: run.runId,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      this.lastContextStats = {
+        rawTokens: estimateTokens(await run.session.getItems()),
+        effectiveTokens: view.effectiveTokens + budget.toolSchemaTokens,
+        archiveTokens: view.snapshot ? estimateTokens(view.snapshot) : 0,
+        coveredItems: view.records.find((record) => record.strategy === 'semantic-summary')?.affectedItems ?? 0,
+        strategies: view.records.map((record) => record.strategy),
+      };
+      const currentStart = context.startOfLastUserTurn(view.input);
+      const perCallCurrentInput = currentStart >= 0 ? view.input.slice(currentStart) : [];
+      this.lastContextManifest = this.contextAssembler.manifest({
+        scope,
+        budget,
+        instructions: {
+          text: view.instructions ?? '',
+          sections: [
+            ...builtInstructions.sections,
+            ...(estimateTokens(view.instructions ?? '') > estimateTokens(builtInstructions.text)
+              ? [{
+                  id: 'work-snapshot' as const,
+                  estimatedTokens: estimateTokens(view.instructions ?? '') - estimateTokens(builtInstructions.text),
+                  truncated: false,
+                }]
+              : []),
+          ],
+        },
+        effective: {
+          items: view.input,
+          records: view.records,
+          rawTokens: view.rawTokens,
+          effectiveTokens: estimateTokens(view.input),
+        },
+        archive,
+        archiveInput: [],
+        currentInput: perCallCurrentInput,
+        toolCount: toolSchemas.length,
+      });
+      return { input: view.input, instructions: view.instructions };
+    };
+    const streamResult = await this.runner.run(request.agent, input, {
       session: run.session,
       sessionInputCallback,
-      maxTurns: binding?.maxTurns ?? this.config.maxTurns,
+      callModelInputFilter,
+      maxTurns: null,
       stream: true,
       signal,
       toolExecution: { maxFunctionToolConcurrency: mode === 'ultra' ? 1 : 2 },
     });
+    runUsage = (streamResult as unknown as {
+      runContext?: { usage?: { add(usage: Usage): void } };
+    }).runContext?.usage;
+    if (runUsage) {
+      for (const usage of pendingSemanticUsages.splice(0)) runUsage.add(usage);
+    }
+    return streamResult;
     } catch (error) {
       if (this.activeRun === run) this.activeRun = undefined;
       await this.computer?.endRun(run.runId).catch(() => undefined);
       run.releaseOwner();
       if (began) {
-        const interrupted = signal?.aborted === true;
+        const budgetPaused = error instanceof RunContextLimitReachedError;
+        const interrupted = signal?.aborted === true || budgetPaused;
         const message = error instanceof Error ? error.message : String(error);
-        if (run.options?.retainExecutionLedger) {
+        if (run.options?.retainExecutionLedger && !budgetPaused) {
           await run.session.rollbackRunItems(run.runId).catch(() => undefined);
         }
         if (interrupted
@@ -2210,8 +2498,8 @@ export class MimiAgent {
     if (!this.activeRun) await this.refreshModelConfiguration();
     const request = modelControlRequestSchema.parse(rawRequest);
     if (request.action === 'list') {
-      return Promise.all(this.modelConfig.providers.flatMap((provider) =>
-        provider.models.map(async (registration) => ({
+      return this.modelConfig.providers.flatMap((provider) =>
+        provider.models.map((registration) => ({
           ...registration,
           provider: {
             id: provider.id,
@@ -2219,8 +2507,7 @@ export class MimiAgent {
             transport: provider.transport,
           },
           configured: Boolean(process.env[provider.apiKeyEnv]?.trim()),
-          health: await this.modelGateway.health(registration.target),
-        }))));
+        })));
     }
     if (request.action === 'inspect') {
       const registration = this.modelGateway.inspect(request.target);
@@ -2442,6 +2729,18 @@ export class MimiAgent {
       runInputTokens: this.lastUsage?.runInputTokens,
       runOutputTokens: this.lastUsage?.runOutputTokens,
       runTotalTokens: this.lastUsage?.runTotalTokens,
+      modelViewTokens: stats.effectiveTokens,
+      modelViewRatio: stats.effectiveTokens / Math.max(
+        1,
+        manifest?.availableInputBudget ?? this.context.requestBudget([]).inputBudget,
+      ),
+      staticCapabilityTokens: (manifest?.sections ?? [])
+        .filter((section) => section.id === 'tool-schemas' || section.id === 'runtime-context')
+        .reduce((total, section) => total + section.estimatedTokens, 0),
+      protocolReserveTokens: manifest?.sections
+        .find((section) => section.id === 'protocol-reserve')?.estimatedTokens
+        ?? this.context.requestBudget([]).protocolReserveTokens,
+      compressionCount: this.lastCompressionCount,
       memories: memories.length,
       planSteps: plan.length,
       goal: goal?.status,

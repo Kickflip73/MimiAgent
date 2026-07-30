@@ -367,15 +367,25 @@ test('owner natural-language runs retain the runtime tool and Skill discovery su
     provider: 'openai', workspaceRoot: root, dataRoot, skillsRoot,
     mcpConfig: path.join(root, 'mcp.json'), historyLimit: 40, contextWindow: 128_000, maxTurns: 20,
   });
-  const captured: { tools?: string[]; instructions?: string; maxTokens?: number } = {};
+  const captured: {
+    tools?: string[];
+    toolSchemas?: unknown[];
+    instructions?: string;
+    maxTokens?: number;
+  } = {};
   const runner = (agent as unknown as { runner: { run: (runtimeAgent: unknown) => Promise<unknown> } }).runner;
   runner.run = async (runtimeAgent) => {
     const value = runtimeAgent as {
-      tools: Array<{ name: string }>;
+      tools: Array<{ name: string; description?: string; parameters?: unknown }>;
       instructions: string;
       modelSettings: { maxTokens?: number };
     };
     captured.tools = value.tools.map((item) => item.name);
+    captured.toolSchemas = value.tools.map(({ name, description, parameters }) => ({
+      name,
+      description,
+      parameters,
+    }));
     captured.instructions = value.instructions;
     captured.maxTokens = value.modelSettings.maxTokens;
     return {};
@@ -394,7 +404,10 @@ test('owner natural-language runs retain the runtime tool and Skill discovery su
     await agent.stream('咋样了？', undefined, decision.options);
     assert.ok(captured.tools?.includes('read_file'));
     assert.ok(captured.tools?.includes('list_skills'));
+    assert.ok((captured.tools?.length ?? 0) < 30);
+    assert.ok(estimateTokens(captured.toolSchemas) <= 4_000);
     assert.match(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
+    assert.match(captured.instructions ?? '', /location: .*hidden-skill\/SKILL\.md/);
     await agent.completeRun('FOCUSED_OWNER_ANSWER');
     const recalled = await agent.memorySearch('FOCUSED_OWNER_ANSWER', 'private');
     assert.equal(recalled[0]?.documentType, 'episode');

@@ -4,7 +4,7 @@
       "enabled": false,
       "command": "node",
       "args": ["/absolute/path/to/MimiAgent/examples/connectors/personal-message-connector.mjs", "--channel=daxiang"],
-      "envAllowlist": ["MIMI_DAEMON_DATA_DIR", "DAXIANG_WEB_CONFIG", "DAXIANG_WEB_COMMAND_TIMEOUT_MS"],
+      "envAllowlist": ["MIMI_DAEMON_DATA_DIR", "DAXIANG_WEB_CONFIG", "DAXIANG_WEB_COMMAND_TIMEOUT_MS", "DAXIANG_WEB_SESSION_REFRESH_INTERVAL_MS"],
       "source": "personal-message:daxiang",
       "trust": "external",
       "profileId": "owner",

@@ -27,7 +27,9 @@ function modelVisibleCapabilities(
 ): ReturnType<ConnectorManager['listCapabilities']> {
   return connectors.listCapabilities().map((connector) => ({
     ...connector,
-    actions: (connector.actions ?? []).filter((action) => action.modelVisible !== false),
+    actions: connector.enabled
+      ? (connector.actions ?? []).filter((action) => action.modelVisible !== false)
+      : [],
   }));
 }
 
@@ -129,16 +131,7 @@ export function connectorEffectiveCapabilityItems(
       selectedRoute: connector.id,
       routeOwner: connector.id,
       capabilities: [...new Set(actions.map((action) => action.capability))].sort(),
-      operations: actions
-        .map((action) => ({
-          capability: action.capability,
-          action: action.name,
-          effect: action.effect,
-          usage: action.description.slice(0, MAX_DESCRIPTION_CHARS),
-        }))
-        .sort((left, right) =>
-          left.capability.localeCompare(right.capability)
-          || left.action.localeCompare(right.action)),
+      actionCount: actions.length,
       safeFallback: 'none' as const,
     };
   });

@@ -27,3 +27,8 @@ Session、Tool 和完成语义应保持一致。真实 Provider canary 是单独
 `MIMI_PROVIDER_API_KEY`、`MIMI_PROVIDER_BASE_URL` 与 `MIMI_MODEL`。这组稳定的通用
 变量避免把厂商名称写入 Runtime；后台 Task worker 会通过受限 credential 通道传递
 API Key，并从经过 schema 校验的 `AppConfig` 获取 endpoint 与模型配置。
+
+`/models` 与 `model_control list` 只列出本地注册，不发起 Provider 请求。显式执行
+`/model doctor [provider/model]` 时，OpenAI-compatible adapter 会向目标模型发送一个
+输出上限为 1 token 的 Chat Completions 探针；只有目标模型、credential、授权和请求
+协议共同可用才报告 `healthy`。因此 doctor 会产生一次真实的最小模型调用及相应费用。

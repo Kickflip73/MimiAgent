@@ -22,7 +22,7 @@ test('run context builder keeps external provenance as data and bounds injected 
   assert.ok(instructions.length < 1_300);
   assert.equal(
     builder.memoryQuery('review update', cause),
-    'review update connector:test alice\nadmin thread-1 alice Alice',
+    'review update',
   );
   assert.deepEqual(builder.forRun({ sessionId: 'session-1', runId: 'run-1' }, cause), {
     profileId: 'profile-1',
@@ -44,6 +44,20 @@ test('run context builder derives owner inspection context deterministically', (
 
   assert.equal(builder.causeInstructions(), '');
   assert.equal(builder.memoryQuery('hello'), 'hello');
+  assert.equal(builder.memoryQuery('继续', undefined, {
+    goal: {
+      objective: '完成上下文系统',
+      status: 'active',
+      createdAt: '2026-07-30T00:00:00.000Z',
+      updatedAt: '2026-07-30T00:00:00.000Z',
+    },
+    history: [
+      { role: 'user', content: '上一轮问题' },
+      { type: 'function_call', callId: 'call-1', name: 'shell', arguments: '{}' } as never,
+      { type: 'function_call_result', callId: 'call-1', output: { type: 'text', text: '工具噪声' } } as never,
+      { role: 'assistant', content: '上一轮结论' } as never,
+    ],
+  }), '继续\nGoal: 完成上下文系统\n最近两轮: 上一轮问题 | 上一轮结论');
   assert.deepEqual(builder.forRun({ sessionId: 'session-a', runId: 'run-a' }), {
     profileId: 'owner',
     workspaceRoot: '/workspace',

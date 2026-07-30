@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
-import type { AgentInputItem } from '@openai/agents';
-import type { Tool } from '@openai/agents';
+import {
+  RunContext,
+  tool as sdkTool,
+  type AgentInputItem,
+  type MCPServer,
+  type Tool,
+} from '@openai/agents';
+import { z } from 'zod';
 import { ContextManager } from '../src/core/context.js';
+import { ExecutionLedger } from '../src/core/execution-ledger.js';
+import { materializeMcpTools } from '../src/runtime/mcp-ledger.js';
 import {
   CapabilityResolver,
   renderEffectiveCapabilitySnapshot,
@@ -75,9 +86,12 @@ test('context assembler accounts for every request section without prompt copies
 
   assert.equal(manifest.availableInputBudget, budget.inputBudget);
   assert.equal(
-    manifest.sections.reduce((total, section) => total + section.estimatedTokens, 0),
+    manifest.sections
+      .filter((section) => section.id !== 'protocol-reserve')
+      .reduce((total, section) => total + section.estimatedTokens, 0),
     manifest.estimatedInputTokens,
   );
+  assert.ok((manifest.sections.find((section) => section.id === 'protocol-reserve')?.estimatedTokens ?? 0) > 0);
   assert.deepEqual(
     manifest.sections.slice(-2).map((section) => section.id),
     ['tool-schemas', 'protocol-reserve'],
@@ -152,6 +166,167 @@ test('tool set builder keeps mode and run-policy filtering in one stage', () => 
   assert.ok(Object.isFrozen(snapshot.items));
 });
 
+test('progressive gateway discovers and invokes every authorized capability family only', async () => {
+  const builder = new ToolSetBuilder();
+  const make = (name: string, value: string) => sdkTool({
+    name,
+    description: `${name} description`,
+    parameters: z.object({}),
+    execute: async () => value,
+  });
+  const authorized = [
+    make('web_search', 'web-ok'),
+    make('memory_read', 'memory-ok'),
+    make('computer_observe', 'computer-ok'),
+    make('show_goal', 'goal-ok'),
+    make('list_skills', 'skill-ok'),
+    make('custom_mcp_lookup', 'mcp-ok'),
+    make('invoke_capability', 'connector-ok'),
+  ];
+  const gateway = builder.progressiveGateway(authorized);
+  const modelFacing = builder.modelFacing([...authorized, ...gateway]);
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'inspect_runtime_capabilities'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'invoke_runtime_capability'));
+  assert.equal(modelFacing.some((candidate) => candidate.name === 'web_search'), false);
+  const inspect = gateway.find((candidate) => candidate.name === 'inspect_runtime_capabilities') as Tool & {
+    invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
+  };
+  const invoke = gateway.find((candidate) => candidate.name === 'invoke_runtime_capability') as Tool & {
+    invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
+  };
+  const context = new RunContext({});
+  for (const [source, name, result] of [
+    ['builtin', 'web_search', 'web-ok'],
+    ['memory', 'memory_read', 'memory-ok'],
+    ['computer', 'computer_observe', 'computer-ok'],
+    ['goal', 'show_goal', 'goal-ok'],
+    ['skill', 'list_skills', 'skill-ok'],
+    ['mcp', 'custom_mcp_lookup', 'mcp-ok'],
+    ['connector', 'invoke_capability', 'connector-ok'],
+  ]) {
+    const catalog = await inspect.invoke(context, JSON.stringify({ name }), {});
+    assert.match(JSON.stringify(catalog), new RegExp(`"source":"${source}"`));
+    assert.equal(
+      await invoke.invoke(context, JSON.stringify({ name, argumentsJson: '{}' }), {}),
+      result,
+    );
+  }
+  assert.match(
+    String(await invoke.invoke(
+      context,
+      JSON.stringify({ name: 'not_authorized', argumentsJson: '{}' }),
+      {},
+    )),
+    /未授权/,
+  );
+});
+
+test('real MCP tools are host-materialized behind the gateway with exact schema and ledger semantics', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-progressive-mcp-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  let executions = 0;
+  let authorizations = 0;
+  const definitions = Array.from({ length: 50 }, (_, index) => ({
+    name: `action_${index}`,
+    description: `MCP action ${index} ${'schema '.repeat(30)}`,
+    inputSchema: {
+      type: 'object' as const,
+      properties: { value: { type: 'string', description: `value ${index}` } },
+      required: ['value'],
+      additionalProperties: false,
+    },
+  }));
+  const server = {
+    name: 'fake',
+    cacheToolsList: false,
+    connect: async () => undefined,
+    close: async () => undefined,
+    listTools: async () => definitions,
+    callTool: async (name: string, args: Record<string, unknown> | null) => ([{
+      type: 'text',
+      text: JSON.stringify({ name, args, execution: ++executions }),
+    }]),
+    invalidateToolsCache: async () => undefined,
+  } as MCPServer;
+  const mcpTools = await materializeMcpTools({
+    servers: [server],
+    ledger,
+    currentRun: () => ({
+      sessionId: 'owner',
+      runId: 'event:mcp',
+      semanticCallIds: true,
+      authorizeSideEffect: async () => { authorizations += 1; },
+    }),
+    model: 'gpt-test',
+    reservedTools: [],
+  });
+  assert.equal(mcpTools.length, 50);
+  assert.equal(mcpTools[0]!.name, 'mcp_fake__action_0');
+  assert.deepEqual(
+    (mcpTools[0] as unknown as { parameters: unknown }).parameters,
+    definitions[0]!.inputSchema,
+  );
+
+  const builder = new ToolSetBuilder();
+  const gateway = builder.progressiveGateway(mcpTools);
+  const modelFacing = builder.modelFacing([...mcpTools, ...gateway]);
+  const request = new AgentRequestFactory().create({
+    model: 'gpt-test',
+    instructions: 'system',
+    tools: modelFacing,
+    outputReserve: 8_000,
+  });
+  const finalTools = await request.agent.getAllTools(new RunContext({}));
+  assert.deepEqual(finalTools.map((candidate) => candidate.name), [
+    'inspect_runtime_capabilities',
+    'invoke_runtime_capability',
+  ]);
+  assert.equal(finalTools.some((candidate) => candidate.name.startsWith('mcp_fake__')), false);
+
+  const inspect = gateway.find((candidate) => candidate.name === 'inspect_runtime_capabilities') as Tool & {
+    invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
+  };
+  const invoke = gateway.find((candidate) => candidate.name === 'invoke_runtime_capability') as Tool & {
+    invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
+  };
+  const context = new RunContext({});
+  const catalog = await inspect.invoke(
+    context,
+    JSON.stringify({ name: 'mcp_fake__action_7' }),
+    {},
+  );
+  assert.match(JSON.stringify(catalog), /"source":"mcp"/);
+  assert.match(JSON.stringify(catalog), /"value"/);
+  const args = JSON.stringify({
+    name: 'mcp_fake__action_7',
+    argumentsJson: JSON.stringify({ value: 'once' }),
+  });
+  await invoke.invoke(context, args, {});
+  await invoke.invoke(context, args, {});
+  assert.equal(executions, 1);
+  assert.equal(authorizations, 1);
+  assert.match(
+    String(await invoke.invoke(
+      context,
+      JSON.stringify({ name: 'mcp_fake__unknown', argumentsJson: '{}' }),
+      {},
+    )),
+    /未授权/,
+  );
+
+  const serialized = finalTools.map((candidate) => {
+    const value = candidate as unknown as Record<string, unknown>;
+    return {
+      name: candidate.name,
+      description: value.description,
+      parameters: value.parameters,
+    };
+  });
+  const budget = new ContextManager(40, 128_000).requestBudget(serialized);
+  assert.equal(budget.toolSchemaTokens, new ContextManager().requestBudget(serialized).toolSchemaTokens);
+  assert.equal(request.toolNames.length, finalTools.length);
+});
+
 test('capability snapshot is deterministic and distinguishes readiness terminology', () => {
   const builder = new ToolSetBuilder();
   const tool = (name: string) => ({ name }) as Tool;
@@ -169,11 +344,8 @@ test('capability snapshot is deterministic and distinguishes readiness terminolo
       freshness: 'unknown' as const,
       coverage: 'bounded' as const,
       permissionSource: 'connector-manager',
-      operations: [{
-        capability: 'desktop.items.open-visible',
-        action: 'open_visible',
-        effect: 'write' as const,
-      }],
+      capabilities: ['desktop.items.open-visible'],
+      actionCount: 1,
       safeFallback: 'none' as const,
     }],
   };
@@ -185,7 +357,8 @@ test('capability snapshot is deterministic and distinguishes readiness terminolo
   assert.equal(first.items.find((item) => item.kind === 'connector')?.freshness, 'unknown');
   const rendered = renderEffectiveCapabilitySnapshot(first);
   assert.match(rendered, /desktop\.items\.open-visible/);
-  assert.match(rendered, /open_visible/);
+  assert.match(rendered, /"actionCount":1/);
+  assert.doesNotMatch(rendered, /open_visible/);
   assert.doesNotMatch(rendered, /"tools":/);
 });
 
@@ -330,12 +503,52 @@ test('state loader can inject direct-owner Soul and preferences without granting
   assert.equal(state.projectGuidance.instructions, '');
 });
 
+test('state loader never injects hot profiles and caps automatic recall at three cards', async () => {
+  let hotProfileCalls = 0;
+  const memories = Array.from({ length: 4 }, (_, index) => ({
+    ref: { scope: 'private' as const, profileId: 'owner', id: `memory-${index}` },
+    title: `memory-${index}`,
+    summary: `summary-${index}`,
+    kind: 'fact' as const,
+    status: 'active' as const,
+    confidence: 'source-grounded' as const,
+    score: 1,
+    sourceRefs: [],
+    documentType: 'wiki' as const,
+  }));
+  const loader = new RunStateLoader({
+    hotProfile: async () => {
+      hotProfileCalls += 1;
+      throw new Error('hot profiles must not be loaded');
+    },
+    searchMemories: async () => memories,
+    loadPlan: async () => [],
+    loadGoal: async () => undefined,
+    loadTeamSummary: async () => '',
+    loadHistory: async () => [],
+    loadSoul: async () => ({ files: [], instructions: '' }),
+    loadPreferences: async () => ({ files: [], instructions: '' }),
+    loadProjectGuidance: async () => ({ files: [], instructions: '' }),
+    loadArchive: async () => undefined,
+    loadActiveSkills: async () => [],
+  });
+  const state = await loader.load({
+    canReadLocal: true,
+    canReadMemory: true,
+    canReadState: true,
+    canReadSessionContext: true,
+    completionToolsAllowed: true,
+    computerAccess: 'none',
+  });
+  assert.equal(hotProfileCalls, 0);
+  assert.equal(state.memories.length, 3);
+});
+
 test('request factory freezes the model-facing tool order and output cap', () => {
   const request = new AgentRequestFactory().create({
     model: 'gpt-test',
     instructions: 'system',
     tools: [{ name: 'read_file' } as Tool, { name: 'delegate_research' } as Tool],
-    mcpServers: [],
     outputReserve: 8_000,
     focusedOutputLimit: 4_096,
   });
@@ -349,7 +562,6 @@ test('request factory maps the provider-neutral reasoning intent into SDK settin
     model: 'gpt-test',
     instructions: 'system',
     tools: [],
-    mcpServers: [],
     outputReserve: 8_000,
     reasoning,
   }).agent.modelSettings.reasoning?.effort;

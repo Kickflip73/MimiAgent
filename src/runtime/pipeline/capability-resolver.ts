@@ -48,6 +48,7 @@ export interface EffectiveCapabilityItem {
   selectedRoute?: string;
   routeOwner?: string;
   capabilities?: readonly string[];
+  actionCount?: number;
   operations?: readonly Readonly<{
     capability: string;
     action: string;
@@ -150,12 +151,12 @@ export function renderEffectiveCapabilitySnapshot(
       coverage: item.coverage,
       selectedRoute: item.selectedRoute,
       capabilities: item.capabilities,
-      operations: item.operations,
+      actionCount: item.actionCount,
     }));
   if (routedItems.length === 0) return '';
   return [
     '## Effective Capability Snapshot',
-    '这是本轮开始前由可信宿主生成的能力事实。优先按 operations 中的精确 capability/action 调用 invoke_capability，并严格遵循 usage 声明的调用顺序、target 和 payload；unavailable/unknown 不得尝试启用 Connector 或猜测替代路线。',
+    '这是本轮开始前由可信宿主生成的 Connector 摘要。需要执行时先用 inspect_mimi_capabilities 按 connector 或 capability 精确查询 action，再用 invoke_capability 调用；unavailable/unknown 不得尝试启用 Connector 或猜测替代路线。',
     JSON.stringify({
       schemaVersion: snapshot.schemaVersion,
       policyRevision: snapshot.policyRevision,

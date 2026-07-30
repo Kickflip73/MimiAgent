@@ -1,5 +1,118 @@
 # Progress
 
+## 2026-07-30 Context Review 修复
+
+### 任务 0 基线
+- 继承上一轮未提交实现与无关脏改动，不重做、不提交、不部署；本节只追加记录。
+- 原样执行 `npm run check` 与 9 个指定聚焦文件：check 通过，聚焦门禁进入全绿后才启动全量。
+- 当前 Codex 外层为受限 workspace sandbox；首轮全量被 loopback/Unix socket `EPERM`、嵌套 `sandbox-exec` exit 71、测试夹具无法访问 `~/.mimi-agent` 系统性污染，命令 exit 1。
+- 上述失败与 Context Review 无关，已写 BLOCKED；不修改范围外源码、测试阈值或既有断言，改用已批准的原始门禁在非嵌套沙箱环境复跑。
+- Review 待复现数字：1,048,576 context / 962,068 input、30 轮 12K 结果累计降幅约 0、500K 在第 18 次前暂停、4317/telemetry-prod 丢失、授权 55 / 首轮 23。
+- 非嵌套原始门禁复跑：`npm run check && npm test && npm run build` exit 0；814/814，fail/skip/todo=0，build 通过。
+- 真实 1M 确定性复现：context=1,048,576、input budget=962,068；第 30 轮 raw/view=`91,759/91,760`、compression records=0；累计 `1,422,795→1,422,825`，降幅 0%，500K 会在第 18 次调用前暂停。
+- 80% 复现：目标 `opaque-ABC_7788` 尚存，但旧事实 `OTLP 4317` 与 `telemetry-prod` 均丢失；确认不能继续依赖关键词快照。
+- Review fixture 的完整授权面 55、首轮模型工具 23/schema 3,374；隐藏 web/Memory/Computer/MCP 无统一回读入口，留作任务 2 红测。
+
+### 任务 1 三层 Context 修复
+- 红：真实 1M/30×12K 复现累计 `1,422,795→1,422,825`（0%），第 18 次前撞 500K；80% 后 4317/telemetry-prod 丢失。
+- 绿：工具结果按 callId+内容摘要登记独立 Artifact；首次消费后每轮变有界语义摘要+`context-artifact:*`，同 Session/Run 可校验回读，越权失败。
+- 70% 工作快照独立持久化，含关键事实；80% 才替换旧对话，最近 3 个 user 回合原文保留；无法覆盖事实时明确失败。
+- 当前确定性 1M 复算：round30 raw/view=`92,209/7,126`，最大请求 7,126；累计 `1,429,770→153,500`，下降 89.26%，未撞 500K，三项关键事实均在。
+- 红→绿聚焦：Context 先因工具协议 ID 误入快照及末项未有界失败，修复后 9/9；canonical Session 深比较不变、协议无孤儿。
+
+### 任务 2 真正渐进披露
+- 新增统一 `inspect_runtime_capabilities`/`invoke_runtime_capability`，覆盖 builtin、MCP、Computer、Memory、Goal、Skill、Connector。
+- 入口只索引 Host/Mode/Security/Policy 已授权并已包装 Ledger 的精确工具；未知/未授权返回失败，隐藏不撤权也不升级权限。
+- Skill availability 改用完整 Host 授权面，首轮可见面仍有界；Core fixture 的首轮 schema≤4K 继续通过，Connector disabled action 描述为 0。
+- 红→绿：初版未知能力测试误按 SDK throw 契约；核实 SDK 返回失败 Tool result 后改测公开契约，7 类授权能力发现/调用与未授权失败均通过。
+
+### 任务 3 Memory 与统计补齐
+- Embedding 不再平均为单文档向量：约 400-token/80 overlap 的每个 chunk 独立入 SQLite，cosine 阈值后按页面聚合；旧单向量表写入为 0。
+- MMR 现在迭代计算 query relevance 与候选 diversity，并硬抑制近重复；自动召回≤3条/900 tokens，无关查询为 0。
+- fake embedding 语义改写命中；数据库已有 chunk 向量但当前 Runtime 无 embedding client 时仍报告 lexical-only。
+- 短“继续”只补 Goal 与最近两轮 user/assistant 对话，跳过 function call/result；Manifest 每次模型调用重建，Raw Session 不含 instructions/tools，reserve 只显示预留，压缩次数按 Run 累计。
+- 扩大聚焦门禁：92/92；随后 Core/Memory/Pipeline/RunContext 50/50，fail/skip/todo=0。
+
+### 待最终门禁
+- 待执行原始 `npm run check && npm test && npm run build`；若外层沙箱再次污染，使用已批准的非嵌套原始命令复跑并保留两份证据。
+
+### 最终门禁
+- 非嵌套原始命令 `npm run check && npm test && npm run build` exit 0。
+- 全量 `818/818`，fail/skip/todo=`0/0/0`；较基线 814 新增 4 条真实回归，TypeScript check/build 均通过。
+- 反向验证：1M 长跑 `0%→89.26%`；4317/telemetry-prod 丢失→保留；隐藏 7 类能力不可达→统一精确发现/调用；单文档平均向量→多 chunk 独立向量+页面聚合。
+- canonical Session、function call/result 配对、Policy/Ledger 与 uncertain no-replay 的既有全量测试均绿。
+- 本轮未提交、部署、重启、安装全局包、修改真实 `.mimi-agent` 或运行 live embedding canary。
+
+### 独立 Review S1 根因续修
+- 红：真实 1M/962,068 input 下，108 条长日志/代码在 raw=675,770（70.24%）因单句 >2K 固定上限中断；140 条独立事实在 80% 因 128 条快照上限中断。
+- 红：fake MCPServer 50 tools 时 Manifest 仅 1 tool/~11 schema tokens，但最终 SDK `getAllTools()` 为 51 tools/~13,618 schema tokens；原生 `mcpServers` 绕过渐进披露。
+- 修复：70% 只调用无工具 semantic summarizer seam 准备带 `coveredItems/sourceDigest` 的持久快照，失败可复用已验证旧快照或保留仍可装入的原视图；80% 才替换已覆盖前缀，最近三轮/canonical/protocol 不改。
+- 修复：Host 先将 MCP Tool 以 server-prefixed 精确名、strict 参数 schema 和 MCP ExecutionLedger 物化到统一 catalog；最终 Agent 不再接收 `mcpServers`，首轮只有 discovery/invoke gateway。
+- 修复：Context Artifact 不再改写旧 ref 的 runId；跨新 Run 重新登记会生成携带 `originRunId` 的当前 Run alias，旧 ref 归属保持不变。
+- 红→绿：新增真实 1M 长日志、140 facts、真实 fake MCPServer、最终 `agent.getAllTools()`、schema 与 Ledger once 回归；首次 MCP 红在 SDK 非 strict schema 改写，Host strict 物化后 focused 66/66 与核心 focused 28/28 全绿。
+- 量化复算：1M/962,068 input 下长日志 raw=675,400（70.20%），140 facts+长结果 raw=780,238（81.10%），两项均通过 semantic seam；30×12K 为 `1,429,770→57,280`，下降 95.99%，最大请求 3,472、round30 `92,209→3,472`，4317/telemetry-prod/opaque ID 保留。
+- MCP 复算：Host catalog 50 项，但最终 `agent.getAllTools()` 只有 2 个 gateway/schema 270 tokens，`mcp_fake__*` 隐性 schema=0；精确发现后调用两次只执行/授权一次。
+- 完整门禁首轮在外层 workspace sandbox 为 808/820：11 项来自测试 Runner `{}` 不含真实 `runContext.usage`，修复双桩兼容；另 1 项为嵌套 `sandbox-exec` exit 71，同文件非嵌套复跑 7/7。
+- 最终非嵌套原始 `npm run check && npm test && npm run build` exit 0：820/820，fail/skip/todo=0，TypeScript check/build 通过；较独立基线 818 新增 2 条反作弊回归。
+- 未运行 live Provider、Daemon、`eval:agent`、部署、重启或真实用户数据读写；live summarizer canary 按任务边界保留在 BLOCKED。
+
+## 2026-07-30 上下文系统任务
+1. 目标：canonical Session 保持全文，模型每次只接收此刻有用、协议完整、可恢复的派生 Context View。
+2. 顺序：统一 Context View → 能力渐进披露 → 相关记忆召回 → TUI 统计与长跑保护 → 总验收。
+3. 正确性边界：80% 才语义压缩，最近 3 个用户回合逐字保留，不用字符裁剪冒充摘要。
+4. 安全边界：权限与 Host/Policy 不变，canonical Session 不回写，uncertain 副作用绝不重放。
+5. 成本边界：首请求 schema≤4K、Connector≤1K、自动记忆≤3条/900 tokens，长跑估算降幅≥70%。
+6. 实现边界：无 Router LLM、关键词工具路由、常驻服务、新依赖、全量预载或真实用户数据修改。
+7. 基线首次因缺少本地 `tsc` exit 127；已写 BLOCKED，仅 `npm ci` 恢复 lockfile 依赖且 prepare 通过。
+8. 复跑 `npm run check` exit 0；指定 6 个文件共 54/54，fail/skip/todo=0，与任务书记录一致。
+9. 工作树继承 16 个用户改动文件；本任务与 `src/runtime/mimi-agent.ts`、`CHANGELOG.md` 重叠时逐块保留。
+10. 最大风险：SDK 过滤视图持久化污染、工具协议孤儿、隐藏 schema 被误当授权、统计把 reserve 当 usage。
+
+### 任务 1 统一 Context View
+- 红测 1：`findLastIndex` 不受 ES2022 lib 支持，`npm run check` 失败；改为反向索引循环后通过。
+- 红测 2：30 个大工具结果虽配对但工作快照误收整段 JSON，模型视图 23,315 tokens；改为工具结果只抽稳定引用，收敛到 8K 内。
+- 绿测：`npm run check` 与 Context/Session/Core 聚焦 76/76，fail/skip/todo=0。
+- 行为：70% 生成结构化工作快照，79% 不压缩，80% 才替换较早历史；最近 3 个用户回合原文保留。
+- 每次模型请求通过 SDK `callModelInputFilter` 重算；大结果变语义事实+sha256 稳定引用，调用/结果配对保留。
+- canonical Session 回归逐项深比较不变；派生摘要明确禁止用于副作用重放。
+
+### 任务 2 能力渐进披露
+- 红测：初始 Capability Snapshot 仍展开 Connector operation/action；旧管线测试要求 action 名进入首轮摘要。
+- 绿测：`npm run check` 与 Core/Connector/Pipeline/Policy/Host 聚焦 119/119，fail/skip/todo=0。
+- 普通 owner 首请求只保留通用核心、Skill 三入口及 Connector inspect/invoke；实测 schema 估算≤4K。
+- 17 个 Connector 合成摘要≤1K，仅含 id/availability/readiness/coverage/capability group/actionCount。
+- 禁用 Connector 的 action 描述为 0；action 名和 usage 只在精确 inspect 结果中披露，invoke 仍走 Host/Policy/Ledger。
+- Skill 首轮只放 name/description/location，SKILL.md 与引用仍由 use_skill/read_skill_resource 按需读取。
+- 选择与 owner 文本无关；结构化 Run policy/Mode/Security 仍是授权和额外工具面的唯一来源。
+
+### 任务 3 相关记忆召回
+- 红测：自动 State Loader 每轮并发加载 hotProfile，查询还拼入 source/actor/conversation 恒定噪声。
+- 绿测：`npm run check` 与 Memory/RunContext/Pipeline 聚焦 41/41，fail/skip/todo=0。
+- hotProfile 路径不再执行；稳定行为继续由 PREFERENCES.md 注入，自动 recall 最多 3 条/900 tokens。
+- 普通 query 只用当前用户意图；仅“继续/接着”等短续接补 active Goal 与最近两轮摘要。
+- FTS5/BM25 保留；embedding 文档按约 400-token chunk/80 overlap 求均值，cosine<0.62 不命中。
+- episode 单独做 90 天时间衰减；MMR 以 0.72 相似度去重，近重复合成结果最多一条。
+- fake embedding 语义改写命中、两个无关 query 返回 0；状态明确显示 hybrid 或 lexical-only。
+- 当前机器无独立 embedding live canary，本任务只验证确定性 fake；不得冒充真实 semantic 实测。
+
+### 任务 4 统计与长跑保护
+- 红测：累计输入保护首次回归期望文案与实际结构化错误不一致（51/52）；按真实错误契约收紧断言，未改判断阈值。
+- 红测补充：为保证“每次请求有界”新增硬失败后，80% 极小合成样本因快照开销超过 202 tokens 红；补入可压缩旧背景以验证真实语义替换，未放宽 80% 或预算断言。
+- 绿测：`npm run check` 与 Config/ContextView/Host/Pipeline 聚焦 53/53，fail/skip/todo=0；语义视图仍超预算时明确失败且 canonical Session 不变。
+- TUI snapshot 已按请求的 Session actor 读取；`/context` 分列 Last request actual、Run cumulative、模型视图占比、Raw Session、静态工具/能力开销、压缩次数。
+- protocol reserve 仍单独显示“仅预留”，不再计入 request/session 已用 token。
+- 默认上限为 32 次模型调用或 500K 累计输入估算；先触限时写 interrupted checkpoint 并暂停，不删协议单元，不回滚/重放 uncertain 动作。
+- 30 轮、每轮新增 12K 工具结果的固定合成长跑：旧算法累计 1,429,410 tokens，派生视图累计 53,837，降幅 96.23%（门槛 70%）。
+- 文档已同步 canonical/派生视图、70/80 阈值、渐进披露、相关记忆、统计与长跑保护；待最终全量验收。
+
+### 最终验收
+- 完整套件首次只有范围外 Cua 生命周期时序失败；原文件立即复跑 31/31，未修改 Computer 源码或断言。
+- 下一次完整终态暴露 6 个真实回归：渐进披露隐藏了既有 Session/模型切换及完成控制工具；修复后恢复/schema/管线聚焦 92/92。
+- 最终原样执行 `npm run check && npm test && npm run build`：exit 0；814/814，fail/skip/todo=0；TypeScript build 通过。
+- 反向验证链：Context View 大结果 23,315→≤8K；continuity 预算红→10/10；控制工具缺失 6 红→92/92；全量 808/814→814/814。
+- 合成长跑独立复算仍为 1,429,410→53,837 tokens，累计估算下降 96.23%；canonical Session、Policy/Ledger 与 uncertain no-replay 测试均绿。
+- 交付仅含源码、测试、ARCHITECTURE/CHANGELOG、PROGRESS/BLOCKED；未部署、重启、安装全局包或修改真实 `.mimi-agent` 数据。
+
 ## 2026-07-30 systemic architecture repair kickoff
 - Goal: reduce the deep live-eval failures to shared architectural causes, then repair at least the first three with generic red-to-green contracts.
 - Priority: real completion/runtime stability, then state consistency/diagnostics, then cost, then breadth.

@@ -24,6 +24,15 @@ import { evidenceFromSource, reciprocalRankFusion } from '../../core/memory.js';
 
 type Row = Record<string, string | number | bigint | Uint8Array | null | undefined>;
 
+export interface DocumentChunkEmbedding {
+  model: string;
+  chunks: Array<{
+    index: number;
+    digest: string;
+    vector: number[];
+  }>;
+}
+
 function json<T>(value: string | number | bigint | Uint8Array | null | undefined): T {
   if (typeof value !== 'string') throw new Error('Memory catalog JSON 字段无效');
   return JSON.parse(value) as T;
@@ -135,7 +144,7 @@ export class SqliteMemoryCatalog {
 
   index(
     page: MemoryDocument,
-    embedding?: { model: string; vector: number[] },
+    embedding?: DocumentChunkEmbedding,
     documentType: MemoryHit['documentType'] = 'wiki',
   ): void {
     const key = refKey(page.ref);
@@ -172,11 +181,24 @@ export class SqliteMemoryCatalog {
           .run(key, page.metadata.title, page.metadata.aliases.join(' '), page.metadata.tags.join(' '), page.body);
       }
       this.database.prepare('DELETE FROM document_embeddings WHERE ref_key = ?').run(key);
+      this.database.prepare('DELETE FROM document_embedding_chunks WHERE ref_key = ?').run(key);
       if (embedding) {
-        this.database.prepare(`
-          INSERT INTO document_embeddings (ref_key, digest, provider, model, dimensions, vector)
-          VALUES (?, ?, 'openai', ?, ?, ?)
-        `).run(key, page.digest, embedding.model, embedding.vector.length, encodeVector(embedding.vector));
+        const insertChunk = this.database.prepare(`
+          INSERT INTO document_embedding_chunks (
+            ref_key, digest, chunk_index, chunk_digest, provider, model, dimensions, vector
+          ) VALUES (?, ?, ?, ?, 'openai', ?, ?, ?)
+        `);
+        for (const chunk of embedding.chunks) {
+          insertChunk.run(
+            key,
+            page.digest,
+            chunk.index,
+            chunk.digest,
+            embedding.model,
+            chunk.vector.length,
+            encodeVector(chunk.vector),
+          );
+        }
       }
       this.database.exec('COMMIT');
     } catch (error) {
@@ -617,23 +639,32 @@ export class SqliteMemoryCatalog {
   }
 
   rebuild(pages: MemoryDocument[], embeddingModel?: string): void {
-    const embeddings = new Map<string, { model: string; vector: number[] }>();
+    const embeddings = new Map<string, DocumentChunkEmbedding>();
     const previous = this.database.prepare(`
-      SELECT d.ref_key, d.digest, e.model, e.dimensions, e.vector
-      FROM documents d JOIN document_embeddings e ON e.ref_key=d.ref_key
+      SELECT d.ref_key, d.digest, e.model, e.chunk_index, e.chunk_digest, e.dimensions, e.vector
+      FROM documents d JOIN document_embedding_chunks e ON e.ref_key=d.ref_key
       WHERE d.document_type = 'wiki'
+      ORDER BY d.ref_key, e.chunk_index
     `).all() as Row[];
     for (const row of previous) {
       if (embeddingModel && row.model !== embeddingModel) continue;
-      embeddings.set(`${String(row.ref_key)}:${String(row.digest)}`, {
-        model: String(row.model), vector: decodeVector(row.vector as Uint8Array),
+      const key = `${String(row.ref_key)}:${String(row.digest)}`;
+      const embedding = embeddings.get(key) ?? { model: String(row.model), chunks: [] };
+      embedding.chunks.push({
+        index: Number(row.chunk_index),
+        digest: String(row.chunk_digest),
+        vector: decodeVector(row.vector as Uint8Array),
       });
+      embeddings.set(key, embedding);
     }
     this.database.exec('BEGIN IMMEDIATE');
     try {
       this.database.exec(`
         DELETE FROM links;
         DELETE FROM document_embeddings WHERE ref_key IN (
+          SELECT ref_key FROM documents WHERE document_type = 'wiki'
+        );
+        DELETE FROM document_embedding_chunks WHERE ref_key IN (
           SELECT ref_key FROM documents WHERE document_type = 'wiki'
         );
       `);
@@ -670,7 +701,7 @@ export class SqliteMemoryCatalog {
 
   needsEmbedding(page: MemoryDocument, model: string): boolean {
     const row = this.database.prepare(`
-      SELECT 1 FROM document_embeddings WHERE ref_key=? AND digest=? AND model=?
+      SELECT 1 FROM document_embedding_chunks WHERE ref_key=? AND digest=? AND model=? LIMIT 1
     `).get(refKey(page.ref), page.digest, model);
     return !row;
   }
@@ -684,7 +715,9 @@ export class SqliteMemoryCatalog {
         SUM(CASE WHEN document_type='wiki' THEN stale ELSE 0 END) AS stale,
         SUM(CASE WHEN document_type='episode' THEN 1 ELSE 0 END) AS episodes FROM documents
     `).get() as Row;
-    const embedding = this.database.prepare('SELECT model, dimensions FROM document_embeddings LIMIT 1').get() as Row | undefined;
+    const embedding = this.database.prepare(
+      'SELECT model, dimensions FROM document_embedding_chunks LIMIT 1',
+    ).get() as Row | undefined;
     const controls = this.database.prepare(`
       SELECT
         (SELECT COUNT(*) FROM source_receipts WHERE status = 'pending') AS pending_receipts,
@@ -730,11 +763,26 @@ export class SqliteMemoryCatalog {
 
   private vectorRows(vector: number[], filterSql: string, parameters: Array<string | number>, limit: number): Row[] {
     const rows = this.database.prepare(`
-      SELECT d.*, e.vector, e.dimensions FROM document_embeddings e
+      SELECT d.*, e.vector, e.dimensions, e.chunk_index FROM document_embedding_chunks e
       JOIN documents d ON d.ref_key=e.ref_key WHERE ${filterSql}
     `).all(...parameters) as Row[];
-    return rows.filter((row) => Number(row.dimensions) === vector.length)
+    const scored = rows.filter((row) => Number(row.dimensions) === vector.length)
       .map((row) => ({ row, score: cosine(vector, decodeVector(row.vector as Uint8Array)) }))
+      .filter(({ score }) => score >= 0.62)
+      .sort((left, right) => right.score - left.score);
+    const pageScores = new Map<string, { row: Row; scores: number[] }>();
+    for (const candidate of scored) {
+      const key = String(candidate.row.ref_key);
+      const aggregate = pageScores.get(key) ?? { row: candidate.row, scores: [] };
+      aggregate.scores.push(candidate.score);
+      pageScores.set(key, aggregate);
+    }
+    return [...pageScores.values()]
+      .map(({ row, scores }) => ({
+        row,
+        score: scores.slice(0, 3).reduce((total, score) => total + score, 0)
+          / Math.min(3, scores.length),
+      }))
       .sort((left, right) => right.score - left.score)
       .slice(0, limit)
       .map(({ row }) => row);
@@ -755,6 +803,13 @@ export class SqliteMemoryCatalog {
         ref_key TEXT PRIMARY KEY REFERENCES documents(ref_key) ON DELETE CASCADE,
         digest TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
         dimensions INTEGER NOT NULL, vector BLOB NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS document_embedding_chunks (
+        ref_key TEXT NOT NULL REFERENCES documents(ref_key) ON DELETE CASCADE,
+        digest TEXT NOT NULL, chunk_index INTEGER NOT NULL, chunk_digest TEXT NOT NULL,
+        provider TEXT NOT NULL, model TEXT NOT NULL,
+        dimensions INTEGER NOT NULL, vector BLOB NOT NULL,
+        PRIMARY KEY(ref_key, chunk_index)
       );
       CREATE TABLE IF NOT EXISTS links (
         source_ref TEXT NOT NULL REFERENCES documents(ref_key) ON DELETE CASCADE,

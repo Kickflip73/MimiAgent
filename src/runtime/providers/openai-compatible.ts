@@ -37,11 +37,21 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     apiKey: string,
     signal?: AbortSignal,
   ) {
-    // The OpenAI-compatible contract does not require a model-detail endpoint.
-    // Probe the authenticated list endpoint so gateways such as Friday are not
-    // reported unhealthy merely because GET /models/{id} is unsupported.
-    return assertHealthyResponse(await fetch(`${requiredBaseUrl(provider)}/models`, {
-      headers: { authorization: `Bearer ${apiKey}` },
+    // A Provider-level /models response proves only endpoint and credential
+    // reachability. Probe the registered model itself so aliases, entitlement,
+    // and request compatibility cannot be reported as healthy by mistake.
+    return assertHealthyResponse(await fetch(`${requiredBaseUrl(provider)}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: registration.target.modelId,
+        messages: [{ role: 'user', content: 'Reply with OK.' }],
+        max_tokens: 1,
+        stream: false,
+      }),
       signal,
     }), provider, registration);
   }

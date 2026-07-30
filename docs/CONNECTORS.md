@@ -109,6 +109,16 @@ Connector 声明 effect=`read` 的 `health_check` 后，Daemon 的确定性
 并发。没有只读健康 action 的旧 Connector 不会被猜测调用。业务模型不得调用
 `health_check`、启停或 reload 来临时维修 Connector。
 
+`personal-daxiang` 的 Supervisor 每 10 秒执行上述只读探活，Connector 自身每 30 秒
+轮询已绑定会话。DOM、账号和目标可读只能证明页面结构仍可用，不能单独证明网页长连接
+仍然健康；因此只读 `health_check probe` 会在专用后台标签连续运行满 10 分钟后，于
+Connector 没有进行中的 action/delivery 时执行一次有界同 URL 刷新，重新安装观察器，
+并在刷新后的账号、页面指纹和目标绑定再次通过后才恢复 ready。刷新失败只会让
+readiness 降级并触发既有的单 Connector 自愈，不会点击发送、重放消息或切换到其他
+执行面。Connector 协议中的 `health_check` action 默认启用 probe；只有显式
+`payload.probe=false` 才做不恢复的普通读取。可通过
+`DAXIANG_WEB_SESSION_REFRESH_INTERVAL_MS` 调整周期。
+
 ## 通用本机 Webhook
 
 没有专用 stdio Bridge 时，可开启只绑定 `127.0.0.1` 的认证入口：
@@ -238,6 +248,9 @@ owner 明确要求按姓名找人或发起新会话时，`search_targets` 只在
 
 动态读取以 `sid` 精确匹配当前已验证账号会话列表中的唯一候选，再从页面结构解析真实
 类型；显示名不参与定位，也不能作为发送目标。配置文件只持久化监听/发送 allowlist，
+目标因会话列表虚拟化暂未加载时，Adapter 最多执行 12 次有界 `loadMoreSessions` 并恢复
+原滚动位置；找到唯一 numeric sid/type 后才读取，耗尽边界仍返回
+`target_unavailable`，不会按名称猜测或无限翻页。
 `authorizationRevision` 使 owner 的每次写目标选择可审计。缺 binding、账号变化、
 revision 无效或写目标当前不存在唯一候选时，status 返回
 `targetBindingStatus=target_not_bound`，`outbound` 不会冒充可用，但账号验证通过后的
@@ -267,10 +280,19 @@ revision 无效或写目标当前不存在唯一候选时，status 返回
 Connector 工具不会展示或调用。Owner Run 只看到 `send_owner_message(channel,text)`；
 Host 固定选择 `personal-<channel>` 与 owner 自会话，Connector 自行读取最新上下文后
 执行一次发送。
+会话稳定性只比较稳定 `mid` 与消息方向，不把可能异步变化的投递回执状态纳入读取
+快照签名；否则已正确选中的会话会被误判为读取超时。`send_to_owner` 只执行一轮稳定
+上下文读取，所有页面校验失败或读取超时在点击前返回 `failed`；只有点击后丢失观察
+结果才返回 `uncertain`。Bridge 通过原生 textarea setter 写入正文，并同步 React
+`_valueTracker` 后在已聚焦输入框触发有界 keydown/input/keyup；DOM value 经一次页面
+状态提交后仍精确匹配才允许单次点击。
 Hub 先由 `get_personal_message_context` 生成最长五分钟、绑定 Run/账号/会话/最新消息
 指纹的 HMAC token，再由 `send_personal_message` 单次消费。发送后只能观察到新
 outgoing `data-mid`，所以首版结果固定为 `observed` 且
 `deliveryConfirmed:false`；点击后的超时或歧义为 `uncertain`，不得重试或换路线。
+Bridge 写入并核验 React textarea 后等待一次有界状态提交，再复核目标与正文并单击。
+新 outgoing 气泡的 `data-mid=""` 只表示本地 optimistic pending；只有同一新气泡取得
+非空服务器 `data-mid` 后才返回 `observed`，不会用正文哈希冒充稳定消息 ID。
 Bridge 不会重复点击已经选中的会话；切换会话后必须等待消息列表稳定再读取或发送。
 页面明确出现失败/重试标记时返回 `failed`，不再把已知失败拖到观察超时；发送 action
 执行期间轮询暂停，避免后台切换会话破坏目标和回执观察。

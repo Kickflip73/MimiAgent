@@ -134,6 +134,7 @@ export interface MemoryStatusSnapshot {
   degraded: boolean;
   embeddingModel?: string;
   embeddingDimensions?: number;
+  retrievalMode?: 'hybrid' | 'lexical-only';
   pendingReceipts?: number;
   decisions?: number;
   pageLimitReached?: boolean;

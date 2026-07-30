@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -20,6 +20,11 @@ interface ProtocolMessage {
 const connector = fileURLToPath(
   new URL('../examples/connectors/personal-message-connector.mjs', import.meta.url),
 );
+
+test('personal message health actions enable the bounded recovery probe by default', async () => {
+  const source = await readFile(connector, 'utf8');
+  assert.match(source, /message\.action === 'health_check'\) return reportHealth\(payload\.probe !== false\)/);
+});
 
 async function waitFor(
   messages: ProtocolMessage[],
@@ -111,8 +116,9 @@ test('personal message connector stays diagnosable when Daxiang config is missin
       deadlineAt: Date.now() + 2_000,
     })}\n`);
     const ownerSend = await waitFor(messages, (message) => message.id === 'owner-send-1');
-    assert.equal(ownerSend.ok, false);
-    assert.match(ownerSend.error ?? '', /owner account or self conversation is not ready/);
+    assert.equal(ownerSend.ok, true);
+    assert.equal(ownerSend.result?.status, 'failed');
+    assert.match(String(ownerSend.result?.error), /owner account or self conversation is not ready/);
   } finally {
     await stop(child);
   }

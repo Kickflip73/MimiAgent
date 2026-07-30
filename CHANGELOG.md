@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- replace fixed sentence extraction with a Provider-backed, no-tool semantic
+  snapshot seam that makes 70% checkpoint preparation non-blocking and validates
+  covered canonical prefixes before 80% compression; materialize native MCP
+  tools behind the unified capability gateway so the SDK request has no hidden
+  schemas while preserving exact discovery, Policy, and ExecutionLedger behavior
+- separate consumed Tool artifacts, durable work snapshots, and 80% dialogue
+  compression so 1M-window runs can read hash-verified canonical results without
+  replaying effects; add policy-preserving progressive discovery for hidden
+  builtin, MCP, Computer, Memory, Goal, Skill, and Connector capabilities; store
+  Memory embeddings per chunk with page aggregation and relevance/diversity MMR
+- derive a bounded Context View before every model call while retaining the
+  canonical Session, add 70% work snapshots and 80% semantic compression with
+  intact recent turns and tool protocol units, progressively disclose Skill and
+  Connector capabilities, recall only relevant bounded memories, separate
+  actual/cumulative/view/reserve context metrics, and safely checkpoint
+  conversations at 32 calls or 500K cumulative estimated input tokens
+- stabilize Daxiang owner messaging when delivery receipts change during a read,
+  remove duplicate pre-send context navigation, and classify all failures before
+  the single send click as failed-safe instead of uncertain; synchronize React
+  textarea tracking so a DOM-verified draft is also accepted by the page state,
+  wait for that state commit before the single click, and require the optimistic
+  outgoing bubble to acquire a non-empty server `data-mid`; load an exact numeric
+  target through the bounded virtualized session list before declaring it absent;
+  periodically refresh the idle dedicated web session through the read-only
+  readiness probe so a stale page connection cannot remain superficially ready
 - hot-reload complete model registry changes at the next Run even when a legacy
   writer did not bump routeVersion; allow concise model registration on an
   existing Provider, and add a bounded `daemon restart --force` that interrupts
@@ -40,8 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   add `/models` plus `/model current/inspect/use/auto/routes/route/doctor` over the
   Session-scoped Daemon control path without restarting it; derive each Daemon
   Run scenario from its durable task kind so Conversation Sessions retain their
-  selected target, and probe the portable authenticated `/models` endpoint for
-  OpenAI-compatible health instead of requiring optional model-detail support
+  selected target; keep model listing side-effect free, and make explicit
+  OpenAI-compatible doctor checks issue a bounded target-model completion so an
+  invalid alias or missing entitlement cannot pass a Provider-only `/models` probe
 - add a Mimi-only `~/.mimi-agent/PREFERENCES.md` for owner-confirmed behavior
   defaults, inject `MIMI.md` Soul first followed by core rules, Preferences,
   Runtime Context, and active Skills as pinned direct-owner context, and expose

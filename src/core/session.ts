@@ -1,5 +1,5 @@
 import { readdir } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { AgentInputItem, Session } from '@openai/agents';
 import { z } from 'zod';
@@ -84,6 +84,33 @@ export interface ContextArchive {
   updatedAt: string;
 }
 
+export interface ContextWorkSnapshot {
+  goal: string[];
+  progress: string[];
+  completed: string[];
+  decisions: string[];
+  constraints: string[];
+  openQuestions: string[];
+  evidence: string[];
+  keyFacts: string[];
+  references: string[];
+  coveredItems: number;
+  sourceDigest: string;
+  updatedAt: string;
+  runId: string;
+}
+
+export interface ContextToolArtifact {
+  ref: string;
+  callId: string;
+  toolName: string;
+  outputDigest: string;
+  runId: string;
+  originRunId?: string;
+  createdAt: string;
+  consumedAt?: string;
+}
+
 export interface SessionPreferences {
   mode?: string;
   provider?: 'openai' | 'deepseek' | 'openai-compatible';
@@ -119,6 +146,8 @@ interface SessionFile {
   items: AgentInputItem[];
   checkpoint?: RunCheckpoint;
   contextArchive?: ContextArchive;
+  contextWorkSnapshot?: ContextWorkSnapshot;
+  contextToolArtifacts?: ContextToolArtifact[];
   preferences?: SessionPreferences;
   activeSkills?: ActivatedSkill[];
 }
@@ -199,7 +228,7 @@ const sessionFileSchema = z.object({
     historyStart: z.number().int().nonnegative().optional(),
     startedAt: z.string(),
     updatedAt: z.string(),
-  }).optional(),
+  }).strict().optional(),
   contextArchive: z.object({
     coveredItems: z.number().int().nonnegative(),
     summary: z.string(),
@@ -208,6 +237,33 @@ const sessionFileSchema = z.object({
     compactedTokens: z.number().nonnegative(),
     updatedAt: z.string(),
   }).optional(),
+  contextWorkSnapshot: z.object({
+    goal: z.array(z.string()),
+    progress: z.array(z.string()),
+    completed: z.array(z.string()),
+    decisions: z.array(z.string()),
+    constraints: z.array(z.string()),
+    openQuestions: z.array(z.string()),
+    evidence: z.array(z.string()),
+    keyFacts: z.array(z.string()),
+    references: z.array(z.string()),
+    coveredItems: z.number().int().nonnegative().default(0),
+    sourceDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/).default(
+      'sha256:0000000000000000000000000000000000000000000000000000000000000000',
+    ),
+    updatedAt: z.string(),
+    runId: z.string(),
+  }).strict().optional(),
+  contextToolArtifacts: z.array(z.object({
+    ref: z.string().regex(/^context-artifact:[0-9a-f-]{36}$/),
+    callId: z.string().min(1),
+    toolName: z.string().min(1),
+    outputDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    runId: z.string().min(1),
+    originRunId: z.string().min(1).optional(),
+    createdAt: z.string(),
+    consumedAt: z.string().optional(),
+  }).strict()).max(1_000).optional(),
   preferences: z.object({
     mode: z.string().optional(),
     provider: z.enum(['openai', 'deepseek', 'openai-compatible']).optional(),
@@ -569,6 +625,129 @@ export class FileSession implements Session {
       session.contextArchive = { ...archive };
       session.updatedAt = new Date().toISOString();
     });
+  }
+
+  async getContextWorkSnapshot(): Promise<ContextWorkSnapshot | undefined> {
+    const snapshot = (await this.load()).contextWorkSnapshot;
+    return snapshot ? structuredClone(snapshot) : undefined;
+  }
+
+  async setContextWorkSnapshot(
+    snapshot: Omit<ContextWorkSnapshot, 'updatedAt' | 'runId'>,
+    expectedRunId: string,
+  ): Promise<boolean> {
+    return this.mutateWhen((session) => {
+      if (session.checkpoint?.status !== 'running' || session.checkpoint.runId !== expectedRunId) {
+        return { result: false, changed: false };
+      }
+      const now = new Date().toISOString();
+      session.contextWorkSnapshot = {
+        ...structuredClone(snapshot),
+        updatedAt: now,
+        runId: expectedRunId,
+      };
+      session.updatedAt = now;
+      return { result: true, changed: true };
+    });
+  }
+
+  async registerContextToolArtifacts(
+    items: AgentInputItem[],
+    expectedRunId: string,
+  ): Promise<ContextToolArtifact[]> {
+    return this.mutateWhen((session) => {
+      if (session.checkpoint?.status !== 'running' || session.checkpoint.runId !== expectedRunId) {
+        return { result: [] as ContextToolArtifact[], changed: false };
+      }
+      const artifacts = session.contextToolArtifacts ?? [];
+      const registered: ContextToolArtifact[] = [];
+      let changed = false;
+      for (const item of items) {
+        const value = item as unknown as Record<string, unknown>;
+        if (value.type !== 'function_call_result') continue;
+        const callId = String(value.callId ?? value.call_id ?? '');
+        if (!callId) continue;
+        const outputDigest = `sha256:${createHash('sha256')
+          .update(JSON.stringify(value.output ?? null))
+          .digest('hex')}`;
+        const existing = artifacts.find((artifact) =>
+          artifact.callId === callId
+          && artifact.outputDigest === outputDigest
+          && artifact.runId === expectedRunId);
+        if (existing) {
+          registered.push({ ...existing });
+          continue;
+        }
+        const origin = artifacts.find((artifact) =>
+          artifact.callId === callId && artifact.outputDigest === outputDigest);
+        const artifact: ContextToolArtifact = {
+          ref: `context-artifact:${randomUUID()}`,
+          callId,
+          toolName: String(value.name ?? 'unknown'),
+          outputDigest,
+          runId: expectedRunId,
+          originRunId: origin?.originRunId ?? origin?.runId ?? expectedRunId,
+          createdAt: new Date().toISOString(),
+        };
+        artifacts.push(artifact);
+        registered.push({ ...artifact });
+        changed = true;
+      }
+      if (changed) {
+        session.contextToolArtifacts = artifacts.slice(-1_000);
+        session.updatedAt = new Date().toISOString();
+      }
+      return { result: registered, changed };
+    });
+  }
+
+  async markContextToolArtifactsConsumed(
+    refs: readonly string[],
+    expectedRunId: string,
+  ): Promise<number> {
+    const selected = new Set(refs);
+    if (!selected.size) return 0;
+    return this.mutateWhen((session) => {
+      if (session.checkpoint?.status !== 'running' || session.checkpoint.runId !== expectedRunId) {
+        return { result: 0, changed: false };
+      }
+      const now = new Date().toISOString();
+      let changed = 0;
+      for (const artifact of session.contextToolArtifacts ?? []) {
+        if (artifact.runId !== expectedRunId || !selected.has(artifact.ref) || artifact.consumedAt) continue;
+        artifact.consumedAt = now;
+        changed += 1;
+      }
+      if (changed) session.updatedAt = now;
+      return { result: changed, changed: changed > 0 };
+    });
+  }
+
+  async readContextToolArtifact(
+    ref: string,
+    expectedRunId: string,
+  ): Promise<{ ref: string; callId: string; toolName: string; output: unknown }> {
+    const session = await this.load();
+    const artifact = session.contextToolArtifacts?.find((candidate) =>
+      candidate.ref === ref && candidate.runId === expectedRunId);
+    if (!artifact) throw new Error('Context Artifact 不存在、所属 Run 不匹配或当前 Session 无权读取');
+    const item = session.items.find((candidate) => {
+      const value = candidate as unknown as Record<string, unknown>;
+      if (value.type !== 'function_call_result') return false;
+      const callId = String(value.callId ?? value.call_id ?? '');
+      if (callId !== artifact.callId) return false;
+      const digest = `sha256:${createHash('sha256')
+        .update(JSON.stringify(value.output ?? null))
+        .digest('hex')}`;
+      return digest === artifact.outputDigest;
+    }) as unknown as Record<string, unknown> | undefined;
+    if (!item) throw new Error('Context Artifact 的 canonical 工具结果缺失或摘要引用校验失败');
+    return {
+      ref: artifact.ref,
+      callId: artifact.callId,
+      toolName: artifact.toolName,
+      output: structuredClone(item.output),
+    };
   }
 
   async getPreferences(): Promise<SessionPreferences> {

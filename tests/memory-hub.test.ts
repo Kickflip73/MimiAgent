@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { RunContext } from '@openai/agents';
 import type OpenAI from 'openai';
@@ -273,6 +274,86 @@ test('automatic semantic recall fails fast instead of retrying a slow embedding 
 
   assert.deepEqual(await hub.search('quick recall', context(root)), []);
   assert.deepEqual(requestOptions, { maxRetries: 0, timeout: 1_500 });
+});
+
+test('hybrid recall uses chunked fake embeddings, rejects unrelated queries and reports lexical-only honestly', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-hybrid-'));
+  const vectorFor = (value: string) => {
+    const normalized = value.toLowerCase();
+    if (/automobile|vehicle|car|保养/u.test(normalized)) return [1, 0, 0];
+    if (/garden|花园/u.test(normalized)) return [0, 1, 0];
+    return [0, 0, 1];
+  };
+  const embeddingClient = {
+    embeddings: {
+      create: async (request: { input: string | string[] }) => ({
+        data: (Array.isArray(request.input) ? request.input : [request.input])
+          .map((input) => ({ embedding: vectorFor(input) })),
+      }),
+    },
+  } as unknown as OpenAI;
+  const hub = await createMemoryHub({
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    profileId: 'owner',
+    embeddingClient,
+  });
+  const ctx = context(root);
+  const page = await hub.remember({
+    title: 'Car maintenance schedule',
+    content: `${'Vehicle service facts. '.repeat(300)}Change engine oil every year.`,
+    kind: 'fact',
+  }, ctx);
+
+  assert.equal((await hub.search('automobile upkeep interval', ctx))[0]?.ref.id, page.ref.id);
+  assert.deepEqual(await hub.search('garden irrigation plan', ctx), []);
+  assert.deepEqual(await hub.search('payroll tax withholding', ctx), []);
+  assert.equal((await hub.status(ctx) as unknown as { retrievalMode: string }).retrievalMode, 'hybrid');
+
+  const database = new DatabaseSync(privateMemoryLayout(path.join(root, 'data'), 'owner').databaseFile, {
+    readOnly: true,
+  });
+  const chunkCount = Number((database.prepare(
+    'SELECT COUNT(*) AS count FROM document_embedding_chunks',
+  ).get() as { count: number }).count);
+  const legacyVectorCount = Number((database.prepare(
+    'SELECT COUNT(*) AS count FROM document_embeddings',
+  ).get() as { count: number }).count);
+  database.close();
+  assert.ok(chunkCount > 1);
+  assert.equal(legacyVectorCount, 0);
+
+  const lexical = await createMemoryHub({
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    profileId: 'owner',
+  });
+  assert.equal(
+    (await lexical.status(ctx) as unknown as { retrievalMode: string }).retrievalMode,
+    'lexical-only',
+  );
+});
+
+test('automatic recall returns at most one near-duplicate and no more than three cards', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-mmr-'));
+  const hub = await createMemoryHub({
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    profileId: 'owner',
+  });
+  const ctx = context(root);
+  for (let index = 0; index < 5; index += 1) {
+    await hub.recordEpisode({
+      sessionId: ctx.sessionId,
+      runId: `run-duplicate-${index}`,
+      input: 'Cobalt release process',
+      answer: `Cobalt deployment uses the same verified release checklist ${index}.`,
+      occurredAt: new Date(Date.now() - index * 1_000).toISOString(),
+    }, { ...ctx, runId: `run-duplicate-${index}` });
+  }
+  const hits = await hub.search('Cobalt release process', ctx);
+  assert.ok(hits.length <= 3);
+  assert.equal(hits.filter((hit) => /same verified release checklist/.test(hit.summary)).length, 1);
 });
 
 test('SubAgent and Team memory tools cannot read private Wiki or episodes', async () => {

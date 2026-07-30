@@ -80,6 +80,7 @@ export interface AppConfig {
   contextWindow?: number;
   outputReserve?: number;
   maxTurns: number | null;
+  maxRunInputTokens?: number;
   teamMaxConcurrency?: number;
   sessionMaxConcurrency?: number;
   permissionMode?: AgentPermissionMode;
@@ -506,13 +507,10 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
   const requestedSecurityProfile = configuredSecurityProfile();
   const selectedPermissionMode = permissionMode(requestedSecurityProfile);
   const selectedSecurityProfile = requestedSecurityProfile ?? inferredSecurityProfile(selectedPermissionMode);
-  const generatedTurnLimit = selectedMaxTurns?.name === 'MIMI_MAX_TURNS' && (
-    (selectedMaxTurns.value === '200' && configVersion === 2)
-    || (selectedMaxTurns.value === '32' && (configVersion ?? 0) <= 3)
-  );
-  const maxTurns = !selectedMaxTurns || generatedTurnLimit
-    ? null
-    : positiveSafeInteger(['MIMI_MAX_TURNS', 'MAX_TURNS'])!;
+  const maxTurns = selectedMaxTurns
+    ? positiveSafeInteger(['MIMI_MAX_TURNS', 'MAX_TURNS'])!
+    : 32;
+  const maxRunInputTokens = positiveSafeInteger(['MIMI_MAX_RUN_INPUT_TOKENS'], 500_000)!;
   const trustedWorkspaceMcp = optionalAbsolutePath(
     ['MIMI_TRUST_WORKSPACE_MCP', 'TRUST_WORKSPACE_MCP'],
     homeDirectory,
@@ -548,6 +546,7 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
     contextWindow,
     outputReserve,
     maxTurns,
+    maxRunInputTokens,
     teamMaxConcurrency,
     sessionMaxConcurrency,
     permissionMode: selectedPermissionMode,

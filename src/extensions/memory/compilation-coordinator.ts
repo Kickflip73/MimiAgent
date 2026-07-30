@@ -14,7 +14,10 @@ import type {
   SourceRef,
 } from '../../core/memory.js';
 import { evidenceFromSource } from '../../core/memory.js';
-import { SqliteMemoryCatalog } from './sqlite-catalog.js';
+import {
+  SqliteMemoryCatalog,
+  type DocumentChunkEmbedding,
+} from './sqlite-catalog.js';
 import { WikiVault } from './wiki-vault.js';
 
 const COMPILER_VERSION = 'memory-hub-v2';
@@ -120,7 +123,7 @@ export class MemoryCompilationCoordinator {
   commit(
     prepared: PreparedCompilation,
     page: MemoryDocument,
-    embedding?: { model: string; vector: number[] },
+    embedding?: DocumentChunkEmbedding,
   ): CompilationReceiptV2 {
     if (prepared.receipt) return prepared.receipt;
     const planned = prepared.job.plannedWrites[0];

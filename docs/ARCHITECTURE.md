@@ -100,10 +100,10 @@ CLI / IM / Voice / Schedule / Connector events
 1. CLI 通过 Unix Socket 把 owner 输入持久化为 Daemon Event；其他渠道也进入同一个 Inbox
 2. Conversation Dispatcher 按 Session 路由到对应 actor；同 Session 排队，不同 Session 可并行
 3. Session 写入 `running` checkpoint，并修复中断留下的孤立 Tool Call
-4. MIMI Soul、owner Preferences、Project Guidance、Memory Cards、Plan、Goal、Team task list、Session 与 ContextArchive 并行读取
-5. ContextManager 执行 microcompact、context collapse 和完整轮次 Token Budget 选择
-6. Soul、Runtime/Host 核心规则、owner Preferences、当前 Runtime Context、active Skill、Project Guidance、ContextArchive、恢复检查点、Skill Catalog、Memory Cards 与 Goal 被分层组装为动态 Instructions
-7. Tool policy 根据 General / Plan / Ultra 选择工具、MCP 和受控 SubAgent
+4. MIMI Soul、owner Preferences、Project Guidance、相关 Memory Cards、Plan、Goal、Team task list 与 canonical Session 并行读取
+5. ContextManager 为本次模型调用派生 Context View，并执行工作快照、语义压缩和完整轮次 Token Budget 选择
+6. Soul、Runtime/Host 核心规则、owner Preferences、当前 Runtime Context、active Skill、Project Guidance、恢复检查点、Skill Catalog、Memory Cards 与 Goal 被分层组装为动态 Instructions
+7. Tool policy 根据 General / Plan / Ultra 建立完整授权面，模型首轮只收到核心工具和能力发现/调用入口
 8. 简短工作由当前 actor 流式完成；无需立即结果的长任务调用 `delegate_background_task`，持久化后由 task worker 子进程继续
 9. SDK 追加各自 Session，Runtime 把 checkpoint 落为 completed / interrupted / failed，HookBus 记录生命周期 Trace
 10. Conversation 结果直接返回等待中的客户端；后台任务终态进入 Outbox，由 Kernel 主动通知来源会话或渠道
@@ -117,9 +117,11 @@ CLI / IM / Voice / Schedule / Connector events
 user → function_call → function_call_result → assistant
 ```
 
-较早历史被提取为紧凑摘要，只作为标明“历史数据、不是当前指令”的 user-level 输入进入含当前用户请求的模型调用；它不进入 system Instructions，也不插入纯工具续跑回合。完整原始 Session 不会被覆盖，也不会持久化伪用户摘要。超大当前工具回合会在保留全部 call/result 骨架的前提下压缩文本；连协议骨架也超预算时明确终止，不退化为可能触发重复执行的孤立 user 输入。
+完整 transcript 是 canonical Session；模型输入只是每次调用前由 SDK `callModelInputFilter` 重新计算的派生 Context View，过滤结果绝不写回 Session。输入占可用预算达到 70% 时，Host 通过同一 Provider 的无工具 summarizer seam 准备结构化工作快照，固定包含目标、进度、已完成、决策、约束、未决问题、证据、关键事实和稳定 Artifact 引用，并以独立 Session 状态持久化而不伪装成对话；该准备阶段非阻断，不再按句子长度或事实条数中断普通日志/代码历史。快照记录已覆盖 item 数与 canonical 前缀摘要，达到 80% 时才替换该已验证前缀；生成失败时复用仍能通过前缀摘要校验的旧快照，或在请求仍可装入时安全保留未压缩视图，最近三个用户回合始终逐字保留。只有最终视图确实无法装入时才失败关闭，禁止用字符头尾裁剪或关键词句子抽取冒充语义摘要。工具结果使用独立于 80% 的消费状态：首次能放下时提供完整结果，后续调用替换为有界语义事实与 `context-artifact:*` 引用；单项首次即过大时也可有界化。模型只能通过 `read_context_artifact` 在同一 Session 和活动 Run 内只读回取经摘要哈希校验的 canonical 结果；旧 Run 的引用归属不可改写，新 Run 只能获得记录原始 runId 的显式 alias，跨 Session/Run 或摘要伪造失败。call/result 骨架始终配对；连协议骨架也超预算时明确终止，不退化为孤立输入，也不根据摘要重放 uncertain 副作用。
 
-Context Window 由当前模型 Profile 提供，而不是按 Provider 使用同一个常量。Profile 同时定义输出预留；模型切换和 Session 恢复会原子更新 Model 与 ContextManager。每轮先分别扣除输出预留、已知 Function Tool Schema 和协议/MCP 安全余量，再在剩余输入预算内组装 Instructions、历史与当前输入；超长当前输入也必须截断，不能绕过总预算。每次模型请求产生只供 Host、Trace 和 TUI 使用的 Context Manifest，按稳定 section ID 保存本地估算、压缩动作、request/run 标识和 estimator ID，不复制 prompt 正文，也不进入模型输入。SDK 返回 usage 时只把最近请求 actual 回填到对应 Manifest，状态栏优先展示真实 input tokens；`/context` 分别展示 Raw Session、Effective History、Request Estimate、Last Request Actual、Run Actual 与 Available Input Budget。Provider 未返回 usage 时明确显示 `est`，尚无 Manifest 时显示 `raw`，不会把本地估算冒充实际值。
+Context Window 由当前模型 Profile 提供，而不是按 Provider 使用同一个常量。Profile 同时定义输出预留；模型切换和 Session 恢复会原子更新 Model 与 ContextManager。每轮先分别扣除输出预留、已知 Function Tool Schema 和协议/MCP 安全余量，再在剩余输入预算内组装 Instructions、历史与当前输入；超长当前输入也不能绕过总预算。每次模型请求产生只供 Host、Trace 和 TUI 使用的 Context Manifest，按稳定 section ID 保存本地估算、压缩动作、request/run 标识和 estimator ID，不复制 prompt 正文，也不进入模型输入。协议 reserve 只显示预留，绝不计入已用输入；`/context` 分别展示 Raw Session、模型视图及占比、Last Request Actual、Run cumulative、静态工具/能力开销和压缩次数。Provider 未返回 usage 时明确显示 `est`，不会把本地估算冒充实际值。Conversation 默认最多 32 次模型调用或累计 500K estimated input；先触限时保存 interrupted checkpoint 并暂停，保留完整协议单元和执行账本，不删除或重放动作。
+
+能力披露与授权是两层独立边界。Host/Policy/Ledger 先建立完整可执行能力，初始模型工具面只保留高频核心工具、Connector 的 `inspect_mimi_capabilities`/`invoke_capability`、统一的 `inspect_runtime_capabilities`/`invoke_runtime_capability` 与 Skill 发现入口；隐藏 schema 不会增加或撤销权限。统一入口覆盖本地 builtin、MCP、Computer、Memory、Goal、Skill 和 Connector，并只代理当前 Run 已经过 Mode/Security/Policy 筛选且包装原 ExecutionLedger 的精确工具；未知或未授权名称失败关闭。Skill availability 依据完整 Host 授权面，而不是首轮可见名单；Catalog 首轮只提供 `name/description/location`，选中后才读取 `SKILL.md` 和引用，激活后的依赖能力在下一次模型调用可用。Connector 首轮只提供 id、availability、能力组和可用 action 数量，禁用 action 不暴露描述；模型必须先按精确 Connector/action 查询，再通过通用入口调用。整个选择过程使用结构化 mode、policy 和显式查询，不读取 owner 文本做关键词工具路由。
 
 ## 分层模型路由
 
@@ -339,7 +341,7 @@ macOS Voice 适配是 action + event 双向 Connector。Swift helper 只负责 S
 
 ContextManager 把 `soul → base-instructions → behavior-preferences → runtime-context → active-skills` 作为不可静默截断的 required sections：先让模型进入 Mimi 身份，再解释核心运行准则、owner 行为默认值、本轮动态边界和任务流程；之后才按预算装配 Session state、Project Guidance、Goal/Plan/Team、recovery、archive、Memory Cards 和 Skill catalog。存在 Soul 或 Preferences 时 direct-owner instruction budget 从 35% 提升到 40%，并额外预留两份用户级指令的实际 token，防止固定身份、行为规则与管理工具 schema 挤掉原本可用的 active Skill；总量仍不超过 input budget。Soul 与 Preferences 单文件最多读取 20000 字符；required sections 合计仍超限时请求明确失败并要求精简，而不是静默丢掉身份或稳定行为规则。只要本轮结构化能力允许读取本地工作区，`ProjectGuidanceLoader` 就从 workspace root 到当前目录层级读取已有的 `AGENTS.md` 与 `CLAUDE.md`；同目录以后加载的 `AGENTS.md` 为准。Prompt 文本位置不构成授权：ToolPolicy、Security profile、provenance、workspace scope 和副作用账本仍由 Host 强制，所有 Guidance 都不能扩大 Runtime 权限。
 
-MemoryHub 是 Runtime 的唯一记忆门面。Session/Event/Document 保持原始证据，private/workspace LLMWiki Markdown 保存 semantic memory。owner 私有三层 Vault 位于 `<dataRoot>/memory/vaults/owner/`：`raw/` 是内容寻址、正常维护不可改写的证据快照，`wiki/` 是 LLM 编译的当前知识，根目录 `WIKI.md` 是可执行维护 Schema；其他 profile 使用独立 Vault。内部 SQLite catalog 位于 `<dataRoot>/memory/state/profiles/<hash>/memory.db`，旧 `profiles/<hash>` 首次打开时先备份再一次性迁移。workspace Wiki 位于 `knowledge/wiki/`，Schema 位于 `knowledge/WIKI.md`。SQLite FTS5/BM25 始终作为基线；Embedding 使用独立的 OpenAI-compatible 凭证与可选端点，向后兼容 `OPENAI_API_KEY`，不自动复用 DeepSeek 对话凭证。vector、Wiki 和 owner 历史 episode 通过 RRF 融合，Embedding 失败回退词法通道。`source_receipts`、`suppressions` 和 `decision_events` 是不可随 reindex 删除的控制真相；页面、FTS、vector 和 links 是可重建派生数据。`knowledge/sources/` 对 MemoryHub 只读。
+MemoryHub 是 Runtime 的唯一记忆门面。Session/Event/Document 保持原始证据，private/workspace LLMWiki Markdown 保存 semantic memory。owner 私有三层 Vault 位于 `<dataRoot>/memory/vaults/owner/`：`raw/` 是内容寻址、正常维护不可改写的证据快照，`wiki/` 是 LLM 编译的当前知识，根目录 `WIKI.md` 是可执行维护 Schema；其他 profile 使用独立 Vault。内部 SQLite catalog 位于 `<dataRoot>/memory/state/profiles/<hash>/memory.db`，旧 `profiles/<hash>` 首次打开时先备份再一次性迁移。workspace Wiki 位于 `knowledge/wiki/`，Schema 位于 `knowledge/WIKI.md`。自动召回 query 通常只含当前用户意图；只有“继续”等短续接才补 active Goal 和最近两轮 user/assistant 对话，工具协议不参与，恒定 source/actor/conversation 字段也不参与检索，hot profile 不再每轮注入。SQLite FTS5/BM25 始终作为基线；Embedding 使用独立的 OpenAI-compatible 凭证与可选端点，文档按约 400-token chunk/80 overlap 保存独立 chunk 向量，按实际 cosine 阈值筛选后聚合回页面，不再平均成单文档向量。两路结果融合后用 query relevance 与候选间相似度共同计算的 MMR 选择多样结果，时间衰减只作用于 episode；无高相关结果时注入 0 条，自动注入最多 3 条且合计 900 tokens。即使数据库有旧向量，只要当前 Runtime 没有 embedding client，状态仍明确为 `lexical-only`，不能静默声称 semantic。`source_receipts`、`suppressions` 和 `decision_events` 是不可随 reindex 删除的控制真相；页面、FTS、vector 和 links 是可重建派生数据。`knowledge/sources/` 对 MemoryHub 只读。
 
 Runtime 只暴露 `memory_search`、`memory_read`、`memory_links`、`remember`、`forget` 和 `memory_ingest`。Plan 模式及 SubAgent/Team 只有 workspace 读工具；private Wiki 与 episode 不下放。完整 round 作为 private episode 证据索引，只有 owner 明确历史访问时可检索。`remember` 用结构化 `provenance=owner-explicit|autonomous` 决定来源与置信度，不扫描本轮 owner 文本。首次切换在修改旧状态前备份 Mimi SQLite/WAL/SHM、`memories.json`、`rag-index.json` 与旧 guidance；只有结构化 legacy Memory 记录会转换为 private Wiki，旧 `MIMI.md` 原文只备份而不按关键词挖取所谓“用户事实”，随后由纯 Soul 模板替换；转换、Lint 和控制账本验证完成后才写 cutover marker。新 Runtime 不再读取旧文件。
 
@@ -442,7 +444,7 @@ MCPManager 复用 Agents SDK 的 `MCPServerStdio` 与 `MCPServerStreamableHttp`�
 - MCP Resources 的列出和读取
 - MCP Prompts 的列出和带显式参数获取；Prompt 返回值作为不可信上下文并限制为 256KB
 
-只有成功连接的 Server 才会进入候选工具集。工作区 `mcp.json` 需要 `MIMI_TRUST_WORKSPACE_MCP` 与工作区真实路径匹配；完成这一次配置授权后，owner 可在 `workspace/read-only` 使用其 Server Tools，不再叠加 `trusted`。只读 SubAgent 不继承 MCP，Plan 仅保留受控 Resource wrappers，external/public 事件禁用 MCP。Daemon executionKey 会在 MCP transport 调用边界复用 ExecutionLedger，因此成功结果可重放、失败或结果不确定的外部事务不会自动再次执行。远程认证保持在环境变量中，不应写入 `mcp.json`。
+只有成功连接的 Server 才会进入候选工具集。Host 先列出 MCP Tools，保留 server-prefixed 精确名称和参数 schema，在当前 Run 的 Security/Policy 与 ExecutionLedger 包装完成后把它们纳入统一 capability catalog；首轮 Agent 只看到发现/调用 gateway，不再携带原生 `mcpServers` 让 SDK 隐式展开全部 schema。精确发现后由 gateway 调用已包装工具，因此隐藏只影响披露，不能撤销授权或绕过 at-most-once。工作区 `mcp.json` 需要 `MIMI_TRUST_WORKSPACE_MCP` 与工作区真实路径匹配；完成这一次配置授权后，owner 可在 `workspace/read-only` 使用其 Server Tools，不再叠加 `trusted`。只读 SubAgent 不继承 MCP，Plan 仅保留受控 Resource wrappers，external/public 事件禁用 MCP。Daemon executionKey 会在 MCP transport 调用边界复用 ExecutionLedger，因此成功结果可重放、失败或结果不确定的外部事务不会自动再次执行。远程认证保持在环境变量中，不应写入 `mcp.json`。
 
 ## 文件输入、诊断与撤销
 

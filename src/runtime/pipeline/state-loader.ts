@@ -7,7 +7,10 @@ import type { ResolvedCapabilities } from './capability-resolver.js';
 
 export interface RunStateLoaderDependencies {
   hotProfile: () => Promise<MemoryCard[]>;
-  searchMemories: () => Promise<MemoryCard[]>;
+  searchMemories: (state: {
+    goal?: Readonly<Goal>;
+    history: readonly AgentInputItem[];
+  }) => Promise<MemoryCard[]>;
   loadPlan: () => Promise<PlanStep[]>;
   loadGoal: () => Promise<Goal | undefined>;
   loadTeamSummary: () => Promise<string>;
@@ -42,8 +45,6 @@ export class RunStateLoader {
     options: { loadOwnerSoul?: boolean; loadOwnerPreferences?: boolean } = {},
   ): Promise<RunStateSnapshot> {
     const [
-      hotProfile,
-      memoryCards,
       plan,
       storedGoal,
       teamSummary,
@@ -54,8 +55,6 @@ export class RunStateLoader {
       storedArchive,
       activeSkills,
     ] = await Promise.all([
-      capabilities.canReadMemory ? this.dependencies.hotProfile() : Promise.resolve([]),
-      capabilities.canReadMemory ? this.dependencies.searchMemories() : Promise.resolve([]),
       capabilities.canReadState ? this.dependencies.loadPlan() : Promise.resolve([]),
       capabilities.canReadState ? this.dependencies.loadGoal() : Promise.resolve(undefined),
       capabilities.canReadState ? this.dependencies.loadTeamSummary() : Promise.resolve(''),
@@ -72,11 +71,14 @@ export class RunStateLoader {
       capabilities.canReadSessionContext ? this.dependencies.loadArchive() : Promise.resolve(undefined),
       capabilities.canReadSessionContext ? this.dependencies.loadActiveSkills() : Promise.resolve([]),
     ]);
-    const memories = [...hotProfile, ...memoryCards]
+    const memoryCards = capabilities.canReadMemory
+      ? await this.dependencies.searchMemories({ goal: storedGoal, history })
+      : [];
+    const memories = memoryCards
       .filter((memory, index, all) => all.findIndex((candidate) => (
         candidate.ref.scope === memory.ref.scope && candidate.ref.id === memory.ref.id
       )) === index)
-      .slice(0, 13);
+      .slice(0, 3);
     return Object.freeze({
       memories: Object.freeze(memories),
       plan: Object.freeze(plan),

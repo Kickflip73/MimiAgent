@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { AgentInputItem } from '@openai/agents';
+import type { ContextSemanticSummarizer } from '../src/core/context.js';
 import { FileSession } from '../src/core/session.js';
 import { BASE_INSTRUCTIONS } from '../src/runtime/instructions.js';
 import { MimiAgent } from '../src/agent.js';
@@ -20,18 +21,35 @@ test('keeps compacted history out of user turns and preserves an adjacent offer'
   const previousSession = process.env.AGENT_SESSION;
   process.env.AGENT_SESSION = sessionId;
   const session = new FileSession(path.join(dataRoot, 'sessions'), sessionId);
-  await session.addItems([
-    { role: 'user', content: 'old question 1' },
-    { role: 'assistant', content: 'old answer 1' },
-    { role: 'user', content: 'old question 2' },
-    { role: 'assistant', content: 'old answer 2' },
-    { role: 'user', content: 'old question 3' },
-    { role: 'assistant', content: 'old answer 3' },
+  const canonicalItems = [
+    { role: 'user', content: `old question 1 ${'背景一。'.repeat(1_500)}` },
+    { role: 'assistant', content: `old answer 1 ${'结论一。'.repeat(1_500)}` },
+    { role: 'user', content: `old question 2 ${'背景二。'.repeat(1_500)}` },
+    { role: 'assistant', content: `old answer 2 ${'结论二。'.repeat(1_500)}` },
+    { role: 'user', content: `old question 3 ${'背景三。'.repeat(1_500)}` },
+    { role: 'assistant', content: `old answer 3 ${'结论三。'.repeat(1_500)}` },
     { role: 'user', content: '我最近有哪些事项？' },
     { role: 'assistant', content: '明天有演唱会。' },
     { role: 'user', content: '最近呢？' },
     { role: 'assistant', content: '需要我帮你查一下路线或天气吗？' },
-  ] as AgentInputItem[]);
+  ] as AgentInputItem[];
+  await session.addItems(canonicalItems);
+  const deterministicSummarizer: ContextSemanticSummarizer = {
+    summarize: async ({ input, seed }) => ({
+      goal: seed.goal ?? [],
+      progress: seed.progress ?? [],
+      completed: seed.completed ?? [],
+      decisions: seed.decisions ?? [],
+      constraints: seed.constraints ?? [],
+      openQuestions: seed.openQuestions ?? [],
+      evidence: seed.evidence ?? [],
+      keyFacts: input.map((item) => {
+        const content = (item as unknown as { content?: unknown }).content;
+        return typeof content === 'string' ? content.slice(0, 80) : JSON.stringify(content);
+      }),
+      references: seed.references ?? [],
+    }),
+  };
   const agent = await MimiAgent.create({
     provider: 'openai',
     workspaceRoot: root,
@@ -41,7 +59,7 @@ test('keeps compacted history out of user turns and preserves an adjacent offer'
     historyLimit: 4,
     contextWindow: 32_000,
     maxTurns: 20,
-  });
+  }, undefined, { contextSemanticSummarizer: deterministicSummarizer });
   let modelInput: AgentInputItem[] = [];
   let instructions = '';
   const runner = (agent as unknown as {
@@ -54,16 +72,24 @@ test('keeps compacted history out of user turns and preserves an adjacent offer'
             history: AgentInputItem[],
             current: AgentInputItem[],
           ) => Promise<AgentInputItem[]>;
+          callModelInputFilter: (args: {
+            modelData: { input: AgentInputItem[]; instructions?: string };
+          }) => Promise<{ input: AgentInputItem[]; instructions?: string }>
+            | { input: AgentInputItem[]; instructions?: string };
         },
       ) => Promise<unknown>;
     };
   }).runner;
   runner.run = async (runtimeAgent, input, options) => {
-    instructions = runtimeAgent.instructions;
-    modelInput = await options.sessionInputCallback(
+    const initialInput = await options.sessionInputCallback(
       await session.getItems(),
       [{ role: 'user', content: input } as AgentInputItem],
     );
+    const filtered = await options.callModelInputFilter({
+      modelData: { input: initialInput, instructions: runtimeAgent.instructions },
+    });
+    instructions = filtered.instructions ?? '';
+    modelInput = filtered.input;
     return {};
   };
 
@@ -80,6 +106,7 @@ test('keeps compacted history out of user turns and preserves an adjacent offer'
       (await session.getItems()).some((item) => JSON.stringify(item).includes('历史背景数据')),
       false,
     );
+    assert.deepEqual(await session.getItems(), canonicalItems);
     await agent.failRun(new Error('test cleanup'), true);
   } finally {
     await agent.close();

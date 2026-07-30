@@ -36,7 +36,6 @@ export class ContextAssembler {
       input.effective.effectiveTokens - archiveTokens - currentInputTokens,
     );
     const estimatedInputTokens = input.budget.toolSchemaTokens
-      + input.budget.protocolReserveTokens
       + estimateTokens(input.instructions.text)
       + input.effective.effectiveTokens;
     return {

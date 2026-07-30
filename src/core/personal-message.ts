@@ -68,6 +68,7 @@ export const personalMessageResultSchema = z.object({
   deliveryConfirmed: z.boolean(),
   accountVerified: z.boolean(),
   targetVerified: z.boolean(),
+  messageId: z.string().trim().min(1).max(500).optional(),
   evidence: z.string().max(2_000).optional(),
   error: z.string().max(2_000).optional(),
 }).strict();

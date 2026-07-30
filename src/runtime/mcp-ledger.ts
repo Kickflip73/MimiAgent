@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import type { MCPServer } from '@openai/agents';
+import {
+  Agent,
+  getAllMcpTools,
+  RunContext,
+  type MCPServer,
+  type Model,
+  type Tool,
+} from '@openai/agents';
 import type { ExecutionLedger } from '../core/execution-ledger.js';
 
 interface RunIdentity {
@@ -91,4 +98,31 @@ export function withMcpExecutionLedger(
       return typeof value === 'function' ? value.bind(target) : value;
     },
   }));
+}
+
+export async function materializeMcpTools<TContext = unknown>(input: {
+  servers: readonly MCPServer[];
+  ledger: ExecutionLedger;
+  currentRun: () => RunIdentity | undefined;
+  model: string | Model;
+  reservedTools: Tool<TContext>[];
+  context?: TContext;
+}): Promise<Tool<TContext>[]> {
+  if (!input.servers.length) return [];
+  const wrapped = withMcpExecutionLedger(input.servers, input.ledger, input.currentRun);
+  const catalogAgent = new Agent<TContext>({
+    name: 'MimiAgent MCP capability catalog',
+    model: input.model,
+    instructions: '',
+    tools: input.reservedTools,
+  });
+  const runContext = new RunContext(input.context as TContext);
+  return getAllMcpTools({
+    mcpServers: wrapped,
+    runContext,
+    agent: catalogAgent,
+    convertSchemasToStrict: true,
+    includeServerInToolNames: true,
+    reservedToolNames: new Set(input.reservedTools.map((tool) => tool.name)),
+  });
 }

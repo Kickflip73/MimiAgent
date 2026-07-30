@@ -451,12 +451,18 @@ test('two cached Session actors reload registry content on their next Run even w
           }
         : provider),
     });
+    const providerRequestsBeforeList = leftEndpoint.requests.length
+      + rightEndpoint.requests.length;
     const listed = await host.mutate('session-b', (agent) =>
       agent.modelControl({ action: 'list' })) as Array<{
         target: { providerId: string; modelId: string };
       }>;
     assert.ok(listed.some((item) =>
       item.target.providerId === 'right' && item.target.modelId === 'right-new-model'));
+    assert.equal(
+      leftEndpoint.requests.length + rightEndpoint.requests.length,
+      providerRequestsBeforeList,
+    );
   } finally {
     await host?.close();
     await Promise.all([leftEndpoint.close(), rightEndpoint.close()]);

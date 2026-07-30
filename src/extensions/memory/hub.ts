@@ -31,7 +31,10 @@ import {
 } from '../../core/memory.js';
 import { DefaultWikiCompiler } from './wiki-compiler.js';
 import { DocumentSource } from './document-source.js';
-import { SqliteMemoryCatalog } from './sqlite-catalog.js';
+import {
+  SqliteMemoryCatalog,
+  type DocumentChunkEmbedding,
+} from './sqlite-catalog.js';
 import { WikiVault } from './wiki-vault.js';
 import { parsePage, serializePage } from './wiki-vault.js';
 import { canonicalTopicKey, resolveMemoryTopic } from './topic-resolver.js';
@@ -106,15 +109,77 @@ function boundCards(cards: MemoryHit[], tokenBudget: number, maxCards: number): 
     const fixed = `${card.title}\n${card.kind}/${card.status}\n`;
     const fixedTokens = estimatedTokens(fixed);
     if (fixedTokens >= remaining) break;
-    let summary = card.summary;
-    while (summary && estimatedTokens(summary) > remaining - fixedTokens) {
-      summary = summary.slice(0, Math.max(0, Math.floor(summary.length * 0.8)));
+    const summaryBudget = remaining - fixedTokens;
+    const statements = card.summary.split(/(?:\r?\n)+|(?<=[。！？.!?])\s+/u)
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+    const selected: string[] = [];
+    for (const statement of statements) {
+      if (estimatedTokens([...selected, statement].join(' ')) > summaryBudget) continue;
+      selected.push(statement);
     }
+    const summary = selected.join(' ');
     if (!summary) break;
     bounded.push({ ...card, summary });
     remaining -= fixedTokens + estimatedTokens(summary);
   }
   return bounded;
+}
+
+function tokenSet(value: string): Set<string> {
+  const normalized = value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+  const tokens = new Set<string>();
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    tokens.add(normalized.slice(index, index + 2));
+  }
+  return tokens;
+}
+
+function similarity(left: string, right: string): number {
+  const a = tokenSet(left);
+  const b = tokenSet(right);
+  if (!a.size || !b.size) return 0;
+  let overlap = 0;
+  for (const token of a) if (b.has(token)) overlap += 1;
+  return overlap / (a.size + b.size - overlap);
+}
+
+function diversify(hits: MemoryHit[], query: string, limit: number): MemoryHit[] {
+  const relevance = new Map(hits.map((hit, index) => [
+    `${hit.ref.scope}:${hit.ref.id}`,
+    0.7 * (1 - index / Math.max(1, hits.length))
+      + 0.3 * similarity(query, `${hit.title} ${hit.summary}`),
+  ]));
+  const selected: MemoryHit[] = [];
+  const remaining = [...hits];
+  while (remaining.length && selected.length < limit) {
+    let bestIndex = 0;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    for (const [index, hit] of remaining.entries()) {
+      const key = `${hit.ref.scope}:${hit.ref.id}`;
+      const redundancy = selected.length
+        ? Math.max(...selected.map((candidate) =>
+          similarity(`${candidate.title} ${candidate.summary}`, `${hit.title} ${hit.summary}`)))
+        : 0;
+      if (redundancy >= 0.72) continue;
+      const score = 0.7 * (relevance.get(key) ?? 0) - 0.3 * redundancy;
+      if (score > bestScore) {
+        bestScore = score;
+        bestIndex = index;
+      }
+    }
+    if (bestScore === Number.NEGATIVE_INFINITY) break;
+    selected.push(remaining.splice(bestIndex, 1)[0]!);
+  }
+  return selected;
+}
+
+function episodeDecay(hit: MemoryHit, now = Date.now()): number {
+  if (hit.documentType !== 'episode') return 1;
+  const occurredAt = hit.sourceRefs.map((source) => Date.parse(source.occurredAt)).filter(Number.isFinite);
+  if (!occurredAt.length) return 1;
+  const ageDays = Math.max(0, now - Math.max(...occurredAt)) / 86_400_000;
+  return Math.exp(-ageDays / 90);
 }
 
 class DefaultMemoryHub implements MemoryHub {
@@ -203,7 +268,9 @@ class DefaultMemoryHub implements MemoryHub {
     if (!normalized) throw new Error('Memory query 不能为空');
     const limit = Math.min(20, Math.max(1, options.limit ?? 5));
     const automatic = Object.keys(options).length === 0;
-    const finish = (hits: MemoryHit[]) => automatic ? boundCards(hits, 1_200, 5) : hits;
+    const finish = (hits: MemoryHit[]) => automatic
+      ? boundCards(diversify(hits, normalized, 3), 900, 3)
+      : hits;
     const queryVector = await this.embed(normalized, automatic);
     const wikiChannels: Array<Array<{ item: MemoryHit; key: string }>> = [];
     const episodeChannels: Array<Array<{ item: MemoryHit; key: string }>> = [];
@@ -226,7 +293,9 @@ class DefaultMemoryHub implements MemoryHub {
       wikiChannels.push(hits.map((item) => ({ item, key: `workspace:${item.ref.id}` })));
     }
     const wikiHits = reciprocalRankFusion(wikiChannels.filter((channel) => channel.length), limit);
-    const episodeHits = reciprocalRankFusion(episodeChannels.filter((channel) => channel.length), limit);
+    const episodeHits = reciprocalRankFusion(episodeChannels.filter((channel) => channel.length), limit)
+      .map((hit) => ({ ...hit, score: hit.score * episodeDecay(hit) }))
+      .sort((left, right) => right.score - left.score);
     const memoryHits = reciprocalRankFusion([
       wikiHits.map((item) => ({ item, key: `${item.ref.scope}:${item.ref.id}` })),
       episodeHits.map((item) => ({ item, key: `episode:${item.ref.id}` })),
@@ -788,7 +857,13 @@ class DefaultMemoryHub implements MemoryHub {
 
   async status(context: RunMemoryContext): Promise<MemoryStatusSnapshot> {
     this.validate(context);
-    return mergeStatus(this.privateCatalog.status(), this.workspaceCatalog.status());
+    const status = mergeStatus(this.privateCatalog.status(), this.workspaceCatalog.status());
+    return {
+      ...status,
+      retrievalMode: this.options.retrievalMode !== 'lexical' && this.options.embeddingClient
+        ? 'hybrid'
+        : 'lexical-only',
+    };
   }
 
   private async setPageLifecycle(
@@ -909,9 +984,50 @@ class DefaultMemoryHub implements MemoryHub {
     }
   }
 
-  private async embedDocument(content: string): Promise<{ model: string; vector: number[] } | undefined> {
-    const vector = await this.embed(content);
-    return vector ? { model: this.embeddingModel, vector } : undefined;
+  private async embedDocument(content: string): Promise<DocumentChunkEmbedding | undefined> {
+    if (this.options.retrievalMode === 'lexical' || !this.options.embeddingClient) return undefined;
+    const chunks = this.embeddingChunks(content);
+    try {
+      const response = await this.options.embeddingClient.embeddings.create({
+        model: this.embeddingModel,
+        input: chunks,
+      });
+      const vectors = response.data.map((item) => item.embedding).filter((vector) => vector.length > 0);
+      const dimensions = vectors[0]?.length ?? 0;
+      if (vectors.length !== chunks.length
+        || !dimensions
+        || vectors.some((vector) => vector.length !== dimensions)) return undefined;
+      return {
+        model: this.embeddingModel,
+        chunks: chunks.map((chunk, index) => ({
+          index,
+          digest: createHash('sha256').update(chunk).digest('hex'),
+          vector: vectors[index]!,
+        })),
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private embeddingChunks(content: string): string[] {
+    const units = [...content];
+    const chunks: string[] = [];
+    let start = 0;
+    while (start < units.length) {
+      let end = start;
+      while (end < units.length && estimatedTokens(units.slice(start, end + 1).join('')) <= 400) end += 1;
+      if (end === start) end += 1;
+      chunks.push(units.slice(start, end).join(''));
+      if (end >= units.length) break;
+      let overlapStart = end;
+      while (overlapStart > start
+        && estimatedTokens(units.slice(overlapStart - 1, end).join('')) <= 80) {
+        overlapStart -= 1;
+      }
+      start = Math.max(start + 1, overlapStart);
+    }
+    return chunks;
   }
 }
 

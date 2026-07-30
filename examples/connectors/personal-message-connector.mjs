@@ -89,6 +89,17 @@ class UnavailableAdapter {
     throw this.error;
   }
 
+  async sendToOwner() {
+    return {
+      status: 'failed',
+      route: 'browser',
+      deliveryConfirmed: false,
+      accountVerified: false,
+      targetVerified: false,
+      error: `owner account or self conversation is not ready: ${errorText(this.error)}`,
+    };
+  }
+
   async acknowledge() {
     return { acknowledged: [] };
   }
@@ -178,7 +189,7 @@ async function handleAction(message) {
   const payload = message.payload && typeof message.payload === 'object' && !Array.isArray(message.payload)
     ? message.payload
     : {};
-  if (message.action === 'health_check') return reportHealth(payload.probe === true);
+  if (message.action === 'health_check') return reportHealth(payload.probe !== false);
   if (message.action === 'list_targets') return adapter.listTargets(payload);
   if (message.action === 'search_targets') return adapter.searchTargets(payload);
   if (message.action === 'bind_target') {
@@ -209,24 +220,7 @@ async function handleAction(message) {
     });
   }
   if (message.action === 'send_to_owner') {
-    const health = await adapter.health({ probe: true });
-    const target = adapter.config?.selfConversation;
-    if (!health.accountVerified || !health.accountFingerprint || !target) {
-      throw new Error('owner account or self conversation is not ready');
-    }
-    const context = await adapter.getContext({
-      accountFingerprint: health.accountFingerprint,
-      sid: target.sid,
-      type: target.type,
-      limit: 1,
-    });
-    return adapter.send({
-      accountFingerprint: health.accountFingerprint,
-      sid: target.sid,
-      type: target.type,
-      latestFingerprint: context.latestFingerprint,
-      text: payload.text,
-    });
+    return adapter.sendToOwner(payload.text);
   }
 }
 

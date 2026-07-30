@@ -46,13 +46,16 @@ test('personal message context and result are bounded and explicit', () => {
     truncated: false,
   });
   assert.equal(context.messages.length, 1);
-  assert.equal(personalMessageResultSchema.parse({
+  const result = personalMessageResultSchema.parse({
     status: 'observed',
     route: 'browser',
     deliveryConfirmed: false,
     accountVerified: true,
     targetVerified: true,
-  }).status, 'observed');
+    messageId: 'message-1',
+  });
+  assert.equal(result.status, 'observed');
+  assert.equal(result.messageId, 'message-1');
 });
 
 test('multiple source policies choose the most restrictive message mode', () => {

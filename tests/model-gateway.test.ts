@@ -6,14 +6,26 @@ import { Agent, Runner } from '@openai/agents';
 import { ModelGateway } from '../src/runtime/model-gateway.js';
 
 async function fakeProvider(label: string) {
-  const requests: Array<{ authorization?: string; path?: string }> = [];
+  const requests: Array<{
+    authorization?: string;
+    body?: Record<string, unknown>;
+    method?: string;
+    path?: string;
+  }> = [];
   const server = http.createServer((request, response) => {
-    requests.push({
-      authorization: request.headers.authorization,
-      path: request.url,
+    let source = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => { source += chunk; });
+    request.on('end', () => {
+      requests.push({
+        authorization: request.headers.authorization,
+        body: source ? JSON.parse(source) as Record<string, unknown> : undefined,
+        method: request.method,
+        path: request.url,
+      });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ id: label, object: 'chat.completion' }));
     });
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ id: label, object: 'model' }));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as AddressInfo;
@@ -70,28 +82,48 @@ test('gateway keeps endpoint, model and credential isolated across concurrent ta
     assert.equal(rightHealth.status, 'healthy');
     assert.deepEqual(left.requests, [{
       authorization: 'Bearer left-secret',
-      path: '/v1/models',
+      body: {
+        model: 'left-model',
+        messages: [{ role: 'user', content: 'Reply with OK.' }],
+        max_tokens: 1,
+        stream: false,
+      },
+      method: 'POST',
+      path: '/v1/chat/completions',
     }]);
     assert.deepEqual(right.requests, [{
       authorization: 'Bearer right-secret',
-      path: '/v1/models',
+      body: {
+        model: 'right-model',
+        messages: [{ role: 'user', content: 'Reply with OK.' }],
+        max_tokens: 1,
+        stream: false,
+      },
+      method: 'POST',
+      path: '/v1/chat/completions',
     }]);
   } finally {
     await Promise.all([left.close(), right.close()]);
   }
 });
 
-test('OpenAI-compatible health does not require the optional model-detail endpoint', async () => {
-  const requests: string[] = [];
+test('OpenAI-compatible health probes the target model instead of Provider reachability', async () => {
+  const requests: Array<{ body: Record<string, unknown>; path: string }> = [];
   const server = http.createServer((request, response) => {
-    requests.push(request.url ?? '');
-    if (request.url === '/v1/models') {
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ object: 'list', data: [] }));
-      return;
-    }
-    response.writeHead(404, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ error: 'model detail endpoint is not supported' }));
+    let source = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => { source += chunk; });
+    request.on('end', () => {
+      const body = JSON.parse(source) as Record<string, unknown>;
+      requests.push({ body, path: request.url ?? '' });
+      if (body.model === 'compatible-model') {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ id: 'chat-health', object: 'chat.completion' }));
+        return;
+      }
+      response.writeHead(400, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: 'unknown model' }));
+    });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address() as AddressInfo;
@@ -107,6 +139,10 @@ test('OpenAI-compatible health does not require the optional model-detail endpoi
           target: { providerId: 'compatible', modelId: 'compatible-model' },
           kind: 'agent',
           capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        }, {
+          target: { providerId: 'compatible', modelId: 'missing-model' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
         }],
       }],
       environment: { COMPATIBLE_KEY: 'compatible-secret' },
@@ -116,7 +152,68 @@ test('OpenAI-compatible health does not require the optional model-detail endpoi
       (await gateway.health({ providerId: 'compatible', modelId: 'compatible-model' })).status,
       'healthy',
     );
-    assert.deepEqual(requests, ['/v1/models']);
+    const missing = await gateway.health({
+      providerId: 'compatible',
+      modelId: 'missing-model',
+    });
+    assert.equal(missing.status, 'unhealthy');
+    assert.match(missing.error ?? '', /HTTP 400.*unknown model/);
+    assert.deepEqual(requests, [{
+      path: '/v1/chat/completions',
+      body: {
+        model: 'compatible-model',
+        messages: [{ role: 'user', content: 'Reply with OK.' }],
+        max_tokens: 1,
+        stream: false,
+      },
+    }, {
+      path: '/v1/chat/completions',
+      body: {
+        model: 'missing-model',
+        messages: [{ role: 'user', content: 'Reply with OK.' }],
+        max_tokens: 1,
+        stream: false,
+      },
+    }]);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('OpenAI-compatible health reports an empty-body gateway rejection', async () => {
+  const server = http.createServer((request, response) => {
+    request.resume();
+    request.on('end', () => {
+      response.writeHead(400);
+      response.end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+  try {
+    const gateway = new ModelGateway({
+      providers: [{
+        id: 'compatible',
+        label: 'Compatible',
+        transport: 'openai-chat-completions',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKeyEnv: 'COMPATIBLE_KEY',
+        models: [{
+          target: { providerId: 'compatible', modelId: 'bad-alias' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        }],
+      }],
+      environment: { COMPATIBLE_KEY: 'compatible-secret' },
+    });
+
+    const result = await gateway.health({
+      providerId: 'compatible',
+      modelId: 'bad-alias',
+    });
+    assert.equal(result.status, 'unhealthy');
+    assert.match(result.error ?? '', /compatible\/bad-alias: HTTP 400/);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => error ? reject(error) : resolve()));

@@ -180,6 +180,33 @@
     element.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  function setTextareaValue(element, value) {
+    const previousValue = String(element.value || '');
+    const descriptor = Object.getOwnPropertyDescriptor(
+      element.ownerDocument.defaultView.HTMLTextAreaElement.prototype,
+      'value',
+    );
+    if (!descriptor?.set) throw new Error('native textarea setter unavailable');
+    element.focus();
+    element.dispatchEvent(new KeyboardEvent('keydown', {
+      bubbles: true,
+      key: value.at(-1) || '',
+    }));
+    descriptor.set.call(element, value);
+    if (element._valueTracker?.setValue) {
+      element._valueTracker.setValue(previousValue);
+    }
+    element.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      inputType: value ? 'insertText' : 'deleteContentBackward',
+      data: value || null,
+    }));
+    element.dispatchEvent(new KeyboardEvent('keyup', {
+      bubbles: true,
+      key: value.at(-1) || '',
+    }));
+  }
+
   function beginTargetSearch(raw) {
     const input = requireObject(raw, 'input');
     const query = requireString(input.query, 'query', 100).trim();
@@ -289,8 +316,7 @@
   }
 
   function messageRecord(element) {
-    const mid = element.getAttribute('data-mid');
-    if (!mid) return null;
+    const mid = element.getAttribute('data-mid') || '';
     const actorId = [
       element.getAttribute('data-sender-id'),
       element.getAttribute('data-userid'),
@@ -372,6 +398,9 @@
       version: VERSION,
       origin: window.location.origin,
       url: window.location.href,
+      navigationStartedAt: Number.isFinite(window.performance?.timeOrigin)
+        ? new Date(window.performance.timeOrigin).toISOString()
+        : null,
       selected: selectedSession(),
       pageShape: shape,
       selfRowCount: selfRows.length,
@@ -584,24 +613,14 @@
     if (!current.matched) return { prepared: false, reason: 'target_not_selected' };
     const inputElement = textarea();
     if (inputElement.value !== '') return { prepared: false, reason: 'existing_draft' };
-    const descriptor = Object.getOwnPropertyDescriptor(
-      inputElement.ownerDocument.defaultView.HTMLTextAreaElement.prototype,
-      'value',
-    );
-    if (!descriptor?.set) throw new Error('native textarea setter unavailable');
-    descriptor.set.call(inputElement, text);
-    inputElement.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      inputType: 'insertText',
-      data: text,
-    }));
+    setTextareaValue(inputElement, text);
     if (inputElement.value !== text) return { prepared: false, reason: 'text_verification_failed' };
     sendButton();
     state.attempts.set(attemptId, {
       sid,
       type,
       text,
-      beforeMids: new Set(current.messages.map((message) => message.mid)),
+      beforeCount: current.messages.length,
       committed: false,
       committedAt: null,
     });
@@ -615,8 +634,9 @@
     if (!attempt) return { dispatched: false, reason: 'attempt_not_found' };
     if (attempt.committed) return { dispatched: true, repeated: true, committedAt: attempt.committedAt };
     const current = readCurrentConversation({ sid: attempt.sid, type: attempt.type, limit: 1 });
-    if (!current.matched || textarea().value !== attempt.text) {
-      return { dispatched: false, reason: 'precommit_verification_failed' };
+    if (!current.matched) return { dispatched: false, reason: 'target_not_selected' };
+    if (textarea().value !== attempt.text) {
+      return { dispatched: false, reason: 'draft_changed_before_commit' };
     }
     const button = sendButton();
     attempt.committed = true;
@@ -631,8 +651,9 @@
     const attempt = state.attempts.get(attemptId);
     if (!attempt) return { status: 'failed', reason: 'attempt_not_found' };
     if (!attempt.committed) return { status: 'failed', reason: 'not_committed' };
-    const candidates = currentMessages(100).filter((message) => (
-      !attempt.beforeMids.has(message.mid) && message.text.includes(attempt.text)
+    const messages = currentMessages(100);
+    const candidates = messages.slice(attempt.beforeCount).filter((message) => (
+      message.mid && message.direction === 'outgoing' && message.text === attempt.text
     ));
     if (candidates.length === 1) {
       return { status: 'observed', message: { ...candidates[0], direction: 'outgoing' }, draftEmpty: textarea().value === '' };

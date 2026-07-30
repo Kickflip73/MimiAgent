@@ -1,13 +1,11 @@
 import { Agent, type Tool } from '@openai/agents';
 import type { ReasoningIntent } from '../../core/model-routing.js';
-import type { MCPManager } from '../../extensions/mcp.js';
 import type { AgentModel } from '../model.js';
 
 export interface AgentRequestInput {
   model: AgentModel;
   instructions: string;
   tools: Tool[];
-  mcpServers: MCPManager['servers'];
   outputReserve: number;
   focusedOutputLimit?: number;
   reasoning?: ReasoningIntent;
@@ -37,8 +35,6 @@ export class AgentRequestFactory {
       },
       instructions: input.instructions,
       tools: input.tools,
-      mcpServers: input.mcpServers,
-      mcpConfig: { includeServerInToolNames: true },
     });
     return {
       agent,
