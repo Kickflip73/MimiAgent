@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- expose read-only Session listing/current-history tools on the initial model surface,
+  make runtime capability queries use bounded multi-keyword matching with zero-result
+  suggestions, and add chronological owner Session-round recall so empty semantic
+  searches cannot be mistaken for missing Memory or missing conversations
 - add first-class Host-owned Browser tools with strict provider-safe schemas,
   byte-bounded DOM observations, verified form/tab workflows and one-shot run
   cleanup that must finish before task completion, and settle link navigation

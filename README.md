@@ -589,7 +589,7 @@ CLI 斜杠命令和模型工具调用复用相同的 MimiAgent 运行时方法�
 
 Session/Event/Document 是证据真相，LLMWiki Markdown 是持续编译的 semantic memory，SQLite 只是可重建索引与不可随 reindex 删除的 receipt/suppression 控制账本。owner 私有 Obsidian Vault 位于 `<dataRoot>/memory/vaults/owner/`，其中 `raw/` 保存内容寻址的不可变证据快照，`wiki/` 保存编译知识，`WIKI.md` 是机器可校验且人类可读的维护 Schema；内部 SQLite 位于 `<dataRoot>/memory/state/profiles/<hash>/memory.db`。workspace 继续使用 `knowledge/sources/`、`knowledge/wiki/` 与 `knowledge/WIKI.md`，禁止私人 provenance，Sources 对 MemoryHub 只读。
 
-- `memory_search`：Wiki-first 搜索，返回有界卡片和来源
+- `memory_search`：默认 Wiki-first 相关性搜索；owner 明确询问最近做过什么时可用 `order=recent` 按时间返回有界 Session round
 - `memory_read` / `memory_links`：按 ref 渐进读取正文与一跳关系
 - `remember`：保存稳定偏好、事实、决策或经验（不保存 todo）
 - `forget`：删除页面并写 suppression

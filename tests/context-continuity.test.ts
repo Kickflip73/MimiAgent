@@ -154,7 +154,15 @@ test('short confirmations resolve against the immediately preceding assistant pr
 
 test('memory recall reformulates irrelevant results before guessing', () => {
   assert.match(BASE_INSTRUCTIONS, /结果为空或明显不相关/);
+  assert.match(BASE_INSTRUCTIONS, /空结果只表示当前查询未命中/);
+  assert.match(BASE_INSTRUCTIONS, /order=recent/);
   assert.match(BASE_INSTRUCTIONS, /全称、缩写、别名、URL、产品名或任务对象/);
   assert.match(BASE_INSTRUCTIONS, /最多再检索两次/);
   assert.match(BASE_INSTRUCTIONS, /不能先猜域名、路径或联系方式/);
+});
+
+test('runtime state claims require same-turn tool evidence', () => {
+  assert.match(BASE_INSTRUCTIONS, /当前运行状态、后台任务、Plan、Goal 或 Session/);
+  assert.match(BASE_INSTRUCTIONS, /必须先调用对应的只读状态工具/);
+  assert.match(BASE_INSTRUCTIONS, /不得声称“已核对”或断言状态不存在/);
 });

@@ -26,6 +26,35 @@ type InvokableTool = Tool & {
 };
 
 const MAX_INDEXED_NAMES_PER_SOURCE = 12;
+const CAPABILITY_QUERY_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'for', 'in', 'of', 'or', 'the', 'to', 'with',
+]);
+
+function normalizeCapabilityQuery(value: string): string {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+function capabilityQueryTerms(value: string): string[] {
+  return [...new Set(normalizeCapabilityQuery(value).split(/\s+/u)
+    .filter((term) => term.length > 1 && !CAPABILITY_QUERY_STOP_WORDS.has(term)))];
+}
+
+function capabilityQueryOverlap(query: string, searchable: string): number {
+  const normalizedQuery = normalizeCapabilityQuery(query);
+  const normalizedSearchable = normalizeCapabilityQuery(searchable);
+  if (!normalizedQuery || !normalizedSearchable) return 0;
+  if (normalizedSearchable.includes(normalizedQuery)) return 1_000;
+  return capabilityQueryTerms(query)
+    .filter((term) => normalizedSearchable.includes(term))
+    .length;
+}
+
+function matchesCapabilityQuery(query: string, searchable: string): number {
+  const overlap = capabilityQueryOverlap(query, searchable);
+  if (overlap >= 1_000) return overlap;
+  const termCount = capabilityQueryTerms(query).length;
+  return overlap >= Math.min(2, termCount) ? overlap : 0;
+}
 
 function connectorActionKey(capability: string, action: string): string {
   return `${capability}\u0000${action}`;
@@ -176,12 +205,17 @@ export class ToolSetBuilder {
           const loop = discoveryLoopResult(JSON.stringify({ source, name, query }));
           if (loop) return loop;
           if (name && !byName.has(name)) throw new Error(`能力未授权或不存在：${name}`);
-          const normalizedQuery = query?.toLowerCase();
-          const directMatches = entries.filter((entry) =>
+          const eligibleEntries = entries.filter((entry) =>
             (!source || entry.source === source)
-            && (!name || entry.name === name)
-            && (!normalizedQuery
-              || `${entry.name} ${entry.description}`.toLowerCase().includes(normalizedQuery)));
+            && (!name || entry.name === name));
+          const directMatches = eligibleEntries
+            .map((entry) => ({
+              entry,
+              score: query ? matchesCapabilityQuery(query, `${entry.name} ${entry.description}`) : 1,
+            }))
+            .filter(({ score }) => score > 0)
+            .sort((left, right) => right.score - left.score || left.entry.name.localeCompare(right.entry.name))
+            .map(({ entry }) => entry);
           const connectorCatalog = query
             && !name
             && (!source || source === 'connector')
@@ -227,6 +261,17 @@ export class ToolSetBuilder {
               } : {}),
             })),
             ...(connectorCatalog === undefined ? {} : { connectorCatalog }),
+            ...(query && matches.length === 0 ? {
+              suggestions: eligibleEntries
+                .map((entry) => ({
+                  name: entry.name,
+                  score: capabilityQueryOverlap(query, `${entry.name} ${entry.description}`),
+                }))
+                .filter(({ score }) => score > 0)
+                .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
+                .slice(0, 5)
+                .map(({ name: suggestedName }) => suggestedName),
+            } : {}),
             truncated: matches.length > 100,
           };
         },
@@ -308,6 +353,8 @@ export class ToolSetBuilder {
       'list_background_tasks',
       'inspect_background_task',
       'runtime_status',
+      'list_sessions',
+      'get_session_history',
       'switch_model',
       'switch_mode',
       'switch_session',

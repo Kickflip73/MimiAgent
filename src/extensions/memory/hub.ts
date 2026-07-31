@@ -182,6 +182,11 @@ function episodeDecay(hit: MemoryHit, now = Date.now()): number {
   return Math.exp(-ageDays / 90);
 }
 
+function latestOccurrence(hit: MemoryHit): number {
+  const timestamps = hit.sourceRefs.map((source) => Date.parse(source.occurredAt)).filter(Number.isFinite);
+  return timestamps.length ? Math.max(...timestamps) : 0;
+}
+
 class DefaultMemoryHub implements MemoryHub {
   private readonly workspaceRoot: string;
   private readonly dataRoot: string;
@@ -841,7 +846,10 @@ class DefaultMemoryHub implements MemoryHub {
       ...(!options.scope || options.scope === 'all' || options.scope === 'private' ? this.privateCatalog.list(options) : []),
       ...(!options.scope || options.scope === 'all' || options.scope === 'workspace' ? this.workspaceCatalog.list(options) : []),
     ];
-    return hits.sort((left, right) => right.summary.localeCompare(left.summary)).slice(0, options.limit ?? 100);
+    return hits.sort(options.order === 'recent'
+      ? (left, right) => latestOccurrence(right) - latestOccurrence(left)
+      : (left, right) => right.summary.localeCompare(left.summary))
+      .slice(0, options.limit ?? 100);
   }
 
   async lint(context: RunMemoryContext): Promise<WikiLintReport> {

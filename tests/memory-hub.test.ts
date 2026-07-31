@@ -365,6 +365,7 @@ test('SubAgent and Team memory tools cannot read private Wiki or episodes', asyn
   const invoke = (name: string, input: unknown) => tools.find((candidate) => candidate.name === name)!
     .invoke(new RunContext({}), JSON.stringify(input));
   assert.deepEqual(await invoke('memory_search', { query: 'violet', scope: 'private', includeEvidence: true, limit: 5 }), []);
+  assert.deepEqual(await invoke('memory_search', { order: 'recent', scope: 'private', limit: 5 }), []);
   assert.match(String(await invoke('memory_read', page.ref)), /只能读取 workspace Memory/);
   assert.deepEqual(tools.map((tool) => tool.name), ['memory_search', 'memory_read', 'memory_links']);
 });
@@ -522,6 +523,34 @@ test('MemoryHub searches all owner Session rounds by default', async () => {
 
   await hub.reindex(ctx);
   assert.equal((await hub.search('cobalt lane', ctx, { scope: 'private' }))[0]?.ref.id, ref.id);
+});
+
+test('memory_search lists recent owner Session rounds without pretending an empty query is semantic search', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-recent-'));
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot: path.join(root, 'data'), profileId: 'owner' });
+  const ctx = context(root);
+  const newest = await hub.recordEpisode({
+    sessionId: 'session-newest', runId: 'run-newest',
+    input: 'Newest session topic', answer: 'Newest session result',
+    occurredAt: '2026-07-30T12:00:00.000Z',
+  }, { ...ctx, sessionId: 'session-newest', runId: 'run-newest' });
+  await hub.recordEpisode({
+    sessionId: 'session-older', runId: 'run-older',
+    input: 'Older session topic', answer: 'Older session result',
+    occurredAt: '2026-07-29T12:00:00.000Z',
+  }, { ...ctx, sessionId: 'session-older', runId: 'run-older' });
+  const search = createMemoryTools(hub, () => ctx)
+    .find((tool) => tool.name === 'memory_search');
+  assert.ok(search && 'invoke' in search);
+
+  const hits = await search.invoke(new RunContext({}), JSON.stringify({
+    order: 'recent',
+    scope: 'private',
+    limit: 2,
+  })) as unknown as Array<{ ref: { id: string }; documentType: string }>;
+
+  assert.equal(hits[0]?.ref.id, newest.id);
+  assert.deepEqual(hits.map((hit) => hit.documentType), ['episode', 'episode']);
 });
 
 test('compiled Wiki knowledge ranks before matching raw Session episodes', async () => {

@@ -91,6 +91,7 @@ export interface MemoryLink {
 
 export interface MemorySearchOptions {
   scope?: MemoryScope | 'all';
+  order?: 'relevance' | 'recent';
   kind?: MemoryKind;
   status?: MemoryStatus | 'all';
   from?: string;

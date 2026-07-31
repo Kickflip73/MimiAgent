@@ -8,6 +8,27 @@ const refSchema = z.object({
   profileId: z.string().optional(),
 });
 
+const searchSchema = z.object({
+  query: z.string().trim().min(1).optional(),
+  order: z.enum(['relevance', 'recent']).default('relevance')
+    .describe('relevance 按 query 检索；recent 按时间列出 owner 最近的历史 Session round'),
+  scope: z.enum(['private', 'workspace', 'all']).default('all'),
+  kind: z.enum(['profile', 'fact', 'concept', 'entity', 'decision', 'lesson', 'source-summary', 'synthesis', 'procedure-ref']).optional(),
+  status: z.enum(['proposed', 'active', 'conflicted', 'superseded', 'expired', 'all']).optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  includeEvidence: z.boolean().default(false),
+  limit: z.number().int().min(1).max(20).default(5),
+}).superRefine(({ order, query }, refinement) => {
+  if (order === 'relevance' && !query) {
+    refinement.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['query'],
+      message: 'order=relevance 时必须提供 query',
+    });
+  }
+});
+
 export interface MemoryToolContext extends RunMemoryContext {}
 
 export function createMemoryTools(
@@ -18,23 +39,24 @@ export function createMemoryTools(
   const tools = [
     tool({
       name: 'memory_search',
-      description: '搜索当前 profile 的长期记忆和全部历史 Session round，并搜索 workspace 知识；返回有界摘要、ref 与来源。',
-      parameters: z.object({
-        query: z.string().trim().min(1),
-        scope: z.enum(['private', 'workspace', 'all']).default('all'),
-        kind: z.enum(['profile', 'fact', 'concept', 'entity', 'decision', 'lesson', 'source-summary', 'synthesis', 'procedure-ref']).optional(),
-        status: z.enum(['proposed', 'active', 'conflicted', 'superseded', 'expired', 'all']).optional(),
-        from: z.string().datetime().optional(),
-        to: z.string().datetime().optional(),
-        includeEvidence: z.boolean().default(false),
-        limit: z.number().int().min(1).max(20).default(5),
-      }),
-      execute: ({ query, scope, kind, status, from, to, includeEvidence, limit }) => hub.search(
-        query, context(), {
+      description: '搜索当前 profile 的长期记忆、历史 Session round 和 workspace 知识；owner 明确询问最近做过什么时用 order=recent 返回最近 Session round。',
+      parameters: searchSchema,
+      execute: ({ query, order, scope, kind, status, from, to, includeEvidence, limit }) => {
+        const runContext = context();
+        if (order === 'recent') {
+          if (options.workspaceOnly || scope === 'workspace' || (runContext.cause?.trust ?? 'owner') !== 'owner') {
+            return [];
+          }
+          return hub.list(runContext, {
+            scope: 'private', order: 'recent', kind, status, from, to, limit,
+            documentTypes: ['episode'],
+          });
+        }
+        return hub.search(query!, runContext, {
           scope: options.workspaceOnly ? 'workspace' : scope,
           kind, status, from, to, includeEvidence, limit,
-        },
-      ),
+        });
+      },
     }),
     tool({
       name: 'memory_read',

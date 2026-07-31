@@ -195,15 +195,17 @@ test('tool set builder keeps mode and run-policy filtering in one stage', () => 
 
 test('progressive gateway discovers and invokes every authorized capability family only', async () => {
   const builder = new ToolSetBuilder();
-  const make = (name: string, value: string) => sdkTool({
+  const make = (name: string, value: string, description = `${name} description`) => sdkTool({
     name,
-    description: `${name} description`,
+    description,
     parameters: z.object({}),
     execute: async () => value,
   });
   const authorized = [
     make('web_search', 'web-ok'),
     make('memory_read', 'memory-ok'),
+    make('list_sessions', 'session-list-ok', '列出 MimiAgent 持久会话的 ID、时间和轮数。'),
+    make('get_session_history', 'session-history-ok', '读取当前 Session 最近的原始历史条目。'),
     make('computer_observe', 'computer-ok'),
     make('computer_act', 'computer-act-ok'),
     make('browser_open', 'browser-open-ok'),
@@ -230,6 +232,8 @@ test('progressive gateway discovers and invokes every authorized capability fami
   assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_wait'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_assert'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_close'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'list_sessions'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'get_session_history'));
   assert.equal(modelFacing.some((candidate) => candidate.name === 'inspect_mimi_capabilities'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'invoke_capability'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'send_owner_message'), false);
@@ -241,6 +245,15 @@ test('progressive gateway discovers and invokes every authorized capability fami
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
   const context = new RunContext({});
+  const naturalSessionQuery = await inspect.invoke(
+    context,
+    JSON.stringify({ query: '会话 历史 Session 列表 搜索 读取' }),
+    {},
+  ) as { capabilities: Array<{ name: string }> };
+  assert.deepEqual(
+    naturalSessionQuery.capabilities.map((candidate) => candidate.name).sort(),
+    ['get_session_history', 'list_sessions'],
+  );
   assert.match(
     String(await invoke.invoke(
       context,
