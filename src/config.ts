@@ -364,7 +364,7 @@ function computerConfig(
     return undefined;
   }
   if (!executableFile(driverCommand)) throw new Error('MIMI_CUA_DRIVER_COMMAND 必须指向可执行普通文件');
-  const defaultAccess = process.env.MIMI_COMPUTER_DEFAULT_ACCESS ?? 'background';
+  const defaultAccess = process.env.MIMI_COMPUTER_DEFAULT_ACCESS ?? 'foreground';
   if (!['none', 'observe', 'background', 'foreground', 'admin'].includes(defaultAccess)) {
     throw new Error('MIMI_COMPUTER_DEFAULT_ACCESS 必须是 none、observe、background、foreground 或 admin');
   }

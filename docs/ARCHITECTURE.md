@@ -55,7 +55,7 @@ src/daemon/
 Connector、不保存正文；Connector cursor 仍由隔离进程维护，Event、Task 和副作用
 回执继续由现有 Store 与 ExecutionLedger 持有。
 
-可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 `computer_observe` 与 `computer_act`。它按 Run 管理不可复用的 Observation、动作/截图预算、前台 lease 和受保护 artifact；GUI 写动作经过统一 Security、ExecutionLedger 与跨进程动作锁。Darwin 的通用 `run_shell` 无条件进入进程沙箱，拒绝 Apple Events、LaunchServices、Accessibility 和正式控制端口；Workstation 也使用这条沙箱 Shell。正式 Connector、Browser 与 Computer Tool 使用结构化 capability 和精确 target。Terminal、Codex、IDE 等控制面应用不能成为 Computer 目标；旧 `claimedComputerApps` 只做兼容诊断，不再封锁整个 Chrome 等应用。`full-owner` 可自动发现已安装的 Cua Driver；Safe/Workstation 不会因此扩大权限。
+可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 app-centric 的 `computer_observe` 与 `computer_act`。Host 按 Run 自动管理精确窗口、最新 Observation、动作/截图预算和 Driver Session；模型不接触 PID、window id、Observation id、投递模式或 Driver 状态。AX 优先，新窗口经有界 settle 仍无语义状态时才回退窗口截图；普通 UI 动作在同一 Tool 结果中直接返回 fresh state。GUI 写动作继续经过统一 Security、ExecutionLedger 与跨进程动作锁。Darwin 的通用 `run_shell` 无条件进入进程沙箱，拒绝 Apple Events、LaunchServices、Accessibility 和正式控制端口；Workstation 也使用这条沙箱 Shell。Terminal、Codex、IDE 等控制面应用不能成为 Computer 目标；`full-owner` 可自动发现已安装的 Cua Driver，Safe/Workstation 不会因此扩大权限。
 
 `src/agent.ts` 导出 `MimiAgent`；实现位于 `runtime/mimi-agent.ts`。
 
@@ -254,6 +254,18 @@ Attention Engine 是同步、确定性的 Host 层分类器，不是第二个模
 来源 `trust` 只作为 provenance 标签，授权由本机 event policy 决定；它绝不因消息自称 owner/trusted 而扩大部署权限。owner/system 在部署权限内工作；其他 provenance 默认受限，只有 Host 用 source/kind/actor/conversation 命中本机 owner source policy 时才获得固定 `reply | work` 档位。后台 Task 不把 provenance 改写成 owner，而是从被保留且确认为 conversation root 的来源 Event 与当前 source policy 重新计算授权；policy 被删除、root/parent 缺失或引用 Task 而非 conversation root 时失败关闭，即使 Task 自带 owner provenance 也不能绕过。外部正文始终只作为数据并记录 provenance。
 
 Connector Action Bridge 把外部凭证保留在 Kernel 监督的隔离 Connector 子进程中。一个 Daemon 数据根只有一个 Connector Manager/broker；Conversation actor 与后台 Task worker 都不能各自拉起同一渠道或复制凭证。每个 action 声明稳定 `capability`、`effect` 和 `modelVisible`；只有模型可见的 Connector 业务 action 进入 Snapshot 的 routedItems，内部探活、目标绑定发送和协议动作仍留在 Host，Host 自身授权的高层业务工具只以无 schema 名称进入 hiddenTools 索引。Manager 在 dispatch 前完成权限、唯一路线、就绪度、幂等与结果分级。旧 `claimedComputerApps` 只保留读取兼容，不再形成整应用授权边界；Computer 保留控制面保护和精确目标校验。超时或子进程退出时不自动重放。
+
+Browser 与 Computer 是渐进目录的两个一等例外：高频通用操作直接向主 Agent 投影
+严格 Function Tools，模型不先查询 Connector、Skill 或 Backend schema。Browser 的
+`BrowserRunManager` 按 Run 持有单一逻辑会话生命周期，OpenCLI/Chrome ref 只在
+Host/Connector 之间流转；标准网页 observation 使用 DOM，最终序列化结果不超过
+16 KiB。Connector 将每个逻辑标签映射到独立后台 OpenCLI session，向模型只暴露稳定
+page ID，避免 backend 的默认标签切换丢失原页；关闭标签会原子更新 active page 并返回
+恢复后的 URL。uncertain open 禁止继续页面动作，close 只投递一次；Dispatcher 在发布完成
+前清理，失败进入不可重试 dead letter。Computer 只投影两个聚合工具，`ComputerManager` 绑定不可变 authority、
+最新精确窗口 observation、动作预算和 session；degraded 且没有 AX/截图证据的
+observation 不可授权写动作。两条路径都保留 ExecutionLedger 的 at-most-once 语义，
+uncertain close 或 action 不能被模型、Daemon 或替代路线静默重放。
 
 `personal-*` Connector 的 `send_message/send_to_owner` 是 Host 内部 action：
 `modelVisible:false` 让通用 Connector 目录和执行工具都无法触达。Owner 自发消息只

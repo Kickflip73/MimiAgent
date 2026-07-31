@@ -161,6 +161,19 @@ export class MimiHost {
       .sort((left, right) => right.observedAt.localeCompare(left.observedAt))[0];
   }
 
+  computerStatus() {
+    const statuses = [...this.resolvedActors.values()]
+      .flatMap((actor) => {
+        const status = actor.agent.computerStatus();
+        return status ? [status] : [];
+      });
+    return statuses
+      .filter((status) => status.operationalCheckedAt)
+      .sort((left, right) => (
+        right.operationalCheckedAt!.localeCompare(left.operationalCheckedAt!)
+      ))[0] ?? statuses[0];
+  }
+
   providerHealth(): ProviderHealthSnapshot | undefined {
     return this.primary.runs.providerHealth?.();
   }

@@ -9,6 +9,7 @@ import { createMimiAttentionRuleTools } from '../src/daemon/attention-rule-tools
 import { createMimiBriefingTools } from '../src/daemon/briefing-tools.js';
 import { createMimiDeliveryTools } from '../src/daemon/delivery-tools.js';
 import { createMimiCommandHostTools, createMimiHostTools } from '../src/daemon/host-tools.js';
+import { BrowserRunManager } from '../src/extensions/browser/manager.js';
 import { createMimiPeopleTools } from '../src/daemon/people-tools.js';
 import { createMimiScheduleTools } from '../src/daemon/schedule-tools.js';
 import { createMimiSessionActivityTools } from '../src/daemon/session-activity-tools.js';
@@ -286,6 +287,13 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       }),
     } as unknown as ConnectorManager;
     const control = { suppressed: false, reason: undefined as string | undefined };
+    const browserRun = new BrowserRunManager('host-tool-suite', async (request) => ({
+      connector: 'browser',
+      effect: request.action === 'snapshot' ? 'read' : 'write',
+      result: request.action === 'open_session'
+        ? { outcome: 'confirmed', sessionRef: 'browser:internal' }
+        : { outcome: 'confirmed' },
+    }));
     const connectorTools = createMimiHostTools({
       store,
       attention,
@@ -294,9 +302,14 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       deliveryControl: control,
       sessionId: 'session-owner',
       connectors: manager,
+      browserRun,
       replyRoute: { channel: 'connector:mail', target: 'owner' },
     });
     assert.ok(connectorTools.some((tool) => tool.name === 'send_owner_message'));
+    assert.deepEqual(
+      connectorTools.filter((tool) => tool.name.startsWith('browser_')).map((tool) => tool.name),
+      ['browser_open', 'browser_observe', 'browser_act', 'browser_wait', 'browser_assert', 'browser_close'],
+    );
     await invoke(connectorTools, 'invoke_capability', {
       capability: 'message.send',
       action: 'send_message',

@@ -28,6 +28,10 @@ export interface CuaDriverLifecycleStatus {
   lastReadyAt?: string;
   lastFailure?: string;
   nextRetryAt?: string;
+  transportReady?: boolean;
+  operationalReadiness?: 'unknown' | 'ready' | 'degraded';
+  operationalCheckedAt?: string;
+  lastOperationalFailure?: string;
 }
 
 interface CuaDriverLifecycleOptions {

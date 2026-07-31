@@ -8,6 +8,7 @@ import type {
   BackendObserveRequest,
   BackendSession,
   ComputerActInput,
+  ComputerAppSummary,
   ComputerBackend,
   ComputerObserveInput,
   ComputerTargetSummary,
@@ -137,6 +138,26 @@ export class CuaDriverClient implements ComputerBackend {
     return { id: input.sessionId };
   }
 
+  async listApps(query: { query?: string; limit: number }, signal?: AbortSignal): Promise<ComputerAppSummary[]> {
+    const result = await this.call('list_apps', {}, signal);
+    const values = Array.isArray(result.structured) ? result.structured : record(result.structured).apps;
+    const needle = query.query?.normalize('NFKC').toLowerCase();
+    return (Array.isArray(values) ? values : [])
+      .map((value) => {
+        const app = record(value);
+        return {
+          bundleId: String(app.bundle_id ?? ''),
+          name: String(app.name ?? ''),
+          running: app.running === true && finite(app.pid) > 0,
+        } satisfies ComputerAppSummary;
+      })
+      .filter((app) => app.bundleId
+        && (!needle || `${app.bundleId} ${app.name}`.normalize('NFKC').toLowerCase().includes(needle)))
+      .sort((left, right) => Number(right.running) - Number(left.running)
+        || left.name.localeCompare(right.name))
+      .slice(0, query.limit);
+  }
+
   async listTargets(query: { query?: string; limit: number }, signal?: AbortSignal): Promise<ComputerTargetSummary[]> {
     const [appsResult, windowsResult] = await Promise.all([
       this.call('list_apps', {}, signal),
@@ -150,29 +171,38 @@ export class CuaDriverClient implements ComputerBackend {
       const pid = finite(app.pid);
       if (pid > 0) appByPid.set(pid, app);
     }
-    const candidates = (Array.isArray(windows) ? windows : []).map((value) => {
+    const candidates = (Array.isArray(windows) ? windows : []).map((value, sourceIndex) => {
       const window = record(value);
       const pid = finite(window.pid);
       const app = appByPid.get(pid) ?? {};
       const bounds = record(window.bounds);
+      const title = String(window.title ?? '');
       return {
         target: {
           bundleId: String(app.bundle_id ?? window.bundle_id ?? ''),
           pid,
           windowId: finite(window.window_id),
           appName: String(window.app_name ?? app.name ?? ''),
-          title: String(window.title ?? ''),
+          title,
           bounds: { x: finite(bounds.x), y: finite(bounds.y), width: finite(bounds.width), height: finite(bounds.height) },
         },
         appActive: app.active === true,
         windowFrontmost: typeof window.frontmost === 'boolean' ? window.frontmost : undefined,
+        isOnScreen: typeof window.is_on_screen === 'boolean' ? window.is_on_screen : undefined,
+        onCurrentSpace: typeof window.on_current_space === 'boolean' ? window.on_current_space : undefined,
+        sourceIndex,
       };
-    }).filter(({ target }) => target.pid > 0 && target.windowId > 0 && target.bundleId);
+    }).filter(({ target, isOnScreen, onCurrentSpace }) => {
+      if (target.pid <= 0 || target.windowId <= 0 || !target.bundleId) return false;
+      if (target.bounds.width < 64 || target.bounds.height < 64) return false;
+      const untitled = target.title.trim().length === 0;
+      return !(untitled && (isOnScreen === false || onCurrentSpace === false));
+    });
     const exactFrontmost = candidates.filter((candidate) => candidate.windowFrontmost === true);
     const soleActiveWindow = exactFrontmost.length === 0
       ? candidates.filter((candidate) => candidate.appActive)
       : [];
-    const normalized = candidates.map(({ target, appActive, windowFrontmost }): ComputerTargetSummary => {
+    const normalized = candidates.map(({ target, appActive, windowFrontmost, isOnScreen, onCurrentSpace, sourceIndex }) => {
       let frontmost: boolean | undefined;
       if (exactFrontmost.length === 1) {
         frontmost = exactFrontmost[0]!.target.pid === target.pid
@@ -184,10 +214,20 @@ export class CuaDriverClient implements ComputerBackend {
       } else if (soleActiveWindow.length === 1 && windowFrontmost !== false) {
         frontmost = true;
       }
-      return { ...target, ...(frontmost === undefined ? {} : { frontmost }) };
-    });
+      const score = (target.title.trim() ? 8 : 0)
+        + (isOnScreen === true ? 4 : 0)
+        + (onCurrentSpace === true ? 2 : 0);
+      return {
+        target: { ...target, ...(frontmost === undefined ? {} : { frontmost }) } satisfies ComputerTargetSummary,
+        score,
+        sourceIndex,
+      };
+    }).sort((left, right) => right.score - left.score || left.sourceIndex - right.sourceIndex);
     const needle = query.query?.toLowerCase();
-    return normalized.filter((target) => !needle || `${target.bundleId} ${target.appName} ${target.title}`.toLowerCase().includes(needle)).slice(0, query.limit);
+    return normalized
+      .map((candidate) => candidate.target)
+      .filter((target) => !needle || `${target.bundleId} ${target.appName} ${target.title}`.toLowerCase().includes(needle))
+      .slice(0, query.limit);
   }
 
   async observe(session: BackendSession, request: BackendObserveRequest, signal?: AbortSignal): Promise<BackendObservation> {
@@ -281,15 +321,16 @@ export class CuaDriverClient implements ComputerBackend {
     }, signal, true);
     const structured = record(result.structured);
     const status = String(structured.status ?? structured.code ?? 'applied');
-    if (/uncertain|partial/i.test(status)) return { status: 'uncertain' };
     if (/background.*(unsupported|unavailable|occluded)/i.test(status)) return { status: 'background_unsupported', data: structured };
     const foregroundControl = ['escalate_session', 'bring_to_front', 'handoff_to_user', 'release_foreground']
       .includes(request.input.action.type);
+    const delivery = String(structured.delivery_mode ?? structured.delivery) === 'foreground' || foregroundControl
+      ? 'foreground'
+      : 'background';
+    if (/uncertain|partial/i.test(status)) return { status: 'uncertain', delivery, data: structured };
     return {
       status: 'applied',
-      delivery: String(structured.delivery_mode ?? structured.delivery) === 'foreground' || foregroundControl
-        ? 'foreground'
-        : 'background',
+      delivery,
       data: structured,
     };
   }
@@ -304,21 +345,65 @@ export class CuaDriverClient implements ComputerBackend {
     const value = record(result.structured);
     const dimensions = record(value.dimensions ?? value.size);
     const screenshotDimensions = result.image ? imageDimensions(result.image.data) : undefined;
-    const elements = Array.isArray(value.elements) ? value.elements.map((candidate) => {
+    const rawElements = Array.isArray(value.elements) ? value.elements : [];
+    const visibleElements = rawElements.filter((candidate) => {
+      const item = record(candidate);
+      return !/^AXMenu/i.test(String(item.role ?? ''));
+    });
+    const elements = visibleElements.length ? visibleElements.map((candidate) => {
       const item = record(candidate);
       const frame = record(item.frame);
+      const rawValue = item.value;
+      const role = String(item.role ?? '');
+      const secure = item.secure === true || /secure|password/i.test(role);
+      const writable = item.writable === true
+        || item.value_settable === true
+        || (!secure && /^AX(?:TextArea|TextField)$/i.test(role) && item.enabled !== false);
       return {
         index: finite(item.element_index ?? item.index),
-        role: String(item.role ?? ''),
+        role,
         ...(item.label === undefined ? {} : { label: String(item.label) }),
+        ...((typeof rawValue === 'string' || typeof rawValue === 'number' || typeof rawValue === 'boolean')
+          ? { value: typeof rawValue === 'string' ? rawValue.slice(0, 500) : rawValue }
+          : {}),
+        ...((item.description ?? item.help) === undefined
+          ? {}
+          : { description: String(item.description ?? item.help).slice(0, 500) }),
+        ...(item.identifier === undefined ? {} : { identifier: String(item.identifier).slice(0, 200) }),
         ...(Array.isArray(item.actions) ? { actions: item.actions.map(String) } : {}),
         ...(Object.keys(frame).length ? { frame: {
           x: finite(frame.x), y: finite(frame.y), width: finite(frame.width ?? frame.w), height: finite(frame.height ?? frame.h),
         } } : {}),
-        secure: item.secure === true || /secure|password/i.test(String(item.role ?? '')),
-        writable: item.writable === true || item.value_settable === true,
+        secure,
+        writable,
+        ...(typeof item.enabled === 'boolean' ? { enabled: item.enabled } : {}),
+        ...(typeof item.selected === 'boolean' ? { selected: item.selected } : {}),
+        ...(typeof item.focused === 'boolean' ? { focused: item.focused } : {}),
       };
     }) : undefined;
+    const treeMarkdown = typeof value.tree_markdown === 'string' ? value.tree_markdown : '';
+    const semanticLines: string[] = [];
+    let skippedMenuIndent: number | undefined;
+    for (const line of treeMarkdown.split('\n')) {
+      const indent = /^\s*/.exec(line)?.[0].length ?? 0;
+      if (/\bAXMenu(?:Bar|Item)\b/.test(line)) {
+        skippedMenuIndent = skippedMenuIndent === undefined
+          ? indent
+          : Math.min(skippedMenuIndent, indent);
+        continue;
+      }
+      if (skippedMenuIndent !== undefined) {
+        if (!line.trim() || indent > skippedMenuIndent) continue;
+        skippedMenuIndent = undefined;
+      }
+      semanticLines.push(line);
+    }
+    const semanticText = semanticLines.join('\n').trim().slice(0, 8_000);
+    const degradedReason = typeof value.degraded_reason === 'string'
+      ? value.degraded_reason.slice(0, 1_000)
+      : undefined;
+    const escalation = record(value.escalation);
+    const screenshotError = record(value.screenshot_error);
     return {
       dimensions: screenshotDimensions ?? (finite(dimensions.width) > 0 && finite(dimensions.height) > 0
         ? { width: finite(dimensions.width), height: finite(dimensions.height) }
@@ -326,7 +411,36 @@ export class CuaDriverClient implements ComputerBackend {
       elements,
       truncated: value.truncated === true,
       screenshot: result.image,
-      data: value,
+      data: {
+        ...(semanticText ? { semanticText } : {}),
+        sourceElementCount: rawElements.length,
+        visibleElementCount: elements?.length ?? 0,
+        ...(value.degraded === true ? { degraded: true } : {}),
+        ...(degradedReason ? { degradedReason } : {}),
+        ...((typeof escalation.reason === 'string' || typeof escalation.recommended === 'string')
+          ? { escalation: {
+              ...(typeof escalation.reason === 'string'
+                ? { reason: escalation.reason.slice(0, 500) }
+                : {}),
+              ...(typeof escalation.recommended === 'string'
+                ? { recommended: escalation.recommended.slice(0, 100) }
+                : {}),
+            } }
+          : {}),
+        ...((typeof screenshotError.code === 'string' || typeof screenshotError.reason === 'string')
+          ? { screenshotError: {
+              ...(typeof screenshotError.code === 'string'
+                ? { code: screenshotError.code.slice(0, 100) }
+                : {}),
+              ...(typeof screenshotError.reason === 'string'
+                ? { reason: screenshotError.reason.slice(0, 500) }
+                : {}),
+              ...(typeof screenshotError.suggestion === 'string'
+                ? { suggestion: screenshotError.suggestion.slice(0, 500) }
+                : {}),
+            } }
+          : {}),
+      },
     };
   }
 
@@ -399,9 +513,10 @@ export class CuaDriverClient implements ComputerBackend {
         (minor === 8 && patch! >= 3)
         || (minor === 9 && patch === 0)
         || (minor === 12 && patch === 3)
+        || (minor === 14 && patch === 1)
       );
       if (!compatible) {
-        throw new Error(`Cua Driver ${match[0]} 不在已测试兼容范围：0.8.3+、0.9.0、0.12.3`);
+        throw new Error(`Cua Driver ${match[0]} 不在已测试兼容范围：0.8.x patch>=3、0.9.0、0.12.3、0.14.1`);
       }
       return match[0];
     })();

@@ -106,6 +106,11 @@
     "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "test:api-contract": "node --import tsx --test tests/public-api-contract.test.ts",
     "test:provider-contract": "node --import tsx --test tests/provider-contract.test.ts",
+    "test:browser:macos": "tsx scripts/run-browser-e2e.ts",
+    "test:browser:agent:macos": "tsx scripts/run-mimi-browser-e2e.ts",
+    "test:computer:macos": "tsx scripts/run-computer-e2e.ts",
+    "test:computer:agent:macos": "tsx scripts/run-mimi-computer-e2e.ts",
+    "test:ui:macos": "npm run test:browser:macos && npm run test:computer:macos",
     "test:coverage": "node --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-lines=85 --test-coverage-branches=75 --test-coverage-functions=75 --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "test:package": "node tests/package-smoke.mjs",
     "ci": "npm run check:repo && npm run check && npm run test:coverage && npm run build && npm run test:package"

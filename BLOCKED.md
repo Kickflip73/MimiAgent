@@ -1,5 +1,21 @@
 # Blocked
 
+- **2026-07-31 Computer 标准 AX 实机门槛（已解除）**：初次实测时已安装并验证
+  Cua Driver `0.14.1`，health RPC、Accessibility 和 Screen Recording 权限位均为
+  true，但 Calculator 与 TextEdit 的精确 `get_window_state` 都返回
+  `ax_window_unresolved`、0 个 AXWindow/可操作元素；请求窗口截图同时返回
+  `px_capture_unavailable`，系统 `screencapture` 也不能生成该窗口图像。独立 Swift
+  AX 复核只看到伪 `AXApplication`/菜单面，不能安全代替 Driver。真实复测因此为
+  Calculator 0/1、TextEdit 0/1，均在首次 observation 后约 8 秒 fail closed，未投递
+  UI 写、未抢前台、未移动光标、未泄漏 session。源码已把这种状态标成
+  `operationalReadiness=degraded`，不再用 transport health 冒充可用。要达到标准 AX
+  ≥95% 仍需外部恢复 CuaDriver.app 的实时窗口捕获/AX 映射，或升级到经过本项目验证的
+  Driver 修复版本；本轮不擅自执行会重置其他应用授权的 `tccutil reset`，也不把
+  Shell/AppleScript/前台按键作为静默降级路线。后续精确窗口诊断证明 Driver 本身可读，
+  真正缺口是离屏伪窗口过滤、新窗口 AX settle/screenshot fallback 和同 bundle 新窗口绑定；
+  修复后 Driver/Manager Calculator + TextEdit 真实 soak 10/10，p95 observation 6309 bytes，
+  session leak/前台变化/由 Computer 动作导致的鼠标变化均为 0。该项不再是 blocker。
+
 - **2026-07-30 Context Review S1 live summarizer canary 未执行（任务边界）**：
   本轮只用 deterministic fake Model/summarizer 验证 1M 阈值、结构化语义快照与失败降级；
   用户明确禁止在未另行授权时调用 live Provider、`eval:agent`、部署或重启，因此没有把
@@ -102,6 +118,11 @@
   远端 3 个提交，仍没有新的冻结部署或 T0。`2026-07-30T04:28:48.138Z` 时
   Daemon 又变为 `0.12.0+3fd675025b04`；虽然运行面 idle 且分支已对齐远端，
   仍有未提交 Provider/个人消息运行时改动，不能建立新 T0。
+  `2026-07-30T12:29:48.205Z` 时 Daemon 又变为 `0.12.0+4c739a2ce947`；
+  虽然 idle，但本地领先远端 1 个未推送运行时提交且 Browser Connector 仍有
+  未提交改动，继续不能建立新 T0。`2026-07-30T20:30:11.911Z` 再次确认同一
+  非目标构建与 idle 状态，但仓库仍未收敛，且 Digest backlog=1051、
+  `personal-daxiang` 离线、Browser readiness stale，本轮继续 blocked。
 - **凭证轮换需 owner/外部系统（M-1）**：2026-07-28 发现一枚 Multica access token 曾进入 Task objective、Schedule 和 Memory observation；原值不在本文件或诊断输出中。已扩展统一净化器，验证备份后净化 50 个数据库值，复扫 0 命中，原始记录仅保留在权限受限的已验证恢复备份。该凭证必须在 Multica 控制面吊销并重发；MimiAgent 不得代替 owner 点击授权或猜测新值。
 - **M1 大象真实目标绑定需 owner/外部状态**：当前没有 owner 选定的精确会话、授权 revision，也没有唯一且非活动的已登录大象网页会话可用于 stable sid 绑定。允许完成 deterministic fixture、bounded read、Draft 和 fail-closed 代码；不得写入猜测目标、不得启用真实发送、不得伪造 72h soak。
 - **macOS Life 恢复需 Calendar/Reminders TCC**：`macos-life` 属于 M4，当前保持 disabled 且配置完整。只有 owner 授权后，按 `docs/CONNECTORS.md` 的只读 probe 和恢复门禁重新启用；不得代点系统授权。

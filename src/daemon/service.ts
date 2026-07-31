@@ -1562,7 +1562,20 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       const effectiveCapability = host?.currentCapabilitySnapshot();
       const providerHealth = host?.providerHealth();
       const providerHealthRoutes = host?.providerHealthRoutes();
-      const computer = computerLifecycle?.status();
+      const transportComputer = computerLifecycle?.status();
+      const operationalComputer = host?.computerStatus();
+      const computer = transportComputer ? {
+        ...transportComputer,
+        transportReady: transportComputer.ready,
+        ready: transportComputer.ready && operationalComputer?.operationalReadiness === 'ready',
+        operationalReadiness: operationalComputer?.operationalReadiness ?? 'unknown',
+        ...(operationalComputer?.operationalCheckedAt
+          ? { operationalCheckedAt: operationalComputer.operationalCheckedAt }
+          : {}),
+        ...(operationalComputer?.lastOperationalFailure
+          ? { lastOperationalFailure: operationalComputer.lastOperationalFailure }
+          : {}),
+      } : undefined;
       return {
         ...status,
         lifecycle: lifecycleEpoch,

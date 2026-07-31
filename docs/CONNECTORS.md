@@ -592,6 +592,27 @@ opencli daemon status
 ```
 
 `opencli daemon status` 必须显示 daemon 为 `running`、Chrome 扩展为 `connected`。Connector 启动时只执行这项无页面副作用的状态检查，不调用会创建 Browser session 的 `opencli doctor`；失败时进程保持在线但上报 `outbound=unavailable` 和 `reasonCode=opencli_unavailable`，不会把缺失依赖误报成浏览器可用。
+
+主 Agent 不直接调用本节低层 action，也不需要先查 Connector catalog。Runtime 的
+`browser_open / browser_observe / browser_act / browser_wait / browser_assert /
+browser_close` 由 Host-owned `BrowserRunManager` 映射到这里，内部 session ref 被剥离，
+单次结果限制为 16 KiB。标准 snapshot 固定 DOM；`<option>` 的非控件 ref 不向模型
+展示，表单动作优先 accessible label/role/name。click/check/uncheck 使用有界结构化
+DOM dispatch 并读取交互状态，fill/select 使用 OpenCLI 的精确控件定位；局部
+`verified=true` 只证明交互，业务完成仍在动作组末用 assert/wait/precise observe 验证。
+当前页 link click 还会在 Connector 内有界轮询 `get url`，回执以
+`navigationSettled` 区分已落稳导航；`target=_blank` 会在 DOM 分发 click 事件但取消
+backend 默认新窗导航，再由 Connector 建立逻辑标签并返回稳定 page ID，不让模型用
+旧页面的瞬时结果触发重复点击。
+OpenCLI 1.8.6 的单 session `tab new` 会让原页退出该 session，因此 Connector 不把
+这项 backend 行为直接暴露为多标签契约：每个逻辑标签使用独立后台 OpenCLI session，
+`list_tabs` 聚合为稳定 Connector page ID，`select_tab` 切换逻辑 active page，
+`close_tab` 关闭指定页或当前页并返回剩余 active page/URL。一个逻辑 Browser session
+最多 20 个标签，`close_session` 会有界释放全部标签。
+写动作失败只有明确未 dispatch 才可换路，accepted/uncertain 不自动重试。
+每个 Run 只创建一个 Host-owned session 生命周期；uncertain open 只允许进入 cleanup，
+close 投递至多一次。Dispatcher 在 Browser cleanup 成功后才提交 Task 完成；cleanup
+结果不确定会保留诊断并进入不可重试 dead letter，而不是用完成结果掩盖潜在 tab leak。
 Connector 默认先查找与当前 Node 可执行文件同目录的 `opencli`，以兼容 launchd 的最小 PATH；若 OpenCLI 安装在其他位置，通过 `OPENCLI_BIN` 提供绝对路径。
 
 会话动作：
@@ -601,7 +622,7 @@ Connector 默认先查找与当前 Node 可执行文件同目录的 `opencli`，
 - `bind_session`：绑定 owner 当前 Chrome 标签以复用人工完成的登录、SSO 或页面定位；绑定会话不会拥有或关闭用户标签。
 - `close_session`：独占会话执行 close，绑定会话只 unbind。Connector/Daemon 正常退出时也会尽力释放仍持有的会话。
 - `probe_tabs`：只返回 Connector 当前持有的会话/标签计数，供只读 canary 使用，不创建、绑定、激活或泄露页面内容。
-- `list_tabs/new_tab/select_tab/close_tab`：标签读取或精确写动作；page ID 只能来自当前会话的 `list_tabs`。
+- `list_tabs/new_tab/select_tab/close_tab`：Connector 管理的逻辑标签动作；page ID 只能来自当前会话的 `list_tabs`，`close_tab` 省略 page 时关闭当前活动页。
 
 页面读取：
 

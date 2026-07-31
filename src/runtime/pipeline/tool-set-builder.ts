@@ -64,6 +64,7 @@ function requestedConnectorAction(argumentsJson: string): string | undefined {
 }
 
 function capabilitySource(name: string): CapabilitySource {
+  if (name.startsWith('browser_')) return 'browser';
   if (name.startsWith('computer_')) return 'computer';
   if (name.startsWith('memory_') || ['remember', 'forget'].includes(name)) return 'memory';
   if (name.includes('goal') || name.includes('plan') || ['prepare_task', 'finish_task'].includes(name)) return 'goal';
@@ -139,6 +140,16 @@ export class ToolSetBuilder {
     const byName = new Map(tools.map((candidate) => [candidate.name, candidate]));
     const discoveredNames = new Set<string>();
     const discoveredConnectorActions = new Set<string>();
+    const discoveryAttempts = new Map<string, number>();
+    const discoveryLoopResult = (signature: string) => {
+      const attempts = (discoveryAttempts.get(signature) ?? 0) + 1;
+      discoveryAttempts.set(signature, attempts);
+      return attempts >= 3 ? {
+        mimiStatus: 'discovery_loop',
+        retryable: false,
+        message: '连续重复查询同一能力目录且没有产生执行进展；停止查询，直接使用已可见工具，或基于现有 unavailable 证据向用户报告。',
+      } : undefined;
+    };
     const entries = tools.map((candidate) => {
       const value = candidate as unknown as Record<string, unknown>;
       const descriptor = toolDescriptor(candidate.name);
@@ -157,11 +168,13 @@ export class ToolSetBuilder {
         name: 'inspect_runtime_capabilities',
         description: '查询本轮 Host 已授权的完整能力目录；初始隐藏不等于撤权。按 source 或精确 name 查询，精确结果会返回调用 schema。',
         parameters: z.object({
-          source: z.enum(['builtin', 'mcp', 'computer', 'memory', 'goal', 'skill', 'connector']).optional(),
+          source: z.enum(['builtin', 'mcp', 'browser', 'computer', 'memory', 'goal', 'skill', 'connector']).optional(),
           name: z.string().trim().min(1).max(200).optional(),
           query: z.string().trim().min(1).max(100).optional(),
         }).strict(),
         execute: async ({ source, name, query }, context, details) => {
+          const loop = discoveryLoopResult(JSON.stringify({ source, name, query }));
+          if (loop) return loop;
           if (name && !byName.has(name)) throw new Error(`能力未授权或不存在：${name}`);
           const normalizedQuery = query?.toLowerCase();
           const directMatches = entries.filter((entry) =>
@@ -243,6 +256,12 @@ export class ToolSetBuilder {
               );
             }
           }
+          if (name === 'inspect_mimi_capabilities') {
+            const loop = discoveryLoopResult(`connector:${argumentsJson}`);
+            if (loop) return loop;
+          } else {
+            discoveryAttempts.clear();
+          }
           return selected.invoke(context as RunContext<unknown>, argumentsJson, details);
         },
       }),
@@ -267,6 +286,14 @@ export class ToolSetBuilder {
       'search_files',
       'inspect_changes',
       'run_shell',
+      'browser_open',
+      'browser_observe',
+      'browser_act',
+      'browser_wait',
+      'browser_assert',
+      'browser_close',
+      'computer_observe',
+      'computer_act',
       'inspect_runtime_capabilities',
       'invoke_runtime_capability',
       'read_context_artifact',

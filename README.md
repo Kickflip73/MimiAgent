@@ -174,8 +174,9 @@ MIMI_MODELS=provider-model-id,provider-fast-model-id
 `MIMI_PROVIDER_BASE_URL` 和 `MIMI_MODEL` 必须填写服务商当前文档给出的实际值。
 该通用 Provider 使用 OpenAI Chat Completions 协议；原生 `openai` Provider 仍使用
 OpenAI Responses API。兼容服务若只实现了部分 OpenAI 协议，Tool Calling、图片输入
-或流式响应能力仍取决于服务端实现。自定义模型默认关闭图片输入，并使用通用 context
-profile；可通过 `MIMI_CONTEXT_WINDOW`、`MIMI_OUTPUT_TOKEN_RESERVE` 和
+或流式响应能力仍取决于服务端实现。自定义模型默认关闭图片输入，并使用模型注册值、
+模型专属环境变量或内置 profile；完全未知且未注册窗口的 legacy 模型才回退到
+`MIMI_CONTEXT_WINDOW` / `MIMI_OUTPUT_TOKEN_RESERVE`。图片能力可通过
 `MIMI_MODEL_SUPPORTS_IMAGE_INPUT` 显式覆盖。
 
 多 Provider 并行使用时，在 owner 私有的 `~/.mimi-agent/models.json` 注册精确
@@ -355,17 +356,17 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_MODEL` / `MIMI_MODELS` | 未设置 | 通用 Provider 的默认模型与全局 `/model` 候选列表 |
 | `MIMI_MAX_TURNS` | 不限制 | 可选的单次 Agent 运行轮数上限；默认由 Goal/Plan 状态、取消、空闲超时与上下文预算控制 |
 | `MIMI_HISTORY_LIMIT` | `40` | Token Budget 之外的历史条目上限；从完整用户轮次开始截取 |
-| `MIMI_CONTEXT_WINDOW` | 按模型 Profile | 全局覆盖模型上下文窗口；通常无需设置 |
-| `MIMI_OUTPUT_TOKEN_RESERVE` | 按模型 Profile | 全局覆盖输出 Token 预留与请求 `maxTokens` |
+| `MIMI_CONTEXT_WINDOW` | 按模型 Profile | 未知 legacy 模型未声明窗口时的兼容回退；不会覆盖模型注册值或内置 Profile |
+| `MIMI_OUTPUT_TOKEN_RESERVE` | 按模型 Profile | 未知 legacy 模型的输出 Token 兼容回退；不会覆盖内置 Profile |
 | `MIMI_OUTPUT_LEVEL` | `tools` | 启动时的事件展示等级：`answer`、`thinking`、`tools`、`trace` |
 | `OPENAI_MODELS` / `DEEPSEEK_MODELS` | 内置常用模型 | 全局 `/model` 选择器中各 Provider 追加的逗号分隔模型列表 |
 | `MIMI_SESSION` | 未设置 | 显式进入已有 Session；未设置时 CLI 使用首次发言才落盘的新对话草稿 |
 | `MIMI_MODE` | `general` | 启动模式：`general`、`plan`、`ultra` |
 | `MIMI_SECURITY_PROFILE` | `full-owner` | 本机认证 Owner 的运行权限：默认直接使用当前 OS 用户权限；仅在需要整体收紧时设置 `safe` 或 `workstation` |
 | `MIMI_PERMISSION_MODE` | 由 Security 派生 | 仅用于读取旧配置；不再参与授权，冲突时以 `MIMI_SECURITY_PROFILE` 为准 |
-| `MIMI_COMPUTER_BACKEND` | 未启用 | 设置为 `cua` 后注册可选的 `computer_observe` / `computer_act`；第一阶段仅 macOS |
-| `MIMI_CUA_DRIVER_COMMAND` | 未设置 | Cua Driver `>=0.8.3 <=0.9.0` 可执行文件的绝对路径；启用 Computer Use 时必填 |
-| `MIMI_COMPUTER_DEFAULT_ACCESS` | `background` | 本机交互 Run 的默认档位：`none/observe/background/foreground/admin`；Daemon 事件仍需 source policy 显式授权 |
+| `MIMI_COMPUTER_BACKEND` | 自动发现 | Full Owner 在 `~/.local/bin` 或 `PATH` 发现兼容 `cua-driver` 时自动注册 `computer_observe` / `computer_act`；设为 `off` 可关闭，第一阶段仅 macOS |
+| `MIMI_CUA_DRIVER_COMMAND` | 未设置 | 可选的 Cua Driver 可执行文件绝对路径覆盖；未设置时自动发现，当前适配器允许并测试 `0.8.x`（patch ≥3）、`0.9.0`、`0.12.3`、`0.14.1` |
+| `MIMI_COMPUTER_DEFAULT_ACCESS` | `foreground` | 本机 Full Owner Run 的最大档位；Host 仍后台优先，只在目标已置前或后台明确未执行时用前台投递。可改为 `none/observe/background/foreground/admin`；Daemon 事件仍需 source policy 显式授权 |
 | `MIMI_COMPUTER_MAX_ACTIONS_PER_RUN` | `50` | 单个 Run 的 GUI 写动作预算 |
 | `MIMI_COMPUTER_MAX_SCREENSHOTS_PER_RUN` | `12` | 单个 Run 的窗口/桌面/局部截图预算 |
 | `MIMI_COMPUTER_ARTIFACT_MAX_MIB` | `1024` | 受保护录制/轨迹 artifact 的单项大小上限 |
@@ -397,7 +398,9 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 
 需要整体收紧某个运行环境时，可在启动前设置 **Safe**（只读，无 Shell、Computer Use 和外部事务）或 **Workstation**（工作区可写并提供结构化沙箱 Shell，但无 Connector 外部事务、Computer Use 或受信工作区 MCP）。旧 Session 保存的安全档位不再参与授权，避免切换对话时意外降权。交互式 CLI 输入 `/security` 会像 `/sessions` 一样打开 Safe、Workstation、Full Owner 三档列表，可用 `↑` / `↓` 选择、`Enter` 确认、`Esc` 取消；也可直接输入 `/security safe|workstation|full-owner`。切换从下一轮生效，作用于当前运行实例，重启后恢复环境配置。旧 `MIMI_PERMISSION_MODE` 只做读取兼容，不能覆盖当前 Security。
 
-Computer Use 默认完全关闭。启用后仍优先使用 Shell、Browser、Connector、Shortcuts 或正式 API；GUI 路径遵循“观察 → 单动作 → 再观察”，默认后台执行。`workspace/read-only`、SubAgent、Team worker 和独立后台 Task 不获得桌面能力；Daemon owner channel 还需在 `assistant.json` 的 source policy 中显式设置 `computerAccess`，并可用 `computerApps` 限制 bundle ID。完整设计与部署边界见 [docs/COMPUTER_USE.md](docs/COMPUTER_USE.md)。
+Browser 是主 Agent 的一等能力：标准网页任务直接使用 `browser_open`、`browser_observe`、`browser_act`、`browser_wait` / `browser_assert` 和 `browser_close`，不需要先发现 Connector 或激活 Browser Skill。Host 按 Run 持有一个会话生命周期，标准 snapshot 固定走 DOM，表单优先 accessible label/role/name，单次模型结果按最终 JSON 字节限制在 16 KiB。OpenCLI/Chrome 仍是隐藏 backend；其内部 session ref 不进入模型参数或结果。Connector 用独立后台 session 实现逻辑多标签，避免底层切换标签时丢失原页；`list_tabs` 返回稳定 page ID，`select_tab` 精确切换，`close_tab` 可关闭指定页或当前页并返回恢复后的活动页。open 结果不确定时禁止继续页面动作，close 最多投递一次；Daemon 只有 cleanup 成功才发布完成，否则任务进入不可重试 dead letter。
+
+Full Owner 在本机发现兼容 Cua Driver 时自动启用 Computer Use，也可用 `MIMI_COMPUTER_BACKEND=off` 关闭。模型只看到 app-centric 的 `computer_observe` 和 `computer_act`：Host 自动解析精确窗口、优先读 AX、必要时回退窗口截图，并在普通 UI 动作后直接返回 fresh state。模型不管理 Session、PID、window id、Observation id、投递模式或执行状态。Host 后台优先；本机 Full Owner 目标已置前或 Driver 明确返回后台未执行时，才自动使用一次前台投递。Daemon status 区分 Driver RPC 的 `transportReady` 与真实窗口观察的 `operationalReadiness`，只有两者都通过时 `computer.ready=true`。Safe/Workstation、SubAgent、Team worker 和独立后台 Task 不获得桌面能力；Daemon owner channel 还需在 `assistant.json` 的 source policy 中显式设置 `computerAccess`，并可用 `computerApps` 限制 bundle ID。完整边界与实机命令见 [docs/COMPUTER_USE.md](docs/COMPUTER_USE.md)。
 
 ## 会话与上下文
 

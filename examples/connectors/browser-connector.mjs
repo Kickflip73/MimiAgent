@@ -27,6 +27,12 @@ const maxOutputBytes = numberEnv(
   32_000,
   8_000_000,
 );
+const navigationSettleMs = numberEnv(
+  'OPENCLI_BROWSER_NAVIGATION_SETTLE_MS',
+  4_000,
+  100,
+  10_000,
+);
 const ACTIONS = new Set([
   'doctor',
   'read_url',
@@ -90,6 +96,7 @@ const WRITE_ACTIONS = new Set([
   'execute_javascript',
 ]);
 const OBSERVATION_ACTIONS = new Set(['list_tabs', 'snapshot', 'find']);
+const MAX_LOGICAL_TABS = 20;
 const sessions = new Map();
 
 class OpenCliError extends Error {
@@ -201,8 +208,8 @@ function sessionRef(value) {
 }
 
 function pageOption(payload) {
-  const page = optionalString(payload.page, 'payload.page', 500);
-  return page ? ['--tab', page] : [];
+  optionalString(payload.page, 'payload.page', 500);
+  return [];
 }
 
 function locatorOptions(payload, prefix = '') {
@@ -232,18 +239,23 @@ function targetAndLocator(payload, targetKey = 'element', prefix = '') {
   const locatorTarget = prefix || targetKey !== 'element'
     ? undefined
     : optionalElementRef(payload.locator, 'payload.locator');
-  const targetCandidates = [explicitTarget, ref, locatorTarget].filter(
+  const selectorTarget = prefix || targetKey !== 'element'
+    ? undefined
+    : optionalElementRef(payload.selector, 'payload.selector');
+  const targetCandidates = [explicitTarget, ref, locatorTarget, selectorTarget].filter(
     (candidate) => candidate !== undefined,
   );
   if (targetCandidates.length > 1) {
-    throw new Error('use only one of payload.ref, payload.locator, or payload.element');
+    throw new Error(
+      'use only one of payload.ref, payload.locator, payload.selector, or payload.element',
+    );
   }
   const target = targetCandidates[0];
   const locator = locatorOptions(payload, prefix);
   if (!target && locator.length === 0) {
     throw new Error(
       targetKey === 'element'
-        ? 'payload.ref, payload.locator, payload.element, or a semantic locator is required'
+        ? 'payload.ref, payload.locator, payload.selector, payload.element, or a semantic locator is required'
         : `payload.${targetKey} or a semantic locator is required`,
     );
   }
@@ -382,8 +394,100 @@ async function inspectOpenCliStatus() {
   };
 }
 
-function browserArgs(session, command) {
-  return ['browser', session.opencliSession, ...command];
+function logicalTab(session, payload = {}) {
+  if (!(session.tabs instanceof Map)) return session;
+  const requestedPage = optionalString(payload.page, 'payload.page', 500);
+  const page = requestedPage ?? session.activePage;
+  const tab = page ? session.tabs.get(page) : undefined;
+  if (!tab) {
+    throw new Error(requestedPage
+      ? 'browser page is missing or expired; call list_tabs and use a current page ID'
+      : 'browser session has no active page; open a new tab or close the session');
+  }
+  return tab;
+}
+
+function browserArgs(session, command, payload = {}) {
+  return ['browser', logicalTab(session, payload).opencliSession, ...command];
+}
+
+function pageUrlFromResult(value) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  for (const key of ['url', 'value', 'text']) {
+    if (typeof value[key] === 'string') return value[key].trim();
+  }
+  return undefined;
+}
+
+function registerLogicalTab(session, opencliSession, kind, result) {
+  const page = `page:${randomUUID()}`;
+  const tab = {
+    page,
+    opencliSession,
+    kind,
+    url: pageUrlFromResult(result),
+  };
+  session.tabs.set(page, tab);
+  session.activePage = page;
+  return tab;
+}
+
+function publicTabResult(result, tab, extra = {}) {
+  const safe = result && typeof result === 'object' && !Array.isArray(result)
+    ? { ...result }
+    : { result };
+  delete safe.page;
+  return {
+    ...safe,
+    page: tab.page,
+    ...(tab.url ? { url: tab.url } : {}),
+    active: true,
+    ...extra,
+  };
+}
+
+async function listLogicalTabs(session) {
+  const tabs = await Promise.all([...session.tabs.values()].map(async (tab) => {
+    const result = await runOpenCli(['browser', tab.opencliSession, 'tab', 'list']);
+    const native = Array.isArray(result)
+      ? result.find((entry) => entry?.active === true) ?? result[0]
+      : undefined;
+    const currentUrl = pageUrlFromResult(native);
+    if (currentUrl) tab.url = currentUrl;
+    return {
+      page: tab.page,
+      ...(tab.url ? { url: tab.url } : {}),
+      ...(typeof native?.title === 'string' ? { title: native.title } : {}),
+      active: tab.page === session.activePage,
+    };
+  }));
+  return {
+    tabs,
+    activePage: session.activePage,
+    observationId: randomUUID(),
+    untrusted: true,
+  };
+}
+
+async function settleNavigation(session, payload, beforeUrl, expectedUrl) {
+  const deadline = Date.now() + navigationSettleMs;
+  while (Date.now() < deadline) {
+    try {
+      const result = await runOpenCli(
+        browserArgs(session, ['get', 'url', ...pageOption(payload)], payload),
+        { timeoutMs: Math.min(commandTimeoutMs, 1_000) },
+      );
+      const currentUrl = pageUrlFromResult(result);
+      if (currentUrl && (currentUrl === expectedUrl || currentUrl !== beforeUrl)) {
+        return { navigationSettled: true, url: currentUrl };
+      }
+    } catch {
+      // Navigation can briefly invalidate the page context; retry within the fixed deadline.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return { navigationSettled: false };
 }
 
 function sanitizeWriteResult(action, result, payload) {
@@ -430,18 +534,38 @@ function redactNetworkValue(value) {
   return output;
 }
 
+function normalizeSnapshotResult(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.text !== 'string') {
+    return value;
+  }
+  return {
+    ...value,
+    text: value.text
+      .split('\n')
+      .filter((line) => !/^\s*\[\d+\]<option\b/i.test(line))
+      .join('\n'),
+  };
+}
+
 async function createSession(kind, target, payload) {
   const logicalLabel = label(target);
+  if (sessions.has(logicalLabel)) {
+    throw new Error('browser session label already exists; close the current session before reopening it');
+  }
   const ref = `browser:${randomUUID()}`;
   const opencliSession = `mimi-${logicalLabel}-${randomUUID().slice(0, 8)}`;
   const session = {
     ref,
-    opencliSession,
     kind,
+    logicalLabel,
+    tabs: new Map(),
+    activePage: undefined,
   };
   sessions.set(ref, session);
+  sessions.set(logicalLabel, session);
   if (kind === 'owned') {
     if (payload.window !== undefined && payload.window !== 'background') {
+      sessions.delete(logicalLabel);
       sessions.delete(ref);
       throw new Error('payload.window must be background; foreground browser sessions are disabled');
     }
@@ -454,23 +578,27 @@ async function createSession(kind, target, payload) {
         '--window',
         'background',
       ], { uncertainOnFailure: true });
+      const tab = registerLogicalTab(session, opencliSession, 'owned', result);
       return {
         sessionRef: ref,
         kind,
-        ...result,
+        ...publicTabResult(result, tab),
         outcome: 'confirmed',
         untrusted: true,
       };
     } catch (error) {
       if (error?.uncertain === true) {
+        const tab = registerLogicalTab(session, opencliSession, 'owned', undefined);
         return {
           sessionRef: ref,
           kind,
+          page: tab.page,
           outcome: 'accepted',
           reason: errorText(error),
           untrusted: true,
         };
       }
+      sessions.delete(logicalLabel);
       sessions.delete(ref);
       throw error;
     }
@@ -481,23 +609,27 @@ async function createSession(kind, target, payload) {
       opencliSession,
       'bind',
     ], { uncertainOnFailure: true });
+    const tab = registerLogicalTab(session, opencliSession, 'bound', result);
     return {
       sessionRef: ref,
       kind,
-      ...result,
+      ...publicTabResult(result, tab),
       outcome: 'confirmed',
       untrusted: true,
     };
   } catch (error) {
     if (error?.uncertain === true) {
+      const tab = registerLogicalTab(session, opencliSession, 'bound', undefined);
       return {
         sessionRef: ref,
         kind,
+        page: tab.page,
         outcome: 'accepted',
         reason: errorText(error),
         untrusted: true,
       };
     }
+    sessions.delete(logicalLabel);
     sessions.delete(ref);
     throw error;
   }
@@ -505,13 +637,25 @@ async function createSession(kind, target, payload) {
 
 async function closeSession(target) {
   const session = sessionRef(target);
-  const command = session.kind === 'bound' ? 'unbind' : 'close';
-  const result = await runOpenCli(
-    browserArgs(session, [command]),
+  const tabs = [...session.tabs.values()];
+  const results = await Promise.allSettled(tabs.map((tab) => runOpenCli(
+    ['browser', tab.opencliSession, tab.kind === 'bound' ? 'unbind' : 'close'],
     { uncertainOnFailure: true },
-  );
+  )));
+  for (const [index, result] of results.entries()) {
+    if (result.status === 'fulfilled') session.tabs.delete(tabs[index].page);
+  }
+  const failure = results.find((result) => result.status === 'rejected');
+  if (failure?.status === 'rejected') {
+    const error = failure.reason;
+    throw new OpenCliError(
+      `failed to release all logical browser tabs: ${errorText(error)}`,
+      error?.uncertain === true,
+    );
+  }
+  if (session.logicalLabel) sessions.delete(session.logicalLabel);
   sessions.delete(session.ref);
-  return { ...result, closed: true, outcome: 'confirmed' };
+  return { closed: true, releasedTabs: tabs.length, outcome: 'confirmed' };
 }
 
 async function readUrl(target, payload) {
@@ -545,6 +689,9 @@ async function readUrl(target, payload) {
 }
 
 async function executeReadAction(action, session, payload) {
+  if (action === 'list_tabs' && session.tabs instanceof Map) {
+    return listLogicalTabs(session);
+  }
   let command;
   if (action === 'list_tabs') command = ['tab', 'list'];
   else if (action === 'snapshot') {
@@ -638,8 +785,10 @@ async function executeReadAction(action, session, payload) {
     ];
   } else throw new Error(`unsupported read action: ${action}`);
 
-  const result = await runOpenCli(browserArgs(session, command));
-  const safeResult = action === 'network' ? redactNetworkValue(result) : result;
+  const result = await runOpenCli(browserArgs(session, command, payload));
+  const safeResult = action === 'network'
+    ? redactNetworkValue(result)
+    : action === 'snapshot' ? normalizeSnapshotResult(result) : result;
   const normalized = Array.isArray(safeResult)
     ? {
         [action === 'list_tabs'
@@ -659,20 +808,240 @@ async function executeReadAction(action, session, payload) {
   };
 }
 
+async function executeDomInteraction(action, session, payload) {
+  targetAndLocator(payload);
+  const locator = {
+    target: payload.element ?? payload.ref ?? payload.locator ?? payload.selector,
+    role: payload.role,
+    name: payload.name,
+    label: payload.label,
+    text: payload.text,
+    testid: payload.testid,
+    nth: payload.nth,
+  };
+  const script = `(() => {
+    const __mimiOperation = ${JSON.stringify(action)};
+    const __mimiLocator = ${JSON.stringify(locator)};
+    const normalized = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+    const implicitRole = (element) => {
+      const explicit = element.getAttribute('role');
+      if (explicit) return explicit.toLowerCase();
+      const tag = element.tagName.toLowerCase();
+      const type = String(element.getAttribute('type') || '').toLowerCase();
+      if (tag === 'button' || (tag === 'input' && ['button', 'submit', 'reset', 'image'].includes(type))) return 'button';
+      if ((tag === 'a' || tag === 'area') && element.hasAttribute('href')) return 'link';
+      if (tag === 'textarea' || (tag === 'input' && !['button', 'submit', 'reset', 'image', 'checkbox', 'radio', 'range', 'number', 'hidden', 'file'].includes(type))) return 'textbox';
+      if (tag === 'select' || (tag === 'input' && element.hasAttribute('list'))) return 'combobox';
+      if (tag === 'input' && type === 'checkbox') return 'checkbox';
+      if (tag === 'input' && type === 'radio') return 'radio';
+      if (tag === 'input' && type === 'range') return 'slider';
+      if (tag === 'input' && type === 'number') return 'spinbutton';
+      if (tag === 'option') return 'option';
+      if (/^h[1-6]$/.test(tag)) return 'heading';
+      if (tag === 'img') return 'img';
+      return '';
+    };
+    const labelText = (element) => normalized([
+      ...(element.labels ? Array.from(element.labels).map((label) => label.textContent || '') : []),
+      element.getAttribute('aria-label') || '',
+    ].join(' '));
+    const accessibleName = (element) => {
+      const labelledBy = String(element.getAttribute('aria-labelledby') || '')
+        .split(/\\s+/)
+        .filter(Boolean)
+        .map((id) => document.getElementById(id)?.textContent || '')
+        .join(' ');
+      return normalized([
+        element.getAttribute('aria-label') || '',
+        labelledBy,
+        labelText(element),
+        element.getAttribute('alt') || '',
+        element.getAttribute('title') || '',
+        element.getAttribute('placeholder') || '',
+        element.textContent || '',
+        'value' in element ? element.value || '' : '',
+      ].join(' '));
+    };
+    let matches;
+    try {
+      if (__mimiLocator.target !== undefined && __mimiLocator.target !== null) {
+        const target = String(__mimiLocator.target);
+        matches = Array.from(document.querySelectorAll(/^\\d+$/.test(target)
+          ? '[data-opencli-ref="' + target + '"]'
+          : target));
+      } else {
+        const candidates = Array.from(document.querySelectorAll('*'));
+        if (candidates.length > 50000) return { verified: false, code: 'dom_too_large', matches_n: candidates.length };
+        matches = candidates.filter((element) => {
+          if (__mimiLocator.role && implicitRole(element) !== normalized(__mimiLocator.role)) return false;
+          if (__mimiLocator.name && !accessibleName(element).includes(normalized(__mimiLocator.name))) return false;
+          if (__mimiLocator.label && !labelText(element).includes(normalized(__mimiLocator.label))) return false;
+          if (__mimiLocator.text && !normalized(element.textContent).includes(normalized(__mimiLocator.text))) return false;
+          if (__mimiLocator.testid) {
+            const testId = element.getAttribute('data-testid') || element.getAttribute('data-test') || element.getAttribute('test-id') || '';
+            if (!normalized(testId).includes(normalized(__mimiLocator.testid))) return false;
+          }
+          return true;
+        });
+      }
+    } catch (error) {
+      return { verified: false, code: 'invalid_selector', message: String(error).slice(0, 300) };
+    }
+    const selectedIndex = Number.isInteger(__mimiLocator.nth)
+      ? __mimiLocator.nth
+      : matches.length === 1 ? 0 : -1;
+    const element = selectedIndex >= 0 ? matches[selectedIndex] : undefined;
+    if (!element) return {
+      verified: false,
+      code: matches.length ? 'ambiguous_target' : 'not_found',
+      matches_n: matches.length,
+    };
+    try {
+      if (__mimiOperation === 'click') {
+        const beforeUrl = location.href;
+        const expectedUrl = element.matches('a[href],area[href]') ? element.href : undefined;
+        const newTabExpected = expectedUrl !== undefined
+          && String(element.getAttribute('target') || '').toLowerCase() === '_blank';
+        if (newTabExpected) {
+          const event = new MouseEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+          });
+          event.preventDefault();
+          element.dispatchEvent(event);
+        } else {
+          element.click();
+        }
+        return {
+          verified: true,
+          clicked: true,
+          matches_n: matches.length,
+          dispatch: newTabExpected ? 'dom_deferred_new_tab' : 'dom',
+          ...(expectedUrl ? { navigationExpected: true, beforeUrl, expectedUrl, newTabExpected } : {}),
+        };
+      }
+      const desired = __mimiOperation === 'check';
+      const state = () => {
+        if ('checked' in element && typeof element.checked === 'boolean') return element.checked;
+        const aria = element.getAttribute('aria-checked');
+        return aria === 'true' ? true : aria === 'false' ? false : undefined;
+      };
+      const before = state();
+      if (before === undefined) return { verified: false, code: 'not_checkable', matches_n: matches.length };
+      if (before !== desired) element.click();
+      const checked = state();
+      return {
+        verified: checked === desired,
+        checked,
+        changed: before !== checked,
+        matches_n: matches.length,
+        dispatch: 'dom',
+      };
+    } catch (error) {
+      return { verified: false, code: 'dispatch_failed', message: String(error).slice(0, 300), matches_n: matches.length };
+    }
+  })()`;
+  let result = await runOpenCli(
+    browserArgs(session, ['eval', script, ...pageOption(payload)], payload),
+    { uncertainOnFailure: true },
+  );
+  if (action === 'click' && result?.navigationExpected === true) {
+    if (result.newTabExpected === true) {
+      const tab = await createLogicalTab(session, { url: result.expectedUrl });
+      result = {
+        ...result,
+        ...tab,
+        navigationSettled: true,
+      };
+    } else {
+      result = {
+        ...result,
+        ...await settleNavigation(session, payload, result.beforeUrl, result.expectedUrl),
+      };
+    }
+  }
+  const succeeded = action === 'click'
+    ? result?.clicked === true && result?.verified === true
+    : result?.verified === true && typeof result?.checked === 'boolean';
+  if (succeeded) return result;
+  const code = typeof result?.code === 'string' ? result.code : 'dom_interaction_failed';
+  const failedSafe = ['not_found', 'ambiguous_target', 'invalid_selector', 'not_checkable', 'dom_too_large'].includes(code);
+  throw new OpenCliError(
+    `${code}: structured DOM ${action} did not complete (${JSON.stringify(result)})`,
+    !failedSafe,
+  );
+}
+
+async function createLogicalTab(session, payload) {
+  if (session.tabs.size >= MAX_LOGICAL_TABS) {
+    throw new Error(`browser session supports at most ${MAX_LOGICAL_TABS} logical tabs`);
+  }
+  const opencliSession = `mimi-tab-${randomUUID().slice(0, 12)}`;
+  const requestedUrl = payload.url === undefined ? 'about:blank' : url(payload.url);
+  try {
+    const result = await runOpenCli([
+      'browser', opencliSession, 'open', requestedUrl, '--window', 'background',
+    ], { uncertainOnFailure: true });
+    const tab = registerLogicalTab(session, opencliSession, 'owned', result);
+    return publicTabResult(result, tab, { tabCount: session.tabs.size });
+  } catch (error) {
+    if (error?.uncertain === true) registerLogicalTab(session, opencliSession, 'owned', undefined);
+    throw error;
+  }
+}
+
+function selectLogicalTab(session, payload) {
+  const page = boundedString(payload.page, 'payload.page', 500, true);
+  const tab = session.tabs.get(page);
+  if (!tab) throw new Error('browser page is missing or expired; call list_tabs and use a current page ID');
+  session.activePage = page;
+  return {
+    selected: true,
+    page,
+    ...(tab.url ? { url: tab.url } : {}),
+    activePage: page,
+    tabCount: session.tabs.size,
+  };
+}
+
+async function closeLogicalTab(session, payload) {
+  const tab = logicalTab(session, payload);
+  const result = await runOpenCli(
+    ['browser', tab.opencliSession, tab.kind === 'bound' ? 'unbind' : 'close'],
+    { uncertainOnFailure: true },
+  );
+  session.tabs.delete(tab.page);
+  if (session.activePage === tab.page) {
+    session.activePage = [...session.tabs.keys()].at(-1);
+  }
+  const active = session.activePage ? session.tabs.get(session.activePage) : undefined;
+  return {
+    ...(result && typeof result === 'object' && !Array.isArray(result) ? result : {}),
+    closed: true,
+    closedPage: tab.page,
+    activePage: session.activePage,
+    ...(active?.url ? { activeUrl: active.url } : {}),
+    tabCount: session.tabs.size,
+  };
+}
+
 async function executeWriteAction(action, session, payload) {
   let command;
+  let result;
   if (action === 'new_tab') {
-    command = ['tab', 'new', ...(payload.url === undefined ? [] : [url(payload.url)])];
-  } else if (action === 'select_tab' || action === 'close_tab') {
-    command = [
-      'tab',
-      action === 'select_tab' ? 'select' : 'close',
-      boundedString(payload.page, 'payload.page', 500, true),
-    ];
+    result = await createLogicalTab(session, payload);
+  } else if (action === 'select_tab') {
+    result = selectLogicalTab(session, payload);
+  } else if (action === 'close_tab') {
+    result = await closeLogicalTab(session, payload);
   } else if (action === 'navigate') {
     command = ['open', url(payload.url), ...pageOption(payload)];
   } else if (action === 'back') command = ['back', ...pageOption(payload)];
-  else if (['click', 'hover', 'focus', 'double_click', 'check', 'uncheck'].includes(action)) {
+  else if (action === 'click' || action === 'check' || action === 'uncheck') {
+    result = await executeDomInteraction(action, session, payload);
+  } else if (['hover', 'focus', 'double_click'].includes(action)) {
     const resolved = targetAndLocator(payload);
     const opencliAction = action === 'double_click' ? 'dblclick' : action;
     command = [
@@ -762,24 +1131,33 @@ async function executeWriteAction(action, session, payload) {
     ];
   } else throw new Error(`unsupported write action: ${action}`);
 
-  const result = await runOpenCli(
-    browserArgs(session, command),
-    { uncertainOnFailure: true },
-  );
+  if (result === undefined) {
+    result = await runOpenCli(
+      browserArgs(session, command, payload),
+      { uncertainOnFailure: true },
+    );
+  }
+  const currentTab = session.tabs.size > 0
+    ? logicalTab(session, action === 'close_tab' ? {} : payload)
+    : undefined;
+  const currentUrl = pageUrlFromResult(result);
+  if (currentTab && currentUrl) currentTab.url = currentUrl;
+  const safeResult = sanitizeWriteResult(action, result, payload);
+  const interactionVerified = safeResult?.verified === true
+    || safeResult?.filled === true
+    || safeResult?.selected !== undefined
+    || safeResult?.clicked === true;
   return {
-    ...sanitizeWriteResult(action, result, payload),
+    ...safeResult,
+    ...(interactionVerified ? { verified: true } : {}),
     outcome: 'confirmed',
     completionScope: 'interaction',
     businessOutcome: 'unverified',
-    nextRead: action === 'click' || action === 'double_click'
-      ? {
-          action: 'list_tabs',
-          reason: '点击可能打开或选择新标签页；先重新列出 page，再读取目标 page',
-        }
-      : {
-          action: 'snapshot',
-          reason: '写动作后重新观察当前页面并核对结果',
-        },
+    verificationPlan: {
+      timing: 'after_action_group',
+      method: 'browser_assert_or_precise_observe',
+      listTabsOnlyIfNewTabExpected: true,
+    },
     untrusted: true,
   };
 }
@@ -815,17 +1193,16 @@ async function execute(message) {
     return { type: 'action_result', id: message.id, ok: true, result };
   }
   if (message.action === 'probe_tabs') {
-    const counts = await Promise.all([...sessions.values()].map(async (session) => {
-      const result = await runOpenCli(browserArgs(session, ['tab', 'list']));
-      return Array.isArray(result) ? result.length : 0;
-    }));
+    const uniqueSessions = [...new Map(
+      [...sessions.values()].map((session) => [session.ref, session]),
+    ).values()];
     return {
       type: 'action_result',
       id: message.id,
       ok: true,
       result: {
-        sessions: counts.length,
-        total: counts.reduce((sum, count) => sum + count, 0),
+        sessions: uniqueSessions.length,
+        total: uniqueSessions.reduce((sum, session) => sum + session.tabs.size, 0),
         truncated: false,
       },
     };
@@ -898,12 +1275,15 @@ async function reportReadiness() {
 void reportReadiness();
 
 async function shutdown() {
-  const active = [...sessions.values()];
+  const active = [...new Map(
+    [...sessions.values()].map((session) => [session.ref, session]),
+  ).values()];
   sessions.clear();
-  await Promise.allSettled(active.map((session) => runOpenCli(
-    browserArgs(session, [session.kind === 'bound' ? 'unbind' : 'close']),
-    { timeoutMs: 5_000 },
-  )));
+  await Promise.allSettled(active.flatMap((session) => [...session.tabs.values()].map((tab) =>
+    runOpenCli(
+      ['browser', tab.opencliSession, tab.kind === 'bound' ? 'unbind' : 'close'],
+      { timeoutMs: 5_000 },
+    ))));
   process.exit(0);
 }
 

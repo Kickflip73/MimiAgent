@@ -553,6 +553,75 @@ test('registration contextWindow and scenario budgets drive the frozen Run reque
   }
 });
 
+test('model switches use each selected context profile instead of the legacy global fallback', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-model-context-switch-'));
+  const endpoint = await fakeGoogle('profile');
+  const modelsFile = path.join(root, 'models.json');
+  await new ModelConfigStore(modelsFile).write({
+    version: 1,
+    routeVersion: 31,
+    providers: [{
+      id: 'profiles',
+      label: 'Profiles',
+      transport: 'google-generate-content',
+      baseUrl: endpoint.baseUrl,
+      apiKeyEnv: 'MIMI_TEST_PROFILE_KEY',
+      models: [
+        {
+          target: { providerId: 'profiles', modelId: 'deepseek-v4-pro' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        },
+        {
+          target: { providerId: 'profiles', modelId: 'gpt-5.6-sol' },
+          kind: 'agent',
+          capabilities: { imageInput: true, imageOutput: false, toolCalling: true },
+        },
+        {
+          target: { providerId: 'profiles', modelId: 'custom-model' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+          contextWindow: 222_000,
+        },
+      ],
+    }],
+    routing: {
+      globalDefault: { providerId: 'profiles', modelId: 'deepseek-v4-pro' },
+      scenarios: {},
+    },
+  });
+  const previous = process.env.MIMI_TEST_PROFILE_KEY;
+  process.env.MIMI_TEST_PROFILE_KEY = 'profile-secret';
+  const agent = await MimiAgent.create({
+    provider: 'openai-compatible',
+    providerBaseUrl: endpoint.baseUrl,
+    defaultModel: 'legacy-model',
+    modelsConfig: modelsFile,
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    contextWindow: 64_000,
+    outputReserve: 8_000,
+    maxTurns: null,
+    securityProfile: 'safe',
+    permissionMode: 'read-only',
+  }, 'profile-session');
+  try {
+    assert.equal((await agent.contextInfo()).contextWindow, 1_048_576);
+    await agent.switchModel('gpt-5.6-sol');
+    assert.equal((await agent.contextInfo()).contextWindow, 1_050_000);
+    await agent.switchModel('custom-model');
+    assert.equal((await agent.contextInfo()).contextWindow, 222_000);
+  } finally {
+    await agent.close();
+    await endpoint.close();
+    if (previous === undefined) delete process.env.MIMI_TEST_PROFILE_KEY;
+    else process.env.MIMI_TEST_PROFILE_KEY = previous;
+  }
+});
+
 test('a background worker preserves the Supervisor-frozen binding reason in its Run receipt', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-model-worker-binding-'));
   const endpoint = await fakeGoogle('worker');

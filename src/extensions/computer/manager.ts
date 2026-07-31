@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { withExclusiveFileLock } from '../../core/state-file.js';
 import type {
   BackendObservation,
@@ -20,6 +21,8 @@ const ACCESS_LEVEL: Record<ComputerAccess, number> = {
   none: 0, observe: 1, background: 2, foreground: 3, admin: 4,
 };
 const OBSERVATION_TTL_MS = 30_000;
+const MAX_MODEL_OBSERVATION_BYTES = 16 * 1024;
+const MAX_SEMANTIC_TEXT_CHARS = 8_000;
 
 export interface ComputerRunAuthority {
   runId: string;
@@ -40,6 +43,18 @@ export interface ComputerReadProbeReceipt {
   target: Pick<ComputerTargetSummary, 'bundleId' | 'pid' | 'windowId'>;
 }
 
+export interface ComputerManagerStatus {
+  configured: true;
+  backend: ComputerBackend['kind'];
+  strategy: 'background-preferred';
+  defaultAccess: ComputerAccess;
+  activeSessions: number;
+  foregroundLeaseActive: boolean;
+  operationalReadiness: 'unknown' | 'ready' | 'degraded';
+  operationalCheckedAt?: string;
+  lastOperationalFailure?: string;
+}
+
 const PROTECTED_CONTROL_PLANE_APPS = new Set([
   'com.apple.Terminal',
   'com.googlecode.iterm2',
@@ -57,11 +72,14 @@ interface StoredObservation extends BackendObservation {
   capturedAt: number;
   expiresAt: number;
   valid: boolean;
+  actionable: boolean;
+  blockedReason?: string;
 }
 
 interface RunState {
   session?: BackendSession;
   observations: Map<string, StoredObservation>;
+  preferredTargets: Map<string, ComputerTargetSummary>;
   actions: number;
   screenshots: number;
   foregroundRestore?: {
@@ -69,6 +87,22 @@ interface RunState {
     timer: ReturnType<typeof setTimeout>;
   };
   activeArtifactId?: string;
+}
+
+function targetKey(target: Pick<ComputerTargetSummary, 'pid' | 'windowId'>): string {
+  return `${target.pid}:${target.windowId}`;
+}
+
+function launchedDocumentName(urls: readonly string[] | undefined): string | undefined {
+  for (const value of urls ?? []) {
+    try {
+      const name = path.basename(decodeURIComponent(new URL(value).pathname));
+      if (name) return name.normalize('NFKC').toLowerCase();
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
 }
 
 function requiresAccess(input: ComputerObserveInput | ComputerActInput): ComputerAccess {
@@ -94,6 +128,14 @@ function actionCoordinates(action: ComputerActInput['action']): Array<{ x: numbe
   return [];
 }
 
+function withForegroundDelivery(input: ComputerActInput): ComputerActInput {
+  if (!('dispatch' in input.action)) return input;
+  return computerActInputSchema.parse({
+    ...input,
+    action: { ...input.action, dispatch: 'foreground' },
+  });
+}
+
 function actionElement(action: ComputerActInput['action'], observation: StoredObservation): ComputerElement | undefined {
   if (!('elementIndex' in action) || action.elementIndex === undefined) return undefined;
   const element = observation.elements?.find((candidate) => candidate.index === action.elementIndex);
@@ -103,10 +145,109 @@ function actionElement(action: ComputerActInput['action'], observation: StoredOb
   return element;
 }
 
+function compactObservationData(data: unknown): unknown {
+  if (typeof data === 'string') return data.slice(0, MAX_SEMANTIC_TEXT_CHARS);
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+  const value = data as Record<string, unknown>;
+  if (typeof value.semanticText === 'string') {
+    return {
+      semanticText: value.semanticText.slice(0, MAX_SEMANTIC_TEXT_CHARS),
+      ...(typeof value.sourceElementCount === 'number'
+        ? { sourceElementCount: value.sourceElementCount }
+        : {}),
+      ...(typeof value.visibleElementCount === 'number'
+        ? { visibleElementCount: value.visibleElementCount }
+        : {}),
+      ...(value.degraded === true ? { degraded: true } : {}),
+      ...(typeof value.degradedReason === 'string'
+        ? { degradedReason: value.degradedReason.slice(0, 1_000) }
+        : {}),
+      ...(value.escalation && typeof value.escalation === 'object'
+        ? { escalation: value.escalation }
+        : {}),
+      ...(value.screenshotError && typeof value.screenshotError === 'object'
+        ? { screenshotError: value.screenshotError }
+        : {}),
+    };
+  }
+  const encoded = JSON.stringify(data);
+  return Buffer.byteLength(encoded) <= 4_000
+    ? data
+    : { truncated: true, preview: encoded.slice(0, 3_500), originalBytes: Buffer.byteLength(encoded) };
+}
+
+function observationReadiness(observation: BackendObservation): {
+  actionable: boolean;
+  blockedReason?: string;
+} {
+  const data = observation.data && typeof observation.data === 'object' && !Array.isArray(observation.data)
+    ? observation.data as Record<string, unknown>
+    : {};
+  if (data.degraded !== true) return { actionable: true };
+  const meaningfulElement = observation.elements?.some((element) => (
+    !/^AX(?:Application|Window|Group|Unknown)$/iu.test(element.role)
+    && (element.label !== undefined
+      || element.value !== undefined
+      || element.actions?.length
+      || element.writable === true)
+  ));
+  if (observation.screenshot || meaningfulElement) return { actionable: true };
+  const reason = typeof data.degradedReason === 'string'
+    ? data.degradedReason
+    : 'driver returned a degraded observation without semantic elements or a screenshot';
+  return {
+    actionable: false,
+    blockedReason: `observation_unusable: ${reason.slice(0, 1_000)}`,
+  };
+}
+
+function modelObservation(observation: StoredObservation): Record<string, unknown> {
+  const elements = observation.elements?.map((element) => ({
+    ...element,
+    ...(element.label ? { label: element.label.slice(0, 240) } : {}),
+    ...(element.description ? { description: element.description.slice(0, 240) } : {}),
+    ...(element.identifier ? { identifier: element.identifier.slice(0, 160) } : {}),
+    ...(element.actions ? { actions: element.actions.slice(0, 8) } : {}),
+  })) ?? [];
+  const view: Record<string, unknown> = {
+    observationId: observation.id,
+    capturedAt: new Date(observation.capturedAt).toISOString(),
+    expiresAt: new Date(observation.expiresAt).toISOString(),
+    target: observation.target,
+    frontmost: observation.frontmost,
+    dimensions: observation.dimensions,
+    elements,
+    truncated: observation.truncated ?? false,
+    data: compactObservationData(observation.data),
+    actionable: observation.actionable,
+    ...(observation.blockedReason ? { blockedReason: observation.blockedReason } : {}),
+  };
+  while (elements.length > 0 && Buffer.byteLength(JSON.stringify(view)) > MAX_MODEL_OBSERVATION_BYTES) {
+    elements.pop();
+    view.truncated = true;
+  }
+  if (Buffer.byteLength(JSON.stringify(view)) > MAX_MODEL_OBSERVATION_BYTES) {
+    const data = view.data as Record<string, unknown> | undefined;
+    if (data && typeof data.semanticText === 'string') {
+      data.semanticText = data.semanticText.slice(0, 2_000);
+      view.truncated = true;
+    }
+  }
+  if (Buffer.byteLength(JSON.stringify(view)) > MAX_MODEL_OBSERVATION_BYTES) {
+    view.data = { truncated: true, message: 'Semantic observation exceeded the model payload budget.' };
+    view.truncated = true;
+  }
+  if (observation.screenshot) view.screenshot = observation.screenshot;
+  return view;
+}
+
 export class ComputerManager {
   private readonly runs = new Map<string, RunState>();
   private actionQueue: Promise<void> = Promise.resolve();
   private readonly artifacts: ComputerArtifactStore;
+  private operationalReadiness: ComputerManagerStatus['operationalReadiness'] = 'unknown';
+  private operationalCheckedAt?: string;
+  private lastOperationalFailure?: string;
 
   constructor(
     private readonly config: ComputerConfig,
@@ -117,6 +258,86 @@ export class ComputerManager {
       path.join(dataRoot, 'computer-artifacts'),
       config.artifactMaxBytes,
     );
+  }
+
+  async listApps(
+    authority: ComputerRunAuthority,
+    query?: string,
+    signal?: AbortSignal,
+  ) {
+    this.authorize(authority, 'observe');
+    const apps = await this.backend.listApps({ query, limit: query ? 10 : 50 }, signal);
+    return apps.filter((app) => (
+      (!authority.allowedApps?.length || authority.allowedApps.includes(app.bundleId))
+      && !authority.deniedApps?.includes(app.bundleId)
+    ));
+  }
+
+  async observeApp(
+    authority: ComputerRunAuthority,
+    app: string,
+    includeScreenshot: boolean,
+    signal?: AbortSignal,
+  ) {
+    this.authorize(authority, 'observe');
+    const normalized = app.normalize('NFKC').trim().toLowerCase();
+    const targets = (await this.backend.listTargets({ query: app, limit: 50 }, signal))
+      .filter((target) => (
+        (!authority.allowedApps?.length || authority.allowedApps.includes(target.bundleId))
+        && !authority.deniedApps?.includes(target.bundleId)
+      ));
+    const score = (target: ComputerTargetSummary) => {
+      if (target.bundleId.normalize('NFKC').toLowerCase() === normalized) return 100;
+      if (target.appName.normalize('NFKC').toLowerCase() === normalized) return 90;
+      if (target.title.normalize('NFKC').toLowerCase() === normalized) return 80;
+      return 0;
+    };
+    const preferred = targets.find((candidate) => {
+      const selected = this.runs.get(authority.runId)?.preferredTargets.get(candidate.bundleId);
+      return selected !== undefined && targetKey(selected) === targetKey(candidate);
+    });
+    const target = preferred ?? [...targets].sort((left, right) => score(right) - score(left))[0];
+    if (!target) {
+      const apps = await this.listApps(authority, app, signal);
+      return {
+        ok: false,
+        reason: apps.some((candidate) => candidate.running) ? 'window_not_found' : 'app_not_running',
+        apps,
+      };
+    }
+    return this.observeTarget(authority, target, includeScreenshot, signal);
+  }
+
+  async observeTarget(
+    authority: ComputerRunAuthority,
+    target: Pick<ComputerTargetSummary, 'bundleId' | 'pid' | 'windowId'>,
+    includeScreenshot: boolean,
+    signal?: AbortSignal,
+  ) {
+    let lastResult: Awaited<ReturnType<ComputerManager['observe']>> | undefined;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await this.observe(authority, {
+        scope: 'window',
+        target,
+        includeScreenshot,
+        maxElements: 160,
+        maxDepth: 12,
+      }, signal);
+      const blockedReason = result && typeof result === 'object' && 'blockedReason' in result
+        ? String(result.blockedReason ?? '')
+        : '';
+      if (!blockedReason.includes('ax_window_unresolved') || includeScreenshot) return result;
+      lastResult = result;
+      await delay(100, undefined, { signal });
+    }
+    if (authority.supportsImageInput === false) return lastResult!;
+    return this.observe(authority, {
+      scope: 'window',
+      target,
+      includeScreenshot: true,
+      maxElements: 160,
+      maxDepth: 12,
+    }, signal);
   }
 
   async observe(authority: ComputerRunAuthority, input: ComputerObserveInput, signal?: AbortSignal) {
@@ -161,8 +382,15 @@ export class ComputerManager {
     if (result.target) this.authorizeApp(authority, result.target.bundleId);
     if (result.data && !result.target && !result.screenshot && !result.elements) return result.data;
     const now = Date.now();
+    const readiness = observationReadiness(result);
+    if (input.scope === 'window') {
+      this.operationalReadiness = readiness.actionable ? 'ready' : 'degraded';
+      this.operationalCheckedAt = new Date().toISOString();
+      this.lastOperationalFailure = readiness.blockedReason;
+    }
     const observation: StoredObservation = {
       ...result,
+      ...readiness,
       id: randomUUID(),
       runId: authority.runId,
       capturedAt: now,
@@ -175,18 +403,7 @@ export class ComputerManager {
       }
     }
     run.observations.set(observation.id, observation);
-    return {
-      observationId: observation.id,
-      capturedAt: new Date(observation.capturedAt).toISOString(),
-      expiresAt: new Date(observation.expiresAt).toISOString(),
-      target: observation.target,
-      frontmost: observation.frontmost,
-      dimensions: observation.dimensions,
-      elements: observation.elements,
-      truncated: observation.truncated ?? false,
-      data: observation.data,
-      screenshot: observation.screenshot,
-    };
+    return modelObservation(observation);
   }
 
   bindLatestRegion(
@@ -249,7 +466,7 @@ export class ComputerManager {
           ? 'target_in_use：allowlist 目标 frontmost 或焦点状态未知，拒绝后台观察'
           : 'target_not_found：没有可验证的 allowlist 后台窗口');
       }
-      await this.observe(authority, {
+      const observation = await this.observe(authority, {
         scope: 'window',
         target: {
           bundleId: target.bundleId,
@@ -260,6 +477,11 @@ export class ComputerManager {
         maxElements: 100,
         maxDepth: 8,
       }, signal);
+      if ((observation as { actionable?: boolean }).actionable !== true) {
+        const reason = (observation as { blockedReason?: string }).blockedReason
+          ?? 'window observation is not actionable';
+        throw new Error(`computer_unavailable: ${reason}`);
+      }
       const after = await this.backend.listTargets({ query: target.bundleId, limit: 50 }, signal);
       const verified = after.find((candidate) => (
         candidate.bundleId === target.bundleId
@@ -304,9 +526,17 @@ export class ComputerManager {
     let target: ComputerTargetSummary | undefined;
     let element: ComputerElement | undefined;
     let backendInput = input;
+    let effectiveAccess = requiredAccess;
+    const promoteToForeground = () => {
+      if (!hasAccess(authority.access, 'foreground')) return false;
+      backendInput = withForegroundDelivery(backendInput);
+      effectiveAccess = 'foreground';
+      return true;
+    };
     let foregroundRestoreTarget: ComputerTargetSummary | undefined;
     let artifactId: string | undefined;
     let artifactPath: string | undefined;
+    let targetsBeforeLaunch: Set<string> | undefined;
     if (input.action.type === 'start_recording') {
       if (run.activeArtifactId) throw new Error('当前 Run 已有活跃录制');
       const pending = await this.artifacts.create(authority.runId);
@@ -324,9 +554,16 @@ export class ComputerManager {
       observation = this.freshObservation(run, authority.runId, input.observationId);
       target = observation.target;
       if (!target || !observation.dimensions) throw new Error('UI 动作必须引用带精确窗口目标和尺寸的 Observation');
+      if (!observation.actionable) {
+        throw new Error(
+          `${observation.blockedReason ?? 'observation_unusable'}；拒绝投递 UI 动作，请修复 AX/截图能力后重新观察`,
+        );
+      }
       this.authorizeApp(authority, target.bundleId);
       if (this.config.pauseWhenTargetFrontmost && requiredAccess === 'background' && observation.frontmost !== false) {
-        throw new Error('target_in_use：目标应用处于前台或焦点状态未知，暂停后台动作');
+        if (!promoteToForeground()) {
+          throw new Error('target_in_use：目标应用处于前台或焦点状态未知，当前 Run 没有前台权限');
+        }
       }
       for (const point of actionCoordinates(input.action)) this.assertPoint(point.x, point.y, observation.dimensions);
       element = actionElement(input.action, observation);
@@ -359,29 +596,49 @@ export class ComputerManager {
     const execute = async () => withExclusiveFileLock(
       path.join(this.dataRoot, 'computer-action'),
       async () => {
+        if (input.action.type === 'launch_app' && input.action.bundleId) {
+          targetsBeforeLaunch = new Set((await this.backend.listTargets({
+            query: input.action.bundleId,
+            limit: 50,
+          }, signal)).map(targetKey));
+        }
         if (target) {
-          const freshTargets = await this.backend.listTargets({ query: target.bundleId, limit: 50 }, signal);
-          const fresh = freshTargets.find((candidate) => candidate.bundleId === target.bundleId
-            && candidate.pid === target.pid && candidate.windowId === target.windowId);
+          const currentTarget = target;
+          const freshTargets = await this.backend.listTargets({ query: currentTarget.bundleId, limit: 50 }, signal);
+          const fresh = freshTargets.find((candidate) => candidate.bundleId === currentTarget.bundleId
+            && candidate.pid === currentTarget.pid && candidate.windowId === currentTarget.windowId);
           if (!fresh) throw new Error('stale_observation：目标窗口身份已变化，请重新观察');
-          if (this.config.pauseWhenTargetFrontmost && requiredAccess === 'background' && fresh.frontmost !== false) {
-            throw new Error('target_in_use：目标应用处于前台或焦点状态未知，暂停后台动作');
+          if (this.config.pauseWhenTargetFrontmost && effectiveAccess === 'background' && fresh.frontmost !== false) {
+            if (!promoteToForeground()) {
+              throw new Error('target_in_use：目标应用处于前台或焦点状态未知，当前 Run 没有前台权限');
+            }
           }
         }
         if (input.action.type === 'drag' && input.action.path.length !== 2) {
           throw new Error('当前 Cua Driver 版本的 drag 只支持起点和终点两个路径点');
         }
-        const applied = await this.backend.act(run.session!, {
+        let applied = await this.backend.act(run.session!, {
           input: backendInput, target, element, fromZoom: observation?.fromZoom, artifactPath,
         }, signal);
-        if (requiredAccess === 'background' && applied.delivery === 'foreground') {
+        // This is the only Backend result that proves the first delivery did not apply.
+        if (applied.status === 'background_unsupported'
+          && effectiveAccess === 'background'
+          && 'dispatch' in input.action
+          && promoteToForeground()) {
+          applied = await this.backend.act(run.session!, {
+            input: backendInput, target, element, fromZoom: observation?.fromZoom, artifactPath,
+          }, signal);
+        }
+        if (effectiveAccess === 'background' && applied.delivery === 'foreground') {
           throw new ComputerActionUncertainError(
             'foreground_violation：驱动把后台动作升级为前台投递，停止后续动作',
           );
         }
-        if (target && requiredAccess === 'background') {
-          const after = await this.backend.listTargets({ query: target.bundleId, limit: 50 }, signal);
-          const fresh = after.find((candidate) => candidate.pid === target.pid && candidate.windowId === target.windowId);
+        if (target && effectiveAccess === 'background') {
+          const currentTarget = target;
+          const after = await this.backend.listTargets({ query: currentTarget.bundleId, limit: 50 }, signal);
+          const fresh = after.find((candidate) => candidate.pid === currentTarget.pid
+            && candidate.windowId === currentTarget.windowId);
           if (fresh && fresh.frontmost !== false) {
             throw new ComputerActionUncertainError('foreground_violation：后台动作后目标成为前台或焦点状态未知，停止后续动作');
           }
@@ -391,6 +648,19 @@ export class ComputerManager {
       signal,
     );
     const result = await this.enqueueAction(execute);
+    if (result.status === 'applied' && input.action.type === 'launch_app' && input.action.bundleId) {
+      const launchedTarget = await this.findLaunchedTarget(
+        input.action.bundleId,
+        targetsBeforeLaunch ?? new Set(),
+        input.action.urls,
+        input.action.newInstance,
+        signal,
+      );
+      if (launchedTarget) {
+        target = launchedTarget;
+        run.preferredTargets.set(input.action.bundleId, launchedTarget);
+      }
+    }
     let artifactResult: Record<string, unknown> = {};
     if (input.action.type === 'start_recording' && artifactId) {
       run.activeArtifactId = artifactId;
@@ -422,12 +692,12 @@ export class ComputerManager {
     }
     if (result.status === 'uncertain') throw new ComputerActionUncertainError();
     if (result.status === 'background_unsupported') return {
-      status: 'background_unsupported', requiredAccess, requiresObservation: true, target,
+      status: 'background_unsupported', requiredAccess: effectiveAccess, requiresObservation: true, target,
     };
     return {
       status: 'applied',
-      delivery: result.delivery ?? (requiredAccess === 'background' ? 'background' : 'foreground'),
-      requiredAccess,
+      delivery: result.delivery ?? (effectiveAccess === 'background' ? 'background' : 'foreground'),
+      requiredAccess: effectiveAccess,
       verified: false,
       requiresObservation: true,
       ...(input.action.type === 'handoff_to_user' ? { foregroundDisposition: 'retained_for_user' } : {}),
@@ -440,7 +710,7 @@ export class ComputerManager {
     const state = this.runs.get(runId);
     await this.restoreForeground(runId);
     this.runs.delete(runId);
-    if (state?.session) await this.backend.endSession(state.session).catch(() => undefined);
+    if (state?.session) await this.backend.endSession(state.session);
     if (state?.activeArtifactId) await this.artifacts.seal(state.activeArtifactId, runId).catch(() => undefined);
   }
 
@@ -449,7 +719,7 @@ export class ComputerManager {
     await this.backend.close();
   }
 
-  status() {
+  status(): ComputerManagerStatus {
     return {
       configured: true,
       backend: this.backend.kind,
@@ -457,13 +727,16 @@ export class ComputerManager {
       defaultAccess: this.config.defaultAccess,
       activeSessions: [...this.runs.values()].filter((state) => state.session).length,
       foregroundLeaseActive: [...this.runs.values()].some((state) => state.foregroundRestore),
+      operationalReadiness: this.operationalReadiness,
+      ...(this.operationalCheckedAt ? { operationalCheckedAt: this.operationalCheckedAt } : {}),
+      ...(this.lastOperationalFailure ? { lastOperationalFailure: this.lastOperationalFailure } : {}),
     };
   }
 
   private async run(runId: string, signal?: AbortSignal): Promise<RunState> {
     let state = this.runs.get(runId);
     if (!state) {
-      state = { observations: new Map(), actions: 0, screenshots: 0 };
+      state = { observations: new Map(), preferredTargets: new Map(), actions: 0, screenshots: 0 };
       this.runs.set(runId, state);
     }
     if (!state.session) state.session = await this.backend.startSession({ sessionId: `mimi-${randomUUID()}`, captureScope: 'auto' }, signal);
@@ -485,7 +758,8 @@ export class ComputerManager {
         && candidate.valid
         && candidate.expiresAt > Date.now()
         && candidate.target !== undefined
-        && candidate.dimensions !== undefined)
+        && candidate.dimensions !== undefined
+        && candidate.actionable)
       .sort((left, right) => right.capturedAt - left.capturedAt)[0];
     if (!observation) {
       throw new Error('stale_observation：当前 Run 没有可绑定的最新窗口观察');
@@ -522,6 +796,27 @@ export class ComputerManager {
     const result = this.actionQueue.then(operation, operation);
     this.actionQueue = result.then(() => undefined, () => undefined);
     return result;
+  }
+
+  private async findLaunchedTarget(
+    bundleId: string,
+    existing: ReadonlySet<string>,
+    urls: readonly string[] | undefined,
+    newInstance: boolean,
+    signal?: AbortSignal,
+  ): Promise<ComputerTargetSummary | undefined> {
+    const documentName = launchedDocumentName(urls);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const targets = await this.backend.listTargets({ query: bundleId, limit: 50 }, signal);
+      const documentTarget = documentName
+        ? targets.find((candidate) => candidate.title.normalize('NFKC').toLowerCase().includes(documentName))
+        : undefined;
+      const freshTarget = targets.find((candidate) => !existing.has(targetKey(candidate)));
+      const selected = documentTarget ?? freshTarget ?? (!newInstance && !urls?.length ? targets[0] : undefined);
+      if (selected) return selected;
+      await delay(100, undefined, { signal });
+    }
+    return undefined;
   }
 
   private async restoreForeground(runId: string): Promise<void> {

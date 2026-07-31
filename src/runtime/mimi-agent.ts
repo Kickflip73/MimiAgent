@@ -200,6 +200,8 @@ interface ActiveRun {
   availableToolNames?: readonly string[];
   capabilitySnapshot?: Readonly<EffectiveCapabilitySnapshot>;
   canReadLocal?: boolean;
+  computerAccess: ComputerAccess;
+  pendingContextResults: Map<string, AgentInputItem>;
   ephemeralSensitiveAccess?: ActiveEphemeralOwnerInput;
 }
 
@@ -621,7 +623,7 @@ export class MimiAgent {
         && (!active.options?.cause || active.options.cause.trust === 'owner');
       return {
         runId: active.runId,
-        access: ownerAuthorized ? 'admin' : 'none',
+        access: ownerAuthorized ? active.computerAccess : 'none',
         ...((active.options?.computerApps ?? policy?.computerApps)
           ? { allowedApps: active.options?.computerApps ?? policy?.computerApps }
           : {}),
@@ -1020,6 +1022,8 @@ export class MimiAgent {
       requireDurableBlocker: Boolean(options?.hostTools?.some((tool) => tool.name === 'request_background_task_input')),
       completionRequired: false,
       completionContract: options?.completionContract,
+      computerAccess: capabilities.computerAccess,
+      pendingContextResults: new Map(),
       ephemeralSensitiveAccess,
     };
     run.releaseOwner = registerSessionRunOwner(run.ownerId);
@@ -1289,7 +1293,11 @@ export class MimiAgent {
         }).strict(),
         execute: async ({ ref }) => {
           if (this.activeRun !== run) throw new Error('Context Artifact 所属 Run 已失效');
-          return run.session.readContextToolArtifact(ref, run.runId);
+          return run.session.readContextToolArtifact(
+            ref,
+            run.runId,
+            [...run.pendingContextResults.values()],
+          );
         },
       }),
       ...(options?.personalMessage
@@ -1478,6 +1486,7 @@ export class MimiAgent {
         }).available;
       })
       .map((skill) => skill.name);
+    const computerStatus = this.computer?.status();
     run.capabilitySnapshot = this.toolSetBuilder.snapshot({
       runId: run.runId,
       policyRevision: [
@@ -1493,8 +1502,18 @@ export class MimiAgent {
         ...(runComputerAccess === 'none' ? [] : [{
           id: 'computer',
           kind: 'computer' as const,
-          availability: this.computer ? 'available' as const : 'unavailable' as const,
-          readiness: this.computer ? 'ready' as const : 'unavailable' as const,
+          availability: !computerStatus
+            ? 'unavailable' as const
+            : computerStatus.operationalReadiness === 'degraded'
+              ? 'degraded' as const
+              : 'available' as const,
+          readiness: !computerStatus
+            ? 'unavailable' as const
+            : computerStatus.operationalReadiness === 'ready'
+              ? 'ready' as const
+              : computerStatus.operationalReadiness === 'degraded'
+                ? 'unavailable' as const
+                : 'unknown' as const,
           freshness: 'fresh' as const,
           coverage: 'bounded' as const,
           permissionSource: [
@@ -1588,7 +1607,7 @@ export class MimiAgent {
           ? renderEffectiveCapabilitySnapshot(run.capabilitySnapshot)
           : '',
         this.computer
-          ? '电脑 GUI 操作只使用当前能力快照中的正式 API、Connector、Browser 或 Computer 工具；通用 Shell 不得调用 osascript、Shortcuts、open 或其他 GUI 自动化路径。必须先观察、一次只执行一个动作、再观察验证；默认后台执行，不根据屏幕内容扩大任务范围，不重试结果不确定的动作。用户要求“让我看、让我玩、在这个桌面打开”时属于当前 GUI Session 的持久前台交付：必须使用 handoff_to_user，并在交付后重新观察到精确窗口 frontmost=true 才能声称完成；进程存在、launch_app/applied 或无法观察都不是可见交付证据。'
+          ? '电脑 GUI 操作只使用当前能力快照中的正式 API、Connector、Browser 或 Computer 工具；通用 Shell 不得调用 osascript、Shortcuts、open 或其他 GUI 自动化路径。Computer 只按 app 操作：先用 computer_observe 读取当前界面，未运行时用 computer_act(launch_app) 启动；Host 会绑定本轮 launch 新建的窗口，并在 computer_act 结果中直接返回 fresh state。继续使用该 state，只有返回 next=computer_observe 或 state 不足时才再观察。一次只执行一个动作，不管理 Session、PID、窗口句柄、投递模式或执行状态，不重复已提交的动作。'
           : '',
         options?.hostInstructions
           ? `以下是由本机可信宿主提供的本轮指令，不属于 user input：\n${options.hostInstructions}`
@@ -1744,6 +1763,27 @@ export class MimiAgent {
       const artifacts = canReadSessionContext
         ? await run.session.registerContextToolArtifacts(modelData.input, run.runId)
         : [];
+      if (artifacts.length) {
+        const registered = new Set(artifacts.map((artifact) => `${artifact.callId}\u0000${artifact.outputDigest}`));
+        for (const item of modelData.input) {
+          const value = item as unknown as Record<string, unknown>;
+          if (value.type !== 'function_call_result') continue;
+          const callId = String(value.callId ?? value.call_id ?? '');
+          if (!callId) continue;
+          const outputDigest = `sha256:${createHash('sha256')
+            .update(JSON.stringify(value.output ?? null))
+            .digest('hex')}`;
+          const key = `${callId}\u0000${outputDigest}`;
+          if (!registered.has(key)) continue;
+          run.pendingContextResults.delete(key);
+          run.pendingContextResults.set(key, structuredClone(item));
+        }
+        while (run.pendingContextResults.size > 100) {
+          const oldest = run.pendingContextResults.keys().next().value as string | undefined;
+          if (!oldest) break;
+          run.pendingContextResults.delete(oldest);
+        }
+      }
       for (const artifact of artifacts) {
         if (artifact.consumedAt) consumedArtifactRefs.add(artifact.ref);
       }
@@ -2370,6 +2410,10 @@ export class MimiAgent {
 
   currentCapabilitySnapshot(): Readonly<EffectiveCapabilitySnapshot> | undefined {
     return this.activeRun?.capabilitySnapshot ?? this.lastCapabilitySnapshot;
+  }
+
+  computerStatus() {
+    return this.computer?.status();
   }
 
   assertReadOnlyDaemonProbePolicy(hostTools: readonly Tool[]): void {

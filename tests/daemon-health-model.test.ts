@@ -193,3 +193,46 @@ test('Computer supervisor outage is unhealthy until Cua Driver recovers', () => 
     nextAction: 'mimi daemon doctor',
   }]);
 });
+
+test('Computer transport health does not claim UI readiness before a real observation', () => {
+  const health = buildDaemonHealth({
+    tasks: taskCounts(),
+    outbox: outboxCounts(),
+    computer: {
+      configured: true,
+      state: 'ready',
+      ready: false,
+      transportReady: true,
+      operationalReadiness: 'unknown',
+      managed: true,
+      launchAttempts: 0,
+      recoveries: 0,
+      consecutiveFailures: 0,
+    },
+  });
+
+  assert.equal(health.state, 'unhealthy');
+  assert.match(health.risks[0]?.message ?? '', /尚无真实窗口 observation/);
+});
+
+test('Computer degraded UI readiness reports the observation failure', () => {
+  const health = buildDaemonHealth({
+    tasks: taskCounts(),
+    outbox: outboxCounts(),
+    computer: {
+      configured: true,
+      state: 'ready',
+      ready: false,
+      transportReady: true,
+      operationalReadiness: 'degraded',
+      lastOperationalFailure: 'observation_unusable: ax_window_unresolved',
+      managed: true,
+      launchAttempts: 0,
+      recoveries: 0,
+      consecutiveFailures: 0,
+    },
+  });
+
+  assert.equal(health.state, 'unhealthy');
+  assert.match(health.risks[0]?.message ?? '', /UI 路径退化.*ax_window_unresolved/);
+});

@@ -1,4 +1,6 @@
 import type { Tool } from '@openai/agents';
+import type { BrowserRunManager } from '../extensions/browser/manager.js';
+import { createBrowserTools } from '../extensions/browser/tools.js';
 import { createMimiActivityTools } from './activity-tools.js';
 import { AttentionEngine } from './attention.js';
 import { createMimiAttentionRuleTools } from './attention-rule-tools.js';
@@ -36,6 +38,7 @@ export interface MimiHostToolContext {
   sessionId: string;
   workspaceRoot?: string;
   connectors?: ConnectorManager;
+  browserRun?: BrowserRunManager;
   connectorRuntime?: ConnectorTaskRuntime;
   replyRoute?: ReplyRoute;
   cancelEvent?: (eventId: string, reason?: string) => EventCancelResult | Promise<EventCancelResult>;
@@ -76,6 +79,7 @@ export function createMimiHostTools(context: MimiHostToolContext): Tool[] {
       pause: context.pauseEvent,
       block: context.blockTask,
     }),
+    ...(context.browserRun ? createBrowserTools(context.browserRun) : []),
     ...(context.connectors
       ? createConnectorHostTools(context.connectors, (request, receipt) => {
           const route = context.replyRoute;

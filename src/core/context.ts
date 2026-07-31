@@ -789,6 +789,18 @@ export class ContextManager {
         return;
       }
       if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.length <= 64_000) {
+          try {
+            const parsed = JSON.parse(trimmed) as unknown;
+            if (parsed && typeof parsed === 'object') {
+              visit(parsed, path, depth);
+              return;
+            }
+          } catch {
+            // Plain text tool output; summarize its bounded statements below.
+          }
+        }
         const statements = value.split(/(?:\r?\n)+|(?<=[。！？.!?])\s*/u)
           .map((statement) => statement.trim())
           .filter(Boolean);
@@ -804,6 +816,11 @@ export class ContextManager {
         return;
       }
       if (value && typeof value === 'object') {
+        const object = value as Record<string, unknown>;
+        if (object.type === 'text' && typeof object.text === 'string') {
+          visit(object.text, path, depth);
+          return;
+        }
         for (const [key, entry] of Object.entries(value)) {
           if (facts.length >= 6) break;
           visit(entry, path ? `${path}.${key}` : key, depth + 1);

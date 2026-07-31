@@ -3,8 +3,10 @@ import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { RunContext } from '@openai/agents';
 import { MimiDispatcher } from '../src/daemon/dispatcher.js';
 import { AttentionEngine } from '../src/daemon/attention.js';
+import type { ConnectorManager } from '../src/daemon/connectors.js';
 import { MimiStore } from '../src/daemon/store.js';
 import { createRunFinalization } from '../src/core/run-finalization.js';
 import { MimiHost } from '../src/runtime/mimi-host.js';
@@ -156,6 +158,92 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
     assert.equal(dispatcher.status().activeToolCount, 0);
   } finally {
     releaseFinalization();
+    store.close();
+  }
+});
+
+test('dispatcher fails before completion when Browser cleanup is uncertain and never replays close', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-browser-cleanup-'));
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  let closeCalls = 0;
+  const connectors = {
+    listCapabilities: () => [{
+      id: 'browser',
+      enabled: true,
+      online: true,
+      readiness: { inbound: 'unavailable', outbound: 'ready' },
+      source: 'browser',
+      trust: 'external',
+      claimedComputerApps: ['com.google.Chrome'],
+      actions: [
+        {
+          name: 'open_session',
+          description: 'open',
+          capability: 'browser.session.write',
+          effect: 'write',
+          routeOwner: 'browser',
+          modelVisible: true,
+        },
+        {
+          name: 'close_session',
+          description: 'close',
+          capability: 'browser.session.write',
+          effect: 'write',
+          routeOwner: 'browser',
+          modelVisible: true,
+        },
+      ],
+    }],
+    executeCapability: async (request: { action: string }) => {
+      if (request.action === 'close_session') {
+        closeCalls += 1;
+        const error = new Error('close delivery uncertain');
+        error.name = 'UncertainDeliveryError';
+        throw error;
+      }
+      return { connector: 'browser', effect: 'write' as const, result: { outcome: 'confirmed' } };
+    },
+  } as unknown as ConnectorManager;
+  const agent = {
+    currentSessionId: 'owner',
+    currentCapabilitySnapshot: () => undefined,
+    completedExecution: async () => undefined,
+    finalizeExecutionLedger: async () => undefined,
+    reopenExecutionLedger: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, {
+    execute: async (request) => {
+      const open = request.options?.hostTools?.find((tool) => tool.name === 'browser_open');
+      assert.ok(open && 'invoke' in open);
+      await open.invoke(new RunContext({}), JSON.stringify({ url: 'https://example.com' }));
+      return { answer: 'browser work completed', effects: [] };
+    },
+  });
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, host, attention, undefined, connectors);
+  try {
+    const now = new Date().toISOString();
+    const routed = store.ingestEvent({
+      id: 'browser-cleanup-event',
+      externalId: 'browser-cleanup-event',
+      source: 'local-cli',
+      kind: 'command',
+      trust: 'owner',
+      payload: { prompt: 'browse' },
+      occurredAt: now,
+      receivedAt: now,
+      priority: 100,
+      profileId: 'owner',
+      sessionKey: 'owner',
+    });
+    assert.ok(routed.task);
+
+    assert.equal(await dispatcher.processTaskById(routed.task.id), true);
+    const task = store.getTask(routed.task.id);
+    assert.equal(task?.status, 'dead_letter');
+    assert.match(task?.error ?? '', /Browser session cleanup failed.*close delivery uncertain/);
+    assert.equal(closeCalls, 1);
+  } finally {
     store.close();
   }
 });

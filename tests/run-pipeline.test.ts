@@ -109,6 +109,33 @@ test('capability resolver preserves provenance, mode, and completion boundaries'
   assert.equal(owner.computerAccess, 'none');
   assert.equal(owner.completionToolsAllowed, true);
 
+  const fullOwnerScope = captureRunScope({
+    sessionId: 'owner-session',
+    workspaceRoot: '/workspace',
+    provider: 'openai',
+    model: 'gpt-test',
+    mode: 'general',
+    permissionMode: 'trusted',
+    securityProfile: 'full-owner',
+    input: 'inspect',
+    options: {
+      cause: {
+        eventId: 'owner-event',
+        source: 'local-cli',
+        trust: 'owner',
+      },
+    },
+  });
+  assert.equal(resolver.resolve({
+    scope: fullOwnerScope,
+    defaultComputerAccess: 'background',
+  }).computerAccess, 'background');
+  assert.equal(resolver.resolve({
+    scope: fullOwnerScope,
+    requestedComputerAccess: 'observe',
+    defaultComputerAccess: 'background',
+  }).computerAccess, 'observe');
+
   const restricted = resolver.resolve({
     scope: scope(),
     policy: {
@@ -178,6 +205,13 @@ test('progressive gateway discovers and invokes every authorized capability fami
     make('web_search', 'web-ok'),
     make('memory_read', 'memory-ok'),
     make('computer_observe', 'computer-ok'),
+    make('computer_act', 'computer-act-ok'),
+    make('browser_open', 'browser-open-ok'),
+    make('browser_observe', 'browser-ok'),
+    make('browser_act', 'browser-act-ok'),
+    make('browser_wait', 'browser-wait-ok'),
+    make('browser_assert', 'browser-assert-ok'),
+    make('browser_close', 'browser-close-ok'),
     make('show_goal', 'goal-ok'),
     make('list_skills', 'skill-ok'),
     make('custom_mcp_lookup', 'mcp-ok'),
@@ -188,6 +222,14 @@ test('progressive gateway discovers and invokes every authorized capability fami
   const modelFacing = builder.modelFacing([...authorized, ...gateway]);
   assert.ok(modelFacing.some((candidate) => candidate.name === 'inspect_runtime_capabilities'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'invoke_runtime_capability'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'computer_observe'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'computer_act'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_open'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_observe'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_act'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_wait'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_assert'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_close'));
   assert.equal(modelFacing.some((candidate) => candidate.name === 'inspect_mimi_capabilities'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'invoke_capability'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'send_owner_message'), false);
@@ -232,6 +274,26 @@ test('progressive gateway discovers and invokes every authorized capability fami
     )),
     /未授权/,
   );
+});
+
+test('progressive gateway stops an identical capability discovery loop on the third call', async () => {
+  const builder = new ToolSetBuilder();
+  const hidden = sdkTool({
+    name: 'web_search',
+    description: 'search',
+    parameters: z.object({}),
+    execute: async () => 'ok',
+  });
+  const inspect = builder.progressiveGateway([hidden]).find(
+    (candidate) => candidate.name === 'inspect_runtime_capabilities',
+  ) as Tool & {
+    invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
+  };
+  const context = new RunContext({});
+  const input = JSON.stringify({ query: 'browser' });
+  assert.doesNotMatch(String(await inspect.invoke(context, input, {})), /discovery_loop/);
+  assert.doesNotMatch(String(await inspect.invoke(context, input, {})), /discovery_loop/);
+  assert.match(JSON.stringify(await inspect.invoke(context, input, {})), /discovery_loop|重复.*能力目录/);
 });
 
 test('runtime capability query searches connector actions through the formal catalog', async () => {

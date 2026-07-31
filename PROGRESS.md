@@ -1,5 +1,34 @@
 # Progress
 
+## 2026-07-31 Browser / Computer 原生可靠性 Goal
+- 目标：主 Agent 直接、严格、可验证地使用 Browser 与 Computer，不再因两层能力发现、宽松 schema 或巨型观察结果陷入循环。
+- 顺序：先修模型契约/权限/观察预算，再做 Host-owned Browser session 与 verify 闭环，最后补真实 E2E/soak 和文档。
+- 基线：直接 Browser 1/1、直接 Cua Calculator 1/1；Mimi Browser 0/1（约 4 分钟 discovery loop），Mimi Computer 0/1（435,071 token）。
+- 测试基线：相关 focused tests 52/52；真实 `test:computer:macos` 脚本不存在，现有 Browser/Computer 测试主要使用 mock/fake backend。
+- 数据基线：Calculator 单次 Manager observation 70,837 bytes、212 AX elements，并重复携带 normalized elements 与 raw driver data。
+- 继承改动：保留现有 PROGRESS/BLOCKED/蓝图修改；Browser Connector 的 logical label alias 属于可复用接缝，只修正相关缺陷并补回归。
+- 架构边界：Browser 新能力留在 extensions/daemon/runtime 接缝；Computer 继续使用 Cua backend；Policy/Ledger/uncertain no-replay 不绕过。
+- 最大风险：直接工具投影不能扩大来源权限；Browser session cleanup 不能把 uncertain close 误报为成功；Computer 裁剪不能丢失可操作元素。
+- 开工 focused baseline：52/52，fail/skip/todo=0；Goal 执行期间每完成一项立即追加实际证据。
+- 已落地一等 Browser 工具、Host-owned session、DOM-only 标准 snapshot、表单语义定位、wait/assert/close、16 KiB 结果预算和重复 discovery 熔断；Provider schema canary 中修复 URL format、record propertyNames 和 nullable locator 冲突。
+- 首轮严格五类 canary 暴露 OpenCLI 1.8.6 的 `tab new` 会让原页脱离当前 session，以及 SDK nullable `page` 被重新写回 payload；没有用 prompt 掩盖。Connector 现以独立后台 OpenCLI session 实现稳定逻辑多标签，`list/select/close` 使用 Connector page ID，关闭后明确恢复 active page/URL；Host 同时剥离所有 null 占位。
+- Browser backend 最终真实 soak：增强场景同时覆盖显式 `new_tab` 与真实 `target=_blank`、关闭新页后保留原页状态；`MIMI_E2E_ITERATIONS=30 npm run test:browser:macos` 为 30/30，成功率 100%，median 6602ms、p95 9000ms、p95 payload 892 bytes、session leak 0。
+- 真实 Mimi 简单读取：4 个原生 Browser calls、33 秒，正确读取 `Mimi Browser Fixture` / `ready` 并 close；无 Skill、capability 或 Connector discovery。最终五类综合场景 `MIMI_E2E_ITERATIONS=10 npm run test:browser:agent:macos` 为 10/10，成功率 100%，median 108841ms、p95 146631ms、每轮固定 19 Browser calls + 1 Host context call、工具失败 0、非原生 fallback 0、leak 0。
+- Computer observation 文本从基线 70837 bytes 收敛到实测约 1.5KB；degraded 且没有 AX/截图时返回 actionable=false，并在 Backend dispatch 前拒绝 UI 写。真实 Calculator/TextEdit 失败路径均约 8 秒停止，session leak/前台变化/光标变化/安全证据缺失均为 0。
+- 真实 Mimi Calculator：3 calls（targets、background launch、window observe），观察 `actionable=false` 后停止，keypress/click/type=0；Daemon 状态从误报 ready 改为 `transportReady=true + operationalReadiness=degraded + ready=false`。
+- 最终门禁：`npm test` 为 839/839，fail/skip/todo=`0/0/0`；`npm run check`、`npm run build`、`git diff --check` 均通过。测试数量较本 Goal 开工基线只增不减，真实 UI 脚本保持 opt-in。
+- 已在无活动 Run/Tool/worker/Host mutation/Outbox sending 时安全重启用户 daemon 到 `0.12.0+035718607471`。部署后 `daemon probe browser-tabs` 返回 ready/fresh、itemCount=0；`daemon probe computer-window` 仍由外部 Cua AX 映射返回 `ax_window_unresolved`，并正确落为 `transportReady=true + operationalReadiness=degraded + ready=false`，未投递 UI 写。
+- Computer 后续实测解除了上述外部阻塞判定：Finder 精确窗口 AX 可读；Calculator/TextEdit 新窗口在有界 settle 后可读，必要时一次 screenshot fallback 可恢复。根因是 Cua 列表中的离屏无标题伪窗口、新 AXWindow 短暂未就绪，以及同 bundle 多窗口时旧窗口抢占选择；均已在 Host 内解决。
+- 参考当前 Codex Computer Use 的 app-centric state/action、AX-first 和截图回退，但 Mimi 没有照搬 Node REPL、MCP/Sky、diff 或多层结果状态。模型面只保留 `computer_observe({app,screenshot?})` 和 `computer_act({action})`；PID/window/Observation/dispatch/driver/admin 字段全部留在 Host。
+- 真实 Driver/Manager Calculator + TextEdit soak：`MIMI_E2E_ITERATIONS=10 npm run test:computer:macos` 为 10/10，成功率 100%，median 48123ms、p95 64889ms、observation p95 6309 bytes，session leak/前台变化/Computer 动作导致的鼠标变化均为 0。
+- 修复同 bundle 新窗口绑定并让 launch 直接返回 fresh state 后，真实 Mimi 组合 E2E 首轮为 1/1：Calculator 56 + TextEdit 读写完成，严格 8 个原生 Computer calls、112096ms、无额外 observe/非原生 fallback/session leak。修复前成功样本为 10 calls/176707ms。
+- 真实 Mimi 组合 soak：`MIMI_E2E_ITERATIONS=10 npm run test:computer:agent:macos` 为 10/10，成功率 100%，median 102234ms、p95 107338ms；每轮固定 8 个 Computer calls，无额外 observe、非原生工具、工具失败或 session leak。每轮同时覆盖 app observe、Calculator 按键+结果观察和 TextEdit AX 读写。
+- 模型 schema 不增加 foreground/dispatch：Host 后台优先；只在目标已置前，或 Driver 明确返回 `background_unsupported` 且本机 Full Owner Run 已有 foreground 权限时自动前台投递。回归证明 background-only authority 不升级且只投递一次。
+- 关键 Calculator 真实 soak：`MIMI_E2E_ITERATIONS=30 MIMI_COMPUTER_SCENARIOS=calculator npm run test:computer:macos` 为 30/30，成功率 100%，median 32648ms、p95 34117ms、observation p95 6309 bytes；session leak、foreground change、Computer 因果鼠标变化和证据缺失均为 0。
+- 最终门禁：`npm test` 为 846/846，fail/skip/todo=`0/0/0`；`npm run check`、`npm run build`、`npm run test:package`、`git diff --check` 均通过。`check:repo` 的 hygiene/release/dependency 三段通过，仅 asset-boundary 因继承的未分类用户 Skill `agent-reach`、`guizang-social-card-skill` 失败，本 Goal 未改动这些资产。
+- Token 证据：5 个可回读的真实 Calculator + TextEdit Mimi Run 总 token 为 280045--374525，中位数 280743；相对开工时 435071-token 失败样本下降约 35.5%，但仍是明确的剩余成本。当前工具面只有两个，主要增量来自 8 次模型往返重复携带运行上下文；不为降调用数引入任意动作数组或可部分执行的第二套工作流。
+- 部署前审计为 active Event/Tool/Task/Host mutation/Outbox sending=`0/0/0/0/0`，10 个 queued briefing 保持持久化未改动。非强制安全重启后用户 daemon 为 `0.12.0+6fbaa8baebe7`（PID 49691）；`browser-tabs` 与 `computer-window` 只读探针均为 ready/fresh/targetVerified/actionResult，Computer 状态为 `transportReady=true + operationalReadiness=ready`。
+
 ## 2026-07-30 Context Review 修复
 
 ### 任务 0 基线
@@ -360,6 +389,15 @@
     `2026-07-30T03:58:26.360Z` 重启为 `0.12.0+3fd675025b04`。运行面完全 idle，
     分支与远端已对齐，但仍有未提交的 Provider/个人消息运行时改动；该构建尚不是
     冻结发布基线，本轮继续 blocked，未执行 canary。
+14. `2026-07-30T12:29:48.205Z` 观察到 Daemon 已于
+    `2026-07-30T10:05:34.158Z` 重启为 `0.12.0+4c739a2ce947`。运行面完全 idle，
+    但本地分支领先远端 1 个未推送运行时提交，Browser Connector 仍有未提交改动；
+    该构建不可视为冻结基线，本轮继续 blocked，未执行 canary。
+15. `2026-07-30T20:30:11.911Z` 观察时 Daemon 仍为
+    `0.12.0+4c739a2ce947` 且运行面 idle，但本地仍领先远端 1 个提交，上一轮文档
+    与 Browser Connector 改动均未收敛；同时 Digest backlog 升至 1051、
+    `personal-daxiang` 离线、Browser readiness stale。本轮继续 blocked，未执行
+    canary；较早的 `16:29Z` heartbeat 被本次更新检查覆盖，不重复计数。
 
 ## 2026-07-28 M1 final runtime soak after owner-sensitive fix
 

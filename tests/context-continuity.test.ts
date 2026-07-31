@@ -19,7 +19,9 @@ test('keeps compacted history out of user turns and preserves an adjacent offer'
   const dataRoot = path.join(root, '.mimi-agent');
   const sessionId = 'context-continuity';
   const previousSession = process.env.AGENT_SESSION;
+  const previousHome = process.env.HOME;
   process.env.AGENT_SESSION = sessionId;
+  process.env.HOME = root;
   const session = new FileSession(path.join(dataRoot, 'sessions'), sessionId);
   const canonicalItems = [
     { role: 'user', content: `old question 1 ${'背景一。'.repeat(1_500)}` },
@@ -52,6 +54,7 @@ test('keeps compacted history out of user turns and preserves an adjacent offer'
   };
   const agent = await MimiAgent.create({
     provider: 'openai',
+    defaultModel: 'context-continuity-test-model',
     workspaceRoot: root,
     dataRoot,
     skillsRoot: path.join(root, 'skills'),
@@ -112,6 +115,8 @@ test('keeps compacted history out of user turns and preserves an adjacent offer'
     await agent.close();
     if (previousSession === undefined) delete process.env.AGENT_SESSION;
     else process.env.AGENT_SESSION = previousSession;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
   }
 });
 

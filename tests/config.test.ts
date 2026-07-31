@@ -59,7 +59,11 @@ test('resolves model-specific context profiles and override precedence', () => {
     workspaceRoot: process.cwd(), dataRoot: '.mimi-agent', daemonDataRoot: '.mimi-agent/daemon', skillsRoot: 'skills', mcpConfig: 'mcp.json',
     historyLimit: 40, maxTurns: 20,
   };
-  const keys = ['CONTEXT_WINDOW', 'OUTPUT_TOKEN_RESERVE', 'DEEPSEEK_V4_PRO_CONTEXT_WINDOW', 'DEEPSEEK_V4_PRO_OUTPUT_RESERVE'] as const;
+  const keys = [
+    'CONTEXT_WINDOW', 'OUTPUT_TOKEN_RESERVE',
+    'DEEPSEEK_V4_PRO_CONTEXT_WINDOW', 'DEEPSEEK_V4_PRO_OUTPUT_RESERVE',
+    'GPT_5_6_SOL_CONTEXT_WINDOW', 'GPT_5_6_SOL_OUTPUT_RESERVE',
+  ] as const;
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   try {
     for (const key of keys) delete process.env[key];
@@ -71,6 +75,12 @@ test('resolves model-specific context profiles and override precedence', () => {
     });
     config.contextWindow = 256_000;
     config.outputReserve = 24_000;
+    assert.deepEqual(resolveModelProfile(config, 'gpt-5.6-sol'), {
+      contextWindow: 1_050_000, outputReserve: 32_768, supportsImageInput: true,
+    });
+    assert.deepEqual(resolveModelProfile(config, 'custom-model'), {
+      contextWindow: 256_000, outputReserve: 24_000, supportsImageInput: false,
+    });
     process.env.DEEPSEEK_V4_PRO_CONTEXT_WINDOW = '512000';
     process.env.DEEPSEEK_V4_PRO_OUTPUT_RESERVE = '48000';
     assert.deepEqual(resolveModelProfile(config, 'deepseek-v4-pro'), {
@@ -222,7 +232,7 @@ test('enables Computer Use by default for full-owner when CUA is installed and s
     assert.deepEqual(loadConfig(home).computer, {
       backend: 'cua', driverCommand: driver, actionTimeoutMs: 15_000,
       maxActionsPerRun: 50, maxScreenshotsPerRun: 12, pauseWhenTargetFrontmost: true,
-      defaultAccess: 'background', foregroundLeaseSeconds: 30,
+      defaultAccess: 'foreground', foregroundLeaseSeconds: 30,
       artifactMaxBytes: 1024 * 1024 * 1024,
     });
     process.env.MIMI_SECURITY_PROFILE = 'full-owner';

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- add first-class Host-owned Browser tools with strict provider-safe schemas,
+  byte-bounded DOM observations, verified form/tab workflows and one-shot run
+  cleanup that must finish before task completion, and settle link navigation
+  before the next observation; emulate stable logical tabs with isolated
+  background OpenCLI sessions so closing a new tab reliably restores the prior
+  page; make
+  Computer observations actionable only with semantic or visual evidence,
+  separate transport from operational readiness, and replace the old model-facing
+  Driver control surface with app-centric observe/act tools whose UI actions return
+  fresh state directly; bind each launch to its newly created app window, keep
+  uncertain transport protection inside the Host, and let authorized Full Owner
+  runs fall back from explicit background-unsupported results without model routing
+- resolve context windows per exact model registration or built-in profile when
+  switching models, add GPT-5.6 family profiles, and limit legacy global context
+  settings to unknown-model fallback instead of overriding every model
 - enforce progressive capability discovery in Host code: keep low-level Connector
   tools behind the unified gateway, reject hidden tools that were not precisely
   inspected in the current Run, and reject guessed Connector capability/action

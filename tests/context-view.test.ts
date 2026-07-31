@@ -357,6 +357,45 @@ test('real 1M view consumes each tool result once and avoids cumulative context 
   assert.ok(1 - boundedCumulative / legacyCumulative >= 0.7);
 });
 
+test('consumed SDK text envelopes retain structured browser facts for the final answer', () => {
+  const manager = new ContextManager(40, 128_000);
+  const output = {
+    type: 'text',
+    text: JSON.stringify({
+      connector: 'browser',
+      effect: 'read',
+      result: {
+        value: 'Mimi Browser Fixture',
+        matches_n: 1,
+        match_level: 'exact',
+        untrusted: true,
+      },
+    }),
+  };
+  const history = [
+    { role: 'user', content: '读取 h1 后关闭浏览器并回答。' },
+    { type: 'function_call', name: 'browser_observe', callId: 'browser-read', arguments: '{}' },
+    { type: 'function_call_result', callId: 'browser-read', output },
+  ] as AgentInputItem[];
+  const artifact: ContextToolArtifact = {
+    ref: 'context-artifact:browser-read',
+    callId: 'browser-read',
+    toolName: 'browser_observe',
+    outputDigest: `sha256:${createHash('sha256').update(JSON.stringify(output)).digest('hex')}`,
+    runId: 'browser-run',
+    createdAt: '2026-07-31T00:00:00.000Z',
+  };
+  const view = manager.modelContextView(history, '', 120_000, {
+    toolArtifacts: [artifact],
+    consumedArtifactRefs: new Set([artifact.ref]),
+  });
+  const serialized = JSON.stringify(view.input);
+  assert.match(serialized, /result\.value=Mimi Browser Fixture/);
+  assert.match(serialized, /result\.matches_n=1/);
+  assert.doesNotMatch(serialized, /完整结果保存在 canonical Session.*Mimi Browser Fixture/s);
+  assertNoOrphanToolUnits(view.input);
+});
+
 test('80% dialogue snapshot preserves arbitrary facts without keyword routing', async () => {
   const manager = new ContextManager(200, 1_048_576);
   const history = [
@@ -490,6 +529,21 @@ test('persists the 70% work snapshot and binds artifact reads to Session and Run
   assert.match(JSON.stringify(await reopened.getContextWorkSnapshot()), /opaque-ABC_7788/);
   const read = await reopened.readContextToolArtifact(artifacts[0]!.ref, run.runId);
   assert.deepEqual(read.output, (result as unknown as { output: unknown }).output);
+  const pendingSession = new FileSession(root, 'pending-owner');
+  const pendingRun = await pendingSession.beginRun('pending', 'run-pending');
+  const pendingArtifacts = await pendingSession.registerContextToolArtifacts(canonical, pendingRun.runId);
+  assert.equal(pendingArtifacts.length, 1);
+  const pendingRead = await pendingSession.readContextToolArtifact(
+    pendingArtifacts[0]!.ref,
+    pendingRun.runId,
+    canonical,
+  );
+  assert.deepEqual(pendingRead.output, (result as unknown as { output: unknown }).output);
+  await assert.rejects(
+    pendingSession.readContextToolArtifact(pendingArtifacts[0]!.ref, pendingRun.runId),
+    /canonical\/pending 工具结果缺失/,
+  );
+  await pendingSession.failRun('pending test complete', false, pendingRun.runId);
   const otherSession = new FileSession(root, 'other');
   await otherSession.beginRun('other', 'run-other');
   await assert.rejects(

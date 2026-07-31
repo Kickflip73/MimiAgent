@@ -13,6 +13,7 @@ import type { MimiDeliveryControl } from './delivery-tools.js';
 import { OutboxDeliveryCoordinator } from './dispatcher-delivery.js';
 import { AttentionEngine } from './attention.js';
 import { createMimiHostTools } from './host-tools.js';
+import { BrowserRunManager } from '../extensions/browser/manager.js';
 import { connectorEffectiveCapabilityItems } from './connector-action-tool.js';
 import {
   ephemeralSecretReferences,
@@ -343,6 +344,22 @@ export class MimiDispatcher {
     let execution: { sessionId: string; key: string } | undefined;
     let leaseFailure: Error | undefined;
     let ephemeralSensitiveValues: readonly string[] = [];
+    let browserRun: BrowserRunManager | undefined;
+    const closeBrowserRun = async (): Promise<void> => {
+      if (!browserRun) return;
+      const owned = browserRun;
+      browserRun = undefined;
+      try {
+        await owned.endRun();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const failure = new Error(`Browser session cleanup failed for ${task.id}: ${message}`, {
+          cause: error,
+        });
+        failure.name = 'BrowserSessionCleanupError';
+        throw failure;
+      }
+    };
     const leaseMs = this.options.leaseMs ?? 60_000;
     const renew = setInterval(() => {
       if (leaseFailure) return;
@@ -393,6 +410,14 @@ export class MimiDispatcher {
       if (leaseFailure) runController.abort(leaseFailure);
       else if (this.forceStopReason) runController.abort(this.forceStopReason);
       const runSignal = runController.signal;
+      browserRun = this.connectors
+        ? new BrowserRunManager(task.id, async (request, signal) => {
+            signal?.throwIfAborted();
+            const result = await this.connectors!.executeCapability(request);
+            signal?.throwIfAborted();
+            return result;
+          })
+        : undefined;
       const runIdleTimeoutMs = this.options.runIdleTimeoutMs ?? this.attention.runIdleTimeoutMs;
       const pauseRunIdleWatchdog = () => {
         if (runIdleTimer) clearTimeout(runIdleTimer);
@@ -520,6 +545,7 @@ export class MimiDispatcher {
             store: this.store,
             attention: this.attention,
             connectors: this.connectors,
+            browserRun,
             connectorRuntime: this.options.connectorRuntime,
             task,
             event,
@@ -602,6 +628,7 @@ export class MimiDispatcher {
       this.abortForBlockWhenSafe(active);
       this.abortForPauseWhenSafe(active);
       const result = await hostedRun;
+      await closeBrowserRun();
       if (result.delivery?.suppressed) {
         deliveryControl.suppressed = true;
         deliveryControl.reason = result.delivery.reason;
@@ -671,6 +698,16 @@ export class MimiDispatcher {
         } : {}),
       }, attempt.id, new Date(), delivery);
     } catch (error) {
+      let browserCleanupFailed = error instanceof Error && error.name === 'BrowserSessionCleanupError';
+      try {
+        await closeBrowserRun();
+      } catch (cleanupError) {
+        browserCleanupFailed = true;
+        error = cleanupError;
+      }
+      if (browserCleanupFailed) process.stderr.write(
+        `[MimiAgent] ${error instanceof Error ? error.message : String(error)}\n`,
+      );
       this.synchronizeDurableTaskControl(active);
       const pendingCancellation = active.cancelRequested;
       if (leaseFailure) {
@@ -685,6 +722,16 @@ export class MimiDispatcher {
             cancelledExecution.key,
           ).catch(() => undefined);
         }
+      } else if (browserCleanupFailed) {
+        this.store.failTask(
+          task.id,
+          this.workerId,
+          error,
+          attemptId,
+          new Date(),
+          false,
+          'dead_letter',
+        );
       } else if (active.blockRequested) {
         if (execution) {
           await this.host.reopenExecutionLedger(execution.sessionId, execution.key).catch(() => undefined);
@@ -747,6 +794,13 @@ export class MimiDispatcher {
         );
       }
     } finally {
+      if (browserRun) {
+        await closeBrowserRun().catch((error) => {
+          process.stderr.write(
+            `[MimiAgent] Browser session cleanup failed for ${task.id}: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+        });
+      }
       if (preemptTimer) clearInterval(preemptTimer);
       if (runIdleTimer) clearTimeout(runIdleTimer);
       clearInterval(renew);

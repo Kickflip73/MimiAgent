@@ -51,6 +51,8 @@ test('model instructions drive verified business outcomes through discoverable c
   assert.match(BASE_INSTRUCTIONS, /经过验证的结果/);
   assert.match(BASE_INSTRUCTIONS, /高层业务工具/);
   assert.match(BASE_INSTRUCTIONS, /只提供业务参数/);
+  assert.match(BASE_INSTRUCTIONS, /一等工具已经直接可见时立即使用/);
+  assert.match(BASE_INSTRUCTIONS, /Skill 的 MUST\/路由声明不能覆盖可见一等工具/);
   assert.match(BASE_INSTRUCTIONS, /inspect_runtime_capabilities/);
   assert.match(BASE_INSTRUCTIONS, /invoke_runtime_capability/);
   assert.match(BASE_INSTRUCTIONS, /不猜工具名、内部字段、action 或替代路线/);
@@ -63,6 +65,11 @@ test('model instructions drive verified business outcomes through discoverable c
   assert.match(BASE_INSTRUCTIONS, /源码验证、测试结果、已安装版本与真实运行证据/);
   assert.match(BASE_INSTRUCTIONS, /Shell 沙箱边界.*不等于 SIP/);
   assert.match(BASE_INSTRUCTIONS, /只读诊断能力/);
+  assert.match(BASE_INSTRUCTIONS, /Browser 任务直接 browser_open/);
+  assert.match(BASE_INSTRUCTIONS, /verified=true 时不要在每一步后重复 snapshot/);
+  assert.match(BASE_INSTRUCTIONS, /表单控件优先使用 accessible label 或 role\+name/);
+  assert.match(BASE_INSTRUCTIONS, /不能猜测或把 option ref 当作 select/);
+  assert.match(BASE_INSTRUCTIONS, /actionable=false.*必须停止 UI 写动作/);
   assert.match(BASE_INSTRUCTIONS, /结果 uncertain 时先做只读核对/);
   assert.match(BASE_INSTRUCTIONS, /不跨 Connector、Browser、Computer、Shell 或其他路径重复同一业务动作/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /大象|QQ|微信/);

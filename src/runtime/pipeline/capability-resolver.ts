@@ -36,7 +36,7 @@ export type CapabilityCoverage =
   | 'metadata_only'
   | 'unavailable'
   | 'unknown';
-export type CapabilitySource = 'builtin' | 'mcp' | 'computer' | 'memory' | 'goal' | 'skill' | 'connector';
+export type CapabilitySource = 'builtin' | 'mcp' | 'browser' | 'computer' | 'memory' | 'goal' | 'skill' | 'connector';
 
 export interface ProgressiveCapabilityGroup {
   source: CapabilitySource;
@@ -214,7 +214,10 @@ export class CapabilityResolver {
       completionToolsAllowed,
       computerAccess: input.scope.securityProfile === 'full-owner'
         && (!input.scope.cause || input.scope.cause.trust === 'owner')
-        ? input.requestedComputerAccess ?? 'admin'
+        ? input.requestedComputerAccess
+          ?? input.policy?.computerAccess
+          ?? input.defaultComputerAccess
+          ?? 'none'
         : 'none',
     });
   }

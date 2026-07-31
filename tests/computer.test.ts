@@ -22,6 +22,7 @@ import type {
   BackendObservation,
   BackendObserveRequest,
   BackendSession,
+  ComputerAppSummary,
   ComputerBackend,
   ComputerConfig,
   ComputerTargetSummary,
@@ -63,6 +64,16 @@ class FakeComputerBackend implements ComputerBackend {
 
   async health() { return { ready: true }; }
   async startSession(): Promise<BackendSession> { this.starts += 1; return { id: 'fake-session' }; }
+  async listApps(query: { query?: string; limit: number }): Promise<ComputerAppSummary[]> {
+    const apps = this.targets.map((candidate) => ({
+      bundleId: candidate.bundleId,
+      name: candidate.appName,
+      running: true,
+    }));
+    const needle = query.query?.toLowerCase();
+    return apps.filter((app) => !needle || `${app.bundleId} ${app.name}`.toLowerCase().includes(needle))
+      .slice(0, query.limit);
+  }
   async listTargets(): Promise<ComputerTargetSummary[]> { return this.targets; }
   async observe(_session: BackendSession, request: BackendObserveRequest): Promise<BackendObservation> {
     if (request.input.scope === 'targets') return { data: [target] };
@@ -171,6 +182,9 @@ test('requires a fresh observation for each bounded UI action', async () => {
     action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
   });
   assert.equal(result.status, 'applied');
+  assert.equal(manager.status().operationalReadiness, 'ready');
+  assert.ok(manager.status().operationalCheckedAt);
+  assert.equal(manager.status().lastOperationalFailure, undefined);
   assert.equal(backend.actions[0]?.target?.windowId, target.windowId);
   await assert.rejects(() => manager.act(authority, {
     observationId: observed.observationId,
@@ -179,6 +193,44 @@ test('requires a fresh observation for each bounded UI action', async () => {
   await manager.endRun(authority.runId);
   assert.equal(backend.starts, 1);
   assert.equal(backend.ends, 1);
+});
+
+test('unverified delivery returns applied and forces a fresh observation', async () => {
+  const { backend, manager, authority } = await fixture();
+  backend.nextActionResult = {
+    status: 'applied',
+    delivery: 'background',
+    data: { effect: 'unverifiable', verified: false },
+  };
+  const observed = await observeWindow(manager, authority);
+  const result = await manager.act(authority, {
+    observationId: observed.observationId,
+    action: { type: 'keypress', keys: ['7'], dispatch: 'background' },
+  });
+
+  assert.equal(result.status, 'applied');
+  assert.equal(result.verified, false);
+  assert.equal(result.requiresObservation, true);
+  assert.equal(backend.actions.length, 1);
+  await assert.rejects(() => manager.act(authority, {
+    observationId: observed.observationId,
+    action: { type: 'keypress', keys: ['7'], dispatch: 'background' },
+  }), /stale_observation/);
+  const fresh = await observeWindow(manager, authority);
+  assert.notEqual(fresh.observationId, observed.observationId);
+});
+
+test('surfaces Computer session cleanup failures after releasing run state', async () => {
+  const { backend, manager, authority } = await fixture();
+  await observeWindow(manager, authority);
+  backend.endSession = async () => {
+    backend.ends += 1;
+    throw new Error('driver session cleanup failed');
+  };
+
+  await assert.rejects(() => manager.endRun(authority.runId), /driver session cleanup failed/);
+  assert.equal(backend.ends, 1);
+  assert.equal(manager.status().activeSessions, 0);
 });
 
 test('background authority rejects a driver-side foreground delivery', async () => {
@@ -190,6 +242,69 @@ test('background authority rejects a driver-side foreground delivery', async () 
     observationId: observed.observationId,
     action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
   }), /foreground_violation.*升级为前台投递/);
+});
+
+test('foreground authority promotes a frontmost target without model dispatch fields', async () => {
+  const { backend, manager, authority } = await fixture({ access: 'foreground' });
+  const frontmost = { ...target, frontmost: true };
+  backend.targets = [frontmost];
+  backend.observation = { ...backend.observation, target: frontmost, frontmost: true };
+  backend.act = async (_session, request) => {
+    backend.actions.push(request);
+    const delivery = 'dispatch' in request.input.action
+      ? request.input.action.dispatch
+      : 'background';
+    return { status: 'applied', delivery };
+  };
+  const observed = await observeWindow(manager, authority);
+  const result = await manager.act(authority, {
+    observationId: observed.observationId,
+    action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
+  });
+
+  assert.equal(result.status, 'applied');
+  assert.equal(result.requiredAccess, 'foreground');
+  assert.equal(backend.actions.length, 1);
+  assert.equal(backend.actions[0]?.input.action.type, 'click');
+  assert.equal(
+    backend.actions[0]?.input.action.type === 'click'
+      ? backend.actions[0].input.action.dispatch
+      : undefined,
+    'foreground',
+  );
+});
+
+test('foreground authority retries only an explicit background_unsupported result', async () => {
+  const promoted = await fixture({ access: 'foreground' });
+  promoted.backend.act = async (_session, request) => {
+    promoted.backend.actions.push(request);
+    const foreground = 'dispatch' in request.input.action
+      && request.input.action.dispatch === 'foreground';
+    return foreground
+      ? { status: 'applied', delivery: 'foreground' }
+      : { status: 'background_unsupported', delivery: 'background' };
+  };
+  const observed = await observeWindow(promoted.manager, promoted.authority);
+  const result = await promoted.manager.act(promoted.authority, {
+    observationId: observed.observationId,
+    action: { type: 'keypress', keys: ['7'], dispatch: 'background' },
+  });
+  assert.equal(result.status, 'applied');
+  assert.equal(result.requiredAccess, 'foreground');
+  assert.equal(promoted.backend.actions.length, 2);
+
+  const restricted = await fixture();
+  restricted.backend.nextActionResult = {
+    status: 'background_unsupported',
+    delivery: 'background',
+  };
+  const restrictedObservation = await observeWindow(restricted.manager, restricted.authority);
+  const restrictedResult = await restricted.manager.act(restricted.authority, {
+    observationId: restrictedObservation.observationId,
+    action: { type: 'keypress', keys: ['7'], dispatch: 'background' },
+  });
+  assert.equal(restrictedResult.status, 'background_unsupported');
+  assert.equal(restricted.backend.actions.length, 1);
 });
 
 test('derives screenshotless window dimensions from the exact target bounds', async () => {
@@ -206,6 +321,61 @@ test('derives screenshotless window dimensions from the exact target bounds', as
     action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
   });
   assert.equal(result.status, 'applied');
+});
+
+test('degraded observations without semantic or visual evidence cannot authorize UI actions', async () => {
+  const { backend, manager, authority } = await fixture();
+  backend.observation = {
+    target,
+    frontmost: false,
+    dimensions: { width: 800, height: 600 },
+    elements: [],
+    data: {
+      degraded: true,
+      degradedReason: 'ax_window_unresolved',
+      screenshotError: { code: 'px_capture_unavailable' },
+    },
+  };
+  const observed = await observeWindow(manager, authority) as unknown as {
+    observationId: string;
+    actionable: boolean;
+    blockedReason?: string;
+  };
+
+  assert.equal(observed.actionable, false);
+  assert.match(observed.blockedReason ?? '', /observation_unusable.*ax_window_unresolved/);
+  assert.equal(manager.status().operationalReadiness, 'degraded');
+  assert.ok(manager.status().operationalCheckedAt);
+  assert.match(manager.status().lastOperationalFailure ?? '', /observation_unusable.*ax_window_unresolved/);
+  await assert.rejects(() => manager.act(authority, {
+    observationId: observed.observationId,
+    action: { type: 'keypress', keys: ['7'], dispatch: 'background' },
+  }), /observation_unusable.*拒绝投递 UI 动作/);
+  assert.equal(backend.actions.length, 0);
+  assert.throws(
+    () => manager.bindLatestAction(authority, { type: 'keypress', keys: ['7'], dispatch: 'background' }),
+    /stale_observation|没有可绑定/,
+  );
+});
+
+test('readiness probe does not report a degraded empty observation as ready', async () => {
+  const { backend, manager } = await fixture();
+  backend.observation = {
+    target,
+    frontmost: false,
+    dimensions: { width: 800, height: 600 },
+    elements: [],
+    data: { degraded: true, degradedReason: 'ax_window_unresolved' },
+  };
+
+  await assert.rejects(() => manager.observeStableBackgroundWindow({
+    runId: 'probe-degraded',
+    access: 'observe',
+    allowedApps: [target.bundleId],
+    supportsImageInput: false,
+  }), /computer_unavailable.*observation_unusable/);
+  assert.equal(backend.actions.length, 0);
+  assert.equal(backend.ends, 1);
 });
 
 test('rejects unsafe target state, coordinates, secure fields, and unapproved escalation', async () => {
@@ -286,11 +456,45 @@ test('protects control-plane apps and Connector-owned apps from Computer takeove
 test('computer tools respect mode and deployment permission boundaries', async () => {
   const { manager, authority } = await fixture();
   const tools = createComputerTools(manager, () => authority);
-  assert.ok(tools.every((item) => item.type === 'function' && item.strict === false));
+  assert.ok(tools.every((item) => item.type === 'function' && item.strict === true));
   assert.deepEqual(toolsForMode('plan', tools).map((item) => item.name), ['computer_observe']);
   assert.deepEqual(toolsForPermission('workspace', tools).map((item) => item.name), []);
   assert.deepEqual(toolsForPermission('read-only', tools).map((item) => item.name), []);
   assert.deepEqual(toolsForPermission('trusted', tools).map((item) => item.name), ['computer_observe', 'computer_act']);
+  assert.doesNotMatch(JSON.stringify(tools), /propertyNames/);
+  const observeParameters = JSON.stringify((tools[0] as unknown as Record<string, unknown>).parameters);
+  const actParameters = JSON.stringify((tools[1] as unknown as Record<string, unknown>).parameters);
+  assert.match(observeParameters, /app.*screenshot/);
+  assert.doesNotMatch(observeParameters, /scope|pid|windowId|maxDepth|promptForPermissions/);
+  assert.doesNotMatch(actParameters, /dispatch|kill_app|request_permissions|set_driver_config|trajectory/);
+});
+
+test('bounds the model-facing Computer observation without losing semantic state', async () => {
+  const { backend, manager, authority } = await fixture();
+  backend.observation = {
+    ...backend.observation,
+    elements: Array.from({ length: 300 }, (_, index) => ({
+      index,
+      role: 'AXButton',
+      label: `Control ${index} ${'x'.repeat(120)}`,
+      actions: ['press'],
+    })),
+    data: {
+      semanticText: `Display: 56\n${'detail '.repeat(5_000)}`,
+      sourceElementCount: 300,
+    },
+  };
+  const result = await manager.observe(authority, {
+    scope: 'window',
+    target: { bundleId: target.bundleId, pid: target.pid, windowId: target.windowId },
+    includeScreenshot: false,
+    maxElements: 400,
+    maxDepth: 12,
+  });
+  const encoded = JSON.stringify(result);
+  assert.ok(Buffer.byteLength(encoded) <= 16 * 1024, `observation was ${Buffer.byteLength(encoded)} bytes`);
+  assert.match(encoded, /Display: 56/);
+  assert.equal((result as { truncated?: boolean }).truncated, true);
 });
 
 test('model-facing Computer tools keep observation and authorization handles inside the Host', async () => {
@@ -307,14 +511,132 @@ test('model-facing Computer tools keep observation and authorization handles ins
     JSON.stringify((act as unknown as Record<string, unknown>).parameters),
     /observationId|authorizationId/,
   );
+  assert.doesNotMatch(
+    JSON.stringify((act as unknown as Record<string, unknown>).parameters),
+    /pid|windowId|dispatch|escalate_session|bring_to_front|handoff_to_user|release_foreground|move_cursor|kill_app|recording|replay_trajectory|set_driver_config|request_permissions/,
+  );
 
   const observed = await observe.invoke(new RunContext({}), JSON.stringify({
-    scope: 'window',
-    target: { bundleId: target.bundleId, pid: target.pid, windowId: target.windowId },
-    includeScreenshot: false,
+    app: target.bundleId,
+    screenshot: false,
   })) as Record<string, unknown>;
   assert.equal(observed.observationId, undefined);
+  assert.equal(observed.target, undefined);
+  assert.equal((observed.app as Record<string, unknown>).id, target.bundleId);
   assert.ok(Array.isArray(observed.elements));
+
+  assert.ok('invoke' in act);
+  const acted = await act.invoke(new RunContext({}), JSON.stringify({
+    action: { type: 'click', elementIndex: 1, button: 'left' },
+  })) as Record<string, unknown>;
+  assert.equal(acted.ok, true);
+  assert.equal(acted.status, undefined);
+  assert.equal(acted.delivery, undefined);
+  assert.equal(acted.requiresObservation, undefined);
+  assert.equal((acted.state as Record<string, unknown>).observationId, undefined);
+  assert.equal((acted.state as Record<string, unknown>).target, undefined);
+  assert.ok(Array.isArray((acted.state as Record<string, unknown>).elements));
+});
+
+test('launch_app binds the new app window and returns its fresh state', async () => {
+  const { backend, manager, authority } = await fixture();
+  const previous = { ...target, title: 'README.md' };
+  const launched = {
+    ...target,
+    pid: 43,
+    windowId: 8,
+    title: 'mimi-fixture.txt',
+  };
+  backend.targets = [previous];
+  backend.act = async (_session, request) => {
+    backend.actions.push(request);
+    backend.targets = [previous, launched];
+    return { status: 'applied', delivery: 'background' };
+  };
+  backend.observe = async (_session, request) => {
+    const requestedPid = request.input.scope === 'window' ? request.input.target.pid : request.target?.pid;
+    const selected = requestedPid === launched.pid ? launched : previous;
+    return {
+      target: selected,
+      frontmost: false,
+      dimensions: { width: 800, height: 600 },
+      elements: [{
+        index: 1,
+        role: 'AXTextArea',
+        value: selected === launched ? 'fixture' : 'readme',
+        writable: true,
+      }],
+    };
+  };
+  const tools = createComputerTools(manager, () => authority);
+  const act = tools.find((item) => item.name === 'computer_act')!;
+  assert.ok('invoke' in act);
+  const result = await act.invoke(new RunContext({}), JSON.stringify({
+    action: {
+      type: 'launch_app',
+      bundleId: target.bundleId,
+      urls: ['file:///tmp/mimi-fixture.txt'],
+      newInstance: true,
+    },
+  })) as Record<string, unknown>;
+  assert.equal(result.ok, true);
+  const state = result.state as Record<string, unknown>;
+  assert.equal((state.app as Record<string, unknown>).window, launched.title);
+
+  const observe = tools.find((item) => item.name === 'computer_observe')!;
+  assert.ok('invoke' in observe);
+  const observed = await observe.invoke(new RunContext({}), JSON.stringify({
+    app: target.bundleId,
+    screenshot: false,
+  })) as Record<string, unknown>;
+  assert.equal((observed.app as Record<string, unknown>).window, launched.title);
+  assert.equal(backend.actions.length, 1);
+});
+
+test('app-centric observation settles a newly launched AX window without replaying an action', async () => {
+  const { backend, manager, authority } = await fixture();
+  let observations = 0;
+  backend.observe = async () => {
+    observations += 1;
+    return observations === 1
+      ? {
+          target,
+          frontmost: false,
+          dimensions: { width: 800, height: 600 },
+          elements: [],
+          data: { degraded: true, degradedReason: 'ax_window_unresolved' },
+        }
+      : backend.observation;
+  };
+
+  const result = await manager.observeApp(authority, target.bundleId, false) as Record<string, unknown>;
+  assert.equal(result.actionable, true);
+  assert.equal(observations, 2);
+  assert.equal(backend.actions.length, 0);
+});
+
+test('app-centric observation falls back once to screenshot evidence after bounded AX settling', async () => {
+  const { backend, manager, authority } = await fixture();
+  let observations = 0;
+  backend.observe = async (_session, request) => {
+    observations += 1;
+    return {
+      target,
+      frontmost: false,
+      dimensions: { width: 800, height: 600 },
+      elements: [],
+      ...(request.input.scope === 'window' && request.input.includeScreenshot
+        ? { screenshot: { data: 'iVBORw0KGgo=', mediaType: 'image/png' } }
+        : {}),
+      data: { degraded: true, degradedReason: 'ax_window_unresolved' },
+    };
+  };
+
+  const result = await manager.observeApp(authority, target.bundleId, false) as Record<string, unknown>;
+  assert.ok(result.screenshot);
+  assert.equal(result.actionable, true);
+  assert.equal(observations, 6);
+  assert.equal(backend.actions.length, 0);
 });
 
 test('redacts type_text plaintext from semantic and persisted ledger arguments', async () => {
@@ -330,12 +652,15 @@ test('redacts type_text plaintext from semantic and persisted ledger arguments',
   assert.match(redacted, /textSha256/);
   assert.match(redacted, /textLength/);
 
-  const { manager, authority } = await fixture();
-  const observed = await observeWindow(manager, authority);
+  const { backend, manager, authority } = await fixture();
+  backend.nextActionResult = {
+    status: 'applied',
+    delivery: 'background',
+    data: { effect: 'unverifiable', verified: false },
+  };
+  await observeWindow(manager, authority);
   const executionRaw = JSON.stringify({
-    observationId: observed.observationId,
-    authorizationId: 'authorization-type-text',
-    action: { type: 'type_text', elementIndex: 1, text: 'private value', dispatch: 'background' },
+    action: { type: 'type_text', elementIndex: 1, text: 'private value' },
   });
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-ledger-'));
   const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
@@ -358,11 +683,14 @@ test('redacts type_text plaintext from semantic and persisted ledger arguments',
     { toolCall: { callId: 'c' } } as never,
   ) as Record<string, unknown>;
   const actionEvidence = actionResult.mimiActionIntent as Record<string, unknown>;
+  assert.equal(actionResult.ok, true);
+  assert.ok(actionResult.state);
   assert.match(String(actionEvidence.ref), /^action-intent:/);
   assert.equal(actionEvidence.outcome, 'confirmed');
   assert.match(String(actionEvidence.actionFamily), /^computer\./);
   const calls = await ledger.listCalls('s', 'r');
   assert.equal(calls.length, 1);
+  assert.equal(backend.actions.length, 1);
   assert.doesNotMatch(calls[0]!.argumentsJson, /private value/);
 });
 
@@ -390,7 +718,7 @@ test('production ledger wiring keeps exact low-risk owner launch on the guarded 
   });
   const first = await wrapped.invoke(new RunContext({}), input, { toolCall: { callId: 'launch-1' } } as never);
   const replay = await wrapped.invoke(new RunContext({}), input, { toolCall: { callId: 'launch-1' } } as never);
-  assert.equal((first as Record<string, unknown>).status, 'applied');
+  assert.equal((first as Record<string, unknown>).ok, true);
   assert.equal(JSON.stringify(replay), JSON.stringify(first));
   assert.equal(backend.actions.length, 1);
 
@@ -419,7 +747,7 @@ test('production ledger wiring keeps exact low-risk owner launch on the guarded 
       newInstance: false,
     },
   }), { toolCall: { callId: 'launch-url' } } as never) as Record<string, unknown>;
-  assert.equal(urlResult.status, 'applied');
+  assert.equal(urlResult.ok, true);
   assert.equal(backend.actions.length, 2);
 });
 
@@ -427,7 +755,7 @@ test('production ledger wiring permits an authenticated owner bounded background
   const { backend, manager, authority } = await fixture({
     allowedApps: [target.bundleId],
   });
-  const observed = await observeWindow(manager, authority);
+  await observeWindow(manager, authority);
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-owner-bounded-ui-'));
   const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
   const act = createComputerTools(manager, () => authority).find((item) => item.name === 'computer_act')!;
@@ -447,14 +775,13 @@ test('production ledger wiring permits an authenticated owner bounded background
   const result = await wrapped.invoke(
     new RunContext({}),
     JSON.stringify({
-      observationId: observed.observationId,
-      action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
+      action: { type: 'click', elementIndex: 1, button: 'left' },
     }),
     { toolCall: { callId: 'bounded-background-click' } } as never,
   ) as Record<string, unknown>;
 
-  assert.equal(result.status, 'applied');
-  assert.equal(result.delivery, 'background');
+  assert.equal(result.ok, true);
+  assert.ok(result.state);
   assert.equal(backend.actions.length, 1);
   assert.equal(backend.actions[0]?.target?.bundleId, target.bundleId);
   assert.equal(backend.actions[0]?.element?.index, 1);
@@ -462,7 +789,7 @@ test('production ledger wiring permits an authenticated owner bounded background
 
 test('Full Owner uses a fresh Computer observation without a second approval layer', async () => {
   const { backend, manager, authority } = await fixture();
-  const observed = await observeWindow(manager, authority);
+  await observeWindow(manager, authority);
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-evidence-only-'));
   const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
   const act = createComputerTools(manager, () => authority).find((item) => item.name === 'computer_act')!;
@@ -479,10 +806,10 @@ test('Full Owner uses a fresh Computer observation without a second approval lay
   assert.ok(wrapped && 'invoke' in wrapped);
 
   const result = await wrapped.invoke(new RunContext({}), JSON.stringify({
-    observationId: observed.observationId,
-    action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' },
+    action: { type: 'click', elementIndex: 1, button: 'left' },
   }), { toolCall: { callId: 'high-risk-click' } } as never) as Record<string, unknown>;
-  assert.equal(result.status, 'applied');
+  assert.equal(result.ok, true);
+  assert.ok(result.state);
   assert.equal(backend.actions.length, 1);
 });
 
@@ -666,7 +993,7 @@ printf '{"elements":[],"screenshot_png_b64":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB","
   const result = await client.observe(session, { input: { scope: 'desktop', includeScreenshot: true } });
   assert.equal(result.screenshot?.mediaType, 'image/png');
   assert.equal(result.screenshot?.data, 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB');
-  assert.deepEqual(result.data, { elements: [] });
+  assert.deepEqual(result.data, { sourceElementCount: 0, visibleElementCount: 0 });
 });
 
 test('Cua CLI adapter accepts the installed 0.12.3 driver version', async () => {
@@ -679,6 +1006,18 @@ printf '{"content":[],"structuredContent":{"ready":true}}\\n'
   const client = new CuaDriverClient(fixture, 2_000);
 
   assert.equal((await client.health()).version, '0.12.3');
+});
+
+test('Cua CLI adapter accepts the tested 0.14.1 driver version', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-current-'));
+  const fixture = path.join(root, 'cua-driver');
+  await writeFile(fixture, `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'cua-driver 0.14.1\\n'; exit 0; fi
+printf '{"content":[],"structuredContent":{"ready":true}}\\n'
+`, { mode: 0o700 });
+  const client = new CuaDriverClient(fixture, 2_000);
+
+  assert.equal((await client.health()).version, '0.14.1');
 });
 
 test('Cua target discovery does not mark every window of the active app frontmost', async () => {
@@ -730,6 +1069,136 @@ process.stdout.write(JSON.stringify({ content: [], structuredContent }) + '\\n')
     targets.map((candidate) => ({ windowId: candidate.windowId, frontmost: candidate.frontmost })),
     [{ windowId: 4, frontmost: false }, { windowId: 5, frontmost: true }],
   );
+});
+
+test('Cua target discovery removes menu-bar pseudo windows', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-window-filter-'));
+  const fixture = path.join(root, 'cua-driver');
+  await writeFile(fixture, `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  process.stdout.write('cua-driver 0.12.3\\n');
+  process.exit(0);
+}
+const name = process.argv[3] || '';
+const structuredContent = name === 'list_apps'
+  ? [{ pid: 61, bundle_id: 'com.example.editor', name: 'Editor', active: false }]
+  : [
+      { pid: 61, window_id: 1, title: 'Document', bounds: { x: 0, y: 0, width: 700, height: 500 } },
+      { pid: 61, window_id: 2, title: '', bounds: { x: 0, y: 0, width: 1728, height: 33 } },
+      { pid: 61, window_id: 3, title: '', bounds: { x: 0, y: 0, width: 1920, height: 30 } }
+    ];
+process.stdout.write(JSON.stringify({ content: [], structuredContent }) + '\\n');
+`, { mode: 0o700 });
+  const targets = await new CuaDriverClient(fixture, 2_000).listTargets({ limit: 10 });
+  assert.deepEqual(targets.map((candidate) => candidate.windowId), [1]);
+});
+
+test('Cua target discovery filters offscreen untitled pseudo windows and ranks usable windows', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-window-rank-'));
+  const fixture = path.join(root, 'cua-driver');
+  await writeFile(fixture, `#!/usr/bin/env node
+if (process.argv[2] === '--version') {
+  process.stdout.write('cua-driver 0.14.1\\n');
+  process.exit(0);
+}
+const name = process.argv[3] || '';
+const structuredContent = name === 'list_apps'
+  ? [{ pid: 62, bundle_id: 'com.example.editor', name: 'Editor', active: false }]
+  : [
+      { pid: 62, window_id: 1, title: '', is_on_screen: false, on_current_space: false, bounds: { x: -10000, y: -10000, width: 64, height: 64 } },
+      { pid: 62, window_id: 2, title: '', is_on_screen: false, on_current_space: false, bounds: { x: 0, y: 617, width: 500, height: 500 } },
+      { pid: 62, window_id: 3, title: 'Background draft', is_on_screen: false, on_current_space: false, bounds: { x: 100, y: 100, width: 700, height: 500 } },
+      { pid: 62, window_id: 4, title: 'Visible draft', is_on_screen: true, on_current_space: true, bounds: { x: 120, y: 120, width: 700, height: 500 } },
+      { pid: 62, window_id: 5, title: '', is_on_screen: true, on_current_space: true, bounds: { x: 140, y: 140, width: 700, height: 500 } }
+    ];
+process.stdout.write(JSON.stringify({ content: [], structuredContent }) + '\\n');
+`, { mode: 0o700 });
+  const targets = await new CuaDriverClient(fixture, 2_000).listTargets({ limit: 10 });
+
+  assert.deepEqual(targets.map((candidate) => candidate.windowId), [4, 3, 5]);
+});
+
+test('Cua observations remove menu trees and raw duplicate payloads', () => {
+  const client = new CuaDriverClient('/bin/false', 2_000);
+  const normalize = (client as unknown as {
+    observation: (result: { structured: unknown }) => BackendObservation;
+  }).observation.bind(client);
+  const observation = normalize({
+    structured: {
+      dimensions: { width: 700, height: 500 },
+      tree_markdown: '- [0] AXWindow Document\n  - [1] AXStaticText Display: 56\n- [2] AXMenuBar\n  - [3] AXMenuItem private-recent-file',
+      elements: [
+        { element_index: 0, role: 'AXWindow', label: 'Document' },
+        { element_index: 1, parent_index: 0, role: 'AXStaticText', label: 'Display: 56', value: '56' },
+        { element_index: 4, parent_index: 0, role: 'AXTextArea', label: 'Editable content', value: 'Editable content' },
+        { element_index: 2, role: 'AXMenuBar', label: 'Application menus' },
+        { element_index: 3, parent_index: 2, role: 'AXMenuItem', label: 'private-recent-file' },
+      ],
+    },
+  });
+  assert.deepEqual(observation.elements?.map((element) => element.index), [0, 1, 4]);
+  assert.equal(observation.elements?.find((element) => element.index === 4)?.writable, true);
+  assert.match(JSON.stringify(observation.data), /Display: 56/);
+  assert.doesNotMatch(JSON.stringify(observation), /private-recent-file|tree_markdown|AXMenuBar/);
+});
+
+test('Cua observations preserve bounded degraded AX diagnostics', () => {
+  const client = new CuaDriverClient('/bin/false', 2_000);
+  const normalize = (client as unknown as {
+    observation: (result: { structured: unknown }) => BackendObservation;
+  }).observation.bind(client);
+  const observation = normalize({
+    structured: {
+      degraded: true,
+      degraded_reason: `ax_window_unresolved: ${'detail'.repeat(400)}`,
+      escalation: {
+        reason: `Use the screenshot. ${'detail'.repeat(200)}`,
+        recommended: 'px',
+      },
+      screenshot_error: {
+        code: 'px_capture_unavailable',
+        reason: `capture failed ${'detail'.repeat(200)}`,
+        suggestion: 'Grant ScreenCapture permission',
+      },
+      elements: [],
+    },
+  });
+  const data = observation.data as Record<string, unknown>;
+  assert.equal(data.degraded, true);
+  assert.match(String(data.degradedReason), /ax_window_unresolved/);
+  assert.ok(String(data.degradedReason).length <= 1_000);
+  assert.deepEqual(data.escalation, {
+    reason: String((data.escalation as Record<string, unknown>).reason),
+    recommended: 'px',
+  });
+  assert.ok(String((data.escalation as Record<string, unknown>).reason).length <= 500);
+  assert.deepEqual(data.screenshotError, {
+    code: 'px_capture_unavailable',
+    reason: String((data.screenshotError as Record<string, unknown>).reason),
+    suggestion: 'Grant ScreenCapture permission',
+  });
+  assert.ok(String((data.screenshotError as Record<string, unknown>).reason).length <= 500);
+});
+
+test('Cua action receipts treat unverifiable effects as delivered but still expose evidence', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-unverifiable-'));
+  const fixture = path.join(root, 'cua-driver');
+  await writeFile(fixture, `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'cua-driver 0.14.1\\n'; exit 0; fi
+printf '{"effect":"unverifiable","verified":false,"path":"key_events"}\\n'
+`, { mode: 0o700 });
+  const client = new CuaDriverClient(fixture, 2_000);
+  const result = await client.act({ id: 'run' }, {
+    input: {
+      observationId: '0a0d8aba-cfa3-4bf7-9eae-6cbeb62ef07d',
+      action: { type: 'keypress', keys: ['7'], dispatch: 'background' },
+    },
+    target,
+  });
+
+  assert.equal(result.status, 'applied');
+  assert.equal(result.delivery, 'background');
+  assert.deepEqual(result.data, { effect: 'unverifiable', verified: false, path: 'key_events' });
 });
 
 test('Cua lifecycle starts a missing daemon and restores it after a crash', async () => {
@@ -801,12 +1270,12 @@ if (!existsSync(${JSON.stringify(state)})) {
 }
 process.stdout.write('{"content":[],"structuredContent":{"status":"applied"}}\\n');
 `, { mode: 0o700 });
-  const lifecycle = new CuaDriverLifecycle(command, 500, {
-    startupTimeoutMs: 500,
+  const lifecycle = new CuaDriverLifecycle(command, 2_000, {
+    startupTimeoutMs: 2_000,
     probeIntervalMs: 10,
     launcher: () => writeFile(state, 'ready'),
   });
-  const client = new CuaDriverClient(command, 500, lifecycle);
+  const client = new CuaDriverClient(command, 2_000, lifecycle);
 
   assert.equal((await client.health()).version, '0.12.3');
   assert.equal(lifecycle.status().recoveries, 1);

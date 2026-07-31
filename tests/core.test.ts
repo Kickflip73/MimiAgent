@@ -250,7 +250,7 @@ test('reads a requested Session snapshot without changing the active Session', a
     assert.equal(snapshot.runtime.model, 'gpt-5-mini');
     assert.equal(snapshot.runtime.outputLevel, 'trace');
     assert.ok(snapshot.context.estimatedTokens > 0);
-    assert.equal(snapshot.context.contextWindow, 128_000);
+    assert.equal(snapshot.context.contextWindow, 400_000);
     assert.equal(agent.currentSessionId, 'active');
   } finally {
     await agent.close();

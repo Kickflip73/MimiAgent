@@ -60,6 +60,10 @@ export function prepareComputerHistoryForModelInput(items: AgentInputItem[]): Ag
 const MODEL_PROFILES: Record<string, ModelProfile> = {
   'deepseek-v4-pro': { contextWindow: 1_048_576, outputReserve: 65_536, supportsImageInput: false },
   'deepseek-v4-flash': { contextWindow: 128_000, outputReserve: 16_384, supportsImageInput: false },
+  'gpt-5.6': { contextWindow: 1_050_000, outputReserve: 32_768, supportsImageInput: true },
+  'gpt-5.6-sol': { contextWindow: 1_050_000, outputReserve: 32_768, supportsImageInput: true },
+  'gpt-5.6-terra': { contextWindow: 1_050_000, outputReserve: 32_768, supportsImageInput: true },
+  'gpt-5.6-luna': { contextWindow: 1_050_000, outputReserve: 32_768, supportsImageInput: true },
   'gpt-5.4-mini': { contextWindow: 400_000, outputReserve: 32_768, supportsImageInput: true },
   'gpt-5.4': { contextWindow: 400_000, outputReserve: 32_768, supportsImageInput: true },
   'gpt-5-mini': { contextWindow: 400_000, outputReserve: 32_768, supportsImageInput: true },
@@ -87,24 +91,32 @@ export function resolveModelProfile(config: AppConfig, name: string): ModelProfi
   const fallback = config.provider === 'openai'
     ? { contextWindow: 400_000, outputReserve: 32_768, supportsImageInput: false }
     : { contextWindow: 128_000, outputReserve: 16_384, supportsImageInput: false };
-  const builtIn = MODEL_PROFILES[name] ?? fallback;
+  const builtIn = MODEL_PROFILES[name];
   const prefix = modelEnvironmentPrefix(name);
   const contextOverride = positiveInteger(
-    process.env[`${prefix}_CONTEXT_WINDOW`] ?? config.contextWindow,
+    process.env[`${prefix}_CONTEXT_WINDOW`],
     `${prefix}_CONTEXT_WINDOW`,
   );
-  const contextWindow = contextOverride ?? builtIn.contextWindow;
+  const legacyContextFallback = builtIn ? undefined : config.contextWindow;
+  const contextWindow = contextOverride
+    ?? builtIn?.contextWindow
+    ?? legacyContextFallback
+    ?? fallback.contextWindow;
   const reserveOverride = positiveInteger(
-    process.env[`${prefix}_OUTPUT_RESERVE`] ?? config.outputReserve,
+    process.env[`${prefix}_OUTPUT_RESERVE`],
     `${prefix}_OUTPUT_RESERVE`,
   );
+  const baseOutputReserve = builtIn?.outputReserve ?? config.outputReserve ?? fallback.outputReserve;
+  const contextWasOverridden = contextOverride !== undefined || legacyContextFallback !== undefined;
   const outputReserve = reserveOverride
-    ?? (contextOverride ? Math.min(builtIn.outputReserve, Math.max(256, Math.floor(contextWindow * 0.1))) : builtIn.outputReserve);
+    ?? (contextWasOverridden
+      ? Math.min(baseOutputReserve, Math.max(256, Math.floor(contextWindow * 0.1)))
+      : baseOutputReserve);
   if (outputReserve >= contextWindow) throw new Error(`模型 ${name} 的输出预留必须小于上下文窗口`);
   const supportsImageInput = optionalBoolean(
     process.env[`${prefix}_SUPPORTS_IMAGE_INPUT`] ?? process.env.MIMI_MODEL_SUPPORTS_IMAGE_INPUT,
     `${prefix}_SUPPORTS_IMAGE_INPUT`,
-  ) ?? builtIn.supportsImageInput;
+  ) ?? builtIn?.supportsImageInput ?? fallback.supportsImageInput;
   return { contextWindow, outputReserve, supportsImageInput };
 }
 

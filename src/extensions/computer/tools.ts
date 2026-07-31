@@ -6,38 +6,67 @@ import {
   TOOL_LEDGER_ARGUMENTS,
 } from '../../core/tool-metadata.js';
 import { ComputerManager, type ComputerRunAuthority } from './manager.js';
-import { computerActionSchema, computerObserveInputSchema } from './types.js';
+import { computerActionSchema } from './types.js';
 
 type StructuredOutput = ToolOutputText | ToolOutputImage;
 
+const modelOptional = <T extends z.ZodType>(schema: T) => schema.nullable().optional();
+
 const observeToolParameters = z.object({
-  scope: z.enum(['targets', 'window', 'region', 'desktop', 'driver', 'session']),
-  query: z.string().optional(),
-  limit: z.number().optional(),
-  target: z.object({ bundleId: z.string().optional(), pid: z.number().optional(), windowId: z.number().optional() }).optional(),
-  includeScreenshot: z.boolean().optional(),
-  maxElements: z.number().optional(),
-  maxDepth: z.number().optional(),
-  rect: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional(),
-  include: z.array(z.enum(['health', 'permissions', 'config', 'recording'])).optional(),
-  promptForPermissions: z.boolean().optional(),
-});
+  app: modelOptional(z.string().min(1).max(500)),
+  screenshot: modelOptional(z.boolean()),
+}).strict();
+
+const modelComputerActionSchema = z.object({
+  type: z.enum([
+    'launch_app', 'click', 'double_click', 'type_text', 'set_value', 'keypress', 'scroll', 'drag', 'wait',
+  ]),
+  bundleId: modelOptional(z.string().min(1).max(500)),
+  urls: modelOptional(z.array(z.string().max(4_000)).max(20)),
+  newInstance: modelOptional(z.boolean()),
+  elementIndex: modelOptional(z.number().int().nonnegative()),
+  x: modelOptional(z.number().finite()),
+  y: modelOptional(z.number().finite()),
+  button: modelOptional(z.enum(['left', 'right', 'middle'])),
+  axAction: modelOptional(z.enum(['press', 'show_menu', 'pick', 'confirm', 'cancel', 'open'])),
+  text: modelOptional(z.string().max(10_000)),
+  value: modelOptional(z.union([z.string().max(10_000), z.number().finite(), z.boolean()])),
+  keys: modelOptional(z.array(z.string().min(1).max(30)).min(1).max(5)),
+  deltaX: modelOptional(z.number().finite()),
+  deltaY: modelOptional(z.number().finite()),
+  path: modelOptional(z.array(z.object({ x: z.number().finite(), y: z.number().finite() }).strict()).min(2).max(20)),
+  milliseconds: modelOptional(z.number().int().min(0).max(30_000)),
+}).strict();
 
 const actToolParameters = z.object({
-  action: computerActionSchema,
-});
+  action: modelComputerActionSchema,
+}).strict();
 
-function nonStrictToolSchema(schema: z.ZodType) {
-  const converted = z.toJSONSchema(schema) as {
-    properties?: Record<string, Record<string, unknown>>;
-    required?: string[];
-  };
+function withoutNulls(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutNulls);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== null && item !== undefined)
+    .map(([key, item]) => [key, withoutNulls(item)]));
+}
+
+function withoutObservationHandle(result: unknown): unknown {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result;
+  const {
+    observationId: _observationId,
+    target,
+    frontmost: _frontmost,
+    ...publicResult
+  } = result as Record<string, unknown>;
+  if (!target || typeof target !== 'object' || Array.isArray(target)) return publicResult;
+  const value = target as Record<string, unknown>;
   return {
-    ...converted,
-    type: 'object' as const,
-    properties: converted.properties ?? {},
-    required: converted.required ?? [],
-    additionalProperties: true as const,
+    ...publicResult,
+    app: {
+      id: value.bundleId,
+      name: value.appName,
+      window: value.title,
+    },
   };
 }
 
@@ -69,30 +98,20 @@ export function createComputerTools(
   };
   const observe = tool({
     name: 'computer_observe',
-    description: '只读发现本机应用/窗口、观察目标窗口元素或按需获取局部图像。模型不支持图像输入时使用 targets 或 includeScreenshot=false 的语义观察。',
-    parameters: nonStrictToolSchema(observeToolParameters),
-    // The public schema intentionally contains optional fields. Keep SDK strict
-    // conversion from rejecting otherwise valid schemas across patch releases;
-    // the canonical discriminated schema is still enforced before execution.
-    strict: false,
+    description: '读取一个 app 的当前界面。传 app 名称或 bundleId；省略 app 时列出可用应用。默认返回紧凑 AX 状态，只有 AX 不足时再请求 screenshot。不会启动未运行的 app。',
+    parameters: observeToolParameters,
     execute: async (input, _context, details): Promise<unknown> => {
       const raw = input as Record<string, unknown>;
-      const parsed = raw.scope === 'region'
-        ? manager.bindLatestRegion(
-            authority(),
-            z.object({
-              x: z.number(),
-              y: z.number(),
-              width: z.number(),
-              height: z.number(),
-            }).parse(raw.rect),
-          )
-        : computerObserveInputSchema.parse(input);
-      const result = await manager.observe(authority(), parsed, details?.signal);
+      const app = typeof raw.app === 'string' ? raw.app.trim() : '';
+      if (!app) return { apps: await manager.listApps(authority(), undefined, details?.signal) };
+      const result = await manager.observeApp(
+        authority(),
+        app,
+        raw.screenshot === true,
+        details?.signal,
+      );
       if (!result || typeof result !== 'object') return result;
-      const { observationId: _observationId, ...publicResult } = result as typeof result & {
-        observationId?: string;
-      };
+      const publicResult = withoutObservationHandle(result) as Record<string, unknown>;
       if (!('screenshot' in publicResult) || !publicResult.screenshot) return publicResult;
       const { screenshot, ...metadata } = publicResult as typeof publicResult & {
         screenshot: { data: string; mediaType: string };
@@ -105,12 +124,48 @@ export function createComputerTools(
   });
   const act = tool({
     name: 'computer_act',
-    description: '执行一个原子电脑动作。UI 动作自动绑定本轮最新的有效窗口观察；launch_app 只需精确 bundleId，不依赖截图或既有观察。',
-    parameters: nonStrictToolSchema(actToolParameters),
-    strict: false,
-    execute: (input, _context, details) => {
-      const action = computerActionSchema.parse((input as Record<string, unknown>).action);
-      return manager.act(authority(), manager.bindLatestAction(authority(), action), details?.signal);
+    description: '执行一个原子电脑动作。Host 自动绑定最新窗口；launch_app 会绑定本轮新建的应用窗口。动作后直接返回 fresh state，使用 state 继续；只有返回 next=computer_observe 时才再观察。',
+    parameters: actToolParameters,
+    execute: async (input, _context, details) => {
+      const modelAction = withoutNulls((input as Record<string, unknown>).action) as Record<string, unknown>;
+      const action = computerActionSchema.parse(modelAction);
+      const runAuthority = authority();
+      const result = await manager.act(
+        runAuthority,
+        manager.bindLatestAction(runAuthority, action),
+        details?.signal,
+      );
+      if (result.status === 'background_unsupported') {
+        return { ok: false, reason: 'background_unsupported' };
+      }
+      if (!result.target) {
+        return { ok: true, next: 'computer_observe' };
+      }
+      try {
+        const state = await manager.observeTarget(
+          runAuthority,
+          result.target,
+          false,
+          details?.signal,
+        );
+        const publicState = withoutObservationHandle(state) as Record<string, unknown>;
+        if (!('screenshot' in publicState) || !publicState.screenshot) {
+          return { ok: true, state: publicState };
+        }
+        const { screenshot, ...metadata } = publicState as typeof publicState & {
+          screenshot: { data: string; mediaType: string };
+        };
+        return [
+          { type: 'text', text: JSON.stringify({ ok: true, state: metadata }) } satisfies ToolOutputText,
+          { type: 'image', image: { data: screenshot.data, mediaType: screenshot.mediaType }, detail: 'high' } satisfies ToolOutputImage,
+        ] satisfies StructuredOutput[];
+      } catch (error) {
+        return {
+          ok: true,
+          next: 'computer_observe',
+          stateUnavailable: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
+        };
+      }
     },
   }) as Tool & {
     [TOOL_LEDGER_ARGUMENTS]?: (rawInput: string) => string;
@@ -135,7 +190,7 @@ export function createComputerTools(
     const runAuthority = authority();
     const parsed = manager.bindLatestAction(
       runAuthority,
-      computerActionSchema.parse(input.action),
+      computerActionSchema.parse(withoutNulls(input.action)),
     );
     const action = parsed.action as unknown as Record<string, unknown>;
     const observationId = 'observationId' in parsed ? parsed.observationId : undefined;
@@ -171,9 +226,7 @@ export function createComputerTools(
       } : {}),
       outcome: (result) => {
         if (!result || typeof result !== 'object') return 'confirmed';
-        const status = (result as Record<string, unknown>).status;
-        if (status === 'uncertain') return 'uncertain';
-        if (status === 'background_unsupported') return 'failed_safe';
+        if ((result as Record<string, unknown>).ok === false) return 'failed_safe';
         return 'confirmed';
       },
     };

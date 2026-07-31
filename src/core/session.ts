@@ -726,12 +726,13 @@ export class FileSession implements Session {
   async readContextToolArtifact(
     ref: string,
     expectedRunId: string,
+    pendingItems: readonly AgentInputItem[] = [],
   ): Promise<{ ref: string; callId: string; toolName: string; output: unknown }> {
     const session = await this.load();
     const artifact = session.contextToolArtifacts?.find((candidate) =>
       candidate.ref === ref && candidate.runId === expectedRunId);
     if (!artifact) throw new Error('Context Artifact 不存在、所属 Run 不匹配或当前 Session 无权读取');
-    const item = session.items.find((candidate) => {
+    const item = [...session.items, ...pendingItems].find((candidate) => {
       const value = candidate as unknown as Record<string, unknown>;
       if (value.type !== 'function_call_result') return false;
       const callId = String(value.callId ?? value.call_id ?? '');
@@ -741,7 +742,7 @@ export class FileSession implements Session {
         .digest('hex')}`;
       return digest === artifact.outputDigest;
     }) as unknown as Record<string, unknown> | undefined;
-    if (!item) throw new Error('Context Artifact 的 canonical 工具结果缺失或摘要引用校验失败');
+    if (!item) throw new Error('Context Artifact 的 canonical/pending 工具结果缺失或摘要引用校验失败');
     return {
       ref: artifact.ref,
       callId: artifact.callId,

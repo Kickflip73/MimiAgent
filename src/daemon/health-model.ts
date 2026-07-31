@@ -101,10 +101,15 @@ export function buildDaemonHealth(input: DaemonHealthInput): DaemonHealthSnapsho
     });
   }
   if (input.computer && !input.computer.ready) {
+    const message = input.computer.transportReady
+      ? input.computer.operationalReadiness === 'degraded'
+        ? `Computer UI 路径退化：${input.computer.lastOperationalFailure ?? '最近一次窗口观察不可操作'}`
+        : 'Computer Driver 已连接，但尚无真实窗口 observation 证明 UI 路径可操作'
+      : `Computer Use ${input.computer.state}：${input.computer.lastFailure ?? 'Cua Driver 尚未就绪'}`;
     risks.push({
       code: 'computer_unavailable',
       severity: 'error',
-      message: `Computer Use ${input.computer.state}：${input.computer.lastFailure ?? 'Cua Driver 尚未就绪'}`,
+      message,
       nextAction: 'mimi daemon doctor',
     });
   }

@@ -41,7 +41,7 @@ export const computerObserveInputSchema = z.discriminatedUnion('scope', [
     target: targetSelectorSchema,
     query: z.string().max(500).optional(),
     includeScreenshot: z.boolean().default(false),
-    maxElements: z.number().int().min(1).max(1_000).default(400),
+    maxElements: z.number().int().min(1).max(1_000).default(160),
     maxDepth: z.number().int().min(1).max(20).default(12),
   }),
   z.object({
@@ -141,14 +141,26 @@ export interface ComputerTargetSummary {
   frontmost?: boolean;
 }
 
+export interface ComputerAppSummary {
+  bundleId: string;
+  name: string;
+  running: boolean;
+}
+
 export interface ComputerElement {
   index: number;
   role: string;
   label?: string;
+  value?: string | number | boolean;
+  description?: string;
+  identifier?: string;
   actions?: string[];
   frame?: { x: number; y: number; width: number; height: number };
   secure?: boolean;
   writable?: boolean;
+  enabled?: boolean;
+  selected?: boolean;
+  focused?: boolean;
 }
 
 export interface BackendSession { id: string }
@@ -186,6 +198,7 @@ export interface ComputerBackend {
   readonly kind: 'cua';
   health(signal?: AbortSignal): Promise<Record<string, unknown>>;
   startSession(input: { sessionId: string; captureScope: 'auto' }, signal?: AbortSignal): Promise<BackendSession>;
+  listApps(query: { query?: string; limit: number }, signal?: AbortSignal): Promise<ComputerAppSummary[]>;
   listTargets(query: { query?: string; limit: number }, signal?: AbortSignal): Promise<ComputerTargetSummary[]>;
   observe(session: BackendSession, request: BackendObserveRequest, signal?: AbortSignal): Promise<BackendObservation>;
   act(session: BackendSession, request: BackendActionRequest, signal?: AbortSignal): Promise<BackendActionResult>;

@@ -61,14 +61,19 @@ if (!session.startsWith('mimi-')) throw new Error('unexpected session');
 if (command === 'open') process.stdout.write(JSON.stringify({ url: subcommand, page: 'page-1' }));
 else if (command === 'bind') process.stdout.write(JSON.stringify({ session, bound: true }));
 else if (command === 'close' || command === 'unbind') process.stdout.write(JSON.stringify({ released: true }));
-else if (command === 'state') process.stdout.write('URL: https://example.com\\n[7] button "Save"');
+else if (command === 'state') process.stdout.write('URL: https://example.com\\n[5]<select>Role\\n  [3]<option>Engineer</option>\\n  [4]<option>Designer</option>\\n[7] button "Save"');
 else if (command === 'find') process.stdout.write(JSON.stringify({ matches_n: 1, entries: [{ ref: 7, role: 'button', text: 'Save' }] }));
 else if (command === 'tab' && subcommand === 'list') process.stdout.write(JSON.stringify([{ page: 'page-1', url: 'https://example.com' }]));
 else if (command === 'get' && subcommand === 'html') process.stdout.write(JSON.stringify({ tag: 'body', text: 'Example' }));
 else if (command === 'get' && subcommand === 'text') process.stdout.write(JSON.stringify({ value: 'Save', matches_n: 1, match_level: 'exact' }));
+else if (command === 'get' && subcommand === 'url') process.stdout.write(JSON.stringify({ value: 'https://example.com/details' }));
 else if (command === 'extract') process.stdout.write(JSON.stringify({ url: 'https://internal.example.com/issues/1', content: '# Internal issue', next_start_char: null }));
 else if (command === 'network') process.stdout.write(JSON.stringify([{ url: 'https://example.com/api?token=secret', body: { token: 'secret' }, shape: ['items'] }]));
 else if (command === 'click') process.stdout.write(JSON.stringify({ clicked: true, target: subcommand, matches_n: 1, match_level: 'exact' }));
+else if (command === 'eval' && subcommand.includes('__mimiOperation = "check"')) process.stdout.write(JSON.stringify({ verified: true, checked: true, changed: true, matches_n: 1, dispatch: 'dom' }));
+else if (command === 'eval' && subcommand.includes('__mimiOperation = "click"')) process.stdout.write(JSON.stringify(subcommand.includes('"role":"link"')
+  ? { verified: true, clicked: true, matches_n: 1, dispatch: 'dom', navigationExpected: true, beforeUrl: 'https://example.com', expectedUrl: subcommand.includes('New window') ? 'https://example.com/popup' : 'https://example.com/details', newTabExpected: subcommand.includes('New window') }
+  : { verified: true, clicked: true, matches_n: 1, dispatch: 'dom' }));
 else if (command === 'eval') process.stdout.write(JSON.stringify({ value: 'script-result', script: subcommand }));
 else if (command === 'fill') {
   const value = rest[0];
@@ -156,6 +161,58 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     const sessionRef = String(opened.result?.sessionRef);
     assert.match(sessionRef, /^browser:/);
 
+    const duplicate = await call('duplicate-open', 'open_session', 'research', {
+      url: 'https://example.com',
+    });
+    assert.equal(duplicate.ok, false);
+    assert.match(duplicate.error ?? '', /label already exists/);
+
+    const held = await call('held', 'probe_tabs', 'all', {});
+    assert.equal(held.result?.sessions, 1);
+    assert.equal(held.result?.total, 1);
+
+    const initialPage = String(opened.result?.page);
+    assert.match(initialPage, /^page:/);
+    const newTab = await call('new-tab', 'new_tab', sessionRef, {
+      url: 'https://example.com/secondary',
+    });
+    assert.equal(newTab.ok, true, newTab.error);
+    const secondaryPage = String(newTab.result?.page);
+    assert.match(secondaryPage, /^page:/);
+    assert.notEqual(secondaryPage, initialPage);
+    assert.equal(newTab.result?.tabCount, 2);
+
+    const logicalTabs = await call('logical-tabs', 'list_tabs', sessionRef, {});
+    assert.equal(logicalTabs.ok, true, logicalTabs.error);
+    const tabs = logicalTabs.result?.tabs as Array<Record<string, unknown>>;
+    assert.equal(tabs.length, 2);
+    assert.equal(tabs.find((tab) => tab.page === secondaryPage)?.active, true);
+
+    const initialPageRead = await call('initial-page-read', 'read_element', sessionRef, {
+      page: initialPage,
+      selector: '#status',
+      field: 'text',
+    });
+    assert.equal(initialPageRead.ok, true, initialPageRead.error);
+    assert.equal(initialPageRead.result?.value, 'Save');
+
+    const selectedInitial = await call('select-initial', 'select_tab', sessionRef, {
+      page: initialPage,
+    });
+    assert.equal(selectedInitial.ok, true, selectedInitial.error);
+    assert.equal(selectedInitial.result?.activePage, initialPage);
+    const closedSecondary = await call('close-secondary', 'close_tab', sessionRef, {
+      page: secondaryPage,
+    });
+    assert.equal(closedSecondary.ok, true, closedSecondary.error);
+    assert.equal(closedSecondary.result?.closedPage, secondaryPage);
+    assert.equal(closedSecondary.result?.activePage, initialPage);
+    assert.equal(closedSecondary.result?.tabCount, 1);
+
+    const aliasSnapshot = await call('alias-snapshot', 'snapshot', 'research', { source: 'dom' });
+    assert.equal(aliasSnapshot.ok, true, aliasSnapshot.error);
+    assert.match(String(aliasSnapshot.result?.text), /button "Save"/);
+
     const foreground = await call('foreground', 'open_session', 'foreground', {
       url: 'https://example.com',
       window: 'foreground',
@@ -169,7 +226,16 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     assert.equal(snapshot.ok, true, snapshot.error);
     assert.match(String(snapshot.result?.observationId), /^[0-9a-f-]{36}$/);
     assert.match(String(snapshot.result?.text), /button "Save"/);
+    assert.doesNotMatch(String(snapshot.result?.text), /\[3\]<option>|\[4\]<option>/);
+    assert.match(String(snapshot.result?.text), /\[5\]<select>/);
     const observationId = String(snapshot.result?.observationId);
+
+    const selectedText = await call('selected-text', 'read_element', sessionRef, {
+      selector: '#status',
+      field: 'text',
+    });
+    assert.equal(selectedText.ok, true, selectedText.error);
+    assert.equal(selectedText.result?.value, 'Save');
 
     const rejected = await call('rejected-click', 'click', sessionRef, {
       observationId,
@@ -191,10 +257,35 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     assert.equal(clicked.result?.businessOutcome, 'unverified');
     assert.equal(clicked.result?.clicked, true);
     assert.equal(clicked.result?.observationInvalidated, undefined);
-    assert.deepEqual(clicked.result?.nextRead, {
-      action: 'list_tabs',
-      reason: '点击可能打开或选择新标签页；先重新列出 page，再读取目标 page',
+    assert.equal(clicked.result?.verified, true);
+    assert.equal(clicked.result?.nextRead, undefined);
+    assert.deepEqual(clicked.result?.verificationPlan, {
+      timing: 'after_action_group',
+      method: 'browser_assert_or_precise_observe',
+      listTabsOnlyIfNewTabExpected: true,
     });
+
+    const navigationClick = await call('navigation-click', 'click', sessionRef, {
+      role: 'link',
+      name: 'Details',
+    });
+    assert.equal(navigationClick.ok, true, navigationClick.error);
+    assert.equal(navigationClick.result?.navigationExpected, true);
+    assert.equal(navigationClick.result?.navigationSettled, true);
+    assert.equal(navigationClick.result?.url, 'https://example.com/details');
+
+    const newWindowClick = await call('new-window-click', 'click', sessionRef, {
+      role: 'link',
+      name: 'New window',
+    });
+    assert.equal(newWindowClick.ok, true, newWindowClick.error);
+    assert.equal(newWindowClick.result?.newTabExpected, true);
+    assert.equal(newWindowClick.result?.navigationSettled, true);
+    assert.match(String(newWindowClick.result?.page), /^page:/);
+    assert.equal(newWindowClick.result?.tabCount, 2);
+    const closedPopup = await call('close-popup', 'close_tab', sessionRef, {});
+    assert.equal(closedPopup.ok, true, closedPopup.error);
+    assert.equal(closedPopup.result?.activePage, initialPage);
 
     const unobservedEval = await call('unobserved-eval', 'execute_javascript', sessionRef, {
       code: 'document.title',
@@ -227,6 +318,16 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     });
     assert.equal(hovered.ok, true, hovered.error);
     assert.equal(hovered.result?.outcome, 'confirmed');
+
+    const checked = await call('checked', 'check', sessionRef, {
+      role: 'checkbox',
+      name: 'Confirm',
+    });
+    assert.equal(checked.ok, true, checked.error);
+    assert.equal(checked.result?.checked, true);
+    assert.equal(checked.result?.verified, true);
+    assert.equal(checked.result?.dispatch, 'dom');
+    assert.equal(checked.result?.outcome, 'confirmed');
 
     const oldObservation = await call('old-observation', 'click', sessionRef, {
       observationId,
@@ -270,6 +371,9 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     assert.equal(closed.result?.closed, true);
     assert.equal(closed.result?.outcome, 'confirmed');
 
+    const released = await call('released', 'probe_tabs', 'all', {});
+    assert.equal(released.result?.sessions, 0);
+
     const expired = await call('expired', 'snapshot', sessionRef, {});
     assert.equal(expired.ok, false);
     assert.match(expired.error ?? '', /missing or expired/);
@@ -283,6 +387,11 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
     assert.ok(commands.some((args) => args[1]?.startsWith('mimi-read-') && args[2] === 'open'));
     assert.ok(commands.some((args) => args[1]?.startsWith('mimi-read-') && args[2] === 'extract'));
     assert.ok(commands.some((args) => args[1]?.startsWith('mimi-read-') && args[2] === 'close'));
+    assert.ok(commands.some((args) => (
+      args[2] === 'get' && args[3] === 'text' && args[4] === '#status'
+    )));
+    assert.ok(commands.every((args) => args[2] !== 'check'));
+    assert.ok(commands.some((args) => args[2] === 'eval' && args[3]?.includes('__mimiOperation = "check"')));
     assert.ok(commands.some((args) => args.includes('--window') && args.includes('background')));
     assert.ok(commands.every((args) => !args.includes('foreground')));
     assert.ok(commands.every((args) => !args.some((arg) => /safari|osascript/i.test(arg))));
