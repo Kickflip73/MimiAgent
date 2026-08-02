@@ -451,11 +451,9 @@ export class TaskProcessSupervisor {
       const available = limit - activeWorkers.length - detachedCodex.length;
       if (available <= 0) return;
       let ready = this.store.readyTasks({
-        types: ['background', 'scheduled', 'briefing', 'memory_maintenance'],
+        executors: ['isolated_worker', 'codex'],
       }, 50)
-        .filter((task) => (
-          task.executor === 'isolated_worker' || task.executor === 'codex'
-        ) && !this.workers.has(task.id));
+        .filter((task) => !this.workers.has(task.id));
       if (ready.length === 0) return;
       if (this.ordinaryCompletionsSinceMaintenance >= 20) {
         const maintenance = ready.find((task) => task.type === 'memory_maintenance');

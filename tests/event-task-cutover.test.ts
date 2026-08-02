@@ -474,7 +474,7 @@ test('v11 cutover atomically preserves Task, Run and Outbox ownership without pa
   }
   const database = new DatabaseSync(file, { readOnly: true });
   try {
-    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 15);
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 16);
     assert.equal(database.prepare("SELECT name FROM sqlite_master WHERE name = 'events_v2'").get(), undefined);
     assert.equal(database.prepare("SELECT name FROM sqlite_master WHERE name = 'task_attempts'").get(), undefined);
     assert.equal((database.prepare('PRAGMA foreign_key_check').all() as unknown[]).length, 0);
@@ -512,13 +512,88 @@ test('v14 removes only artifact-free digested Tasks and repairs their route rece
 
   const database = new DatabaseSync(file, { readOnly: true });
   try {
-    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 15);
+    assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 16);
     assert.equal((database.prepare('PRAGMA foreign_key_check').all() as unknown[]).length, 0);
   } finally {
     database.close();
   }
   const backups = await readdir(path.join(root, 'backups'), { recursive: true });
   assert.equal(backups.some((entry) => entry.endsWith('mimi.db')), true);
+});
+
+test('v16 migrates only the known queued Briefing route and records unresolved combinations', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-event-task-v16-'));
+  const file = path.join(root, 'mimi.db');
+  const store = new MimiStore(file);
+  const at = '2026-07-20T00:00:00.000Z';
+  try {
+    const authority = store.appendEvent({
+      id: 'briefing-authority', externalId: 'briefing-authority', source: 'attention:briefing',
+      type: 'alert.received', trust: 'external', payload: {}, profileId: 'owner',
+      occurredAt: at, receivedAt: at,
+    }).event;
+    store.enqueueTask({
+      id: 'legacy-briefing', type: 'background', idempotencyKey: 'legacy-briefing',
+      authorityEventId: authority.id, profileId: 'owner', sessionKey: 'mimi-briefing', objective: {},
+      executor: 'isolated_worker', workspaceAccess: 'read', priority: 85,
+    });
+    store.enqueueTask({
+      id: 'unresolved-briefing', type: 'background', idempotencyKey: 'unresolved-briefing',
+      authorityEventId: authority.id, profileId: 'owner', sessionKey: 'mimi-briefing-unknown', objective: {},
+      executor: 'isolated_worker', workspaceAccess: 'read', priority: 84,
+    });
+    store.enqueueTask({
+      id: 'unknown-historical-type', type: 'background', idempotencyKey: 'unknown-historical-type',
+      authorityEventId: authority.id, profileId: 'owner', sessionKey: 'mimi-unknown-type', objective: {},
+      executor: 'isolated_worker', workspaceAccess: 'read', priority: 83,
+    });
+  } finally {
+    store.close();
+  }
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`
+    UPDATE tasks SET type = 'briefing', executor = 'session_actor', workspace_access = 'write'
+      WHERE id = 'legacy-briefing';
+    UPDATE tasks SET type = 'briefing', executor = 'codex', workspace_access = 'write'
+      WHERE id = 'unresolved-briefing';
+    UPDATE tasks SET type = 'retired_worker_kind'
+      WHERE id = 'unknown-historical-type';
+    PRAGMA user_version = 15;
+  `);
+  legacy.close();
+
+  const migrated = new MimiStore(file);
+  try {
+    assert.equal(migrated.getTask('legacy-briefing')?.executor, 'isolated_worker');
+    assert.equal(migrated.getTask('legacy-briefing')?.workspaceAccess, 'read');
+    assert.equal(migrated.getTask('unresolved-briefing')?.executor, 'codex');
+    assert.equal(migrated.getTask('unresolved-briefing')?.workspaceAccess, 'write');
+    assert.equal(migrated.getTask('unknown-historical-type')?.type, 'retired_worker_kind');
+    assert.equal(
+      migrated.activitySnapshot(20).recentTransitions.some((item) => (
+        item.type === 'migration.task_executor_v16' && item.entityId === 'schema:v16'
+      )),
+      true,
+    );
+  } finally {
+    migrated.close();
+  }
+  const verified = new DatabaseSync(file, { readOnly: true });
+  assert.equal((verified.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 16);
+  assert.equal(
+    (verified.prepare('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check,
+    'ok',
+  );
+  assert.equal(verified.prepare('PRAGMA foreign_key_check').all().length, 0);
+  const audit = verified.prepare(`
+    SELECT data_json FROM audit_events WHERE event_type = 'migration.task_executor_v16'
+  `).get() as { data_json: string };
+  assert.equal(
+    (JSON.parse(audit.data_json) as { after: { unresolvedHistoricalCombinations: number } })
+      .after.unresolvedHistoricalCombinations,
+    2,
+  );
+  verified.close();
 });
 
 test('repairs an empty half-migrated v12 database before accepting new Events', async () => {

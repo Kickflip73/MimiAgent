@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 
-export function createFreshV12Schema(database: DatabaseSync): void {
+export function createFreshV16Schema(database: DatabaseSync): void {
   database.exec(`
     BEGIN IMMEDIATE;
     CREATE TABLE events (
@@ -63,6 +63,38 @@ export function createFreshV12Schema(database: DatabaseSync): void {
     CREATE TABLE attention_state (
       key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL
     ) STRICT;
+    CREATE TABLE memory_observations (
+      source_key TEXT PRIMARY KEY,
+      event_id TEXT NOT NULL REFERENCES events(id),
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      run_id TEXT NOT NULL REFERENCES runs(id),
+      session_id TEXT NOT NULL,
+      profile_id TEXT NOT NULL,
+      outcome TEXT NOT NULL CHECK(outcome IN ('completed', 'dead_letter')),
+      trust TEXT NOT NULL,
+      content_digest TEXT NOT NULL,
+      observed_at TEXT NOT NULL,
+      compiled_at TEXT,
+      receipt_id TEXT,
+      evidence_snapshot_json TEXT
+    ) STRICT;
+    CREATE TABLE memory_lint_state (
+      profile_id TEXT PRIMARY KEY,
+      changes_since_lint INTEGER NOT NULL DEFAULT 0,
+      first_changed_at TEXT,
+      last_lint_at TEXT
+    ) STRICT;
+    CREATE TABLE memory_lint_receipts (
+      receipt_id TEXT PRIMARY KEY,
+      profile_id TEXT NOT NULL,
+      page_count INTEGER NOT NULL,
+      recorded_at TEXT NOT NULL
+    ) STRICT;
+    CREATE TABLE memory_lint_task_receipts (
+      task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+      profile_id TEXT NOT NULL,
+      completed_at TEXT NOT NULL
+    ) STRICT;
     CREATE INDEX events_timeline_idx ON events(received_at DESC, id);
     CREATE INDEX events_subject_idx ON events(subject_type, subject_id, received_at DESC);
     CREATE INDEX events_correlation_idx ON events(correlation_id, received_at ASC);
@@ -78,6 +110,8 @@ export function createFreshV12Schema(database: DatabaseSync): void {
     CREATE INDEX tasks_authority_idx ON tasks(authority_event_id);
     CREATE INDEX tasks_parent_idx ON tasks(parent_task_id);
     CREATE INDEX tasks_retention_idx ON tasks(status, updated_at);
+    CREATE INDEX tasks_executor_ready_idx
+      ON tasks(executor, status, not_before, priority DESC, created_at ASC);
     CREATE INDEX runs_task_status_idx ON runs(task_id, status);
     CREATE INDEX outbox_ready_idx ON outbox(status, not_before, created_at);
     CREATE INDEX outbox_task_idx ON outbox(task_id);
@@ -88,7 +122,11 @@ export function createFreshV12Schema(database: DatabaseSync): void {
     CREATE INDEX digest_pending_idx ON digest_items(digested_at, briefing_event_id, priority, occurred_at);
     CREATE INDEX digest_retention_idx ON digest_items(digested_at);
     CREATE INDEX attention_retention_idx ON attention_state(updated_at);
-    PRAGMA user_version = 12;
+    CREATE INDEX memory_observations_pending_idx
+      ON memory_observations(compiled_at, profile_id, observed_at);
+    CREATE INDEX memory_observations_task_idx
+      ON memory_observations(task_id, run_id);
+    PRAGMA user_version = 16;
     COMMIT;
   `);
 }

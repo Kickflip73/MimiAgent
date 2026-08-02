@@ -10,6 +10,8 @@
 - ARC-000 红→绿：显式贯通 owner route/Briefing/Routine 的模拟时钟，并新增 7 天 + 1ms 回退断言；`npm run check` 与 `daemon-attention-v12` 6/6 全绿。
 - 2026-08-02 真实运行基线：build `0.12.0+54d3940e1185`、Doctor ready=false；Task queued/dead-letter=`15/522`（37 未分类），Digest=5935，24h Runs=303，enabled/ready Connector=`8/4`。
 - 真实数据已备份到 `/tmp/mimi-m1-arc000-20260802T1000Z` 并复验 `databaseIntegrity=ok`；schema=1、2542 files、116542139 bytes，未修改原 Task/Digest。
+- ARC-000 clean-source CI：在提交 `d15645f` 的临时干净 worktree 原样运行 `npm run ci` exit 0；851/851、fail/skip/todo=0、coverage `87.41/77.46/84.06`，repo/check/build/package 全绿；临时 worktree 已删除。
+- ARC-101/102 红测先行：executor 单一领取、非法 route、Briefing 修复和 v16 精确迁移首轮 37 项中 7 项按预期失败；实现后聚焦 44/44、`npm run check`、`npm test`、`npm run build` 全绿。调度已删除 `claimTaskTypes`，enqueue 统一拒绝非法 `type/executor/workspaceAccess`；v16 只修复 queued `briefing + session_actor + write`，未知历史 type/组合保留并计入 audit，fresh DB 直接创建 v16。
 
 ## 2026-07-31 Browser / Computer 原生可靠性 Goal
 - 目标：主 Agent 直接、严格、可验证地使用 Browser 与 Computer，不再因两层能力发现、宽松 schema 或巨型观察结果陷入循环。

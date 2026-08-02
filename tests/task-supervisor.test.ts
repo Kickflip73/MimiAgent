@@ -39,12 +39,15 @@ function task(id: string, executor: TaskRecord['executor']): TaskRecord {
 }
 
 test('process supervisor schedules Codex background tasks instead of ignoring them', async () => {
-  const sessionTask = task('session-task', 'session_actor');
   const codexTask = task('codex-task', 'codex');
+  let readySelector: unknown;
   const store = {
     emitDueMemoryMaintenanceTasks: () => [],
     runningTasks: () => [],
-    readyTasks: () => [sessionTask, codexTask],
+    readyTasks: (selector: unknown) => {
+      readySelector = selector;
+      return [codexTask];
+    },
   };
   const supervisor = new TaskProcessSupervisor(
     store as never,
@@ -63,6 +66,7 @@ test('process supervisor schedules Codex background tasks instead of ignoring th
 
   await internal.pump();
 
+  assert.deepEqual(readySelector, { executors: ['isolated_worker', 'codex'] });
   assert.deepEqual(launched, [{ taskId: codexTask.id, workspaceAccess: 'write' }]);
 });
 

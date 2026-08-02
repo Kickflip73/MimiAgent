@@ -1503,7 +1503,6 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
     dispatcher = new MimiDispatcher(store, host, attention, notifier, connectors, {
       workerId,
       maxConcurrentTasks: config.sessionMaxConcurrency ?? 4,
-      claimTaskTypes: ['conversation'],
       onStreamEvent: (eventId, event) => {
         const streamed = mimiStreamEvent(event);
         if (streamed) liveEvents.publish(eventId, streamed);

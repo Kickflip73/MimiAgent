@@ -132,8 +132,8 @@ export interface TaskRecord extends TaskInput {
 }
 
 export interface TaskSelector {
-  types?: TaskType[];
   executor?: TaskExecutor;
+  executors?: TaskExecutor[];
   excludedSessionKeys?: string[];
 }
 

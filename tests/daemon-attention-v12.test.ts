@@ -313,6 +313,9 @@ test('owner routes, routine occurrences, and digest briefings remain idempotent'
     assert.equal(digest.task, undefined);
     assert.equal(store.pendingDigestCount(), 1);
     assert.equal(attention.emitDueBriefings(baseTime).length, 1);
+    const briefingTask = store.listTasks().find((candidate) => candidate.type === 'briefing');
+    assert.equal(briefingTask?.executor, 'isolated_worker');
+    assert.equal(briefingTask?.workspaceAccess, 'read');
     assert.equal(attention.emitDueBriefings(baseTime).length, 0);
     assert.ok(attention.forceBriefing(baseTime) === undefined);
 

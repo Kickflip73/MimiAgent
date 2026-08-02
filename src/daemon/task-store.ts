@@ -11,6 +11,7 @@ import type {
   TaskSelector,
   TaskStatus,
 } from './types.js';
+import { validateTaskRoute } from './task-routing.js';
 
 type Row = Record<string, string | number | null | undefined>;
 
@@ -91,6 +92,7 @@ export class TaskStore {
   constructor(private readonly database: DatabaseSync) {}
 
   enqueue(input: TaskInput, timestamp: string): { task: TaskRecord; inserted: boolean } {
+    validateTaskRoute(input);
     const inserted = this.database.prepare(`
       INSERT INTO tasks (
         id, type, idempotency_key, trigger_event_id, authority_event_id, parent_task_id,
@@ -139,17 +141,17 @@ export class TaskStore {
   }
 
   listReady(selector: TaskSelector, timestamp: string, limit: number): TaskRecord[] {
-    const types = [...new Set(selector.types ?? [])].slice(0, 8);
+    const executors = [...new Set(selector.executors ?? [])].slice(0, 3);
     const excludedSessions = [...new Set(selector.excludedSessionKeys ?? [])].slice(0, 16);
     const clauses = ["status = 'queued'", 'not_before <= ?'];
     const parameters: Array<string | number> = [timestamp];
-    if (types.length) {
-      clauses.push(`type IN (${types.map(() => '?').join(', ')})`);
-      parameters.push(...types);
-    }
     if (selector.executor) {
       clauses.push('executor = ?');
       parameters.push(selector.executor);
+    }
+    if (executors.length) {
+      clauses.push(`executor IN (${executors.map(() => '?').join(', ')})`);
+      parameters.push(...executors);
     }
     if (excludedSessions.length) {
       clauses.push(`(session_key IS NULL OR session_key NOT IN (${excludedSessions.map(() => '?').join(', ')}))`);
@@ -163,16 +165,16 @@ export class TaskStore {
   }
 
   listRunning(selector: TaskSelector, limit: number): TaskRecord[] {
-    const types = [...new Set(selector.types ?? [])].slice(0, 8);
+    const executors = [...new Set(selector.executors ?? [])].slice(0, 3);
     const clauses = ["status = 'running'"];
     const parameters: Array<string | number> = [];
-    if (types.length) {
-      clauses.push(`type IN (${types.map(() => '?').join(', ')})`);
-      parameters.push(...types);
-    }
     if (selector.executor) {
       clauses.push('executor = ?');
       parameters.push(selector.executor);
+    }
+    if (executors.length) {
+      clauses.push(`executor IN (${executors.map(() => '?').join(', ')})`);
+      parameters.push(...executors);
     }
     parameters.push(limit);
     return (this.database.prepare(`
@@ -182,17 +184,17 @@ export class TaskStore {
   }
 
   claimCandidate(selector: TaskSelector, timestamp: string): TaskRecord | undefined {
-    const types = [...new Set(selector.types ?? [])].slice(0, 8);
+    const executors = [...new Set(selector.executors ?? [])].slice(0, 3);
     const excludedSessions = [...new Set(selector.excludedSessionKeys ?? [])].slice(0, 16);
     const clauses = ["status = 'queued'", 'not_before <= ?'];
     const parameters: Array<string> = [timestamp];
-    if (types.length) {
-      clauses.push(`type IN (${types.map(() => '?').join(', ')})`);
-      parameters.push(...types);
-    }
     if (selector.executor) {
       clauses.push('executor = ?');
       parameters.push(selector.executor);
+    }
+    if (executors.length) {
+      clauses.push(`executor IN (${executors.map(() => '?').join(', ')})`);
+      parameters.push(...executors);
     }
     if (excludedSessions.length) {
       clauses.push(`(session_key IS NULL OR session_key NOT IN (${excludedSessions.map(() => '?').join(', ')}))`);

@@ -148,7 +148,6 @@ test('dispatcher binds a transient lease only to the direct owner conversation R
     },
   });
   const dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {
-    claimTaskTypes: ['conversation'],
     takeEphemeralSecrets: (id, sessionId, references) => broker.take(id, sessionId, references),
   });
   try {

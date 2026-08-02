@@ -10,7 +10,7 @@ import { assertSessionId } from '../core/session-id.js';
 import { EventStore } from './event-store.js';
 import { EventRouter } from './event-router.js';
 import { sanitizedMemoryEvidenceSnapshot } from './memory-evidence.js';
-import { createFreshV12Schema } from './persistence/schema/current.js';
+import { createFreshV16Schema } from './persistence/schema/current.js';
 import {
   ensureMemoryLintSchemaV13,
   hasMemoryObservationSourceKey,
@@ -21,6 +21,10 @@ import {
   hasMemoryEvidenceSnapshot,
   upgradeMemoryEvidenceSnapshotV15,
 } from './persistence/schema/migrations/v15-memory-evidence-snapshot.js';
+import {
+  hasTaskExecutorOwnershipV16,
+  upgradeTaskExecutorOwnershipV16,
+} from './persistence/schema/migrations/v16-task-executor-ownership.js';
 import { prepareLegacyEventSchemaForV12 } from './persistence/schema/migrations/v3-v11-legacy-event-preparation.js';
 import {
   assertEmptyPartialEventTaskV12Tables,
@@ -270,6 +274,7 @@ export class MimiStore {
     this.backupBeforeMemoryHubCutover();
     this.backupBeforeTaskRouteRepairV14();
     this.backupBeforeMemoryEvidenceV15();
+    this.backupBeforeTaskExecutorV16();
     this.migrate();
     this.eventRouter = new EventRouter(this, 'ingress-v1');
     chmodSync(this.file, 0o600);
@@ -1287,8 +1292,8 @@ export class MimiStore {
       const result = this.ingestEvent(event, {
         type: 'briefing',
         sessionKey: event.sessionKey,
-        executor: 'session_actor',
-        workspaceAccess: 'write',
+        executor: 'isolated_worker',
+        workspaceAccess: 'read',
       });
       this.database.prepare(`
         UPDATE digest_items SET briefing_event_id = ?
@@ -2445,7 +2450,17 @@ export class MimiStore {
 
   private migrate(): void {
     const version = Number((this.database.prepare('PRAGMA user_version').get() as Row).user_version);
-    if (version > 15) throw new Error(`不支持的 MimiAgent 数据库版本：${version}`);
+    if (version > 16) throw new Error(`不支持的 MimiAgent 数据库版本：${version}`);
+    if (version === 16) {
+      if (!hasFinalEventTaskV12Schema(this.database)
+        || !hasMemoryObservationSourceKey(this.database)
+        || !hasMemoryEvidenceSnapshot(this.database)
+        || !hasTaskExecutorOwnershipV16(this.database)) {
+        throw new Error('MimiAgent 数据库标记为 v16，但缺少最终 Event/Task、Memory 或 executor schema');
+      }
+      ensureMemoryLintSchemaV13(this.database);
+      return;
+    }
     if (version === 15) {
       if (!hasFinalEventTaskV12Schema(this.database)
         || !hasMemoryObservationSourceKey(this.database)
@@ -2453,6 +2468,7 @@ export class MimiStore {
         throw new Error('MimiAgent 数据库标记为 v15，但缺少最终 Event/Task 或 Memory observation schema');
       }
       ensureMemoryLintSchemaV13(this.database);
+      upgradeTaskExecutorOwnershipV16(this.database);
       return;
     }
     if (version === 14) {
@@ -2461,6 +2477,7 @@ export class MimiStore {
       }
       ensureMemoryLintSchemaV13(this.database);
       upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
+      upgradeTaskExecutorOwnershipV16(this.database);
       return;
     }
     if (version === 13) {
@@ -2470,6 +2487,7 @@ export class MimiStore {
       ensureMemoryLintSchemaV13(this.database);
       repairDigestedTaskRoutesV14(this.database);
       upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
+      upgradeTaskExecutorOwnershipV16(this.database);
       return;
     }
     if (version === 12) {
@@ -2477,6 +2495,7 @@ export class MimiStore {
         upgradeMemoryObservationsV13(this.database);
         repairDigestedTaskRoutesV14(this.database);
         upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
+        upgradeTaskExecutorOwnershipV16(this.database);
         return;
       }
       if (!hasLegacyEventTaskSchema(this.database)) {
@@ -2490,13 +2509,11 @@ export class MimiStore {
       upgradeMemoryObservationsV13(this.database);
       repairDigestedTaskRoutesV14(this.database);
       upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
+      upgradeTaskExecutorOwnershipV16(this.database);
       return;
     }
     if (version === 0) {
-      createFreshV12Schema(this.database);
-      upgradeMemoryObservationsV13(this.database);
-      repairDigestedTaskRoutesV14(this.database);
-      upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
+      createFreshV16Schema(this.database);
       return;
     }
     prepareLegacyEventSchemaForV12(this.database, version);
@@ -2506,6 +2523,28 @@ export class MimiStore {
     upgradeMemoryObservationsV13(this.database);
     repairDigestedTaskRoutesV14(this.database);
     upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
+    upgradeTaskExecutorOwnershipV16(this.database);
+  }
+
+  private backupBeforeTaskExecutorV16(): void {
+    const version = Number((this.database.prepare('PRAGMA user_version').get() as Row).user_version);
+    if (version !== 15 || !hasFinalEventTaskV12Schema(this.database)) return;
+    this.database.exec('PRAGMA wal_checkpoint(FULL);');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupRoot = path.join(
+      path.dirname(this.file),
+      'backups',
+      `task-executor-v16-${stamp}-${randomUUID().slice(0, 8)}`,
+    );
+    mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+    chmodSync(backupRoot, 0o700);
+    for (const suffix of ['', '-wal', '-shm']) {
+      const source = `${this.file}${suffix}`;
+      if (!existsSync(source)) continue;
+      const target = path.join(backupRoot, `${path.basename(this.file)}${suffix}`);
+      copyFileSync(source, target);
+      chmodSync(target, 0o600);
+    }
   }
 
   private backupBeforeMemoryEvidenceV15(): void {

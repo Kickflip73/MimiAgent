@@ -191,7 +191,7 @@ test('v15 migration backfills bounded evidence for existing v14 observations', a
   const verified = new DatabaseSync(file, { readOnly: true });
   assert.equal(
     (verified.prepare('PRAGMA user_version').get() as { user_version: number }).user_version,
-    15,
+    16,
   );
   verified.close();
 });

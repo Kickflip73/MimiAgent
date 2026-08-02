@@ -31,7 +31,6 @@ import type {
   ImmutableEvent,
   ReplyRoute,
   TaskRecord,
-  TaskType,
 } from './types.js';
 import {
   personalMessageContextSchema,
@@ -48,7 +47,6 @@ export interface DispatcherOptions {
   leaseMs?: number;
   maxAttempts?: number;
   maxConcurrentTasks?: number;
-  claimTaskTypes?: TaskType[];
   preemptPollMs?: number;
   runIdleTimeoutMs?: number;
   onStreamEvent?: (eventId: string, event: RunStreamEvent) => void;
@@ -235,7 +233,7 @@ export class MimiDispatcher {
     }
     const task = this.store.claimTask(
       this.workerId,
-      { types: this.options.claimTaskTypes, executor: 'session_actor' },
+      { executor: 'session_actor' },
       this.options.leaseMs ?? 60_000,
       new Date(),
     );
@@ -291,7 +289,6 @@ export class MimiDispatcher {
       const task = this.store.claimTask(
         this.workerId,
         {
-          types: this.options.claimTaskTypes,
           executor: 'session_actor',
           excludedSessionKeys: [...this.activeSessions],
         },
@@ -443,7 +440,7 @@ export class MimiDispatcher {
         : undefined;
       let completionDelivery: { suppressed: true; reason?: string } | undefined;
       const checkPreemption = () => {
-        if (!this.options.claimTaskTypes?.includes('conversation')) return;
+        if (task.executor !== 'session_actor') return;
         if (preemptedBy || active.tools > 0 || runSignal.aborted) return;
         try {
           for (const reservedId of this.reservedPreemptions) {
@@ -451,7 +448,7 @@ export class MimiDispatcher {
               this.reservedPreemptions.delete(reservedId);
             }
           }
-          for (const candidate of this.store.readyTasks({ types: this.options.claimTaskTypes }, 50)) {
+          for (const candidate of this.store.readyTasks({ executor: 'session_actor' }, 50)) {
             if (candidate.id === task.id || this.active.has(candidate.id)
               || this.reservedPreemptions.has(candidate.id)) continue;
             const candidateEvent = this.store.getImmutableEvent(candidate.triggerEventId ?? candidate.authorityEventId);

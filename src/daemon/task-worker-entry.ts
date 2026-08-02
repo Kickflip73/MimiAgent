@@ -122,7 +122,6 @@ async function run(raw: unknown): Promise<void> {
     }), { maxConcurrentSessions: 1 });
     dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {
       maxConcurrentTasks: 1,
-      claimTaskTypes: ['background', 'scheduled', 'briefing', 'memory_maintenance'],
       connectorRuntime: new KernelConnectorRuntime(init.socket, init.taskId, init.workerToken),
       memoryMaintenance: {
         capture: (input, profileId) => agent.memoryCapture(input, profileId),

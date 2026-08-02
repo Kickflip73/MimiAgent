@@ -58,6 +58,18 @@ test('v12 task lifecycle enforces idempotency, selectors, leases, attempts, and 
       () => store.enqueueTask(taskInput(authority.id, 'conflict', { idempotencyKey: 'high' })),
       /幂等键冲突/,
     );
+    assert.throws(
+      () => store.enqueueTask(taskInput(authority.id, 'invalid-conversation', {
+        type: 'conversation', executor: 'isolated_worker', workspaceAccess: 'write',
+      })),
+      /conversation.*executor=session_actor/,
+    );
+    assert.throws(
+      () => store.enqueueTask(taskInput(authority.id, 'invalid-briefing', {
+        type: 'briefing', executor: 'isolated_worker', workspaceAccess: 'write',
+      })),
+      /briefing.*workspaceAccess=read/,
+    );
     assert.deepEqual(store.readyTasks({}, 10, base).map((candidate) => candidate.id), ['high', 'low']);
     assert.deepEqual(store.readyTasks({ executor: 'codex' }, 10, base).map((candidate) => candidate.id), ['low']);
     assert.deepEqual(
@@ -65,7 +77,7 @@ test('v12 task lifecycle enforces idempotency, selectors, leases, attempts, and 
       ['low'],
     );
 
-    const claimed = store.claimTask('worker-1', { types: ['background'] }, 60_000, base);
+    const claimed = store.claimTask('worker-1', { executor: 'isolated_worker' }, 60_000, base);
     assert.equal(claimed?.id, high.id);
     assert.equal(store.runningTasks().length, 1);
     assert.equal(store.claimTaskById(high.id, 'worker-2', 60_000, base), undefined);
