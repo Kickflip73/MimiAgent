@@ -731,8 +731,9 @@ CPU/内存/磁盘尚无持久样本时同样返回 `null` 和 host sampling=`not
 摘要不冒充跨重启趋势。只对已知/已采样指标产生预算告警；Provider health、资源趋势、
 dead letter/Digest/readiness 分类进入
 status、Doctor 和脱敏 diagnostic bundle。dead letter 分类只读取持久化的结构化 failure
-事实，不解析自然语言 error；历史记录保留原事实并标为 `legacy_failure/investigate`，新记录
-使用 `retry_after_fix/archive_safe/external_blocked/manual_verify/investigate` 处置投影。
+事实，不解析自然语言 error；历史记录保留原事实并标为 `legacy_failure/manual_verify`，禁止
+自动重放。所有记录只使用计划冻结的 `archive/retry_after_fix/blocked/manual_verify` 处置投影；
+缺失结构化 failure 的异常行保持 `unknown/manual_verify` 并继续阻断 Doctor readiness。
 
 ### M1 Jarvis Eval
 

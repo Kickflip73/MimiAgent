@@ -15,7 +15,7 @@ export type DeadLetterCategory =
 
 export interface DeadLetterClassification {
   category: DeadLetterCategory;
-  disposition: 'retry_after_fix' | 'archive_safe' | 'external_blocked' | 'manual_verify' | 'investigate';
+  disposition: 'archive' | 'retry_after_fix' | 'blocked' | 'manual_verify';
   count: number;
 }
 
@@ -40,9 +40,9 @@ export interface OperationalClassificationSnapshot {
 export function classifyDeadLetterFailure(
   failure: RunFailureRecord | undefined,
 ): Omit<DeadLetterClassification, 'count'> {
-  if (!failure) return { category: 'unknown', disposition: 'investigate' };
+  if (!failure) return { category: 'unknown', disposition: 'manual_verify' };
   if (failure.code.startsWith('historical.')) {
-    return { category: 'legacy_failure', disposition: 'investigate' };
+    return { category: 'legacy_failure', disposition: 'manual_verify' };
   }
   if (failure.disposition.kind === 'uncertain') {
     return { category: 'uncertain_side_effect', disposition: 'manual_verify' };
@@ -51,7 +51,7 @@ export function classifyDeadLetterFailure(
     return { category: 'provider', disposition: 'retry_after_fix' };
   }
   if (failure.disposition.kind === 'policy_denied') {
-    return { category: 'authorization', disposition: 'external_blocked' };
+    return { category: 'authorization', disposition: 'blocked' };
   }
   if (failure.code.startsWith('dependency.')) {
     return { category: 'dependency', disposition: 'retry_after_fix' };
@@ -60,10 +60,10 @@ export function classifyDeadLetterFailure(
     return { category: 'worker_runtime', disposition: 'retry_after_fix' };
   }
   if (failure.code.startsWith('connector.')) {
-    return { category: 'external_unavailable', disposition: 'external_blocked' };
+    return { category: 'external_unavailable', disposition: 'blocked' };
   }
   if (failure.code.startsWith('cancelled.') || failure.code.startsWith('superseded.')) {
-    return { category: 'cancelled_or_superseded', disposition: 'archive_safe' };
+    return { category: 'cancelled_or_superseded', disposition: 'archive' };
   }
   if (failure.disposition.kind === 'transient') {
     return { category: 'external_unavailable', disposition: 'retry_after_fix' };

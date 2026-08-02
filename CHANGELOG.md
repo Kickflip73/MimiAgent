@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- constrain historical dead-letter projections to the frozen archive,
+  retry-after-fix, blocked, or manual-verify contract; retain unknown rows as
+  readiness blockers and require manual verification for legacy failures instead
+  of allowing automatic replay
 - bind every compiled daemon build to a packaged manifest containing the full Git
   commit and dirty flag, retain a content digest that is stable across reinstall
   timestamps, fail closed on stale or malformed provenance, and make Doctor report

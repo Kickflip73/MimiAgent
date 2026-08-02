@@ -606,7 +606,7 @@ test('v16 migrates only the known queued Briefing route and records unresolved c
     );
     assert.equal(migrated.activitySnapshot(20).failureClassification.unclassifiedDeadLetters, 0);
     assert.deepEqual(migrated.activitySnapshot(20).failureClassification.deadLetters, [{
-      category: 'legacy_failure', disposition: 'investigate', count: 1,
+      category: 'legacy_failure', disposition: 'manual_verify', count: 1,
     }]);
     assert.equal(migrated.pendingDigestCount(), 2);
     assert.equal(

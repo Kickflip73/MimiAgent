@@ -46,12 +46,33 @@ test('dead letters aggregate into observable dispositions without copying errors
   ]);
   assert.deepEqual(classified, [
     { category: 'provider', disposition: 'retry_after_fix', count: 5 },
-    { category: 'unknown', disposition: 'investigate', count: 4 },
+    { category: 'unknown', disposition: 'manual_verify', count: 4 },
     { category: 'worker_runtime', disposition: 'retry_after_fix', count: 3 },
     { category: 'configuration', disposition: 'retry_after_fix', count: 2 },
     { category: 'uncertain_side_effect', disposition: 'manual_verify', count: 1 },
   ]);
   assert.doesNotMatch(JSON.stringify(classified), /quota|dispatch|fixture/);
+});
+
+test('historical, cancelled, and externally blocked failures use the Phase 5 disposition contract', () => {
+  assert.deepEqual(classifyDeadLetterFailure({
+    code: 'historical.scheduled.isolated_worker.retained_dead_letter',
+    disposition: {
+      phase: 'runtime', kind: 'unclassified', retryable: false, dispatchStarted: true,
+    },
+  }), { category: 'legacy_failure', disposition: 'manual_verify' });
+  assert.deepEqual(classifyDeadLetterFailure({
+    code: 'cancelled.owner_request',
+    disposition: {
+      phase: 'runtime', kind: 'terminal', retryable: false, dispatchStarted: false,
+    },
+  }), { category: 'cancelled_or_superseded', disposition: 'archive' });
+  assert.deepEqual(classifyDeadLetterFailure({
+    code: 'connector.offline',
+    disposition: {
+      phase: 'pre_dispatch', kind: 'failed_safe', retryable: false, dispatchStarted: false,
+    },
+  }), { category: 'external_unavailable', disposition: 'blocked' });
 });
 
 test('structured Task facts classify failures without reading natural-language errors', () => {
