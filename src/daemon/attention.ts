@@ -14,6 +14,7 @@ import {
   type SourcePolicyAccess,
 } from './policy.js';
 import { MimiStore } from './store.js';
+import type { AutonomousBudgetReason } from './run-source.js';
 import type {
   DigestItem,
   EventEnvelope,
@@ -128,6 +129,9 @@ const attentionConfigBaseSchema = z.object({
     maxRunsPerHour: z.number().int().min(1).max(1_000).default(20),
     maxRunsPerDay: z.number().int().min(1).max(10_000).default(100),
     maxRunsPerSourcePerHour: z.number().int().min(1).max(1_000).default(10),
+    maxTokensPerHour: z.number().int().min(1).max(100_000_000).default(400_000),
+    maxTokensPerDay: z.number().int().min(1).max(1_000_000_000).default(2_000_000),
+    maxTokensPerSourcePerHour: z.number().int().min(1).max(100_000_000).default(200_000),
   }).strict(),
   thresholds: z.object({
     alertPriority: z.number().int().min(0).max(100).default(75),
@@ -235,7 +239,14 @@ function defaultConfig(): AttentionConfig {
     owner: { displayName: 'Owner', locale: 'zh-CN', focus: [], replyRoute: { channel: 'system' } },
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai',
     quietHours: { enabled: true, start: '23:00', end: '07:30', urgentPriority: 95 },
-    budgets: { maxRunsPerHour: 20, maxRunsPerDay: 100, maxRunsPerSourcePerHour: 10 },
+    budgets: {
+      maxRunsPerHour: 20,
+      maxRunsPerDay: 100,
+      maxRunsPerSourcePerHour: 10,
+      maxTokensPerHour: 400_000,
+      maxTokensPerDay: 2_000_000,
+      maxTokensPerSourcePerHour: 200_000,
+    },
     thresholds: { alertPriority: 75, webhookPriority: 80 },
     execution: { runIdleTimeoutMs: 20 * 60_000 },
     maintenance: { enabled: true, historyRetentionDays: 90, intervalHours: 24 },
@@ -725,8 +736,13 @@ export class AttentionEngine {
     }
     const rule = this.config.rules.find((candidate) => this.matchesRule(candidate, event));
     if (rule) {
+      if (rule.action === 'run') {
+        return this.applyAutonomousBudget(
+          event.source, { decision: 'task_created', reasonCode: `rule:${rule.id}` }, now,
+        );
+      }
       return {
-        decision: rule.action === 'run' ? 'task_created' : rule.action === 'digest' ? 'digest' : 'observe_only',
+        decision: rule.action === 'digest' ? 'digest' : 'observe_only',
         reasonCode: `rule:${rule.id}`,
       };
     }
@@ -734,25 +750,77 @@ export class AttentionEngine {
     if (this.isQuiet(now) && event.priority < this.config.quietHours.urgentPriority) {
       return { decision: 'digest', reasonCode: 'quiet_hours' };
     }
-    const hourAgo = new Date(now.getTime() - 60 * 60_000);
-    const dayAgo = new Date(now.getTime() - 24 * 60 * 60_000);
-    if (this.store.countRunsSince(hourAgo) >= this.config.budgets.maxRunsPerHour) {
-      return { decision: 'digest', reasonCode: 'hourly_budget' };
+    if (event.priority >= this.config.quietHours.urgentPriority) {
+      return { decision: 'task_created', reasonCode: 'urgent_priority' };
     }
-    if (this.store.countRunsSince(dayAgo) >= this.config.budgets.maxRunsPerDay) {
-      return { decision: 'digest', reasonCode: 'daily_budget' };
+    if (event.kind === 'command') {
+      return this.applyAutonomousBudget(
+        event.source, { decision: 'task_created', reasonCode: 'direct_command' }, now,
+      );
     }
-    if (this.store.countRunsSince(hourAgo, event.source) >= this.config.budgets.maxRunsPerSourcePerHour) {
-      return { decision: 'digest', reasonCode: 'source_hourly_budget' };
-    }
-    if (event.kind === 'command') return { decision: 'task_created', reasonCode: 'direct_command' };
     if (event.kind === 'alert' && event.priority >= this.config.thresholds.alertPriority) {
-      return { decision: 'task_created', reasonCode: 'alert_threshold' };
+      return this.applyAutonomousBudget(
+        event.source, { decision: 'task_created', reasonCode: 'alert_threshold' }, now,
+      );
     }
     if (event.kind === 'webhook' && event.priority >= this.config.thresholds.webhookPriority) {
-      return { decision: 'task_created', reasonCode: 'webhook_threshold' };
+      return this.applyAutonomousBudget(
+        event.source, { decision: 'task_created', reasonCode: 'webhook_threshold' }, now,
+      );
     }
     return { decision: 'digest', reasonCode: 'below_wakeup_threshold' };
+  }
+
+  private applyAutonomousBudget(
+    source: string,
+    decision: { decision: 'task_created'; reasonCode: string },
+    now: Date,
+  ): { decision: 'task_created' | 'digest'; reasonCode: string } {
+    const exhausted = this.autonomousBudgetExhaustion(source, now);
+    if (!exhausted) {
+      this.store.clearAutonomousBudgetExhaustion(source, now);
+      return decision;
+    }
+    this.store.recordAutonomousBudgetExhaustion(
+      source, exhausted.reasonCode, exhausted.retryAt, now,
+    );
+    return { decision: 'digest', reasonCode: exhausted.reasonCode };
+  }
+
+  private autonomousBudgetExhaustion(
+    source: string,
+    now: Date,
+  ): { reasonCode: AutonomousBudgetReason; retryAt: Date } | undefined {
+    const hourAgo = new Date(now.getTime() - 60 * 60_000);
+    const dayAgo = new Date(now.getTime() - 24 * 60 * 60_000);
+    const hour = this.store.autonomousBudgetUsageSince(hourAgo);
+    const day = this.store.autonomousBudgetUsageSince(dayAgo);
+    const sourceHour = this.store.autonomousBudgetUsageSince(hourAgo, source);
+    const hourRuns = hour.runs + hour.reservedRuns;
+    const dayRuns = day.runs + day.reservedRuns;
+    const sourceHourRuns = sourceHour.runs + sourceHour.reservedRuns;
+    if (hourRuns >= this.config.budgets.maxRunsPerHour) {
+      return { reasonCode: 'hourly_budget', retryAt: new Date(now.getTime() + 60 * 60_000) };
+    }
+    if (dayRuns >= this.config.budgets.maxRunsPerDay) {
+      return { reasonCode: 'daily_budget', retryAt: new Date(now.getTime() + 24 * 60 * 60_000) };
+    }
+    if (sourceHourRuns >= this.config.budgets.maxRunsPerSourcePerHour) {
+      return { reasonCode: 'source_hourly_budget', retryAt: new Date(now.getTime() + 60 * 60_000) };
+    }
+    if (day.unmeteredRuns > 0) {
+      return { reasonCode: 'token_usage_unavailable', retryAt: new Date(now.getTime() + 24 * 60 * 60_000) };
+    }
+    if (hour.totalTokens >= this.config.budgets.maxTokensPerHour) {
+      return { reasonCode: 'token_hourly_budget', retryAt: new Date(now.getTime() + 60 * 60_000) };
+    }
+    if (day.totalTokens >= this.config.budgets.maxTokensPerDay) {
+      return { reasonCode: 'token_daily_budget', retryAt: new Date(now.getTime() + 24 * 60 * 60_000) };
+    }
+    if (sourceHour.totalTokens >= this.config.budgets.maxTokensPerSourcePerHour) {
+      return { reasonCode: 'source_token_hourly_budget', retryAt: new Date(now.getTime() + 60 * 60_000) };
+    }
+    return undefined;
   }
 
   emitDueBriefings(now = new Date()): ImmutableEvent[] {
@@ -779,6 +847,14 @@ export class AttentionEngine {
       const scheduledLocal = `${local.date} ${routine.time}`;
       const checkpoint = `routine:${routine.id}:${local.date}:${routine.time}`;
       if (this.routineCheckpoints.has(checkpoint)) continue;
+      const budget = this.autonomousBudgetExhaustion('attention:routine', now);
+      if (budget) {
+        this.store.recordAutonomousBudgetExhaustion(
+          'attention:routine', budget.reasonCode, budget.retryAt, now,
+        );
+        continue;
+      }
+      this.store.clearAutonomousBudgetExhaustion('attention:routine', now);
       const revision = routineRevision(routine);
       const sessionKey = routine.sessionKey ?? derivedSessionId('routine', routine.id);
       const replyRoute = this.overrideReplyRoute(routine.replyChannel, routine.replyTarget, now);
@@ -829,7 +905,7 @@ export class AttentionEngine {
   }
 
   forceBriefing(now = new Date()): ImmutableEvent | undefined {
-    return this.createBriefing(`briefing:manual:${randomUUID()}`, '手动简报', now);
+    return this.createBriefing(`briefing:manual:${randomUUID()}`, '手动简报', now, true);
   }
 
   status(now = new Date()): Record<string, unknown> {
@@ -869,7 +945,22 @@ export class AttentionEngine {
     };
   }
 
-  private createBriefing(checkpoint: string, label: string, now: Date): ImmutableEvent | undefined {
+  private createBriefing(
+    checkpoint: string,
+    label: string,
+    now: Date,
+    ownerForced = false,
+  ): ImmutableEvent | undefined {
+    if (!ownerForced) {
+      const budget = this.autonomousBudgetExhaustion('attention:briefing', now);
+      if (budget) {
+        this.store.recordAutonomousBudgetExhaustion(
+          'attention:briefing', budget.reasonCode, budget.retryAt, now,
+        );
+        return undefined;
+      }
+      this.store.clearAutonomousBudgetExhaustion('attention:briefing', now);
+    }
     const buildPrompt = (items: DigestItem[]): string => {
       const focus = this.config.owner.focus.length
         ? `所有者当前关注：${this.config.owner.focus.join('；')}。`

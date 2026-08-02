@@ -116,6 +116,8 @@ export interface RedactedDiagnosticBundle {
   resources: {
     host: ReturnType<typeof resourceHostSummary>;
     daily: NonNullable<MimiDoctorReport['daemon']['activity']>['resourceTrends'];
+    bySource24h: NonNullable<MimiDoctorReport['daemon']['activity']>['runUsageBySource'];
+    autonomousBudgetExhaustions: NonNullable<MimiDoctorReport['daemon']['activity']>['autonomousBudgetExhaustions'];
   };
   failureClassification: NonNullable<MimiDoctorReport['daemon']['activity']>['failureClassification'];
 }
@@ -280,6 +282,8 @@ export async function buildRedactedDiagnosticBundle(
     resources: {
       host: resourceHostSummary(),
       daily: doctor.daemon.activity?.resourceTrends ?? [],
+      bySource24h: doctor.daemon.activity?.runUsageBySource ?? [],
+      autonomousBudgetExhaustions: doctor.daemon.activity?.autonomousBudgetExhaustions ?? [],
     },
     failureClassification: doctor.daemon.activity?.failureClassification ?? {
       deadLetters: [],

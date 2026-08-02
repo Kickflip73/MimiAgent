@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- enforce autonomous Run and Token budgets before creating non-urgent Connector,
+  Routine, or scheduled Briefing work; preserve owner, urgent, and in-flight work;
+  classify 24-hour usage by stable Event provenance; fail closed when historical
+  token facts are unavailable; and expose one exhaustion/recovery transition in
+  activity, Doctor, and redacted diagnostics
 - persist a structured failure code and `RunFailureDisposition` at every daemon
   Task failure boundary, reserve `failed` for deterministic errors and
   `dead_letter` for exhausted transient or uncertain outcomes, classify activity

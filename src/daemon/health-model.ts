@@ -17,6 +17,8 @@ export interface DaemonHealthRisk {
     | 'connector_unavailable'
     | 'connector_stale'
     | 'connector_readiness_unknown'
+    | 'autonomous_budget_exhausted'
+    | 'unknown_run_source'
     | 'computer_unavailable';
   severity: DaemonHealthSeverity;
   message: string;
@@ -53,6 +55,8 @@ export interface DaemonHealthInput {
   checkedAt?: string;
   taskWorkerRuntime?: { ready: boolean; reason?: string };
   computer?: CuaDriverLifecycleStatus;
+  autonomousBudgetExhaustions?: number;
+  unknownRunSources?: number;
 }
 
 export function doctorBlockingHealthRisks(
@@ -92,6 +96,22 @@ export function buildDaemonHealth(input: DaemonHealthInput): DaemonHealthSnapsho
   const outboxBacklog = (input.outbox.pending ?? 0) + (input.outbox.sending ?? 0);
   const digestBacklog = input.pendingDigest ?? 0;
   const risks: DaemonHealthRisk[] = [];
+  if ((input.unknownRunSources ?? 0) > 0) {
+    risks.push({
+      code: 'unknown_run_source',
+      severity: 'warning',
+      message: `${input.unknownRunSources} 个近 24 小时 Run 缺少稳定来源分类`,
+      nextAction: 'mimi daemon activity',
+    });
+  }
+  if ((input.autonomousBudgetExhaustions ?? 0) > 0) {
+    risks.push({
+      code: 'autonomous_budget_exhausted',
+      severity: 'warning',
+      message: `${input.autonomousBudgetExhaustions} 个自治来源已达到 Run/Token 预算并被合并或延后`,
+      nextAction: 'mimi daemon attention',
+    });
+  }
   if (input.taskWorkerRuntime?.ready === false) {
     risks.push({
       code: 'task_worker_runtime_unavailable',

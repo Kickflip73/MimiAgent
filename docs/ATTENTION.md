@@ -70,7 +70,10 @@ owner 也可先调用 `get_mimi_settings` 读取完整快照，再用 `update_mi
   "budgets": {
     "maxRunsPerHour": 20,
     "maxRunsPerDay": 100,
-    "maxRunsPerSourcePerHour": 10
+    "maxRunsPerSourcePerHour": 10,
+    "maxTokensPerHour": 400000,
+    "maxTokensPerDay": 2000000,
+    "maxTokensPerSourcePerHour": 200000
   },
   "thresholds": {
     "alertPriority": 75,
@@ -177,6 +180,8 @@ owner 也可先调用 `get_mimi_settings` 读取完整快照，再用 `update_mi
 `routines` 让 MimiAgent 在摘要池为空、没有新 IM 或 CLI 输入时仍能主动工作。新建配置以及缺少该字段的旧配置默认获得两条例程：每天 08:00 的 `morning-plan` 和每天 21:00 的 `evening-close`。若不需要，显式设置 `"routines": []`；也可以对单条设置 `enabled:false`。
 
 默认晨间与晚间例程会先使用 `inspect_mimi_activity` 检查 MimiAgent 自身积压、dead letter 和近期状态变化，再检查日历、消息、天气和生活事项。该只读视图与 `mimi daemon activity [数量]` 复用同一个 Store 查询，只包含有界运行元数据，不包含其他 Event 正文、Run 答案、Outbox payload 或 target。counts 是持久库当前保留窗口内的记录，不是本次进程启动以来的计数器。统计中的 Task 是路由后的执行单元，`conversation` 是一次对话处理而非后台任务，只有 `background` 才是委派后台任务；回答数量时应使用 `tasksByType` 和近期 trigger Event 来源，不得把 `tasks.completed` 总数直接表述为后台任务数。
+
+`budgets` 同时限制每小时、每日和单来源每小时的自治 Run/Token。分母只包含 Connector、health、briefing、maintenance、routine 和无法分类的自治来源，并把 queued/running Task 计作 Run 预留；owner 直接请求、显式手动 Briefing、达到 `urgentPriority` 的事件、已经 dispatch 的副作用收尾和 eval 不受机械阻断。达到预算后，新非紧急事件进入 Digest，Routine/定时 Briefing 延后，不再先创建 Event/Task；同一来源在耗尽到恢复期间只写一次结构化状态通知。旧 Run 若没有完整 input/output token 事实，自治入口按 `token_usage_unavailable` 失败关闭，而不是把未知用量当作 0。`daemon activity`、Doctor 和脱敏诊断按 `owner_conversation | connector | health | briefing | maintenance | routine | eval | unknown` 报告近 24 小时 Run/Token 与当前耗尽原因；`unknown` 会形成健康风险，便于补齐新来源映射。
 
 Schema v14 修复旧 Event/Task cutover 的历史语义：旧 `digested` / `ignored` Event 分别保留为 `digest` / `rejected` 路由，不创建可执行 Task。升级已有 v13 库前会先备份 SQLite/WAL/SHM；修复只删除明确由 v12 迁移生成、带 `task.digested` 证据且没有 Run、Outbox 或子 Task 的幽灵 Task，任何存在执行或投递证据的记录都保留。
 

@@ -683,7 +683,20 @@ Provider Key。主 Daemon、每个 Session actor 和 isolated worker 都显式�
 RunService；worker route/credential 经过严格 IPC schema，credential 不进入基础环境、
 Shell 或 MCP。status、Doctor 和 diagnostic bundle 同时报告两条 route health。
 
-Daemon activity 复用 SQLite Task/Run 数据，按日聚合 Run 与 Token。费用只有 Provider
+Daemon activity 复用 SQLite Task/Run 数据，按日聚合 Run 与 Token，并按稳定
+`owner_conversation | connector | health | briefing | maintenance | routine | eval | unknown`
+来源分类报告近 24 小时用量；分类只读取 Task type 和不可变 Event source/trust，不解析
+prompt 或自然语言结果。unknown 不会静默归零，而是进入 Doctor 风险。
+
+Attention 的 Run/Token 预算只计算自治来源，并把 queued/running Task 作为 Run 预留，避免
+并发入口超卖。超过小时、每日或单来源预算后，Connector 事件合并进 Digest，Routine 和
+定时 Briefing 在创建 Event/Task 前延后；Owner 直接请求、Owner 手动 Briefing、紧急事件、
+已经 dispatch 的事务收尾和 eval 不受机械丢弃。同一来源从耗尽到恢复只产生一次结构化
+状态通知。历史 Run 缺少完整 Token 事实时自治入口失败关闭并报告
+`token_usage_unavailable`，不会把未知成本冒充为 0。状态复用现有 Attention state/audit，
+没有新增常驻服务、状态机或持久系统。
+
+费用只有 Provider
 实际返回样本时才显示数值，否则为 `null` 且 sampling=`unknown`，不会伪装为 0。
 CPU/内存/磁盘尚无持久样本时同样返回 `null` 和 host sampling=`not_sampled`；实时 Host
 摘要不冒充跨重启趋势。只对已知/已采样指标产生预算告警；Provider health、资源趋势、

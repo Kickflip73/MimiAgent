@@ -10,6 +10,11 @@ import type { RunFailureRecord } from '../core/run-failure.js';
 import type { MimiContextStatus } from '../core/context.js';
 import type { DailyResourceTrend } from './resource-slo.js';
 import type {
+  AutonomousBudgetExhaustion,
+  RunSourceCategory,
+  RunSourceUsage,
+} from './run-source.js';
+import type {
   DeadLetterClassification,
   DigestClassification,
   ReadinessUnknownClassification,
@@ -420,6 +425,8 @@ export interface MimiActivityRun {
   startedAt: string;
   completedAt?: string;
   error?: string;
+  source: string;
+  sourceCategory: RunSourceCategory;
 }
 
 export interface MimiActivityDelivery {
@@ -455,6 +462,9 @@ export interface MimiActivitySnapshot {
   recentDeliveries: MimiActivityDelivery[];
   recentTransitions: MimiActivityTransition[];
   resourceTrends: DailyResourceTrend[];
+  runUsageBySource: RunSourceUsage[];
+  unknownRunSources: number;
+  autonomousBudgetExhaustions: AutonomousBudgetExhaustion[];
   failureClassification: {
     deadLetters: DeadLetterClassification[];
     digest: DigestClassification[];

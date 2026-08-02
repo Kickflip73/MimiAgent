@@ -448,6 +448,8 @@ export interface MimiDoctorReport {
       taskDeadLetters: number;
       outboxDeadLetters: number;
       resourceTrends: MimiActivitySnapshot['resourceTrends'];
+      runUsageBySource: MimiActivitySnapshot['runUsageBySource'];
+      autonomousBudgetExhaustions: MimiActivitySnapshot['autonomousBudgetExhaustions'];
       failureClassification: MimiActivitySnapshot['failureClassification'];
     };
   };
@@ -1123,6 +1125,8 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
         connectors: runtimeConnectors,
         checkedAt: activity?.generatedAt,
         taskWorkerRuntime: daemonStatus.taskWorkerRuntime,
+        autonomousBudgetExhaustions: activity?.autonomousBudgetExhaustions?.length,
+        unknownRunSources: activity?.unknownRunSources,
       })
     : undefined;
   if (health) {
@@ -1212,6 +1216,8 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
           taskDeadLetters,
           outboxDeadLetters,
           resourceTrends: activity.resourceTrends ?? [],
+          runUsageBySource: activity.runUsageBySource ?? [],
+          autonomousBudgetExhaustions: activity.autonomousBudgetExhaustions ?? [],
           failureClassification: {
             ...(activity.failureClassification ?? {
               deadLetters: [],
@@ -1596,6 +1602,8 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           checkedAt: activity.generatedAt,
           taskWorkerRuntime,
           computer,
+          autonomousBudgetExhaustions: activity.autonomousBudgetExhaustions.length,
+          unknownRunSources: activity.unknownRunSources,
         }),
       };
     };
