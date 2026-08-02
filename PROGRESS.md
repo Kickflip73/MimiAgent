@@ -555,3 +555,22 @@
    message-id Adapter；QQ 仍缺 inbound observer。三条通道均未发送、未猜目标、未把
    私聊内容写入证据。最终全量 `npm test` 为 876/876，fail/skip/todo=0；Phase 3 以
    `implemented_blocked` 退出，继续 ARC-301～303。
+
+## 2026-08-02 ARC-301～302 Run Pipeline 与普通 Run 终态
+
+1. ARC-301 已把普通 Run 的 Scope、State、Capability、Context、ToolSet、Request、
+   Fact collection 与 Commit decision 固化为可独立测试的阶段；模型可见只读 Tool
+   facts 与 side-effect Ledger facts 在 Host 汇合，读操作不会因此进入重放账本。
+2. ARC-302 新增 `completed / partial / blocked / interrupted / failed / uncertain`
+   六类结构化 outcome；判定只消费 SDK、Tool、Ledger 与 Gate 事实，不解析模型答案
+   关键词。Plan 降为 UI 进度，Goal/Completion Contract 保留强完成语义；非完成答案
+   由 Host 约束并绑定 SHA-256、manifest、原因、下一步和 evidence refs。
+3. 反向测试先分别以缺少 outcome classifier、fact collector 和 failure Finalization
+   传播接口得到红测；实现后 Run finalization/fact collector 为 5/5、21/21，真实
+   Provider disconnect 集成为 9/9，Dispatcher Task/Outbox 一致性为 4/4。
+4. 同一份规范 Finalization 已贯穿 Error、Session、Task、Trace、Run Commit Journal
+   与 Outbox；Journal 对同一 execution key 选择最新 attempt，并 finalize 所有旧 attempt，
+   不重放 uncertain Tool。旧持久化记录读取时补齐兼容默认值。
+5. 提交 `6a96147` 落地实现，提交 `04df91e` 锁定矩阵与架构契约。最终聚焦验收
+   34/34、`npm run check`、`npm run build` 通过；全量 `npm test` 为 883/883，
+   fail/skip/todo=0。继续 ARC-303 热点文件与生产 LOC 收敛。
