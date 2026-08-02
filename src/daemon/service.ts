@@ -1,11 +1,10 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
-import { access, chmod, link, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { parse as parseDotenv } from 'dotenv';
 import {
   adoptRuntimeWorkspaceConfig,
@@ -45,12 +44,7 @@ import {
   workerConnectorActionParamsSchema,
   workerConnectorInspectParamsSchema,
 } from './connector-worker-rpc.js';
-import {
-  ensureControlToken,
-  mimiRpc,
-  MimiIpcServer,
-  readControlToken,
-} from './ipc.js';
+import { mimiRpc, MimiIpcServer, readControlToken } from './ipc.js';
 import { NotifierRegistry } from './notifier.js';
 import { MimiStore } from './store.js';
 import { MimiWebhookServer } from './webhook.js';
@@ -71,17 +65,11 @@ import {
 import { rotateDaemonLogs } from './log-maintenance.js';
 import {
   DaemonLifecycleStore,
+  DaemonMutationGate,
   type DaemonLifecycleEpoch,
   type DaemonLifecycleStopReason,
 } from './lifecycle.js';
 import { classifyReadinessUnknown } from './operational-classification.js';
-import {
-  BACKGROUND_DEFAULTS_VERSION,
-  defaultConnectorEnabled,
-  LEGACY_VISIBLE_MACOS_CONNECTORS,
-  legacyVisibleConnectorsToDisable,
-  personalMessageConnectorsToAdd,
-} from './background-defaults.js';
 import { createMimiCommandHostTools } from './host-tools.js';
 import {
   MimiLiveEvents,
@@ -90,6 +78,21 @@ import {
   mimiStreamTaskState,
 } from './live-events.js';
 import { ownerSessionId } from './policy.js';
+import {
+  createMimiChatSnapshot,
+  createMimiHistoryChunk,
+} from './chat-snapshot.js';
+import { pathExists as exists, writeAtomicJson } from './json-file.js';
+import {
+  connectorScriptPath,
+  initializeMimi,
+  runtimeRoot,
+} from './initialization.js';
+import {
+  daemonLaunchEnvironment,
+  launchAgentPlist,
+  MIMI_LAUNCH_AGENT_LABEL,
+} from './launch-agent-config.js';
 import {
   sharedCuaDriverLifecycle,
   type CuaDriverLifecycle,
@@ -118,7 +121,6 @@ import {
   type EventTrust,
   type MimiActivitySnapshot,
   type MimiChatSnapshot,
-  type MimiHistoryChunk,
   type MimiSchedulePage,
   type ReplyRoute,
   type ScheduleRecord,
@@ -133,42 +135,10 @@ export {
   mimiPaths,
 } from './client-runtime.js';
 export type { DaemonProtocolState, MimiPaths } from './client-runtime.js';
-
-export class DaemonMutationGate {
-  private activeCount = 0;
-  private accepting = true;
-  private readonly idleWaiters = new Set<() => void>();
-
-  get active(): number {
-    return this.activeCount;
-  }
-
-  async run<T>(operation: () => Promise<T>): Promise<T> {
-    if (!this.accepting) throw new Error('MimiAgent 正在关闭，不再接受新的管理事务');
-    this.activeCount += 1;
-    try {
-      return await operation();
-    } finally {
-      this.activeCount -= 1;
-      if (this.activeCount === 0) {
-        for (const resolve of this.idleWaiters) resolve();
-        this.idleWaiters.clear();
-      }
-    }
-  }
-
-  beginShutdown(): boolean {
-    if (this.activeCount > 0) return false;
-    this.accepting = false;
-    return true;
-  }
-
-  async closeAndWait(): Promise<void> {
-    this.accepting = false;
-    if (this.activeCount === 0) return;
-    await new Promise<void>((resolve) => this.idleWaiters.add(resolve));
-  }
-}
+export { createMimiChatSnapshot, createMimiHistoryChunk } from './chat-snapshot.js';
+export { initializeMimi, type MimiInitialization } from './initialization.js';
+export { daemonLaunchEnvironment, launchAgentPlist } from './launch-agent-config.js';
+export { DaemonMutationGate } from './lifecycle.js';
 
 export function daemonProcessIsLive(
   pid: number,
@@ -204,91 +174,6 @@ function chatSessionId(params: Record<string, unknown>): string {
   );
 }
 
-export async function createMimiChatSnapshot(
-  host: Pick<MimiHost, 'snapshot'>,
-  sessionId: string,
-  workspaceRoot: string,
-  itemLimit = 30,
-): Promise<MimiChatSnapshot> {
-  const snapshot = await host.snapshot(sessionId);
-  return {
-    sessionId: snapshot.sessionId,
-    workspaceRoot,
-    provider: snapshot.runtime.provider,
-    model: snapshot.runtime.model,
-    mode: snapshot.runtime.mode.label,
-    outputLevel: snapshot.runtime.outputLevel,
-    permissionMode: snapshot.runtime.permissionMode,
-    securityProfile: snapshot.runtime.securityProfile,
-    contextUsed: snapshot.context.status.value,
-    contextWindow: snapshot.context.contextWindow,
-    contextStatus: snapshot.context.status,
-    items: boundedChatItems(snapshot.items, itemLimit),
-    plan: snapshot.plan.slice(0, 20).map((step) => ({
-      ...step,
-      id: step.id.slice(0, 100),
-      description: step.description.slice(0, 1_000),
-    })),
-    recovery: snapshot.recovery,
-  };
-}
-
-const CHAT_SNAPSHOT_MAX_BYTES = 512 * 1024;
-const HISTORY_CHUNK_CHARACTERS = 256 * 1024;
-
-function boundedChatItems(items: MimiChatSnapshot['items'], itemLimit: number): MimiChatSnapshot['items'] {
-  const limit = Math.max(1, Math.min(200, Math.trunc(itemLimit)));
-  const selected = items.filter((item) => (
-    'role' in item && (item.role === 'user' || item.role === 'assistant')
-  )).slice(-limit);
-  while (selected.length > 1 && Buffer.byteLength(JSON.stringify(selected), 'utf8') > CHAT_SNAPSHOT_MAX_BYTES) {
-    selected.shift();
-  }
-  if (Buffer.byteLength(JSON.stringify(selected), 'utf8') <= CHAT_SNAPSHOT_MAX_BYTES) return selected;
-  const last = selected.at(-1);
-  if (!last || !('role' in last) || (last.role !== 'user' && last.role !== 'assistant')) return [];
-  return [{
-    role: last.role,
-    content: '[最近一条对话超过 CLI 快照上限；请使用 /history 分块读取完整权威历史。]',
-  } as MimiChatSnapshot['items'][number]];
-}
-
-export async function createMimiHistoryChunk(
-  host: Pick<MimiHost, 'snapshot'>,
-  sessionId: string,
-  offset = 0,
-  expectedRevision?: string,
-): Promise<MimiHistoryChunk> {
-  if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('history offset 必须是非负安全整数');
-  const snapshot = await host.snapshot(sessionId);
-  const source = JSON.stringify(snapshot.items);
-  const revision = createHash('sha256').update(source).digest('hex');
-  if (expectedRevision && expectedRevision !== revision) throw new Error('Session 历史在读取期间发生变化，请重试 /history');
-  if (offset > source.length) throw new Error('history offset 超出当前 Session 历史');
-  const end = Math.min(source.length, offset + HISTORY_CHUNK_CHARACTERS);
-  return {
-    chunk: source.slice(offset, end),
-    nextOffset: end < source.length ? end : undefined,
-    revision,
-    totalCharacters: source.length,
-  };
-}
-
-function truncateUtf8(value: string, maximumBytes: number): string {
-  if (Buffer.byteLength(value) <= maximumBytes) return value;
-  let low = 0;
-  let high = value.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (Buffer.byteLength(value.slice(0, middle)) <= maximumBytes) low = middle;
-    else high = middle - 1;
-  }
-  let end = low;
-  if (end > 0 && /[\uD800-\uDBFF]/.test(value[end - 1]!)) end -= 1;
-  return value.slice(0, end);
-}
-
-const LAUNCH_AGENT_LABEL = 'com.mimiagent.daemon';
 const DAEMON_WORKSPACE_FILE = 'workspace.json';
 
 export type DaemonStartupMode = 'launchd' | 'detached';
@@ -341,7 +226,7 @@ export async function reconcileMimiDaemon(
 }
 
 function launchAgentFile(): string {
-  return path.join(os.homedir(), 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
+  return path.join(os.homedir(), 'Library', 'LaunchAgents', `${MIMI_LAUNCH_AGENT_LABEL}.plist`);
 }
 
 function daemonWorkspaceFile(config: AppConfig): string {
@@ -401,23 +286,6 @@ export async function resolveDaemonWorkspaceConfig(config: AppConfig): Promise<A
   return resolved;
 }
 
-const CONNECTOR_TEMPLATE_ROOTS = [
-  '/absolute/path/to/MimiAgent',
-  '/absolute/path/to/MimiAgent',
-] as const;
-export interface MimiInitialization {
-  root: string;
-  connectors: {
-    file: string;
-    created: boolean;
-    updatedActions: number;
-    removedRetired: number;
-    total: number;
-    enabled: string[];
-  };
-  assistant: { file: string; created: boolean };
-}
-
 export interface MimiDoctorReport {
   ready: boolean;
   platform: NodeJS.Platform;
@@ -463,20 +331,6 @@ export interface MimiDoctorReport {
   storage?: DiagnosticStorageSnapshot;
   issues: string[];
   nextActions: string[];
-}
-
-interface InitializeOptions {
-  platform?: NodeJS.Platform;
-  runtimeRoot?: string;
-}
-
-function xml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;').replaceAll("'", '&apos;');
-}
-
-function plistString(value: string): string {
-  return `    <string>${xml(value)}</string>`;
 }
 
 function launchctl(args: string[], ignoreFailure = false): Promise<void> {
@@ -592,347 +446,6 @@ function runtimeHttpConfiguration(): { port: number; token: string } | undefined
   const token = preferredEnvironmentValue('MIMI_RUNTIME_HTTP_TOKEN');
   if (!token) throw new Error('启用 Runtime HTTP 时必须设置 MIMI_RUNTIME_HTTP_TOKEN');
   return { port, token };
-}
-
-function runtimeRoot(): string {
-  return path.resolve(fileURLToPath(new URL('../../', import.meta.url)));
-}
-
-async function exists(file: string): Promise<boolean> {
-  try {
-    await access(file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function writeExclusiveJson(file: string, value: unknown): Promise<boolean> {
-  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  await chmod(path.dirname(file), 0o700);
-  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  try {
-    await link(temporary, file);
-    await chmod(file, 0o600);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
-    throw error;
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
-
-async function writeAtomicJson(file: string, value: unknown): Promise<void> {
-  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  try {
-    await chmod(temporary, 0o600);
-    await rename(temporary, file);
-    await chmod(file, 0o600);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
-
-function localConnectorConfig(
-  template: ConnectorFileConfig,
-  root: string,
-  platform: NodeJS.Platform,
-): ConnectorFileConfig {
-  return {
-    backgroundDefaultsVersion: BACKGROUND_DEFAULTS_VERSION,
-    connectors: Object.fromEntries(Object.entries(template.connectors).map(([id, connector]) => [id, {
-      ...connector,
-      enabled: defaultConnectorEnabled(id, platform),
-      command: connector.command === 'node' ? process.execPath : connector.command,
-      args: connector.args.map((argument) => CONNECTOR_TEMPLATE_ROOTS.reduce(
-        (resolved, placeholder) => resolved.replaceAll(placeholder, root),
-        argument,
-      )),
-    }])),
-  };
-}
-
-function connectorScriptPath(connector: ConnectorFileConfig['connectors'][string]): string | undefined {
-  for (let index = connector.args.length - 1; index >= 0; index -= 1) {
-    const argument = connector.args[index];
-    if (argument && path.isAbsolute(argument) && /\.(?:mjs|cjs|js)$/.test(argument)) return argument;
-  }
-  return undefined;
-}
-
-const RETIRED_CONNECTOR_IDS = new Set([
-  'daxiang',
-  'daxiang-applescript',
-  'http-action',
-  'macos-browser',
-  'qq',
-  'qq-applescript',
-  'wechat-applescript',
-]);
-
-const RETIRED_CONNECTOR_SCRIPTS = new Set([
-  'daxiang-applescript-connector.mjs',
-  'daxiang-connector.mjs',
-  'http-action-connector.mjs',
-  'macos-browser-connector.mjs',
-  'qq-applescript-connector.mjs',
-  'qq-napcat-connector.mjs',
-  'wechat-applescript-connector.mjs',
-]);
-
-const REQUIRED_CONNECTOR_ENV: Readonly<Record<string, readonly string[]>> = {
-  'openclaw-weixin': ['MIMI_DAEMON_SOCKET'],
-};
-
-interface ConnectorScriptIdentity {
-  canonicalPath: string;
-  device?: bigint;
-  inode?: bigint;
-  sha256?: string;
-}
-
-async function connectorScriptIdentity(
-  connector: ConnectorFileConfig['connectors'][string],
-): Promise<ConnectorScriptIdentity | undefined> {
-  const script = connectorScriptPath(connector);
-  if (!script) return undefined;
-  try {
-    const canonicalPath = await realpath(script);
-    const metadata = await stat(canonicalPath, { bigint: true });
-    const sha256 = metadata.isFile() && metadata.size <= 2_000_000n
-      ? createHash('sha256').update(await readFile(canonicalPath)).digest('hex')
-      : undefined;
-    return { canonicalPath, device: metadata.dev, inode: metadata.ino, sha256 };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    return { canonicalPath: path.resolve(script) };
-  }
-}
-
-async function sameConnectorScript(
-  current: ConnectorFileConfig['connectors'][string],
-  packaged: ConnectorFileConfig['connectors'][string],
-): Promise<boolean> {
-  const [currentIdentity, packagedIdentity] = await Promise.all([
-    connectorScriptIdentity(current),
-    connectorScriptIdentity(packaged),
-  ]);
-  if (!currentIdentity || !packagedIdentity) return false;
-  if (currentIdentity.canonicalPath === packagedIdentity.canonicalPath) return true;
-  if (currentIdentity.device !== undefined
-    && packagedIdentity.device !== undefined
-    && currentIdentity.device === packagedIdentity.device
-    && currentIdentity.inode === packagedIdentity.inode) return true;
-  return path.basename(currentIdentity.canonicalPath) === path.basename(packagedIdentity.canonicalPath)
-    && currentIdentity.sha256 !== undefined
-    && currentIdentity.sha256 === packagedIdentity.sha256;
-}
-
-async function mergeTemplateActions(
-  current: ConnectorFileConfig,
-  template: ConnectorFileConfig,
-): Promise<{
-  config: ConnectorFileConfig;
-  updatedActions: number;
-  removedRetired: number;
-  changed: boolean;
-}> {
-  let updatedActions = 0;
-  let removedRetired = 0;
-  let changed = false;
-  const connectors = { ...current.connectors };
-  const legacyBrowser = connectors['macos-browser'];
-  const browserTemplate = template.connectors.browser;
-  if (legacyBrowser && browserTemplate && !connectors.browser) {
-    connectors.browser = { ...browserTemplate, enabled: legacyBrowser.enabled };
-    changed = true;
-  }
-  let backgroundDefaultsVersion = current.backgroundDefaultsVersion;
-  if (backgroundDefaultsVersion < BACKGROUND_DEFAULTS_VERSION) {
-    const canonical = new Set<string>();
-    for (const id of LEGACY_VISIBLE_MACOS_CONNECTORS) {
-      const connector = connectors[id];
-      const packaged = template.connectors[id];
-      if (!connector?.enabled || !packaged || !await sameConnectorScript(connector, packaged)) continue;
-      canonical.add(id);
-    }
-    const defaults = legacyVisibleConnectorsToDisable(
-      backgroundDefaultsVersion,
-      Object.fromEntries(Object.entries(connectors).map(([id, connector]) => [id, connector.enabled])),
-      canonical,
-    );
-    for (const id of defaults.disabled) {
-      const connector = connectors[id]!;
-      connectors[id] = { ...connector, enabled: false };
-    }
-    backgroundDefaultsVersion = defaults.version;
-    changed ||= defaults.changed;
-  }
-  if (backgroundDefaultsVersion < BACKGROUND_DEFAULTS_VERSION) {
-    const personal = personalMessageConnectorsToAdd(
-      backgroundDefaultsVersion,
-      new Set(Object.keys(connectors)),
-    );
-    for (const id of personal.added) {
-      const packaged = template.connectors[id];
-      if (packaged) connectors[id] = { ...packaged, enabled: false };
-    }
-    backgroundDefaultsVersion = personal.version;
-    changed ||= personal.changed;
-  }
-  for (const [id, connector] of Object.entries(connectors)) {
-    const script = connectorScriptPath(connector);
-    if (!RETIRED_CONNECTOR_IDS.has(id) && (!script || !RETIRED_CONNECTOR_SCRIPTS.has(path.basename(script)))) {
-      continue;
-    }
-    delete connectors[id];
-    removedRetired += 1;
-    changed = true;
-  }
-  for (const [id, connector] of Object.entries(template.connectors)) {
-    if (!connectors[id] && connector.enabled) {
-      connectors[id] = connector;
-      changed = true;
-    }
-  }
-  for (const [id, connector] of Object.entries(current.connectors)) {
-    const packaged = template.connectors[id];
-    if (!packaged) continue;
-    if (!await sameConnectorScript(connector, packaged)) continue;
-    const migrateSystemProvenance = id === 'macos-system'
-      && connector.source === 'system'
-      && connector.trust === 'trusted'
-      && packaged.source === 'macos-system'
-      && packaged.trust === 'system';
-    const migrateNodeCommand = connector.command === 'node'
-      && path.isAbsolute(packaged.command);
-    const missing = connector.syncTemplateActions
-      ? Object.entries(packaged.actions).filter(([name]) => !Object.hasOwn(connector.actions, name))
-      : [];
-    const metadataUpdates = connector.syncTemplateActions
-      ? Object.entries(packaged.actions).filter(([name, packagedAction]) => {
-        const currentAction = connector.actions[name];
-        return currentAction !== undefined
-          && (currentAction.description !== packagedAction.description
-            || (currentAction.capability === undefined && packagedAction.capability !== undefined)
-            || (currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown')
-            || currentAction.modelVisible !== packagedAction.modelVisible
-            || currentAction.targetExample !== packagedAction.targetExample
-            || currentAction.payloadExampleJson !== packagedAction.payloadExampleJson);
-      })
-      : [];
-    const missingEnv = (REQUIRED_CONNECTOR_ENV[id] ?? []).filter((name) => (
-      packaged.envAllowlist.includes(name) && !connector.envAllowlist.includes(name)
-    ));
-    const missingClaimedComputerApps = packaged.claimedComputerApps.filter(
-      (bundleId) => !connector.claimedComputerApps.includes(bundleId),
-    );
-    if (
-      !migrateSystemProvenance
-      && !migrateNodeCommand
-      && !missing.length
-      && !metadataUpdates.length
-      && !missingEnv.length
-      && !missingClaimedComputerApps.length
-    ) continue;
-    updatedActions += missing.length + metadataUpdates.length;
-    changed = true;
-    const updatedMetadata = Object.fromEntries(metadataUpdates.map(([name, packagedAction]) => {
-      const currentAction = connector.actions[name]!;
-      return [name, {
-        ...currentAction,
-        description: packagedAction.description,
-        ...(currentAction.capability === undefined && packagedAction.capability !== undefined
-          ? { capability: packagedAction.capability }
-          : {}),
-        ...(currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown'
-          ? { effect: packagedAction.effect }
-          : {}),
-        ...(currentAction.modelVisible !== packagedAction.modelVisible
-          ? { modelVisible: packagedAction.modelVisible }
-          : {}),
-        ...(currentAction.targetExample !== packagedAction.targetExample
-          ? { targetExample: packagedAction.targetExample }
-          : {}),
-        ...(currentAction.payloadExampleJson !== packagedAction.payloadExampleJson
-          ? { payloadExampleJson: packagedAction.payloadExampleJson }
-          : {}),
-      }];
-    }));
-    connectors[id] = {
-      ...connector,
-      ...(migrateNodeCommand ? { command: packaged.command } : {}),
-      ...(migrateSystemProvenance ? { source: packaged.source, trust: packaged.trust } : {}),
-      envAllowlist: [...connector.envAllowlist, ...missingEnv],
-      claimedComputerApps: [...connector.claimedComputerApps, ...missingClaimedComputerApps],
-      actions: { ...Object.fromEntries(missing), ...connector.actions, ...updatedMetadata },
-    };
-  }
-  return {
-    config: { backgroundDefaultsVersion, connectors },
-    updatedActions,
-    removedRetired,
-    changed,
-  };
-}
-
-export async function initializeMimi(
-  config: AppConfig,
-  options: InitializeOptions = {},
-): Promise<MimiInitialization> {
-  const paths = mimiPaths(config);
-  const root = path.resolve(options.runtimeRoot ?? runtimeRoot());
-  const platform = options.platform ?? process.platform;
-  await mkdir(paths.root, { recursive: true, mode: 0o700 });
-  await chmod(paths.root, 0o700);
-  await ensureControlToken(paths.socket);
-
-  const templateFile = path.join(root, 'mimi.connectors.example.json');
-  const template = parseConnectorConfig(JSON.parse(await readFile(templateFile, 'utf8')) as unknown);
-  const localTemplate = localConnectorConfig(template, root, platform);
-  let connectorCreated = false;
-  if (!await exists(paths.connectorsConfig)) {
-    connectorCreated = await writeExclusiveJson(
-      paths.connectorsConfig,
-      localTemplate,
-    );
-  }
-  let connectorConfig = parseConnectorConfig(JSON.parse(await readFile(paths.connectorsConfig, 'utf8')) as unknown);
-  let updatedActions = 0;
-  let removedRetired = 0;
-  if (!connectorCreated) {
-    const merged = await mergeTemplateActions(connectorConfig, localTemplate);
-    connectorConfig = merged.config;
-    updatedActions = merged.updatedActions;
-    removedRetired = merged.removedRetired;
-    if (merged.changed) await writeAtomicJson(paths.connectorsConfig, connectorConfig);
-  }
-  await chmod(paths.connectorsConfig, 0o600);
-
-  const assistantExisted = await exists(paths.assistantConfig);
-  const store = new MimiStore(paths.database);
-  try {
-    await AttentionEngine.load(paths.assistantConfig, store);
-  } finally {
-    store.close();
-  }
-  return {
-    root: paths.root,
-    connectors: {
-      file: paths.connectorsConfig,
-      created: connectorCreated,
-      updatedActions,
-      removedRetired,
-      total: Object.keys(connectorConfig.connectors).length,
-      enabled: Object.entries(connectorConfig.connectors)
-        .filter(([, connector]) => connector.enabled)
-        .map(([id]) => id),
-    },
-    assistant: { file: paths.assistantConfig, created: !assistantExisted },
-  };
 }
 
 function providerConfigured(config: AppConfig): boolean {
@@ -1242,107 +755,6 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
     issues,
     nextActions,
   };
-}
-
-export function daemonLaunchEnvironment(config: AppConfig): Record<string, string> {
-  const paths = mimiPaths(config);
-  const session = preferredEnvironmentValue('MIMI_SESSION', 'AGENT_SESSION') ?? 'mimi-system';
-  const environment: Record<string, string> = {
-    MIMI_MODEL_PROVIDER: config.provider,
-    MIMI_CONFIG_VERSION: '4',
-    MIMI_WORKSPACE: config.workspaceRoot,
-    AGENT_WORKSPACE: config.workspaceRoot,
-    MIMI_DATA_DIR: config.dataRoot,
-    MIMI_DAEMON_DATA_DIR: paths.root,
-    MIMI_DAEMON_SOCKET: paths.socket,
-    MIMI_SKILLS_DIR: config.skillsRoot,
-    MIMI_MCP_CONFIG: config.mcpConfig,
-    MIMI_HISTORY_LIMIT: String(config.historyLimit),
-    MIMI_TEAM_MAX_CONCURRENCY: String(config.teamMaxConcurrency ?? 4),
-    MIMI_PERMISSION_MODE: config.permissionMode ?? 'trusted',
-    MIMI_SECURITY_PROFILE: securityProfileSummary(config).id,
-    MIMI_SESSION: session,
-    AGENT_SESSION: session,
-    MIMI_CONNECTORS_CONFIG: paths.connectorsConfig,
-    MIMI_ASSISTANT_CONFIG: paths.assistantConfig,
-  };
-  if (config.maxTurns !== null) environment.MIMI_MAX_TURNS = String(config.maxTurns);
-  if (config.contextWindow !== undefined) environment.MIMI_CONTEXT_WINDOW = String(config.contextWindow);
-  if (config.outputReserve !== undefined) environment.MIMI_OUTPUT_TOKEN_RESERVE = String(config.outputReserve);
-  if (config.provider === 'openai-compatible') {
-    if (config.providerBaseUrl !== undefined) environment.MIMI_PROVIDER_BASE_URL = config.providerBaseUrl;
-    if (config.defaultModel !== undefined) environment.MIMI_MODEL = config.defaultModel;
-    if (config.availableModels?.length) environment.MIMI_MODELS = config.availableModels.join(',');
-  } else if (config.provider === 'deepseek') {
-    if (config.providerBaseUrl !== undefined) environment.DEEPSEEK_BASE_URL = config.providerBaseUrl;
-    if (config.defaultModel !== undefined) environment.DEEPSEEK_MODEL = config.defaultModel;
-    if (config.availableModels?.length) environment.DEEPSEEK_MODELS = config.availableModels.join(',');
-  } else {
-    if (config.defaultModel !== undefined) environment.OPENAI_MODEL = config.defaultModel;
-    if (config.availableModels?.length) environment.OPENAI_MODELS = config.availableModels.join(',');
-  }
-  if (config.computer) {
-    environment.MIMI_COMPUTER_BACKEND = config.computer.backend;
-    environment.MIMI_CUA_DRIVER_COMMAND = config.computer.driverCommand;
-    environment.MIMI_COMPUTER_ACTION_TIMEOUT_MS = String(config.computer.actionTimeoutMs);
-    environment.MIMI_COMPUTER_MAX_ACTIONS_PER_RUN = String(config.computer.maxActionsPerRun);
-    environment.MIMI_COMPUTER_MAX_SCREENSHOTS_PER_RUN = String(config.computer.maxScreenshotsPerRun);
-    environment.MIMI_COMPUTER_PAUSE_WHEN_TARGET_FRONTMOST = String(config.computer.pauseWhenTargetFrontmost);
-    environment.MIMI_COMPUTER_DEFAULT_ACCESS = config.computer.defaultAccess;
-    environment.MIMI_COMPUTER_FOREGROUND_LEASE_SECONDS = String(config.computer.foregroundLeaseSeconds);
-    environment.MIMI_COMPUTER_ARTIFACT_MAX_MIB = String(Math.floor(config.computer.artifactMaxBytes / 1024 / 1024));
-  }
-  if (config.trustedWorkspaceMcp !== undefined) {
-    environment.MIMI_TRUST_WORKSPACE_MCP = config.trustedWorkspaceMcp;
-  }
-  const environmentFile = resolveEnvironmentFile();
-  environment.MIMI_ENV_FILE = environmentFile;
-  environment.DOTENV_CONFIG_PATH = environmentFile;
-  return environment;
-}
-
-export function launchAgentPlist(config: AppConfig, entry = process.argv[1], execArgs = process.execArgv): string {
-  if (!entry) throw new Error('无法确定 MimiAgent 启动入口');
-  const paths = mimiPaths(config);
-  const argumentsXml = [process.execPath, ...execArgs, entry, 'daemon', 'run'].map(plistString).join('\n');
-  const environment = daemonLaunchEnvironment(config);
-  environment.MIMI_DAEMON_SUPERVISOR = 'launchd';
-  const environmentXml = Object.entries(environment)
-    .map(([key, value]) => `      <key>${xml(key)}</key>\n      <string>${xml(value)}</string>`).join('\n');
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${LAUNCH_AGENT_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-${argumentsXml}
-  </array>
-  <key>WorkingDirectory</key>
-  <string>${xml(config.workspaceRoot)}</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-${environmentXml}
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>ThrottleInterval</key>
-  <integer>10</integer>
-  <key>ProcessType</key>
-  <string>Background</string>
-  <key>StandardOutPath</key>
-  <string>${xml(paths.stdoutLog)}</string>
-  <key>StandardErrorPath</key>
-  <string>${xml(paths.stderrLog)}</string>
-</dict>
-</plist>
-`;
 }
 
 export async function installMimiLaunchAgent(config: AppConfig): Promise<string> {

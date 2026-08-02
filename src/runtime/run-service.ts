@@ -11,7 +11,6 @@ import type {
   MimiRunOptions,
 } from './mimi-agent.js';
 import { assertRunCanComplete, isRunInterrupted, isTerminalRunInterruption } from './run-outcome.js';
-import { RunCommitCoordinator } from './pipeline/run-commit-coordinator.js';
 import {
   classifyProviderFault,
   ProviderCircuitBreaker,
@@ -144,7 +143,6 @@ async function observe<T>(callback: ((value: T) => void | Promise<void>) | undef
 }
 
 export class AgentRunService {
-  private readonly commits: RunCommitCoordinator;
   private readonly providerReliability: ProviderCircuitBreaker;
   private readonly providerId: string;
   private readonly providerIdForRun?: ProviderReliabilityKeyResolver;
@@ -167,11 +165,6 @@ export class AgentRunService {
     this.providerReliability = options.providerReliability ?? new ProviderCircuitBreaker();
     this.backupProvider = options.backupProvider;
     this.providerFailover = new ProviderFailoverCoordinator(this.providerReliability);
-    this.commits = new RunCommitCoordinator({
-      complete: (answer, usage) => this.agent.completeRun(answer, usage),
-      fail: (error, interrupted, usage, interruptedAnswer) =>
-        this.agent.failRun(error, interrupted, usage, interruptedAnswer),
-    });
   }
 
   providerHealth(): ProviderHealthSnapshot {
@@ -263,7 +256,7 @@ export class AgentRunService {
         : finalOutput === undefined ? streamedAnswer : JSON.stringify(finalOutput)).slice(0, 20_000);
       const answer = this.agent.redactActiveRunText?.(rawAnswer) ?? rawAnswer;
       const usage = usageFrom(stream);
-      const effects = await this.commits.complete({ answer, usage });
+      const effects = await this.agent.completeRun(answer, usage);
       const committedAnswer = this.agent.completedRunAnswer ?? answer;
       const result = {
         answer: committedAnswer,
@@ -285,16 +278,16 @@ export class AgentRunService {
         && isTerminalRunInterruption(request.signal.reason)
         ? request.signal.reason
         : undefined;
-      const commitFailure = this.commits.fail({
-        error: isTerminalRunInterruption(error)
+      const commitFailure = this.agent.failRun(
+        isTerminalRunInterruption(error)
           ? safeError
           : terminalReason
             ? this.agent.redactActiveRunError?.(terminalReason) ?? terminalReason
             : safeError,
-        interrupted: isRunInterrupted(error, request.signal),
-        usage: usageFrom(stream),
+        isRunInterrupted(error, request.signal),
+        usageFrom(stream),
         interruptedAnswer,
-      });
+      );
       const failureFinalization = streamAcquired
         ? await commitFailure
         : await commitFailure.catch(() => undefined);

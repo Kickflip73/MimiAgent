@@ -100,6 +100,42 @@ export interface DaemonLifecycleTransition {
   error?: string;
 }
 
+export class DaemonMutationGate {
+  private activeCount = 0;
+  private accepting = true;
+  private readonly idleWaiters = new Set<() => void>();
+
+  get active(): number {
+    return this.activeCount;
+  }
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    if (!this.accepting) throw new Error('MimiAgent 正在关闭，不再接受新的管理事务');
+    this.activeCount += 1;
+    try {
+      return await operation();
+    } finally {
+      this.activeCount -= 1;
+      if (this.activeCount === 0) {
+        for (const resolve of this.idleWaiters) resolve();
+        this.idleWaiters.clear();
+      }
+    }
+  }
+
+  beginShutdown(): boolean {
+    if (this.activeCount > 0) return false;
+    this.accepting = false;
+    return true;
+  }
+
+  async closeAndWait(): Promise<void> {
+    this.accepting = false;
+    if (this.activeCount === 0) return;
+    await new Promise<void>((resolve) => this.idleWaiters.add(resolve));
+  }
+}
+
 export class DaemonLifecycleStore {
   private readonly state: AtomicJsonStore<DaemonLifecycleFile>;
   private readonly historyLimit: number;

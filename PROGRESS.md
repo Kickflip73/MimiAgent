@@ -574,3 +574,18 @@
 5. 提交 `6a96147` 落地实现，提交 `04df91e` 锁定矩阵与架构契约。最终聚焦验收
    34/34、`npm run check`、`npm run build` 通过；全量 `npm test` 为 883/883，
    fail/skip/todo=0。继续 ARC-303 热点文件与生产 LOC 收敛。
+
+## 2026-08-02 ARC-303 组合根第一段
+
+1. 先加行数门禁得到 `mimi-agent.ts:3424 > 1800` 红证据；当前三个组合根已收敛为
+   `1627 / 1795 / 1900`，`tests/architecture-budget.test.ts` 通过。
+2. `RunPipeline` 现独占 prepare/execute/异常回收，`RunCommitCoordinator` 独占
+   complete/fail/receipt recovery；`AgentRunService` 删除第二个 commit facade。
+3. Daemon 初始化、chat snapshot、launchd 配置和生命周期退出 `service.ts`；Activity、
+   Outbox、Schedule、Run、Memory observation 按现有表级不变量退出 `store.ts`，
+   `MimiStore` 保留跨表 transaction 与 schema migration facade。
+4. 全量原始门禁 `npm run check && npm test && npm run build && git diff --check`
+   exit 0，skip/todo=0；额外聚焦 Runtime 99/99、Store/Memory 23/23。
+5. ARC-303 尚未关闭：以 `e1dd9a0` 开工口径计，相关生产文件基线约 9450 行，
+   当前含新模块 10128 行（净 +678）；距离硬目标 8505 仍差 1623 行。此提交只保存
+   已验证的职责所有权与热点门禁，不把纯搬文件冒充净 LOC 达标。

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- split the three oversized composition roots without adding a service,
+  dependency, ORM, or state system: one Run Pipeline prepares and executes a
+  frozen Run, one Commit Coordinator owns completion/failure/recovery, daemon
+  lifecycle and initialization leave `service.ts`, and table-specific
+  Activity, Outbox, Schedule, Run, and Memory-observation invariants leave the
+  transactional `MimiStore` facade; lock the roots at 1800/1800/1900 lines
 - make the Host the single authority for ordinary Run finalization, derive
   `completed`, `partial`, `blocked`, `interrupted`, `failed`, or `uncertain`
   from structured SDK, Tool, Ledger, and Gate facts, constrain non-completed

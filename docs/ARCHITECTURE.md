@@ -27,8 +27,10 @@ src/
 ├── terminal.ts          事件渲染
 ├── runtime/
 │   ├── bootstrap.ts     CLI / Daemon 共用 Provider 启动
-│   ├── run-service.ts   统一 stream 消费、终态提交和 usage
-│   ├── mimi-agent.ts    MimiAgent 组合根与一轮运行
+│   ├── run-service.ts   统一 stream 消费与 Provider failover
+│   ├── mimi-agent.ts    MimiAgent 薄组合根、当前 Run ownership 与公开 facade
+│   ├── pipeline/        RunScope、状态/能力/上下文/工具/请求与唯一提交管线
+│   ├── runtime-control-coordinator.ts 运行查询、模型控制与受约束 Host probe
 │   ├── mimi-host.ts     键控 Session actor、每 Session FIFO 与全局并发槽
 │   └── components.ts    模型、状态存储和扩展初始化
 ├── core/                    Session、Context、Memory、Plan、Team 与 Trace
@@ -36,7 +38,8 @@ src/
 └── tools.ts                 高频本地原子工具（分段读取、检索、摘要校验 Patch、变更检查等）
 
 src/daemon/
-├── store.ts             SQLite WAL Inbox / Run / Outbox / Lease / Audit / Schedule / Digest
+├── store.ts             SQLite WAL 事务 facade、Task/Event/Digest 与 schema 迁移
+├── *-store.ts           Outbox/Schedule/Run/Memory observation/Activity 表级不变量
 ├── policy.ts            事件 provenance、Session 路由与模型输入
 ├── dispatcher.ts        有界并发 claim / renew / execute / retry / deliver 循环
 ├── task-tools.ts        后台任务持久委派、查询与取消工具
@@ -536,6 +539,12 @@ ToolSetBuilder → AgentRequestFactory → RunCommitCoordinator` 分阶段组装
 在异步读取前冻结；各阶段只接收显式输入，模型请求的工具顺序、权限和 Context
 Manifest 因而可以独立测试。Session、Goal/Plan、Team、ExecutionLedger、Trace
 和 Run Commit Journal 通过 state ports 装配，组合根不再逐项拼接持久化路径。
+`RunPipeline` 只拥有单次 Run 的 prepare/execute 与异常回收，
+`RunCommitCoordinator` 独占完成、失败、receipt 恢复和 phase 推进；
+`AgentRunService` 不再维护第二个提交 facade。Daemon `service.ts` 只装配生命周期、
+初始化、LaunchAgent 与 RPC，`store.ts` 保留跨表 transaction，而已经有独立表和
+lease/幂等不变量的 Activity、Outbox、Schedule、Run 与 Memory observation 由紧邻
+adapter 持有。三个组合根的源码行数由回归测试锁定为 1800/1800/1900 上限。
 
 每个普通 Run 只由 Host 生成一份规范 `RunFinalization`：`outcome` 取
 `completed / partial / blocked / interrupted / failed / uncertain`，并绑定答案摘要、
