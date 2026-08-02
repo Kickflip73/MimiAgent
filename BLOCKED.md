@@ -203,3 +203,8 @@
   必须在 Geniusrd/MIMI-compatible、DeepSeek、Friday 各自控制面吊销并重发，再原子更新 `.env`
   并通过 Doctor/Provider canary 复核。没有对应外部控制面能力时不得伪称已轮换，也不得只删除
   本机值来冒充处置完成。
+- **2026-08-03 ARC-503 当前 decision=`NO-GO`**：不可覆盖快照已写入
+  `evals/m1/exit-records/20260803T033746+0800-no-go.json`。它明确记录最终 build 的
+  eligible live matrix=0/100，T0/24h/72h/7d 均未开始，以及上述全部 unresolved disposition；
+  后续只能在门禁解除后建立新 clean build/T0 并新增 exit record，不得修改本记录或用历史证据
+  将它提升为 GO。

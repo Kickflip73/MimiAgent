@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 1,
+  "recordId": "m1-exit-20260803T033746+0800-no-go",
+  "createdAt": "2026-08-03T03:37:46+08:00",
+  "decision": "NO-GO",
+  "decisionContract": "docs/plans/20260731-MimiAgent-M1架构收敛重构计划.md#phase-6d-m2-go-no-go",
+  "reason": "Phase 5 runtime prerequisites are unresolved, so no final T0, live matrix, or calendar soak window is eligible.",
+  "source": {
+    "evidenceHead": "98b2a551da94f0de10a4b47db1e32f51cf23abb9",
+    "branch": "codex/mimiagent-integrated",
+    "frozenCodeCommit": "ca7cdafa414a421ae1a96fc4c201cab211f65416",
+    "frozenBuildIdentity": "0.12.0+gca7cdafa414a421ae1a96fc4c201cab211f65416.clean.d8fecfcbb50c",
+    "frozenBuildDirty": false,
+    "workspaceHeadDirty": true,
+    "workspaceDirtyDisposition": "Only pre-existing user-owned files and explicitly excluded untracked Skills remain; none entered the frozen build."
+  },
+  "dataset": {
+    "schemaVersion": 2,
+    "revision": "m1-fixtures-2026-07-28.1",
+    "policyRevision": "m1-policy-c4e3e4a.1",
+    "toolSnapshotRevision": "m1-tools-c4e3e4a.1",
+    "manifest": "evals/m1/manifest.v2.json"
+  },
+  "ci": {
+    "command": "npm run ci",
+    "cleanWorktree": true,
+    "exitCode": 0,
+    "repositoryChecks": 4,
+    "tests": 892,
+    "passed": 892,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "coverage": {
+      "linePercent": 88.24,
+      "branchPercent": 78.25,
+      "functionPercent": 84.58
+    },
+    "buildPassed": true,
+    "packageSmokePassed": true
+  },
+  "architecture": {
+    "productionLines": 8490,
+    "productionLineBudget": 8505,
+    "hotspotLines": {
+      "src/runtime/mimi-agent.ts": 1174,
+      "src/daemon/service.ts": 1536,
+      "src/daemon/store.ts": 1475
+    },
+    "hotspotBudgets": {
+      "src/runtime/mimi-agent.ts": 1800,
+      "src/daemon/service.ts": 1800,
+      "src/daemon/store.ts": 1900
+    },
+    "newRuntimeDependencies": 0,
+    "newServices": 0,
+    "newPersistentSystems": 0,
+    "newModelGateways": 0
+  },
+  "migration": {
+    "database": "A copied real v15 backup migrated to v16 with integrity_check=ok and foreign_key_check=0; Task count remained 1626.",
+    "projection": "Legacy queued Briefing 15->0, final route 0->15, pending Digest 5935->229, health projection 5719->13, collapsed=5706, unresolved=0.",
+    "rollback": "The generated rollback backup remained readable v15 with Task=1626, queued Briefing=15, Digest=5935, integrity_check=ok, and foreign_key_check=0.",
+    "futureVersionRefusal": "SQLite user_version=17 and models.json version=2 were rejected before mutation.",
+    "historicalDeadLetters": "A read-only v16 backup dry-run classified all 522 retained records as legacy_failure/manual_verify; unclassified=0 and DB/WAL/SHM hashes were unchanged.",
+    "realStateMutatedByThisGoal": false
+  },
+  "runtimeAtDecision": {
+    "doctorReady": false,
+    "installedBuild": "0.12.0+gbee23c9d915cd53dc5d1e6d123a1555ad8b7acd4.dirty.0991f3cca896",
+    "runningBuild": "0.12.0+54d3940e1185",
+    "buildAligned": false,
+    "daemonRunning": true,
+    "activeEvents": 0,
+    "activeTasks": 0,
+    "activeTools": 0,
+    "activeHostMutations": 0,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "computer": {
+      "ready": false,
+      "driverVersion": "0.16.0",
+      "accessibility": true,
+      "screenRecording": false,
+      "overall": "degraded"
+    },
+    "connectors": {
+      "enabled": 8,
+      "online": 8,
+      "ready": 4,
+      "unavailable": [
+        "personal-daxiang"
+      ],
+      "stale": [
+        "browser",
+        "macos-shortcuts"
+      ],
+      "unknown": [
+        "macos-screen"
+      ]
+    },
+    "taskDeadLetters": 549,
+    "unclassifiedDeadLetters": 37,
+    "pendingDigest": 6673
+  },
+  "liveMatrix": {
+    "t0": null,
+    "requested": 0,
+    "eligible": 0,
+    "executed": 0,
+    "success": 0,
+    "blocked": 0,
+    "failed": 0,
+    "uncertain": 0,
+    "minimumEligibleRequired": 100,
+    "families": {
+      "browser": { "required": 20, "eligible": 0 },
+      "computer": { "required": 20, "eligible": 0 },
+      "screen": { "required": 10, "eligible": 0 },
+      "shortcuts": { "required": 10, "eligible": 0 },
+      "daxiang": { "required": 15, "eligible": 0 },
+      "qq": { "required": 15, "eligible": 0 },
+      "wechat": { "required": 10, "eligible": 0 }
+    },
+    "historicalRunsCounted": false,
+    "fixturesCounted": false,
+    "readinessCounted": false
+  },
+  "soak": {
+    "read24h": { "startedAt": null, "endedAt": null, "passed": false },
+    "write72h": { "startedAt": null, "endedAt": null, "passed": false },
+    "ready7d": { "startedAt": null, "endedAt": null, "passed": false },
+    "historicalWindowsCounted": false
+  },
+  "failureInjection": {
+    "buildProvenance": "Dirty, unknown, stale-manifest, mismatched Doctor, and cross-build evidence cases fail closed before live execution.",
+    "stateVersions": "Future SQLite and JSON versions refuse without writes.",
+    "deadLetterClassification": "The old disposition contract first failed 3 of 21 focused tests; the corrected contract passed 31 of 31 adjacent tests.",
+    "uncertainSideEffects": "Uncertain actions remain manual_verify and are never automatically replayed."
+  },
+  "unresolved": [
+    {
+      "id": "build-drift",
+      "disposition": "blocked",
+      "owner": "deployment",
+      "condition": "Installed and running builds must be the same traceable clean build after a verified backup and safe cutover."
+    },
+    {
+      "id": "computer-tcc",
+      "disposition": "blocked",
+      "owner": "owner_action_required",
+      "condition": "Grant Screen Recording to com.trycua.driver and re-verify operational Computer readiness."
+    },
+    {
+      "id": "personal-message-readiness",
+      "disposition": "blocked",
+      "owner": "external_dependency",
+      "condition": "Daxiang, QQ, and WeChat require real operational adapters, stable test targets, and confirmed read/send/readback evidence."
+    },
+    {
+      "id": "connector-readiness",
+      "disposition": "blocked",
+      "owner": "external_dependency",
+      "condition": "All enabled required connectors must report fresh, explicit operational readiness."
+    },
+    {
+      "id": "historical-runtime-state",
+      "disposition": "manual_verify",
+      "owner": "operations",
+      "condition": "Back up and migrate real state under the clean build, then verify unclassified dead letters=0 without replaying uncertain actions."
+    },
+    {
+      "id": "provider-credential-rotation",
+      "disposition": "blocked",
+      "owner": "owner_action_required",
+      "condition": "Rotate the exposed Geniusrd/MIMI-compatible, DeepSeek, and Friday credentials in their external control planes, update the local environment atomically, and re-run Provider checks."
+    },
+    {
+      "id": "runtime-backlog",
+      "disposition": "retry_after_fix",
+      "owner": "operations",
+      "condition": "After safe deployment, verify scheduled Provider routing, let Digest/Briefing converge naturally, and prove no new systemic dead letters."
+    }
+  ],
+  "evidenceIndex": [
+    "PROGRESS.md",
+    "BLOCKED.md",
+    "docs/plans/20260731-MimiAgent-M1架构收敛重构计划.md",
+    "evals/m1/manifest.v2.json",
+    "tests/architecture-budget.test.ts",
+    "tests/m1-eval.test.ts",
+    "tests/operational-classification.test.ts",
+    "tests/event-task-cutover.test.ts",
+    "tests/package-smoke.mjs"
+  ],
+  "nextEligibleStep": "After every unresolved Phase 5 prerequisite is cleared, create a new clean-build deployment record and a new T0; do not edit or promote this NO-GO record."
+}

@@ -760,3 +760,8 @@
    值进入本地 Codex 工具回显。值未写入仓库、PROGRESS、BLOCKED 或最终结论，`.env` 仍为 0600；
    但工具回显不能撤销，必须轮换 Geniusrd/MIMI-compatible、DeepSeek 与 Friday 三组外部凭证。
    未擅自删除本机值，因为删除既不能撤销暴露，又会破坏现有服务。
+6. 按 ARC-503 布尔合同生成不可覆盖的时间戳化 NO-GO 记录
+   `evals/m1/exit-records/20260803T033746+0800-no-go.json`：最终 build 的 live matrix 分母如实为
+   requested/eligible/executed=`0/0/0`，T0、24h、72h、7d 均为 null/未通过，历史 build、fixture
+   与 readiness 均未补数。JSON 校验和 `git diff --check` 通过，敏感值模式扫描零命中（`rg`
+   exit 1），文件 SHA-256=`88c824a2e7f684687fcf8201a1e2bf44c66a758902c7874f8875ee598bd2c5be`。
