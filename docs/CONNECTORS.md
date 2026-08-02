@@ -540,9 +540,9 @@ Actions：
 
 Actions：
 
-- `list_shortcuts`：`target=all|<folder-name-or-id>`，payload 支持 `limit`（默认 500，上限 1000）；返回 `--show-identifiers` 的有界逐行条目。
-- `list_folders`：`target=all`，列出快捷指令文件夹及 identifier。
-- `run_shortcut`：`target=<shortcut-name-or-id>`，运行快捷指令并返回结构化结果。
+- `list_shortcuts`：`target=all|<folder-name-or-id>`，payload 支持 `limit`（默认 500，上限 1000）；把 `--show-identifiers` 输出解析为有界 `{ id, name }` catalog，并只在 Connector 内存中保留最近一次实际返回的稳定 id。
+- `list_folders`：`target=all`，以 `{ id, name }` 列出快捷指令文件夹。
+- `run_shortcut`：`target=<shortcut-id>`，只接受最近一次 `list_shortcuts` 实际签发的稳定 id；名称或未列出的 id 失败关闭，运行后返回结构化结果。
 
 `run_shortcut` payload 支持：
 

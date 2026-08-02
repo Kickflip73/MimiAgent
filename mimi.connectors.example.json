@@ -255,9 +255,9 @@
       "deliveryTimeoutMs": 30000,
       "actionTimeoutMs": 900000,
       "actions": {
-        "list_shortcuts": { "description": "列出全部或指定文件夹中的快捷指令；target 为 all 或文件夹名/ID", "capability": "shortcuts.catalog.read", "effect": "read" },
+        "list_shortcuts": { "description": "列出全部或指定文件夹中的快捷指令，返回结构化稳定 id 与名称；target 为 all 或文件夹名/ID", "capability": "shortcuts.catalog.read", "effect": "read" },
         "list_folders": { "description": "列出快捷指令文件夹；target 为 all", "capability": "shortcuts.catalog.read", "effect": "read" },
-        "run_shortcut": { "description": "按名称或 ID 运行快捷指令，支持文本/文件输入和文件/stdout 输出", "capability": "shortcuts.run", "effect": "write" }
+        "run_shortcut": { "description": "只按最近一次 list_shortcuts 签发的稳定 id 运行快捷指令，支持文本/文件输入和文件/stdout 输出", "capability": "shortcuts.run", "effect": "write" }
       }
     },
     "macos-desktop": {

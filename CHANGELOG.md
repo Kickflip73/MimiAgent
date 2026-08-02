@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- bind Shortcuts execution to structured stable IDs issued by the latest live
+  Connector catalog instead of accepting guessed shortcut names
 - accept the live-certified Cua Driver 0.16.0 boundary while retaining the
   previously tested exact versions
 - unify each Run behind one immutable Host capability registry and one bounded

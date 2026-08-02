@@ -12,6 +12,7 @@ import path from 'node:path';
 
 const ACTIONS = new Set(['list_shortcuts', 'list_folders', 'run_shortcut']);
 const shortcuts = process.env.MACOS_SHORTCUTS_BIN || '/usr/bin/shortcuts';
+const issuedShortcutIds = new Set();
 
 function errorText(error) {
   return error instanceof Error ? error.message : String(error);
@@ -147,9 +148,19 @@ async function runCommand(args, timeoutMs, maxOutputBytes) {
   });
 }
 
-function lines(stdout, limit) {
+function catalog(stdout, limit) {
   const all = stdout.toString('utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  return { items: all.slice(0, limit), truncated: all.length > limit };
+  const items = all.slice(0, limit).map((line) => {
+    const match = /^(.*\S)\s+\(([^()]+)\)$/.exec(line);
+    if (!match) throw new Error(`shortcuts catalog entry has no stable identifier: ${line.slice(0, 200)}`);
+    const name = boundedString(match[1], 'shortcut name', 1000, true);
+    const id = boundedString(match[2], 'shortcut id', 200, true);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(id)) {
+      throw new Error(`shortcuts catalog returned an invalid stable identifier: ${id.slice(0, 200)}`);
+    }
+    return { id, name };
+  });
+  return { items, truncated: all.length > limit };
 }
 
 async function execute(message) {
@@ -162,11 +173,17 @@ async function execute(message) {
     const args = ['list', '--show-identifiers'];
     if (!['all', '*'].includes(message.target)) args.push('--folder-name', message.target);
     const result = await runCommand(args, 30_000, 500_000);
-    return { type: 'action_result', id: message.id, ok: true, result: { ...lines(result.stdout, payload.limit), stderr: result.stderr || undefined } };
+    const listed = catalog(result.stdout, payload.limit);
+    issuedShortcutIds.clear();
+    for (const item of listed.items) issuedShortcutIds.add(item.id);
+    return { type: 'action_result', id: message.id, ok: true, result: { ...listed, stderr: result.stderr || undefined } };
   }
   if (message.action === 'list_folders') {
     const result = await runCommand(['list', '--folders', '--show-identifiers'], 30_000, 500_000);
-    return { type: 'action_result', id: message.id, ok: true, result: { ...lines(result.stdout, payload.limit), stderr: result.stderr || undefined } };
+    return { type: 'action_result', id: message.id, ok: true, result: { ...catalog(result.stdout, payload.limit), stderr: result.stderr || undefined } };
+  }
+  if (!issuedShortcutIds.has(message.target)) {
+    throw new Error('run_shortcut target must be an exact shortcut catalog ID returned by list_shortcuts');
   }
 
   let temporary;

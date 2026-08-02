@@ -316,7 +316,7 @@ owner 查询大象消息时通过稳定 capability 发现正式 action，再使�
 
 `macos-notes-connector.mjs` 复用 Apple Notes 现有账号和 iCloud 同步，按需列出文件夹、搜索和读取笔记，并可创建、更新或追加工作记录与生活笔记。它不轮询、不镜像 Notes 数据库；密码保护笔记不尝试解锁，附件只返回元数据。
 
-`macos-shortcuts-connector.mjs` 直接调用系统 `shortcuts` CLI，让 MimiAgent 可以发现并运行用户已有的快捷指令。它支持文本、base64 和多个文件输入，可返回有界 text/base64 stdout 或写入显式绝对输出路径；不实现第二套自动化 DSL。
+`macos-shortcuts-connector.mjs` 直接调用系统 `shortcuts` CLI，让 MimiAgent 可以发现并运行用户已有的快捷指令。Catalog 返回结构化稳定 id，执行只接受最近一次真实列出的 id，不把名称猜测当目标；它支持文本、base64 和多个文件输入，可返回有界 text/base64 stdout 或写入显式绝对输出路径，不实现第二套自动化 DSL。
 
 `macos-desktop-connector.mjs` 通过 System Events 感知前台应用和窗口，并可激活应用、打开 URL/绝对路径、读写文本剪贴板、输入文本、发送 key code 和点击一级菜单项。`open_visible` 要求精确 bundle ID，并且只有观察到目标应用已置前且存在可见窗口才返回 `outcome=confirmed`；系统只接受打开请求但验证超时会返回 uncertain，禁止重放。剪贴板感知默认关闭，持久启停只由 operator 管理。
 

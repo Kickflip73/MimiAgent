@@ -40,14 +40,14 @@ test('macOS Shortcuts connector lists and runs shortcuts with bounded argv-only 
 import { readFileSync, writeFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 if (args[0] === 'list') {
-  process.stdout.write(args.includes('--folders') ? 'Home (folder-home)\\nWork (folder-work)\\n' : 'Morning (shortcut-1)\\nArchive (shortcut-2)\\n');
+  process.stdout.write(args.includes('--folders') ? 'Home (folder-home)\\nWork (folder-work)\\n' : 'Morning (shortcut-1)\\nArchive (shortcut-2)\\nBinary (binary)\\nWrite File (write-file)\\nFail (fail)\\nLarge (large)\\nHang (hang)\\n');
   process.exit(0);
 }
 const name = args[1];
-if (name === 'Hang') setTimeout(() => {}, 10000);
-else if (name === 'Fail') { process.stderr.write('shortcut failed intentionally'); process.exit(7); }
-else if (name === 'Large') process.stdout.write('x'.repeat(1000));
-else if (name === 'Binary') process.stdout.write(Buffer.from([0, 255, 1, 2]));
+if (name === 'hang') setTimeout(() => {}, 10000);
+else if (name === 'fail') { process.stderr.write('shortcut failed intentionally'); process.exit(7); }
+else if (name === 'large') process.stdout.write('x'.repeat(1000));
+else if (name === 'binary') process.stdout.write(Buffer.from([0, 255, 1, 2]));
 else {
   const inputPaths = [];
   let outputPath;
@@ -94,14 +94,22 @@ else {
 
   try {
     const listed = await call('list-1', 'list_shortcuts', 'Work', { limit: 1 });
-    assert.deepEqual(listed.result?.items, ['Morning (shortcut-1)']);
+    assert.deepEqual(listed.result?.items, [{ id: 'shortcut-1', name: 'Morning' }]);
     assert.equal(listed.result?.truncated, true);
     const folders = await call('folders-1', 'list_folders', 'all', {});
-    assert.deepEqual(folders.result?.items, ['Home (folder-home)', 'Work (folder-work)']);
+    assert.deepEqual(folders.result?.items, [
+      { id: 'folder-home', name: 'Home' },
+      { id: 'folder-work', name: 'Work' },
+    ]);
+    const fullCatalog = await call('list-2', 'list_shortcuts', 'all', { limit: 20 });
+    assert.equal((fullCatalog.result?.items as Array<{ id: string }>).length, 7);
 
-    const hostileName = 'Do "Work"; $(touch /tmp/shortcut-never-runs) `whoami`';
+    const guessedName = await call('guessed-1', 'run_shortcut', 'Morning', {});
+    assert.equal(guessedName.ok, false);
+    assert.match(guessedName.error ?? '', /catalog ID/);
+
     const hostileInput = 'hello; $(touch /tmp/shortcut-input-never-runs)';
-    const run = await call('run-1', 'run_shortcut', hostileName, {
+    const run = await call('run-1', 'run_shortcut', 'shortcut-1', {
       input: hostileInput, inputName: 'request.txt', inputPaths: [existing],
       outputType: 'public.utf8-plain-text', timeoutMs: 2000,
     });
@@ -109,18 +117,18 @@ else {
     const output = JSON.parse(String(run.result?.output)) as {
       name: string; args: string[]; inputPaths: string[]; inputs: string[]; outputType: string;
     };
-    assert.equal(output.name, hostileName);
+    assert.equal(output.name, 'shortcut-1');
     assert.equal(Buffer.from(output.inputs[0] ?? '', 'base64').toString('utf8'), hostileInput);
     assert.equal(Buffer.from(output.inputs[1] ?? '', 'base64').toString('utf8'), 'existing input');
     assert.equal(output.outputType, 'public.utf8-plain-text');
-    assert.ok(output.args.includes(hostileName));
+    assert.ok(output.args.includes('shortcut-1'));
     await assert.rejects(access(output.inputPaths[0] ?? ''), /ENOENT/);
 
-    const binary = await call('binary-1', 'run_shortcut', 'Binary', { outputEncoding: 'base64' });
+    const binary = await call('binary-1', 'run_shortcut', 'binary', { outputEncoding: 'base64' });
     assert.equal(binary.result?.output, Buffer.from([0, 255, 1, 2]).toString('base64'));
     assert.equal(binary.result?.outputBytes, 4);
 
-    const fileOutput = await call('file-1', 'run_shortcut', 'Write File', {
+    const fileOutput = await call('file-1', 'run_shortcut', 'write-file', {
       input: Buffer.from([1, 2, 3]).toString('base64'), inputEncoding: 'base64',
       outputPath, outputType: 'public.json',
     });
@@ -130,13 +138,13 @@ else {
     assert.equal(saved.inputs[0], Buffer.from([1, 2, 3]).toString('base64'));
     assert.equal(saved.outputType, 'public.json');
 
-    const failed = await call('fail-1', 'run_shortcut', 'Fail', {});
+    const failed = await call('fail-1', 'run_shortcut', 'fail', {});
     assert.equal(failed.ok, false);
     assert.match(failed.error ?? '', /failed intentionally/);
-    const overflow = await call('overflow-1', 'run_shortcut', 'Large', { maxOutputBytes: 100 });
+    const overflow = await call('overflow-1', 'run_shortcut', 'large', { maxOutputBytes: 100 });
     assert.equal(overflow.ok, false);
     assert.match(overflow.error ?? '', /output exceeds 100 bytes/);
-    const timeout = await call('timeout-1', 'run_shortcut', 'Hang', { timeoutMs: 1000 });
+    const timeout = await call('timeout-1', 'run_shortcut', 'hang', { timeoutMs: 1000 });
     assert.equal(timeout.ok, false);
     assert.match(timeout.error ?? '', /timed out after 1000ms/);
 
