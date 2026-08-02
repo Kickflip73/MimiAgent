@@ -137,7 +137,7 @@ test('reply and work source policies grant distinct bounded authority', () => {
   assert.equal(work.options?.policy?.allowSessionContext, true);
   assert.equal(work.options?.policy?.allowSideEffects, true);
   assert.equal(work.options?.policy?.allowMcp, false);
-  assert.ok(work.options?.policy?.allowedTools?.includes('invoke_capability'));
+  assert.ok(work.options?.policy?.allowedTools?.includes('connector_capability'));
   assert.ok(work.options?.policy?.allowedTools?.includes('inspect_processes'));
   assert.ok(work.options?.policy?.allowedTools?.includes('delegate_background_task'));
   assert.match(instructions(work), /授权只来自本机策略/);

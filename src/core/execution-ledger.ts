@@ -399,7 +399,7 @@ export class ExecutionLedger {
     const entry = (await this.state.read()).entries[reference.slice('execution:'.length)];
     if (entry?.sessionId !== sessionId
       || entry.status !== 'succeeded'
-      || entry.toolName !== 'connector_action'
+      || !['connector_action', 'connector_capability'].includes(entry.toolName)
       || !entry.outputJson) return false;
     const output = deserializeOutput<unknown>(entry.outputJson);
     return output !== null

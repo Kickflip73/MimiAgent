@@ -13,8 +13,9 @@ Connector 把个人大象、微信 Bot、邮件、Messages、新闻、天气、�
 已有渠道只由 operator 执行 `mimi daemon connectors enable <id>` /
 `mimi daemon connectors disable <id>` 原子启停。修改其他配置后运行
 `mimi daemon connectors reload` 换代 Connector 子进程。模型 Run 只获得能力发现和
-调用工具，不能启停、重载或修改 Connector 注册表。`inspect_mimi_capabilities`
-返回配置文件绝对路径和有界能力目录。Host 会
+调用工具，不能启停、重载或修改 Connector 注册表。统一的 `inspect_capabilities`
+直接读取 ConnectorManager 的有界目录；`inspect_mimi_capabilities` 只保留为 Kernel
+只读诊断和旧 transcript 兼容，不进入新模型 Run 工具面。Host 会
 完整解析新配置；JSON/schema 无效时旧集合保持在线。启停和重载都仅在没有进行中的
 delivery/action 时切换，避免中断结果不确定的真实事务；繁忙时配置不变并快速失败。
 切换会短暂停止旧渠道再启动新渠道，不运行双份 Connector，也不自动监视文件变化。
@@ -174,7 +175,7 @@ Connector 完成远端发送后必须确认：
 
 Agent 主动执行 Connector 事务时只调用模型目录中的业务 capability。Action 可用
 `modelVisible:false` 标记为 Host 内部动作，不会进入 Snapshot，也不能通过
-`invoke_capability` 或 `connector_action` 直达。Daemon 在程序内完成唯一路线、就绪度、
+`invoke_capability` 直达。Daemon 在程序内完成唯一路线、就绪度、
 effect、幂等和失败分级；模型不接触 `operationRef`、探活、内部目标句柄或重放流程。
 普通 Run 只要存在 `started/uncertain` 外部动作，最终回执就固定为
 `completionDecision=uncertain`，Host 会把答案改写为“业务目标未确认完成”。
@@ -184,7 +185,7 @@ effect、幂等和失败分级；模型不接触 `operationRef`、探活、内�
 
 个人消息的查看、读取和汇总只调用 `effect=read` 的目标目录与上下文动作。新消息 Event 由 Connector 自身的定时轮询采集；该内部同步不登记为模型 action，也不能作为普通消息读取的前置步骤。
 
-每个 Daemon Agent Run 还会获得只读 `inspect_mimi_capabilities`，动态返回当前 Connector 的 enabled/online、inbound/outbound readiness、`capability/effect/routeOwner` 与 action 目录。能力选择优先使用 `capability` 精确过滤；`query` 只检索展示元数据，业务词零命中时 `total=0` 但 `catalogTotal/catalogActions` 和 `availableCapabilities` 仍明确保留，不能据此声称没有 Connector 或切换到更宽权限路线。精确 ID 未注册会明确报错。输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals、`filterMatched` 与 `truncated` 明示过滤和截断。状态仍可能随后变化，因此 Manager 在真正发送前再次校验。
+每个 Daemon Agent Run 只看到统一的 `inspect_capabilities`/`invoke_capability` deferred gateway。Connector query 直接读取 Manager 的 enabled/online、inbound/outbound readiness、`capability/effect/routeOwner` 与 action 目录，不通过另一个 Tool 转调。能力选择优先使用 `capability` 精确过滤；`query` 只检索展示元数据，业务词零命中时 `total=0` 但 `catalogTotal/catalogActions` 和 `availableCapabilities` 仍明确保留，不能据此声称没有 Connector 或切换到更宽权限路线。精确 ID 未注册会明确报错。输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals、`filterMatched` 与 `truncated` 明示过滤和截断。目录结果按 Run 与 semantic revision 缓存；readiness 或 action 目录变化立即失效，Manager 在真正发送前仍会再次校验。
 
 ```json
 {"type":"action","id":"action-uuid","action":"send_message","target":"group:123","payload":{"text":"会议延后 10 分钟"},"deadlineAt":1784176000000}
@@ -685,11 +686,12 @@ Actions：
 
 Connector 仍是首层信任边界：只接入你愿意处理的来源，限制 IM 白名单，且只在 `envAllowlist` 中提供必要凭证。需要代 owner 执行本地或外部事务的控制入口必须在 Host 侧完成认证并明确配置为 `owner`；`trusted` 只记录 provenance，不会提权，事件正文也不能自行改变该标签。
 
-统一能力目录查询 Connector 时会委托正式的 `inspect_mimi_capabilities` 目录按 action
+统一能力目录查询 Connector 时会直接调用 ConnectorManager 的结构化目录，按 action
 名称、描述和稳定 capability 检索。命中后返回匹配的 Connector action 以及
 `invoke_capability` 的真实调用 schema；因此 progressive disclosure 不能再把未直接
-展示的 action 误报成能力不存在。该桥接适用于所有 Connector 声明，不依赖 owner 文本、
-业务关键词、具体应用或目标路径。
+展示的 action 误报成能力不存在。该桥接适用于所有模型可见 Connector 声明，不依赖
+owner 文本、业务关键词、具体应用或目标路径；Browser、Desktop 和 personal-* 仍是
+direct Host 工具的私有 backend，不进入该目录。
 
 ## Capability owner 与跨路径防重
 

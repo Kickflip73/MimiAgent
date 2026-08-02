@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Tool } from '@openai/agents';
 import { AgentRequestFactory } from '../src/runtime/pipeline/request-factory.js';
+import { HostCapabilityRegistry } from '../src/runtime/pipeline/capability-registry.js';
 import { ToolSetBuilder } from '../src/runtime/pipeline/tool-set-builder.js';
 
 const tool = (name: string): Tool => ({ name }) as Tool;
@@ -36,10 +37,10 @@ for (const scenario of [
       scenario.permissionMode,
       scenario.securityProfile,
     );
-    const snapshot = builder.snapshot({
+    const snapshot = new HostCapabilityRegistry(actualTools).snapshot({
       runId: `run-${scenario.name}`,
       policyRevision: scenario.name,
-      tools: actualTools,
+      modelTools: actualTools,
       observedAt: '2026-07-30T00:00:00.000Z',
     });
     const request = new AgentRequestFactory().create({

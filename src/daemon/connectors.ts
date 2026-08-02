@@ -4,6 +4,12 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import { z } from 'zod';
 import { ActionFailedSafeError } from '../core/action-intent.js';
+import {
+  connectorCapabilityRevision,
+  connectorCapabilitySnapshot,
+  type ConnectorCapabilityFilter,
+  type ConnectorCapabilitySnapshot,
+} from './connector-action-tool.js';
 import { derivedSessionId } from './policy.js';
 import {
   PermanentDeliveryError,
@@ -1042,6 +1048,14 @@ export class ConnectorManager {
 
   listCapabilities(): ConnectorCapability[] {
     return [...this.connectors.values()].map((connector) => connector.capability());
+  }
+
+  inspectCapabilities(filter: ConnectorCapabilityFilter = {}): ConnectorCapabilitySnapshot {
+    return connectorCapabilitySnapshot(this, filter);
+  }
+
+  capabilityRevision(): string {
+    return connectorCapabilityRevision(this);
   }
 
   async executeAction(request: ConnectorActionRequest): Promise<unknown> {

@@ -283,7 +283,7 @@ owner/system 以及命中 owner source policy 的 MimiAgent 事件可使用有�
 
 `get_mimi_settings` 与 `update_mimi_settings` 让 owner 通过对话调整个人画像、时区、静默时段、自治预算、告警阈值、运行超时、历史保留和简报设置。更新使用先读后写的完整快照，不会覆盖上述独立管理的人物、规则、例程和替身策略。需要临时专注时可直接说“免打扰 2 小时”，由 `snooze_mimi` 暂停非紧急自主处理和定时简报，到期自动恢复；当前 owner 命令与紧急事件照常执行，`clear_mimi_snooze` 可提前恢复。
 
-微信 Bot、邮件、Messages、新闻和天气等渠道通过隔离的 stdio Connector 接入：Daemon 负责拉起、确定性 readiness 探活、连续失败后的单 Connector 重启、崩溃退避、事件去重和可靠回传，Connector 只负责渠道协议。探活与恢复不启动模型 Run；MimiAgent 只在无法自愈或影响事务时通知，中断期间结果不确定的外部动作不会自动重放。每个 Daemon Run 都获得动态只读 `inspect_mimi_capabilities`，可小范围查看 enabled、online、readiness 和 action 目录。配置示例见 `mimi.connectors.example.json`，协议见 [docs/CONNECTORS.md](docs/CONNECTORS.md)。
+微信 Bot、邮件、Messages、新闻和天气等渠道通过隔离的 stdio Connector 接入：Daemon 负责拉起、确定性 readiness 探活、连续失败后的单 Connector 重启、崩溃退避、事件去重和可靠回传，Connector 只负责渠道协议。探活与恢复不启动模型 Run；MimiAgent 只在无法自愈或影响事务时通知，中断期间结果不确定的外部动作不会自动重放。每个 Daemon Run 都通过统一的 `inspect_capabilities`/`invoke_capability` 按需查看和调用 Connector action；目录直接读取 Manager 的 enabled、online、readiness 和 action 快照，readiness 变化会使本 Run 的发现缓存失效。配置示例见 `mimi.connectors.example.json`，协议见 [docs/CONNECTORS.md](docs/CONNECTORS.md)。
 
 大象个人账号通道通过默认关闭的 `personal-daxiang` Connector 接入已登录的专用
 Chrome 后台标签，动态分页发现当前账号已有会话并提供有界读取、首次监听历史基线、

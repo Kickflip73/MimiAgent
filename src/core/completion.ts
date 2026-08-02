@@ -109,7 +109,7 @@ function workUnitResults(value: unknown): WorkUnitResult[] {
 }
 function isConfirmedActionReceipt(item: CompletionEvidence): boolean {
   const receipt = objectValue(item.output);
-  return item.toolName === 'connector_action'
+  return (item.toolName === 'connector_action' || item.toolName === 'connector_capability')
     && receipt?.outcome === 'confirmed'
     && receipt.tool === item.toolName
     && typeof receipt.operationId === 'string'

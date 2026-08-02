@@ -151,6 +151,10 @@ import type {
 import { captureRunScope, type RunScope } from './pipeline/run-scope.js';
 import { RunStateLoader } from './pipeline/state-loader.js';
 import {
+  HostCapabilityRegistry,
+  type CapabilityCatalogAccess,
+} from './pipeline/capability-registry.js';
+import {
   ToolSetBuilder,
   withoutPersonalMessageDesktopFallback,
   withoutPersonalMessageFallbackHistory,
@@ -316,6 +320,7 @@ export interface MimiRunOptions {
     | Promise<CompletionDeliveryDisposition | undefined>;
   personalMessage?: PersonalMessageScope;
   capabilityItems?: readonly EffectiveCapabilityItem[];
+  capabilityCatalog?: CapabilityCatalogAccess;
   providerRoute?: {
     provider: AppConfig['provider'];
     model?: string;
@@ -1457,9 +1462,12 @@ export class MimiAgent {
       tools: catalogTools,
       outputReserve: modelProfile.outputReserve,
     }).agent.getAllTools(new RunContext({}));
-    const progressiveGatewayTools = this.toolSetBuilder.progressiveGateway(allTools);
-    const modelTools = this.toolSetBuilder.modelFacing(
-      [...allTools, ...progressiveGatewayTools],
+    const capabilityRegistry = new HostCapabilityRegistry(
+      allTools,
+      options?.capabilityCatalog,
+    );
+    const classifiedTools = this.toolSetBuilder.classify(
+      [...capabilityRegistry.authorizedTools()],
       runPolicy,
       options?.personalMessage
         ? ['get_personal_message_context', 'send_personal_message']
@@ -1474,7 +1482,19 @@ export class MimiAgent {
             ]
           : [],
     );
-    run.availableToolNames = allTools.map((candidate) => candidate.name);
+    const selectedModelTools = this.toolSetBuilder.sdkTools(
+      classifiedTools,
+      personalConnectorOnly || options?.personalMessage
+        ? []
+        : capabilityRegistry.gatewayTools(classifiedTools.deferred),
+    );
+    const modelTools = await this.requestFactory.create({
+      model,
+      instructions: '',
+      tools: selectedModelTools,
+      outputReserve: modelProfile.outputReserve,
+    }).agent.getAllTools(new RunContext({}));
+    run.availableToolNames = capabilityRegistry.authorizedTools().map((candidate) => candidate.name);
     const availableSkillNames = this.skills.list()
       .filter((candidate) => {
         const skill = this.skills.get(candidate.name);
@@ -1485,15 +1505,14 @@ export class MimiAgent {
       })
       .map((skill) => skill.name);
     const computerStatus = this.computer?.status();
-    run.capabilitySnapshot = this.toolSetBuilder.snapshot({
+    run.capabilitySnapshot = capabilityRegistry.snapshot({
       runId: run.runId,
       policyRevision: [
         this.securityProfile,
         mode,
         runPolicy ? 'run-policy' : 'default-policy',
       ].join(':'),
-      tools: modelTools,
-      authorizedTools: allTools,
+      modelTools,
       skills: availableSkillNames,
       items: [
         ...(options?.capabilityItems ?? []),

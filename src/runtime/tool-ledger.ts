@@ -307,7 +307,7 @@ export function withExecutionLedger(
         };
         const result = await ledger.executeOnce(call, invokeAuthorized);
         if (consecutiveDuplicate) return alreadyExecutedResult(result);
-        return tool.name === 'connector_action'
+        return tool.name === 'connector_action' || tool.name === 'connector_capability'
           ? withExecutionEvidence(result, executionReceiptRef(call))
           : result;
       },

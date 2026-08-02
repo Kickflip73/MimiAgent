@@ -94,7 +94,7 @@ const WORK_SOURCE_POLICY_TOOLS = [
   'read_file', 'write_file', 'edit_file', 'move_file', 'list_directory', 'search_files',
   'inspect_processes', 'run_shell',
   'http_get', 'web_search', 'http_request',
-  'inspect_mimi_capabilities', 'invoke_capability',
+  'connector_capability',
   'send_owner_message',
   'memory_search', 'memory_read', 'memory_links', 'memory_ingest',
   'list_skills', 'use_skill', 'read_skill_resource',
@@ -131,7 +131,7 @@ const PERSONAL_MESSAGE_AUTO_TOOLS = [
 
 const WORK_SOURCE_POLICY_SIDE_EFFECT_TOOLS = [
   'write_file', 'edit_file', 'move_file', 'run_shell', 'http_request',
-  'invoke_capability', 'memory_ingest',
+  'connector_capability', 'memory_ingest',
   'send_owner_message',
   'update_plan', 'set_goal', 'update_goal',
   'schedule_mimi_follow_up', 'schedule_mimi_watch', 'complete_current_mimi_schedule',
@@ -142,10 +142,10 @@ const WORK_SOURCE_POLICY_SIDE_EFFECT_TOOLS = [
 
 const WORK_TASK_TOOLS = WORK_SOURCE_POLICY_TOOLS
   .filter((name) => name !== 'delegate_background_task')
-  .map((name) => name === 'invoke_capability' ? 'connector_action' : name);
+  .map((name) => name === 'connector_capability' ? 'connector_action' : name);
 const WORK_TASK_SIDE_EFFECT_TOOLS = WORK_SOURCE_POLICY_SIDE_EFFECT_TOOLS
   .filter((name) => name !== 'delegate_background_task')
-  .map((name) => name === 'invoke_capability' ? 'connector_action' : name);
+  .map((name) => name === 'connector_capability' ? 'connector_action' : name);
 const NON_OWNER_WORK_TASK_TOOLS = WORK_TASK_TOOLS
   .filter((name) => name !== 'connector_action');
 const NON_OWNER_WORK_TASK_SIDE_EFFECT_TOOLS = WORK_TASK_SIDE_EFFECT_TOOLS
@@ -228,7 +228,7 @@ function connectorHealthPlaybook(event: EventEnvelope): string {
   if (status === 'offline' || status === 'unavailable' || status === 'stale' || status === 'unknown') {
     return [
       '## MimiAgent Connector 自愈执行剧本',
-      '这是 Daemon Host 产生的可信 Connector 离线事件。先用 inspect_mimi_capabilities 核对 connectorId 的实时状态；若已经在线，取消同一 Connector 的失效恢复 Watch 并安静完成。',
+      '这是 Daemon Host 产生的可信 Connector 离线事件。先用 inspect_capabilities 的 connector query 核对 connectorId 实时状态；若已经在线，取消同一 Connector 的失效恢复 Watch 并安静完成。',
       'Connector 的恢复由 Supervisor 执行；只根据结构化状态说明当前业务影响。尚未恢复时建立一个检查该 Connector 恢复在线的 schedule_mimi_watch；配置或命令缺失则给 owner 精确修复信息。',
     ].join('\n');
   }

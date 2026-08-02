@@ -7,6 +7,7 @@ import test from 'node:test';
 import { ActionFailedSafeError } from '../src/core/action-intent.js';
 import { ExecutionLedger } from '../src/core/execution-ledger.js';
 import {
+  connectorCapabilityRevision,
   connectorCapabilitySnapshot,
   createConnectorHostTools,
   createConnectorTaskHostTools,
@@ -88,12 +89,12 @@ test('capability snapshot filters exact ids and actions while bounding the catal
       }]),
       readiness: { inbound: 'ready' as const, outbound: 'ready' as const, stale: true },
     },
-    capability('browser', [{
-      name: 'page_text',
-      description: 'read bounded visible page text',
-      capability: 'browser.page.read',
+    capability('documents', [{
+      name: 'render',
+      description: 'render a document',
+      capability: 'documents.render',
       effect: 'read',
-      routeOwner: 'browser',
+      routeOwner: 'documents',
     }]),
   ];
   const manager = {
@@ -120,11 +121,11 @@ test('capability snapshot filters exact ids and actions while bounding the catal
   assert.equal(businessWordMiss.total, 0);
   assert.equal(businessWordMiss.catalogTotal, 3);
   assert.equal(businessWordMiss.filterMatched, false);
-  assert.ok(businessWordMiss.availableCapabilities.includes('browser.page.read'));
-  const browserRead = connectorCapabilitySnapshot(manager, { capability: 'browser.page.read' });
-  assert.equal(browserRead.total, 1);
-  assert.equal(browserRead.connectors[0]?.routeOwner, 'browser');
-  assert.equal(browserRead.connectors[0]?.actions[0]?.name, 'page_text');
+  assert.ok(businessWordMiss.availableCapabilities.includes('documents.render'));
+  const documentRender = connectorCapabilitySnapshot(manager, { capability: 'documents.render' });
+  assert.equal(documentRender.total, 1);
+  assert.equal(documentRender.connectors[0]?.routeOwner, 'documents');
+  assert.equal(documentRender.connectors[0]?.actions[0]?.name, 'render');
 
   const many = Array.from({ length: 51 }, (_, index) => capability(
     `connector-${index}`,
@@ -144,6 +145,37 @@ test('capability snapshot filters exact ids and actions while bounding the catal
   assert.equal(bounded.connectors.reduce((total, item) => total + item.actions.length, 0), 100);
   assert.equal(bounded.connectors[0]?.actions[0]?.description.length, 300);
   assert.equal(bounded.truncated, true);
+});
+
+test('Connector catalog revision ignores probe timestamps but tracks semantic readiness and actions', () => {
+  const item = capability('mail');
+  const manager = {
+    configPath: '/fixture/connectors.json',
+    listCapabilities: () => [item],
+  } as ConnectorManager;
+  const initial = connectorCapabilityRevision(manager);
+  item.readiness.reportedAt = '2026-08-02T00:01:00.000Z';
+  assert.equal(connectorCapabilityRevision(manager), initial);
+  item.readiness.outbound = 'unavailable';
+  const unavailable = connectorCapabilityRevision(manager);
+  assert.notEqual(unavailable, initial);
+  item.actions[0]!.description = 'updated bounded action';
+  assert.notEqual(connectorCapabilityRevision(manager), unavailable);
+});
+
+test('model Connector catalog hides Browser, Computer fallback, and personal-message backends', () => {
+  const manager = {
+    configPath: '/fixture/connectors.json',
+    listCapabilities: () => [
+      capability('browser'),
+      capability('desktop'),
+      capability('personal-daxiang'),
+      capability('macos-shortcuts'),
+    ],
+  } as ConnectorManager;
+  const snapshot = connectorCapabilitySnapshot(manager);
+  assert.deepEqual(snapshot.connectors.map((connector) => connector.id), ['macos-shortcuts']);
+  assert.equal(snapshot.catalogTotal, 1);
 });
 
 test('model-facing host tools expose only inspect and capability invocation with bounded receipts', async () => {
@@ -174,15 +206,15 @@ test('model-facing host tools expose only inspect and capability invocation with
   assert.match(String(await invoke(tools, 'inspect_mimi_capabilities', { connector: 'missing' })), /未注册/);
   assert.deepEqual(tools.map((item) => item.name), [
     'inspect_mimi_capabilities',
-    'invoke_capability',
+    'connector_capability',
   ]);
-  assert.match(String(await invoke(tools, 'invoke_capability', {
+  assert.match(String(await invoke(tools, 'connector_capability', {
     capability: 'message.send',
     action: 'send_message',
     target: 'owner',
     payloadJson: '{',
   })), /有效 JSON/);
-  const confirmed = await invoke(tools, 'invoke_capability', {
+  const confirmed = await invoke(tools, 'connector_capability', {
     capability: 'message.send',
     action: 'send_message',
     target: 'owner',
@@ -190,14 +222,14 @@ test('model-facing host tools expose only inspect and capability invocation with
   }) as Record<string, unknown>;
   assert.equal(confirmed.outcome, 'confirmed');
   assert.equal(confirmed.operationId, 'message-1');
-  const requestReceipt = await invoke(tools, 'invoke_capability', {
+  const requestReceipt = await invoke(tools, 'connector_capability', {
     capability: 'message.send',
     action: 'send_message',
     target: 'owner',
     payloadJson: JSON.stringify({ mode: 'request' }),
   }) as Record<string, unknown>;
   assert.equal(requestReceipt.operationId, 'request-1');
-  const accepted = await invoke(tools, 'invoke_capability', {
+  const accepted = await invoke(tools, 'connector_capability', {
     capability: 'message.send',
     action: 'send_message',
     target: 'owner',
@@ -205,7 +237,7 @@ test('model-facing host tools expose only inspect and capability invocation with
   }) as Record<string, unknown>;
   assert.equal(accepted.outcome, 'accepted');
   assert.equal(accepted.evidence, 'plain-result');
-  const large = await invoke(tools, 'invoke_capability', {
+  const large = await invoke(tools, 'connector_capability', {
     capability: 'message.send',
     action: 'send_message',
     target: 'owner',
@@ -251,11 +283,11 @@ test('internal Connector actions stay out of the model catalog and owner messagi
 
   const tools = createConnectorHostTools(manager, undefined, { allowOwnerMessage: true });
   const catalog = await invoke(tools, 'inspect_mimi_capabilities', {}) as ConnectorCapabilitySnapshot;
-  assert.deepEqual(catalog.availableCapabilities, ['personal-message.context.read']);
-  assert.deepEqual(catalog.connectors[0]?.actions.map((action) => action.name), ['get_context']);
+  assert.deepEqual(catalog.availableCapabilities, []);
+  assert.deepEqual(catalog.connectors, []);
   assert.deepEqual(tools.map((item) => item.name), [
     'inspect_mimi_capabilities',
-    'invoke_capability',
+    'connector_capability',
     'send_owner_message',
   ]);
   const disabledTools = createConnectorHostTools({
@@ -330,7 +362,7 @@ test('read capability receipts are confirmed from the declared effect', async ()
     }),
   } as unknown as ConnectorManager;
 
-  const receipt = await invoke(createConnectorHostTools(manager), 'invoke_capability', {
+  const receipt = await invoke(createConnectorHostTools(manager), 'connector_capability', {
     capability: 'mail.list.read',
     action: 'list',
     target: 'owner',
@@ -382,7 +414,7 @@ test('explicit Connector rejection remains failed_safe across the SDK tool bound
     }),
   );
   const invokeWrapped = (payloadJson: string, callId: string) => {
-    const selected = wrapped.find((tool) => tool.name === 'invoke_capability');
+    const selected = wrapped.find((tool) => tool.name === 'connector_capability');
     assert.ok(selected && 'invoke' in selected);
     return selected.invoke(new RunContext({}), JSON.stringify({
       capability: 'fixture.write',
@@ -440,7 +472,7 @@ test('host ledger freezes an exact uncertain Connector retry without model opera
       },
     }),
   );
-  const selected = wrapped.find((tool) => tool.name === 'invoke_capability');
+  const selected = wrapped.find((tool) => tool.name === 'connector_capability');
   assert.ok(selected && 'invoke' in selected);
   const invokeBrowser = (target: string, code: string, callId: string) => selected.invoke(
     new RunContext({}),

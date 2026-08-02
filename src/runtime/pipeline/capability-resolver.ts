@@ -180,7 +180,7 @@ export function renderEffectiveCapabilitySnapshot(
   if (routedItems.length === 0 && snapshot.hiddenToolCount === 0) return '';
   return [
     '## Effective Capability Snapshot',
-    '可信 Host 统一能力索引：hiddenTools 已授权、仅隐藏 schema；使用前以 inspect_runtime_capabilities 按 source/name/query 查询，再由 invoke_runtime_capability 调用。Connector 摘要只含公开 action，缺项不代表其他 Host 能力不存在；判定不可用或换路前必须查统一目录，unavailable/unknown 禁止猜替代路线。',
+    '可信 Host 统一能力索引：hiddenTools 已授权、仅隐藏 schema；使用前以 inspect_capabilities 按 source/name/query 查询，再由 invoke_capability 调用。Connector 摘要只含公开 action，缺项不代表其他 Host 能力不存在；判定不可用或换路前必须查统一目录，unavailable/unknown 禁止猜替代路线。',
     JSON.stringify({
       schemaVersion: snapshot.schemaVersion,
       policyRevision: snapshot.policyRevision,

@@ -351,7 +351,7 @@ test('returns unknown model tool calls to the model instead of aborting the run'
   }
 });
 
-test('owner natural-language runs retain the runtime tool and Skill discovery surface', async () => {
+test('owner natural-language runs retain direct tools and unified deferred Skill discovery', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-focused-context-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const skillsRoot = path.join(root, 'skills');
@@ -403,7 +403,9 @@ test('owner natural-language runs retain the runtime tool and Skill discovery su
     ]).flat() as AgentInputItem[]);
     await agent.stream('咋样了？', undefined, decision.options);
     assert.ok(captured.tools?.includes('read_file'));
-    assert.ok(captured.tools?.includes('list_skills'));
+    assert.ok(captured.tools?.includes('inspect_capabilities'));
+    assert.ok(captured.tools?.includes('invoke_capability'));
+    assert.equal(captured.tools?.includes('list_skills'), false);
     assert.ok((captured.tools?.length ?? 0) < 30);
     assert.ok(estimateTokens(captured.toolSchemas) <= 4_000);
     assert.match(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);

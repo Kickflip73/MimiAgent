@@ -310,7 +310,7 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       connectorTools.filter((tool) => tool.name.startsWith('browser_')).map((tool) => tool.name),
       ['browser_open', 'browser_observe', 'browser_act', 'browser_wait', 'browser_assert', 'browser_close'],
     );
-    await invoke(connectorTools, 'invoke_capability', {
+    await invoke(connectorTools, 'connector_capability', {
       capability: 'message.send',
       action: 'send_message',
       target: 'owner',
@@ -330,7 +330,7 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
       connectors: manager,
       replyRoute: { channel: 'connector:mail', target: 'another-target' },
     });
-    await invoke(mismatchTools, 'invoke_capability', {
+    await invoke(mismatchTools, 'connector_capability', {
       capability: 'message.send',
       action: 'send_message',
       target: 'owner',

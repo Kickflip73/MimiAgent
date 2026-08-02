@@ -81,11 +81,11 @@ test('finalization gives shell and uncertain external effects one canonical answ
   assert.equal(executionCompletionDecision(calls), 'uncertain');
 });
 
-test('ordinary run completion is not downgraded by a recovered failed-safe action', () => {
+test('ordinary run completion is not downgraded by a recovered failed-safe Connector capability', () => {
   assert.equal(executionCompletionDecision([{
     sessionId: 'owner',
     runId: 'run-1',
-    toolName: 'invoke_capability',
+    toolName: 'connector_capability',
     callId: 'rejected',
     argumentsJson: '{}',
     status: 'failed',
@@ -93,7 +93,7 @@ test('ordinary run completion is not downgraded by a recovered failed-safe actio
   }, {
     sessionId: 'owner',
     runId: 'run-1',
-    toolName: 'invoke_capability',
+    toolName: 'connector_capability',
     callId: 'corrected',
     argumentsJson: '{}',
     status: 'succeeded',

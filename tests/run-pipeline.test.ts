@@ -20,6 +20,7 @@ import {
   renderEffectiveCapabilitySnapshot,
 } from '../src/runtime/pipeline/capability-resolver.js';
 import { ContextAssembler } from '../src/runtime/pipeline/context-assembler.js';
+import { HostCapabilityRegistry } from '../src/runtime/pipeline/capability-registry.js';
 import { AgentRequestFactory } from '../src/runtime/pipeline/request-factory.js';
 import { captureRunScope } from '../src/runtime/pipeline/run-scope.js';
 import { RunStateLoader } from '../src/runtime/pipeline/state-loader.js';
@@ -170,10 +171,10 @@ test('tool set builder keeps mode and run-policy filtering in one stage', () => 
     },
   );
   assert.deepEqual(prepared.map((item) => item.name), ['read_file', 'delegate_research']);
-  const snapshot = builder.snapshot({
+  const snapshot = new HostCapabilityRegistry(prepared).snapshot({
     runId: 'run-1',
     policyRevision: 'guarded:v1',
-    tools: prepared,
+    modelTools: prepared,
     skills: ['reviewer', 'researcher', 'reviewer'],
     observedAt: '2026-07-27T00:00:00.000Z',
   });
@@ -193,7 +194,7 @@ test('tool set builder keeps mode and run-policy filtering in one stage', () => 
   assert.ok(Object.isFrozen(snapshot.items));
 });
 
-test('progressive gateway discovers and invokes every authorized capability family only', async () => {
+test('direct tools stay out of the gateway while deferred families remain invokable', async () => {
   const builder = new ToolSetBuilder();
   const make = (name: string, value: string, description = `${name} description`) => sdkTool({
     name,
@@ -217,13 +218,14 @@ test('progressive gateway discovers and invokes every authorized capability fami
     make('show_goal', 'goal-ok'),
     make('list_skills', 'skill-ok'),
     make('custom_mcp_lookup', 'mcp-ok'),
-    make('invoke_capability', 'connector-ok'),
     make('send_owner_message', 'owner-message-ok'),
   ];
-  const gateway = builder.progressiveGateway(authorized);
-  const modelFacing = builder.modelFacing([...authorized, ...gateway]);
-  assert.ok(modelFacing.some((candidate) => candidate.name === 'inspect_runtime_capabilities'));
-  assert.ok(modelFacing.some((candidate) => candidate.name === 'invoke_runtime_capability'));
+  const registry = new HostCapabilityRegistry(authorized);
+  const classified = builder.classify([...registry.authorizedTools()]);
+  const gateway = registry.gatewayTools(classified.deferred);
+  const modelFacing = builder.sdkTools(classified, gateway);
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'inspect_capabilities'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'invoke_capability'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'computer_observe'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'computer_act'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_open'));
@@ -235,13 +237,14 @@ test('progressive gateway discovers and invokes every authorized capability fami
   assert.ok(modelFacing.some((candidate) => candidate.name === 'list_sessions'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'get_session_history'));
   assert.equal(modelFacing.some((candidate) => candidate.name === 'inspect_mimi_capabilities'), false);
-  assert.equal(modelFacing.some((candidate) => candidate.name === 'invoke_capability'), false);
+  assert.equal(modelFacing.some((candidate) => candidate.name === 'invoke_runtime_capability'), false);
+  assert.equal(modelFacing.some((candidate) => candidate.name === 'connector_capability'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'send_owner_message'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'web_search'), false);
-  const inspect = gateway.find((candidate) => candidate.name === 'inspect_runtime_capabilities') as Tool & {
+  const inspect = gateway.find((candidate) => candidate.name === 'inspect_capabilities') as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
-  const invoke = gateway.find((candidate) => candidate.name === 'invoke_runtime_capability') as Tool & {
+  const invoke = gateway.find((candidate) => candidate.name === 'invoke_capability') as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
   const context = new RunContext({});
@@ -250,26 +253,23 @@ test('progressive gateway discovers and invokes every authorized capability fami
     JSON.stringify({ query: '会话 历史 Session 列表 搜索 读取' }),
     {},
   ) as { capabilities: Array<{ name: string }> };
-  assert.deepEqual(
-    naturalSessionQuery.capabilities.map((candidate) => candidate.name).sort(),
-    ['get_session_history', 'list_sessions'],
-  );
-  assert.match(
-    String(await invoke.invoke(
-      context,
-      JSON.stringify({ name: 'computer_observe', argumentsJson: '{}' }),
-      {},
-    )),
-    /尚未通过 inspect_runtime_capabilities 精确发现/,
-  );
+  assert.deepEqual(naturalSessionQuery.capabilities, []);
+  assert.match(String(await inspect.invoke(
+    context,
+    JSON.stringify({ name: 'computer_observe' }),
+    {},
+  )), /不是 deferred capability/);
+  assert.match(String(await inspect.invoke(
+    context,
+    JSON.stringify({ name: 'browser_open' }),
+    {},
+  )), /不是 deferred capability/);
   for (const [source, name, result] of [
     ['builtin', 'web_search', 'web-ok'],
     ['memory', 'memory_read', 'memory-ok'],
-    ['computer', 'computer_observe', 'computer-ok'],
     ['goal', 'show_goal', 'goal-ok'],
     ['skill', 'list_skills', 'skill-ok'],
     ['mcp', 'custom_mcp_lookup', 'mcp-ok'],
-    ['connector', 'invoke_capability', 'connector-ok'],
     ['connector', 'send_owner_message', 'owner-message-ok'],
   ]) {
     const catalog = await inspect.invoke(context, JSON.stringify({ name }), {});
@@ -289,7 +289,7 @@ test('progressive gateway discovers and invokes every authorized capability fami
   );
 });
 
-test('progressive gateway stops an identical capability discovery loop on the third call', async () => {
+test('capability registry caches identical discovery without a loop guard', async () => {
   const builder = new ToolSetBuilder();
   const hidden = sdkTool({
     name: 'web_search',
@@ -297,16 +297,17 @@ test('progressive gateway stops an identical capability discovery loop on the th
     parameters: z.object({}),
     execute: async () => 'ok',
   });
-  const inspect = builder.progressiveGateway([hidden]).find(
-    (candidate) => candidate.name === 'inspect_runtime_capabilities',
+  const inspect = new HostCapabilityRegistry([hidden]).gatewayTools([hidden]).find(
+    (candidate) => candidate.name === 'inspect_capabilities',
   ) as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
   const context = new RunContext({});
   const input = JSON.stringify({ query: 'browser' });
-  assert.doesNotMatch(String(await inspect.invoke(context, input, {})), /discovery_loop/);
-  assert.doesNotMatch(String(await inspect.invoke(context, input, {})), /discovery_loop/);
-  assert.match(JSON.stringify(await inspect.invoke(context, input, {})), /discovery_loop|重复.*能力目录/);
+  const first = await inspect.invoke(context, input, {});
+  assert.deepEqual(await inspect.invoke(context, input, {}), first);
+  assert.deepEqual(await inspect.invoke(context, input, {}), first);
+  assert.doesNotMatch(JSON.stringify(first), /discovery_loop|重复.*能力目录/);
 });
 
 test('runtime capability query searches connector actions through the formal catalog', async () => {
@@ -346,7 +347,7 @@ test('runtime capability query searches connector actions through the formal cat
     },
   });
   const invokeConnector = sdkTool({
-    name: 'invoke_capability',
+    name: 'connector_capability',
     description: '调用当前目录中的一项 Connector 业务能力。',
     parameters: z.object({
       capability: z.string(),
@@ -356,11 +357,30 @@ test('runtime capability query searches connector actions through the formal cat
     }),
     execute: async ({ action }) => `${action}-ok`,
   });
-  const gateway = builder.progressiveGateway([inspectConnector, invokeConnector]);
-  const inspect = gateway.find((candidate) => candidate.name === 'inspect_runtime_capabilities') as Tool & {
+  const gateway = new HostCapabilityRegistry(
+    [inspectConnector, invokeConnector],
+    {
+      inspectConnector: async ({ query }) => {
+        const matched = catalog.find((candidate) => candidate.query === query);
+        return {
+          filterMatched: Boolean(matched),
+          actions: matched ? 1 : 0,
+          connectors: matched ? [{
+            id: matched.connector,
+            actions: [{
+              name: matched.action,
+              capability: matched.capability,
+              effect: 'write',
+            }],
+          }] : [],
+        };
+      },
+    },
+  ).gatewayTools([invokeConnector]);
+  const inspect = gateway.find((candidate) => candidate.name === 'inspect_capabilities') as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
-  const invoke = gateway.find((candidate) => candidate.name === 'invoke_runtime_capability') as Tool & {
+  const invoke = gateway.find((candidate) => candidate.name === 'invoke_capability') as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
   const context = new RunContext({});
@@ -376,13 +396,13 @@ test('runtime capability query searches connector actions through the formal cat
       connectorCatalog: { connectors: Array<{ actions: Array<{ name: string; capability: string }> }> };
     };
     assert.equal(found.matchedCount, 1);
-    assert.equal(found.capabilities[0]?.name, 'invoke_capability');
+    assert.equal(found.capabilities[0]?.name, 'connector_capability');
     assert.ok(found.capabilities[0]?.parameters);
     assert.equal(found.connectorCatalog.connectors[0]?.actions[0]?.name, expected.action);
     assert.equal(found.connectorCatalog.connectors[0]?.actions[0]?.capability, expected.capability);
     assert.equal(
       await invoke.invoke(context, JSON.stringify({
-        name: 'invoke_capability',
+        name: 'connector_capability',
         argumentsJson: JSON.stringify({
           capability: expected.capability,
           action: expected.action,
@@ -395,7 +415,7 @@ test('runtime capability query searches connector actions through the formal cat
   }
   assert.match(
     String(await invoke.invoke(context, JSON.stringify({
-      name: 'invoke_capability',
+      name: 'connector_capability',
       argumentsJson: JSON.stringify({
         capability: 'desktop.keyboard.write',
         action: 'send_keys',
@@ -424,9 +444,18 @@ test('runtime capability query searches connector actions through the formal cat
       connectors: [{ id: 'disabled-connector', actions: [] }],
     }),
   });
-  const disabledGateway = builder.progressiveGateway([disabledInspector, invokeConnector]);
+  const disabledGateway = new HostCapabilityRegistry(
+    [disabledInspector, invokeConnector],
+    {
+      inspectConnector: async () => ({
+        filterMatched: true,
+        actions: 0,
+        connectors: [{ id: 'disabled-connector', actions: [] }],
+      }),
+    },
+  ).gatewayTools([invokeConnector]);
   const inspectDisabled = disabledGateway.find(
-    (candidate) => candidate.name === 'inspect_runtime_capabilities',
+    (candidate) => candidate.name === 'inspect_capabilities',
   ) as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
@@ -447,8 +476,8 @@ test('progressive snapshot indexes every hidden capability family without disclo
     execute: async () => name,
   });
   const visible = [
-    make('inspect_runtime_capabilities'),
-    make('invoke_runtime_capability'),
+    make('inspect_capabilities'),
+    make('invoke_capability'),
   ];
   const hidden = [
     make('http_request'),
@@ -459,11 +488,10 @@ test('progressive snapshot indexes every hidden capability family without disclo
     make('send_owner_message'),
     ...Array.from({ length: 20 }, (_, index) => make(`mcp_fixture__action_${String(index).padStart(2, '0')}`)),
   ];
-  const snapshot = builder.snapshot({
+  const snapshot = new HostCapabilityRegistry([...visible, ...hidden]).snapshot({
     runId: 'progressive-index',
     policyRevision: 'full-owner:general',
-    tools: visible,
-    authorizedTools: [...visible, ...hidden],
+    modelTools: visible,
     observedAt: '2026-07-30T00:00:00.000Z',
   });
 
@@ -491,7 +519,7 @@ test('progressive snapshot indexes every hidden capability family without disclo
   assert.equal(snapshot.hiddenTools.find((group) => group.source === 'mcp')?.names.length, 12);
   const rendered = renderEffectiveCapabilitySnapshot(snapshot);
   assert.match(rendered, /send_owner_message/);
-  assert.match(rendered, /inspect_runtime_capabilities/);
+  assert.match(rendered, /inspect_capabilities/);
   assert.match(rendered, /Connector 摘要只含公开 action/);
   assert.doesNotMatch(rendered, /SECRET_DESCRIPTION|secret/);
 });
@@ -543,8 +571,10 @@ test('real MCP tools are host-materialized behind the gateway with exact schema 
   );
 
   const builder = new ToolSetBuilder();
-  const gateway = builder.progressiveGateway(mcpTools);
-  const modelFacing = builder.modelFacing([...mcpTools, ...gateway]);
+  const registry = new HostCapabilityRegistry(mcpTools);
+  const classified = builder.classify([...registry.authorizedTools()]);
+  const gateway = registry.gatewayTools(classified.deferred);
+  const modelFacing = builder.sdkTools(classified, gateway);
   const request = new AgentRequestFactory().create({
     model: 'gpt-test',
     instructions: 'system',
@@ -553,15 +583,15 @@ test('real MCP tools are host-materialized behind the gateway with exact schema 
   });
   const finalTools = await request.agent.getAllTools(new RunContext({}));
   assert.deepEqual(finalTools.map((candidate) => candidate.name), [
-    'inspect_runtime_capabilities',
-    'invoke_runtime_capability',
+    'inspect_capabilities',
+    'invoke_capability',
   ]);
   assert.equal(finalTools.some((candidate) => candidate.name.startsWith('mcp_fake__')), false);
 
-  const inspect = gateway.find((candidate) => candidate.name === 'inspect_runtime_capabilities') as Tool & {
+  const inspect = gateway.find((candidate) => candidate.name === 'inspect_capabilities') as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
-  const invoke = gateway.find((candidate) => candidate.name === 'invoke_runtime_capability') as Tool & {
+  const invoke = gateway.find((candidate) => candidate.name === 'invoke_capability') as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
   const context = new RunContext({});
@@ -625,8 +655,23 @@ test('capability snapshot is deterministic and distinguishes readiness terminolo
       safeFallback: 'none' as const,
     }],
   };
-  const first = builder.snapshot(input);
-  const second = builder.snapshot({ ...input, tools: [...input.tools].reverse() });
+  const registry = new HostCapabilityRegistry(input.authorizedTools);
+  const first = registry.snapshot({
+    runId: input.runId,
+    policyRevision: input.policyRevision,
+    modelTools: input.tools,
+    skills: input.skills,
+    observedAt: input.observedAt,
+    items: input.items,
+  });
+  const second = registry.snapshot({
+    runId: input.runId,
+    policyRevision: input.policyRevision,
+    modelTools: [...input.tools].reverse(),
+    skills: input.skills,
+    observedAt: input.observedAt,
+    items: input.items,
+  });
   assert.equal(first.snapshotDigest, second.snapshotDigest);
   assert.equal(first.toolSetDigest, second.toolSetDigest);
   assert.deepEqual(first.tools, ['a', 'b']);
@@ -656,6 +701,21 @@ test('structured personal message scope excludes desktop fallback tools', () => 
     'inspect_mimi_capabilities',
     'connector_action',
   ]);
+});
+
+test('personal message model surface contains only its frozen business route', () => {
+  const tool = (name: string) => ({ name }) as Tool;
+  const classified = new ToolSetBuilder().classify([
+    tool('get_personal_message_context'),
+    tool('send_personal_message'),
+  ], undefined, [
+    'get_personal_message_context',
+    'send_personal_message',
+  ]);
+  assert.deepEqual(
+    new ToolSetBuilder().sdkTools(classified, []).map((candidate) => candidate.name),
+    ['get_personal_message_context', 'send_personal_message'],
+  );
 });
 
 test('Workstation retains sandboxed shell and excludes external or GUI transactions', () => {

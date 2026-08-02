@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- unify each Run behind one immutable Host capability registry and one bounded
+  discovery gateway, keep Browser, Computer, and personal routes direct, resolve
+  the exact SDK tool surface once, and invalidate Connector discovery only when
+  the semantic catalog revision changes
 - enforce autonomous Run and Token budgets before creating non-urgent Connector,
   Routine, or scheduled Briefing work; preserve owner, urgent, and in-flight work;
   classify 24-hour usage by stable Event provenance; fail closed when historical

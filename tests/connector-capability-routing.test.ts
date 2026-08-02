@@ -53,8 +53,9 @@ test('model instructions drive verified business outcomes through discoverable c
   assert.match(BASE_INSTRUCTIONS, /只提供业务参数/);
   assert.match(BASE_INSTRUCTIONS, /一等工具已经直接可见时立即使用/);
   assert.match(BASE_INSTRUCTIONS, /Skill 的 MUST\/路由声明不能覆盖可见一等工具/);
-  assert.match(BASE_INSTRUCTIONS, /inspect_runtime_capabilities/);
-  assert.match(BASE_INSTRUCTIONS, /invoke_runtime_capability/);
+  assert.match(BASE_INSTRUCTIONS, /inspect_capabilities/);
+  assert.match(BASE_INSTRUCTIONS, /invoke_capability/);
+  assert.doesNotMatch(BASE_INSTRUCTIONS, /inspect_runtime_capabilities|invoke_runtime_capability|inspect_mimi_capabilities/);
   assert.match(BASE_INSTRUCTIONS, /不猜工具名、内部字段、action 或替代路线/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /operationRef/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /observationId|candidateToken|routeOwner/);

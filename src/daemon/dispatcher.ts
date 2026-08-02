@@ -14,7 +14,9 @@ import { OutboxDeliveryCoordinator } from './dispatcher-delivery.js';
 import { AttentionEngine } from './attention.js';
 import { createMimiHostTools } from './host-tools.js';
 import { BrowserRunManager } from '../extensions/browser/manager.js';
-import { connectorEffectiveCapabilityItems } from './connector-action-tool.js';
+import {
+  connectorEffectiveCapabilityItems,
+} from './connector-action-tool.js';
 import {
   ephemeralSecretReferences,
   EphemeralSensitiveRunFailedError,
@@ -519,6 +521,17 @@ export class MimiDispatcher {
           capabilityItems: this.connectors
             ? connectorEffectiveCapabilityItems(this.connectors)
             : [],
+          capabilityCatalog: this.connectors
+              ? {
+                inspectConnector: (filter) => this.connectors!.inspectCapabilities(filter),
+                revision: () => this.connectors!.capabilityRevision(),
+              }
+            : this.options.connectorRuntime
+              ? {
+                  inspectConnector: (filter, signal) =>
+                    this.options.connectorRuntime!.inspectCapabilities(filter, signal),
+                }
+              : undefined,
           ...(personalMessage ? { personalMessage } : {}),
           executionKey,
           retainExecutionLedger: true,

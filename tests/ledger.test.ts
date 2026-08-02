@@ -511,7 +511,7 @@ test('declared read actions bypass side-effect authorization and uncertain ledge
   let executions = 0;
   let authorizations = 0;
   const original = tool({
-    name: 'invoke_capability',
+    name: 'connector_capability',
     description: 'bounded read capability',
     parameters: z.object({ target: z.string() }),
     execute: async () => {
@@ -781,7 +781,7 @@ test('uncertain ActionIntent freezes its action scope while preserving reads and
   let recoveryExecutions = 0;
   let readExecutions = 0;
   const actionTool = (
-    name: 'computer_act' | 'invoke_capability',
+    name: 'computer_act' | 'connector_capability',
     execute: () => Promise<unknown>,
     route: string,
     outcome: 'confirmed' | 'uncertain' = 'confirmed',
@@ -813,7 +813,7 @@ test('uncertain ActionIntent freezes its action scope while preserving reads and
     });
     return value;
   };
-  const rejected = actionTool('invoke_capability', async () => {
+  const rejected = actionTool('connector_capability', async () => {
     rejectedExecutions += 1;
     throw new ActionFailedSafeError('payload rejected before execution');
   }, 'connector');
@@ -821,11 +821,11 @@ test('uncertain ActionIntent freezes its action scope while preserving reads and
     firstExecutions += 1;
     throw new Error('connection ended after dispatch');
   }, 'computer', 'uncertain');
-  const fallback = actionTool('invoke_capability', async () => {
+  const fallback = actionTool('connector_capability', async () => {
     fallbackExecutions += 1;
     return { outcome: 'confirmed' };
   }, 'connector');
-  const recovery = actionTool('invoke_capability', async () => {
+  const recovery = actionTool('connector_capability', async () => {
     recoveryExecutions += 1;
     return { outcome: 'confirmed' };
   }, 'connector', 'confirmed', 'browser.session.close');

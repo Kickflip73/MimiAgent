@@ -1,5 +1,5 @@
 import { tool, type Tool } from '@openai/agents';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   TOOL_ACTION_INTENT,
@@ -25,12 +25,18 @@ type OwnerMessageChannel = typeof OWNER_MESSAGE_CHANNELS[number];
 function modelVisibleCapabilities(
   connectors: ConnectorManager,
 ): ReturnType<ConnectorManager['listCapabilities']> {
-  return connectors.listCapabilities().map((connector) => ({
-    ...connector,
-    actions: connector.enabled
-      ? (connector.actions ?? []).filter((action) => action.modelVisible !== false)
-      : [],
-  }));
+  // These Connectors are private backends for direct Host tools; exposing their
+  // actions would create a second model route to the same Browser/UI/message target.
+  return connectors.listCapabilities()
+    .filter((connector) => connector.id !== 'browser'
+      && connector.id !== 'desktop'
+      && !connector.id.startsWith('personal-'))
+    .map((connector) => ({
+      ...connector,
+      actions: connector.enabled
+        ? (connector.actions ?? []).filter((action) => action.modelVisible !== false)
+        : [],
+    }));
 }
 
 function ownerMessageChannels(connectors: ConnectorManager): OwnerMessageChannel[] {
@@ -46,6 +52,47 @@ function ownerMessageChannels(connectors: ConnectorManager): OwnerMessageChannel
     ));
     return declared ? [channel as OwnerMessageChannel] : [];
   });
+}
+
+export function connectorCapabilityRevision(connectors: ConnectorManager): string {
+  const catalog = modelVisibleCapabilities(connectors)
+    .map((connector) => ({
+      id: connector.id,
+      enabled: connector.enabled,
+      online: connector.online,
+      source: connector.source,
+      claimedComputerApps: [...connector.claimedComputerApps].sort(),
+      readiness: {
+        inbound: connector.readiness.inbound,
+        outbound: connector.readiness.outbound,
+        deliveryConfirmed: connector.readiness.deliveryConfirmed,
+        stale: connector.readiness.stale === true,
+        coverage: connector.readiness.coverage,
+        accountVerified: connector.readiness.accountVerified,
+        backgroundSafe: connector.readiness.backgroundSafe,
+        changesReadState: connector.readiness.changesReadState,
+        stableConversationId: connector.readiness.stableConversationId,
+        stableMessageId: connector.readiness.stableMessageId,
+        contextRead: connector.readiness.contextRead,
+        targetBound: connector.readiness.targetBound,
+        targetBindingStatus: connector.readiness.targetBindingStatus,
+        reasonCode: connector.readiness.reasonCode,
+      },
+      actions: [...connector.actions]
+        .map((action) => ({
+          name: action.name,
+          description: action.description,
+          capability: action.capability,
+          effect: action.effect,
+          routeOwner: action.routeOwner,
+          targetExample: action.targetExample,
+          payloadExampleJson: action.payloadExampleJson,
+        }))
+        .sort((left, right) => left.capability.localeCompare(right.capability)
+          || left.name.localeCompare(right.name)),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return `sha256:${createHash('sha256').update(JSON.stringify(catalog)).digest('hex')}`;
 }
 
 export interface ConnectorCapabilitySnapshot {
@@ -151,7 +198,7 @@ export interface ConnectorTaskRuntime {
 type InspectCapabilities = ConnectorTaskRuntime['inspectCapabilities'];
 type ExecuteConnectorAction = ConnectorTaskRuntime['executeAction'];
 type ConnectorActionReceipt = Record<string, unknown> & {
-  tool: 'connector_action' | 'invoke_capability' | 'send_owner_message';
+  tool: 'connector_action' | 'connector_capability' | 'invoke_capability' | 'send_owner_message';
   connector: string;
   action: string;
   target: string;
@@ -375,7 +422,7 @@ export function createInvokeCapabilityTool(
   onAction?: OnConnectorAction,
 ): Tool {
   const capabilityTool = tool({
-    name: 'invoke_capability',
+    name: 'connector_capability',
     description: '调用当前目录中的一项 Connector 业务能力。必须使用目录返回的精确 action、targetExample 和 payloadExampleJson；不得猜字段或用相邻 action 替代。',
     parameters: z.object({
       capability: z.string()
@@ -406,7 +453,7 @@ export function createInvokeCapabilityTool(
         payload,
       };
       const receipt = connectorReceipt(
-        'invoke_capability',
+        'connector_capability',
         request,
         selected.result,
         selected.effect,
