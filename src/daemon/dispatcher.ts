@@ -6,6 +6,7 @@ import { attachmentPayload, inputWithAttachments } from '../runtime/attachments.
 import type { RuntimeEvent } from '../runtime/hooks.js';
 import { TerminalRunInterruptedError } from '../runtime/run-outcome.js';
 import { CompletionGateError } from '../core/completion.js';
+import { runFinalizationFromError } from '../core/run-finalization.js';
 import { NotifierRegistry } from './notifier.js';
 import type { ConnectorTaskRuntime } from './connector-action-tool.js';
 import type { ConnectorManager } from './connectors.js';
@@ -670,7 +671,13 @@ export class MimiDispatcher {
           this.store.blockTask(
             task.id,
             this.workerId,
-            { answer: result.answer, question: blocked.question, reason, usage: result.usage },
+            {
+              answer: result.answer,
+              question: blocked.question,
+              reason,
+              finalization: result.finalization,
+              usage: result.usage,
+            },
             reason,
             attempt.id,
             new Date(),
@@ -680,6 +687,7 @@ export class MimiDispatcher {
                 type: 'background_task_blocked',
                 taskId: task.id,
                 question: blocked.question,
+                finalization: result.finalization,
                 text: `MimiAgent 后台任务需要你的输入（${task.id}）：${blocked.question}`.slice(0, 4_000),
               },
             },
@@ -698,6 +706,7 @@ export class MimiDispatcher {
                 ? `MimiAgent 后台任务已完成（${task.id}）：${result.answer}`.slice(0, 4_000)
                 : result.answer,
               taskId: task.id,
+              finalization: result.finalization,
               ...(task.type !== 'conversation' ? {
                 type: 'background_task_completed',
               } : {}),
@@ -723,12 +732,14 @@ export class MimiDispatcher {
         } : {}),
       }, attempt.id, new Date(), delivery);
     } catch (error) {
+      let failureFinalization = runFinalizationFromError(error);
       let browserCleanupFailed = error instanceof Error && error.name === 'BrowserSessionCleanupError';
       try {
         await closeBrowserRun();
       } catch (cleanupError) {
         browserCleanupFailed = true;
         error = cleanupError;
+        failureFinalization = undefined;
       }
       if (browserCleanupFailed) process.stderr.write(
         `[MimiAgent] ${error instanceof Error ? error.message : String(error)}\n`,
@@ -762,6 +773,9 @@ export class MimiDispatcher {
             },
           },
           attemptId,
+          new Date(),
+          undefined,
+          failureFinalization,
         );
       } else if (active.blockRequested) {
         if (execution) {
@@ -772,7 +786,7 @@ export class MimiDispatcher {
         this.store.blockTask(
           task.id,
           this.workerId,
-          { question: blocked.question, reason },
+          { question: blocked.question, reason, finalization: failureFinalization },
           reason,
           attemptId,
           new Date(),
@@ -782,6 +796,7 @@ export class MimiDispatcher {
               type: 'background_task_blocked',
               taskId: task.id,
               question: blocked.question,
+              finalization: failureFinalization,
               text: `MimiAgent 后台任务需要你的输入（${task.id}）：${blocked.question}`.slice(0, 4_000),
             },
           },
@@ -811,6 +826,9 @@ export class MimiDispatcher {
           error,
           classifyRunFailureRecord(error),
           attemptId,
+          new Date(),
+          undefined,
+          failureFinalization,
         );
       } else if (this.stopRequested && active.runController?.signal.aborted) {
         this.store.requeueTask(task.id, this.workerId, 'MimiAgent Dispatcher 正在停止，任务已安全重排队', attemptId);
@@ -828,6 +846,7 @@ export class MimiDispatcher {
           attemptId,
           new Date(),
           configuredMaxAttempts,
+          failureFinalization,
         );
       }
     } finally {

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   runFinalizationRecordSchema,
   type RunFinalizationRecord,
+  type RunOutcome,
 } from './run-finalization.js';
 import { AtomicJsonStore } from './state-file.js';
 
@@ -22,6 +23,7 @@ export interface RunCommitJournalEntry {
   executionKey?: string;
   phase: RunCommitPhase;
   answerDigest: string;
+  outcome?: RunOutcome;
   completionDecision?: 'pass' | 'continue' | 'blocked' | 'uncertain';
   runtimeActions: Array<Record<string, unknown>>;
   finalization?: RunFinalizationRecord;
@@ -49,6 +51,7 @@ const entrySchema = z.object({
   executionKey: z.string().optional(),
   phase: phaseSchema,
   answerDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+  outcome: z.enum(['completed', 'partial', 'blocked', 'interrupted', 'failed', 'uncertain']).optional(),
   completionDecision: z.enum(['pass', 'continue', 'blocked', 'uncertain']).optional(),
   runtimeActions: z.array(z.record(z.string(), z.unknown())),
   finalization: runFinalizationRecordSchema.optional(),
@@ -107,6 +110,7 @@ export class RunCommitJournal {
       if (existing) {
         if (existing.answerDigest !== input.answerDigest
           || existing.executionKey !== input.executionKey
+          || existing.outcome !== input.outcome
           || JSON.stringify(existing.runtimeActions) !== JSON.stringify(input.runtimeActions)
           || JSON.stringify(existing.finalization) !== JSON.stringify(input.finalization)) {
           throw new Error(`Run ${input.runId} 已存在不同的提交计划，拒绝覆盖`);
@@ -147,14 +151,19 @@ export class RunCommitJournal {
     executionKey: string,
   ): Promise<RunCommitJournalEntry | undefined> {
     return this.state.update((journal) => {
-      const entry = Object.values(journal.entries).find((candidate) =>
+      const entries = Object.values(journal.entries).filter((candidate) =>
         candidate.sessionId === sessionId
         && candidate.executionKey === executionKey
         && candidate.phase !== 'finalized');
-      if (!entry) return undefined;
-      entry.phase = 'task_committed';
-      entry.updatedAt = new Date().toISOString();
-      return { ...entry };
+      if (!entries.length) return undefined;
+      const updatedAt = new Date().toISOString();
+      for (const entry of entries) {
+        if (PHASE_ORDER.indexOf(entry.phase) < PHASE_ORDER.indexOf('task_committed')) {
+          entry.phase = 'task_committed';
+        }
+        entry.updatedAt = updatedAt;
+      }
+      return { ...entries.at(-1)! };
     });
   }
 
@@ -163,12 +172,15 @@ export class RunCommitJournal {
     executionKey: string,
   ): Promise<RunCommitJournalEntry | undefined> {
     return this.state.update((journal) => {
-      const entry = Object.values(journal.entries).find((candidate) =>
+      const entries = Object.values(journal.entries).filter((candidate) =>
         candidate.sessionId === sessionId && candidate.executionKey === executionKey);
-      if (!entry) return undefined;
-      entry.phase = 'finalized';
-      entry.updatedAt = new Date().toISOString();
-      return { ...entry };
+      if (!entries.length) return undefined;
+      const updatedAt = new Date().toISOString();
+      for (const entry of entries) {
+        entry.phase = 'finalized';
+        entry.updatedAt = updatedAt;
+      }
+      return { ...entries.at(-1)! };
     });
   }
 
@@ -181,8 +193,8 @@ export class RunCommitJournal {
     sessionId: string,
     executionKey: string,
   ): Promise<RunCommitJournalEntry | undefined> {
-    const entry = Object.values((await this.state.read()).entries).find((candidate) =>
-      candidate.sessionId === sessionId && candidate.executionKey === executionKey);
+    const entry = Object.values((await this.state.read()).entries).filter((candidate) =>
+      candidate.sessionId === sessionId && candidate.executionKey === executionKey).at(-1);
     return entry ? this.cloneEntry(entry) : undefined;
   }
 

@@ -1,6 +1,7 @@
 import type { AgentInputItem, RunStreamEvent } from '@openai/agents';
 import type { ModelProvider } from '../config.js';
 import type { RunFinalizationRecord } from '../core/run-finalization.js';
+import { attachRunFinalization } from '../core/run-finalization.js';
 import type { RuntimeEffect } from './control.js';
 import type { RuntimeEvent } from './hooks.js';
 import type {
@@ -294,10 +295,14 @@ export class AgentRunService {
         usage: usageFrom(stream),
         interruptedAnswer,
       });
-      if (streamAcquired) await commitFailure;
-      else await commitFailure.catch(() => undefined);
-      await observe(observer.onError, safeError);
-      throw safeError;
+      const failureFinalization = streamAcquired
+        ? await commitFailure
+        : await commitFailure.catch(() => undefined);
+      const terminalError = failureFinalization
+        ? attachRunFinalization(safeError, failureFinalization)
+        : safeError;
+      await observe(observer.onError, terminalError);
+      throw terminalError;
     } finally {
       stopRuntimeEvents();
     }

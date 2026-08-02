@@ -3,6 +3,15 @@ import { z } from 'zod';
 import type { ExecutionCallRecord } from './execution-ledger.js';
 
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+export const runOutcomeSchema = z.enum([
+  'completed',
+  'partial',
+  'blocked',
+  'interrupted',
+  'failed',
+  'uncertain',
+]);
+export type RunOutcome = z.infer<typeof runOutcomeSchema>;
 
 export const toolExecutionManifestEntrySchema = z.object({
   runId: z.string().min(1),
@@ -17,12 +26,139 @@ export const toolExecutionManifestEntrySchema = z.object({
 export const runFinalizationRecordSchema = z.object({
   runId: z.string().min(1),
   answerDigest: digestSchema,
+  outcome: runOutcomeSchema.default('completed'),
+  reason: z.string().trim().min(1).max(2_000).optional(),
+  nextAction: z.string().trim().min(1).max(2_000).optional(),
+  evidenceRefs: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
   completionDecision: z.enum(['pass', 'continue', 'blocked', 'uncertain']).optional(),
   toolManifest: z.array(toolExecutionManifestEntrySchema),
 }).strict();
 
 export type ToolExecutionManifestEntry = z.infer<typeof toolExecutionManifestEntrySchema>;
 export type RunFinalizationRecord = z.infer<typeof runFinalizationRecordSchema>;
+const ERROR_FINALIZATIONS = new WeakMap<Error, RunFinalizationRecord>();
+
+export function attachRunFinalization(
+  error: unknown,
+  finalization: RunFinalizationRecord,
+): Error {
+  const target = error instanceof Error ? error : new Error(String(error));
+  ERROR_FINALIZATIONS.set(target, finalization);
+  return target;
+}
+
+export function runFinalizationFromError(error: unknown): RunFinalizationRecord | undefined {
+  return error instanceof Error ? ERROR_FINALIZATIONS.get(error) : undefined;
+}
+
+export interface RunOutcomeInput {
+  sdk: 'completed' | 'interrupted' | 'failed';
+  calls: readonly ExecutionCallRecord[];
+  completionDecision?: RunFinalizationRecord['completionDecision'];
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function actionEvidence(value: unknown): Record<string, unknown> | undefined {
+  return objectValue(objectValue(value)?.mimiActionIntent);
+}
+
+function isInteractionOnly(value: unknown): boolean {
+  const record = objectValue(value);
+  return record?.completionScope === 'interaction'
+    || record?.businessOutcome === 'unverified';
+}
+
+function isAcceptedOnly(value: unknown): boolean {
+  const record = objectValue(value);
+  return record?.outcome === 'accepted'
+    || actionEvidence(value)?.outcome === 'failed_safe';
+}
+
+function blocksForInput(call: ExecutionCallRecord): boolean {
+  return call.status === 'succeeded'
+    && call.toolName === 'request_background_task_input'
+    && objectValue(call.output)?.accepted === true;
+}
+
+function unresolvedFailures(calls: readonly ExecutionCallRecord[]): ExecutionCallRecord[] {
+  return calls.filter((call, index) => call.status === 'failed' && !calls.slice(index + 1).some((later) => (
+    later.status === 'succeeded'
+    && later.toolName === call.toolName
+    && later.argumentsJson === call.argumentsJson
+  )));
+}
+
+export function classifyRunOutcome(input: RunOutcomeInput): RunOutcome {
+  if (input.calls.some((call) => call.status === 'started' || call.status === 'uncertain')) {
+    return 'uncertain';
+  }
+  if (input.calls.some(blocksForInput)) return 'blocked';
+  if (input.sdk === 'interrupted') return 'interrupted';
+  if (input.sdk === 'failed') return 'failed';
+  if (input.completionDecision) {
+    const gateOutcomes: Record<NonNullable<RunFinalizationRecord['completionDecision']>, RunOutcome> = {
+      pass: 'completed',
+      continue: 'partial',
+      blocked: 'blocked',
+      uncertain: 'uncertain',
+    };
+    return gateOutcomes[input.completionDecision];
+  }
+  const failed = unresolvedFailures(input.calls);
+  if (failed.length) {
+    return input.calls.some((call) => call.status === 'succeeded') ? 'partial' : 'failed';
+  }
+  if (input.calls.some((call) => call.status === 'succeeded'
+    && (isInteractionOnly(call.output) || isAcceptedOnly(call.output)))) return 'partial';
+  return 'completed';
+}
+
+function collectEvidenceRefs(value: unknown, refs: Set<string>, depth = 0): void {
+  if (depth > 5 || refs.size >= 100) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectEvidenceRefs(item, refs, depth + 1));
+    return;
+  }
+  const record = objectValue(value);
+  if (!record) return;
+  if (typeof record.ref === 'string'
+    && /^(?:action-intent|execution|artifact|test):/u.test(record.ref)) {
+    refs.add(record.ref.slice(0, 500));
+  }
+  Object.values(record).forEach((item) => collectEvidenceRefs(item, refs, depth + 1));
+}
+
+export function runEvidenceRefs(calls: readonly ExecutionCallRecord[]): string[] {
+  const refs = new Set<string>();
+  calls.forEach((call) => collectEvidenceRefs(call.output, refs));
+  return [...refs].sort();
+}
+
+export function constrainRunAnswer(input: {
+  draft: string;
+  outcome: RunOutcome;
+  reason?: string;
+  nextAction?: string;
+  evidenceRefs?: readonly string[];
+}): string {
+  const draft = input.draft.trim().slice(0, 20_000);
+  if (input.outcome === 'completed') return draft;
+  const status = [
+    `Host 终态：outcome=${input.outcome}；本轮不构成整体完成声明。`,
+    input.reason ? `原因：${input.reason.trim().slice(0, 2_000)}` : '',
+    input.nextAction ? `下一步：${input.nextAction.trim().slice(0, 2_000)}` : '',
+    input.evidenceRefs?.length
+      ? `证据引用：${input.evidenceRefs.slice(0, 20).join('、')}`
+      : '',
+    draft ? `模型草稿（仅作未验证的执行摘要）：\n${draft}` : '',
+  ].filter(Boolean);
+  return status.join('\n\n').slice(0, 20_000);
+}
 
 export function executionCompletionDecision(
   calls: readonly ExecutionCallRecord[],
@@ -66,12 +202,25 @@ export function toolExecutionManifest(
 export function createRunFinalization(input: {
   runId: string;
   answer: string;
+  outcome?: RunOutcome;
+  reason?: string;
+  nextAction?: string;
+  evidenceRefs?: readonly string[];
   completionDecision?: RunFinalizationRecord['completionDecision'];
   calls: readonly ExecutionCallRecord[];
 }): RunFinalizationRecord {
+  const outcome = input.outcome ?? classifyRunOutcome({
+    sdk: 'completed',
+    calls: input.calls,
+    completionDecision: input.completionDecision,
+  });
   return runFinalizationRecordSchema.parse({
     runId: input.runId,
     answerDigest: digest(input.answer),
+    outcome,
+    ...(input.reason ? { reason: input.reason } : {}),
+    ...(input.nextAction ? { nextAction: input.nextAction } : {}),
+    evidenceRefs: input.evidenceRefs ?? runEvidenceRefs(input.calls),
     ...(input.completionDecision ? { completionDecision: input.completionDecision } : {}),
     toolManifest: toolExecutionManifest(input.calls),
   });

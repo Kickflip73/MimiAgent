@@ -24,6 +24,7 @@ import { HostCapabilityRegistry } from '../src/runtime/pipeline/capability-regis
 import { AgentRequestFactory } from '../src/runtime/pipeline/request-factory.js';
 import { captureRunScope } from '../src/runtime/pipeline/run-scope.js';
 import { RunStateLoader } from '../src/runtime/pipeline/state-loader.js';
+import { RunFactCollector } from '../src/runtime/pipeline/run-fact-collector.js';
 import {
   ToolSetBuilder,
   withoutPersonalMessageDesktopFallback,
@@ -61,6 +62,53 @@ test('captures an immutable run scope before delayed pipeline work', () => {
   assert.throws(() => {
     (captured as { sessionId: string }).sessionId = 'other';
   }, TypeError);
+});
+
+test('run fact collector captures read success, structured rejection, and thrown failure once', async () => {
+  const collector = new RunFactCollector();
+  const tools = collector.wrap([
+    sdkTool({
+      name: 'read_file',
+      description: 'read',
+      parameters: z.object({ path: z.string() }),
+      execute: async () => ({ content: 'bounded' }),
+    }),
+    sdkTool({
+      name: 'connector_action',
+      description: 'reject',
+      parameters: z.object({}),
+      execute: async () => ({
+        mimiStatus: 'tool_input_rejected',
+        code: 'target_required',
+        message: 'target required',
+      }),
+    }),
+    {
+      name: 'run_shell',
+      invoke: async () => { throw new Error('exit 2'); },
+    } as unknown as Tool,
+  ]);
+  const invoke = async (index: number, input: string, callId: string) => {
+    const selected = tools[index];
+    assert.ok(selected && 'invoke' in selected);
+    return selected.invoke(
+      new RunContext({}),
+      input,
+      { toolCall: { callId } } as never,
+    );
+  };
+  await invoke(0, '{"path":"README.md"}', 'read-1');
+  await invoke(1, '{}', 'reject-1');
+  await assert.rejects(invoke(2, '{}', 'shell-1'), /exit 2/);
+
+  const calls = collector.calls('owner', 'run-facts');
+  assert.deepEqual(calls.map(({ toolName, callId, status }) => ({ toolName, callId, status })), [
+    { toolName: 'read_file', callId: 'read-1', status: 'succeeded' },
+    { toolName: 'connector_action', callId: 'reject-1', status: 'failed' },
+    { toolName: 'run_shell', callId: 'shell-1', status: 'failed' },
+  ]);
+  assert.equal(calls[1]?.error, 'target required');
+  assert.equal(calls[2]?.error, 'exit 2');
 });
 
 test('context assembler accounts for every request section without prompt copies', () => {

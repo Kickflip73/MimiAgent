@@ -303,6 +303,8 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
         await context.block?.({ question, reason });
         return {
           accepted: true,
+          question,
+          ...(reason ? { reason } : {}),
           message: '已请求用户输入；现在停止本次后台执行并给出简短说明。',
         };
       },

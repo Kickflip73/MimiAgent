@@ -7,7 +7,8 @@ import type { RunFailureRecord } from '../src/core/run-failure.js';
 import { classifyRunFailureRecord } from '../src/daemon/dispatcher-retry-policy.js';
 import { MimiStore } from '../src/daemon/store.js';
 
-const base = new Date('2026-08-02T13:00:00.000Z');
+// Keep claim time after enqueueTask's real default without depending on the wall clock.
+const base = new Date('2030-08-02T13:00:00.000Z');
 
 test('typed failure facts alone choose failed, retry, and dead-letter terminal states', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-task-failure-disposition-'));

@@ -12,6 +12,11 @@ import {
 import { assertSessionId } from './session-id.js';
 import { AtomicJsonStore, StateFileCorruptError } from './state-file.js';
 import { modelTargetSchema, type ModelTarget } from './model-routing.js';
+import {
+  runFinalizationRecordSchema,
+  type RunFinalizationRecord,
+  type RunOutcome,
+} from './run-finalization.js';
 
 export type RunStatus = 'running' | 'completed' | 'interrupted' | 'failed';
 
@@ -60,6 +65,8 @@ export interface RunCheckpoint {
   answer?: string;
   error?: string;
   nextAction?: string;
+  outcome?: RunOutcome;
+  finalization?: RunFinalizationRecord;
   completionContract?: CompletionContract;
   completionReport?: CompletionReport;
   completionGate?: {
@@ -215,6 +222,8 @@ const sessionFileSchema = z.object({
     answer: z.string().optional(),
     error: z.string().optional(),
     nextAction: z.string().optional(),
+    outcome: z.enum(['completed', 'partial', 'blocked', 'interrupted', 'failed', 'uncertain']).optional(),
+    finalization: runFinalizationRecordSchema.optional(),
     completionContract: completionContractSchema.optional(),
     completionReport: completionReportSchema.optional(),
     completionGate: z.object({
@@ -515,15 +524,29 @@ export class FileSession implements Session {
     });
   }
 
-  async completeRun(answer: string, expectedRunId?: string): Promise<RunCheckpoint | undefined> {
+  async completeRun(
+    answer: string,
+    expectedRunId?: string,
+    finalization?: RunFinalizationRecord,
+  ): Promise<RunCheckpoint | undefined> {
     return this.finishRun(
       'completed',
-      { answer: answer.trim().slice(0, 8_000), phase: '已完成', nextAction: undefined },
+      {
+        answer: answer.trim().slice(0, 8_000),
+        phase: finalization?.outcome === 'completed' ? '已完成' : '本轮已终态',
+        nextAction: finalization?.nextAction,
+        outcome: finalization?.outcome ?? 'completed',
+        finalization,
+      },
       expectedRunId,
     );
   }
 
-  async reconcileCompletedRun(answer: string, expectedRunId: string): Promise<RunCheckpoint | undefined> {
+  async reconcileCompletedRun(
+    answer: string,
+    expectedRunId: string,
+    finalization?: RunFinalizationRecord,
+  ): Promise<RunCheckpoint | undefined> {
     return this.mutateWhen((session) => {
       if (!session.checkpoint || session.checkpoint.runId !== expectedRunId) {
         return { result: session.checkpoint ? { ...session.checkpoint } : undefined, changed: false };
@@ -537,8 +560,10 @@ export class FileSession implements Session {
         status: 'completed',
         answer: answer.trim().slice(0, 8_000),
         error: undefined,
-        phase: '已完成',
-        nextAction: undefined,
+        phase: finalization?.outcome === 'completed' ? '已完成' : '本轮已终态',
+        nextAction: finalization?.nextAction,
+        outcome: finalization?.outcome ?? 'completed',
+        finalization,
         ownerId: undefined,
         ownerPid: undefined,
         updatedAt: now,
@@ -548,11 +573,20 @@ export class FileSession implements Session {
     });
   }
 
-  async failRun(error: string, interrupted = false, expectedRunId?: string): Promise<RunCheckpoint | undefined> {
+  async failRun(
+    error: string,
+    interrupted = false,
+    expectedRunId?: string,
+    finalization?: RunFinalizationRecord,
+  ): Promise<RunCheckpoint | undefined> {
     return this.finishRun(interrupted ? 'interrupted' : 'failed', {
       error: error.trim().slice(0, 2_000),
-      phase: interrupted ? '已中断' : '执行失败',
-      nextAction: '检查最后进展并继续未完成任务',
+      phase: finalization?.outcome === 'uncertain'
+        ? '结果不确定'
+        : interrupted ? '已中断' : '执行失败',
+      nextAction: finalization?.nextAction ?? '检查最后进展并继续未完成任务',
+      outcome: finalization?.outcome ?? (interrupted ? 'interrupted' : 'failed'),
+      finalization,
     }, expectedRunId);
   }
 
@@ -926,7 +960,10 @@ export class FileSession implements Session {
 
   private async finishRun(
     status: Exclude<RunStatus, 'running'>,
-    update: Pick<RunCheckpoint, 'phase'> & Partial<Pick<RunCheckpoint, 'answer' | 'error' | 'nextAction'>>,
+    update: Pick<RunCheckpoint, 'phase'> & Partial<Pick<
+      RunCheckpoint,
+      'answer' | 'error' | 'nextAction' | 'outcome' | 'finalization'
+    >>,
     expectedRunId?: string,
   ): Promise<RunCheckpoint | undefined> {
     return this.mutateWhen((session) => {

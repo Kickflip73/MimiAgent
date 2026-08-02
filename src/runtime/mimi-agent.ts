@@ -51,7 +51,6 @@ import type { PreferenceStore } from '../core/preferences.js';
 import { PlanStore, type PlanStep } from '../core/plan.js';
 import {
   createRunFinalization,
-  executionCompletionDecision,
   runFinalizationRecordSchema,
   type RunFinalizationRecord,
 } from '../core/run-finalization.js';
@@ -162,6 +161,8 @@ import {
   withoutPersonalMessageFallbackHistory,
 } from './pipeline/tool-set-builder.js';
 import { AgentRequestFactory } from './pipeline/request-factory.js';
+import { decideRunCommit } from './pipeline/run-commit-coordinator.js';
+import { RunFactCollector, mergeRunCalls } from './pipeline/run-fact-collector.js';
 import { PersonalMessageHub, type PersonalMessageScope } from './personal-message-hub.js';
 import {
   createMimiPreferenceTools,
@@ -208,6 +209,7 @@ interface ActiveRun {
   canReadLocal?: boolean;
   computerAccess: ComputerAccess;
   pendingContextResults: Map<string, AgentInputItem>;
+  facts: RunFactCollector;
   ephemeralSensitiveAccess?: ActiveEphemeralOwnerInput;
 }
 
@@ -1033,6 +1035,7 @@ export class MimiAgent {
       completionContract: options?.completionContract,
       computerAccess: capabilities.computerAccess,
       pendingContextResults: new Map(),
+      facts: new RunFactCollector(),
       ephemeralSensitiveAccess,
     };
     run.releaseOwner = registerSessionRunOwner(run.ownerId);
@@ -1494,12 +1497,12 @@ export class MimiAgent {
         ? []
         : capabilityRegistry.gatewayTools(classifiedTools.deferred),
     );
-    const modelTools = await this.requestFactory.create({
+    const modelTools = run.facts.wrap(await this.requestFactory.create({
       model,
       instructions: '',
       tools: selectedModelTools,
       outputReserve: modelProfile.outputReserve,
-    }).agent.getAllTools(new RunContext({}));
+    }).agent.getAllTools(new RunContext({})));
     run.availableToolNames = capabilityRegistry.authorizedTools().map((candidate) => candidate.name);
     const availableSkillNames = this.skills.list()
       .filter((candidate) => {
@@ -2942,17 +2945,6 @@ export class MimiAgent {
     const run = this.activeRun;
     if (!run) throw new Error('没有正在运行的任务可完成');
     const safeAnswer = redactActiveEphemeralText(answer, run.ephemeralSensitiveAccess);
-    if (run.planOwned && !run.completionRequired) {
-      const steps = await (run.plans ?? this.plans).get();
-      const incomplete = steps.filter((step) => step.status !== 'completed');
-      if (incomplete.length > 0) {
-        throw new Error(
-          `本轮 Plan 尚未完成，拒绝把 Run 标记为完成：${incomplete
-            .map((step) => `${step.id}=${step.status}`)
-            .join(', ')}`,
-        );
-      }
-    }
     let gate: CompletionGateDecision | undefined;
     if (run.completionRequired) {
       const evaluated = await this.evaluateRunCompletion(
@@ -2968,13 +2960,17 @@ export class MimiAgent {
       }, run.runId);
     }
     const evidenceRunId = run.options?.executionKey ?? run.runId;
-    const initialExecutionCalls = await this.ledger.listCalls(run.sessionId, evidenceRunId);
-    const implicitDecision = gate ? undefined : executionCompletionDecision(initialExecutionCalls);
-    const committedAnswer = gate && gate.decision !== 'pass'
-      ? incompleteCompletionAnswer(gate)
-      : implicitDecision === 'uncertain'
-        ? `业务目标未确认完成：本轮至少一个外部动作结果不确定，Host 已停止同一动作的自动重放。\n\n${safeAnswer}`
-        : safeAnswer;
+    const initialExecutionCalls = mergeRunCalls(
+      run.facts.calls(run.sessionId, evidenceRunId),
+      await this.ledger.listCalls(run.sessionId, evidenceRunId),
+    );
+    const decision = decideRunCommit({
+      draft: gate && gate.decision !== 'pass' ? incompleteCompletionAnswer(gate) : safeAnswer,
+      calls: initialExecutionCalls,
+      ...(gate ? { completionDecision: gate.decision } : {}),
+      ...(gate && gate.decision !== 'pass' ? { reason: gate.reason } : {}),
+    });
+    const committedAnswer = decision.answer;
     this.activeRun = undefined;
     const validUsage = this.validUsage(usage, run.scope.modelBinding);
     const executionKey = run.options?.executionKey;
@@ -2987,15 +2983,18 @@ export class MimiAgent {
         executionKey,
         retainExecutionLedger: run.options?.retainExecutionLedger === true,
       });
-      const executionCalls = await this.ledger.listCalls(
-        run.sessionId,
-        executionKey ?? run.runId,
+      const executionCalls = mergeRunCalls(
+        run.facts.calls(run.sessionId, executionKey ?? run.runId),
+        await this.ledger.listCalls(run.sessionId, executionKey ?? run.runId),
       );
-      const completionDecision = gate?.decision ?? executionCompletionDecision(executionCalls);
       const finalization = createRunFinalization({
         runId: run.runId,
         answer: committedAnswer,
-        ...(completionDecision ? { completionDecision } : {}),
+        outcome: decision.outcome,
+        ...(decision.reason ? { reason: decision.reason } : {}),
+        ...(decision.nextAction ? { nextAction: decision.nextAction } : {}),
+        evidenceRefs: decision.evidenceRefs,
+        ...(gate ? { completionDecision: gate.decision } : {}),
         calls: executionCalls,
       });
       await this.runCommits.prepare({
@@ -3003,7 +3002,8 @@ export class MimiAgent {
         runId: run.runId,
         ...(executionKey ? { executionKey } : {}),
         answerDigest: runAnswerDigest(committedAnswer),
-        ...(completionDecision ? { completionDecision } : {}),
+        outcome: decision.outcome,
+        ...(gate ? { completionDecision: gate.decision } : {}),
         runtimeActions: actions.map((action) => ({ ...action })),
         finalization,
       });
@@ -3025,7 +3025,7 @@ export class MimiAgent {
       }
       await this.runCommits.advance(run.sessionId, run.runId, 'receipt_committed');
       await this.traces.record(run.sessionId, 'run_finalization', finalization);
-      completed = await run.session.completeRun(committedAnswer, run.runId);
+      completed = await run.session.completeRun(committedAnswer, run.runId, finalization);
       if (completed?.runId !== run.runId || completed.status !== 'completed') {
         throw new Error(`Run ${run.runId} 已失效，拒绝用旧结果完成当前 Session`);
       }
@@ -3130,13 +3130,44 @@ export class MimiAgent {
     interrupted = false,
     usage?: ContextUsageSnapshot,
     interruptedAnswer?: string,
-  ): Promise<void> {
+  ): Promise<RunFinalizationRecord | undefined> {
     const run = this.activeRun;
-    if (!run) return;
+    if (!run) return undefined;
     const safeError = this.redactRunError(error, run.ephemeralSensitiveAccess);
+    const errorMessage = safeError instanceof Error ? safeError.message : String(safeError);
     const safeInterruptedAnswer = interrupted && interruptedAnswer
       ? redactActiveEphemeralText(interruptedAnswer, run.ephemeralSensitiveAccess)
       : undefined;
+    const executionRunId = run.options?.executionKey ?? run.runId;
+    const calls = mergeRunCalls(
+      run.facts.calls(run.sessionId, executionRunId),
+      await this.ledger.listCalls(run.sessionId, executionRunId),
+    );
+    const decision = decideRunCommit({
+      draft: safeInterruptedAnswer ?? '',
+      calls,
+      sdk: 'interrupted',
+      reason: errorMessage,
+    });
+    const finalization = createRunFinalization({
+      runId: run.runId,
+      answer: decision.answer,
+      outcome: decision.outcome,
+      reason: decision.reason,
+      nextAction: decision.nextAction,
+      evidenceRefs: decision.evidenceRefs,
+      calls,
+    });
+    await this.runCommits.prepare({
+      sessionId: run.sessionId,
+      runId: run.runId,
+      ...(run.options?.executionKey ? { executionKey: run.options.executionKey } : {}),
+      answerDigest: finalization.answerDigest,
+      outcome: finalization.outcome,
+      runtimeActions: [],
+      finalization,
+    });
+    await this.traces.record(run.sessionId, 'run_finalization', finalization);
     this.activeRun = undefined;
     await this.computer?.endRun(run.runId).catch(() => undefined);
     run.releaseOwner();
@@ -3149,17 +3180,25 @@ export class MimiAgent {
       await run.session.clearRunCheckpoint(run.runId);
     } else {
       await run.session.failRun(
-        safeError instanceof Error ? safeError.message : String(safeError),
-        interrupted,
+        errorMessage,
+        decision.outcome === 'interrupted',
         run.runId,
+        finalization,
       );
     }
+    await this.runCommits.advance(run.sessionId, run.runId, 'session_committed');
+    this.lastCommittedAnswer = decision.answer;
+    this.lastFinalization = finalization;
     await this.hooks.emit({
       type: 'run_error',
       sessionId: run.sessionId,
-      error: safeError instanceof Error ? safeError.message : String(safeError),
-      interrupted,
+      error: errorMessage,
+      interrupted: decision.outcome === 'interrupted',
     });
+    if (!run.options?.retainExecutionLedger) {
+      await this.runCommits.advance(run.sessionId, run.runId, 'finalized');
+    }
+    return finalization;
   }
 
   private redactRunError(
@@ -3222,7 +3261,11 @@ export class MimiAgent {
       && JSON.stringify(journal.finalization) !== JSON.stringify(receipt.finalization)) {
       throw new Error(`Execution ${executionKey} 的工具事实与提交日志不一致`);
     }
-    await this.createSession(sessionId).reconcileCompletedRun(receipt.answer, receipt.runId);
+    await this.createSession(sessionId).reconcileCompletedRun(
+      receipt.answer,
+      receipt.runId,
+      receipt.finalization,
+    );
     if (journal) await this.runCommits.advance(sessionId, receipt.runId, 'session_committed');
     const effects = await this.runtimeActions.apply(receipt.actions ?? [], sessionId, executionKey);
     if (journal) await this.runCommits.advance(sessionId, receipt.runId, 'effects_applied');

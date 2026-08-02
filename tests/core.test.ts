@@ -1692,7 +1692,7 @@ test('plan completion requires structured evidence and verifies external ActionI
   assert.equal((await plans.get())[0]?.status, 'completed');
 });
 
-test('ordinary runs cannot finish while their owned Plan still has active steps', async () => {
+test('ordinary Run finalization does not turn inactive Plan UI state into a failure', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-plan-run-consistency-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const previousSession = process.env.AGENT_SESSION;
@@ -1722,22 +1722,13 @@ test('ordinary runs cannot finish while their owned Plan still has active steps'
 
     const plans = new PlanStore(path.join(dataRoot, 'plans.json'), 'plan-run-consistency');
     await plans.update([{ id: 'finalize', description: '完成汇总', status: 'running' }]);
-    await assert.rejects(
-      agent.completeRun('已经完成'),
-      /本轮 Plan 尚未完成.*finalize=running/,
-    );
-
-    await plans.update([{
-      id: 'finalize',
-      description: '完成汇总',
-      status: 'completed',
-      completion: {
-        kind: 'internal',
-        evidenceRefs: ['final-report'],
-        verification: 'confirmed',
-      },
-    }]);
-    await agent.completeRun('已经完成');
+    assert.deepEqual(await agent.completeRun('本轮读取已闭合'), []);
+    assert.equal(agent.completedRunFinalization?.outcome, 'completed');
+    assert.equal((await plans.get())[0]?.status, 'running');
+    assert.equal((await new FileSession(
+      path.join(dataRoot, 'sessions'),
+      'plan-run-consistency',
+    ).getCheckpoint())?.finalization?.outcome, 'completed');
   } finally {
     await agent.close();
     if (previousSession === undefined) delete process.env.AGENT_SESSION;

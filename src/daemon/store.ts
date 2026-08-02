@@ -8,6 +8,7 @@ import {
 } from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
 import { runFailureRecord, type RunFailureRecord } from '../core/run-failure.js';
+import type { RunFinalizationRecord } from '../core/run-finalization.js';
 import { EventStore } from './event-store.js';
 import { EventRouter } from './event-router.js';
 import { sanitizedMemoryEvidenceSnapshot } from './memory-evidence.js';
@@ -1075,6 +1076,7 @@ export class MimiStore {
     attemptId?: string,
     at = new Date(),
     retryLimit?: number,
+    finalization?: RunFinalizationRecord,
   ): TaskRecord {
     return this.transaction(() => {
       const structuredFailure = runFailureRecord(failure);
@@ -1097,7 +1099,12 @@ export class MimiStore {
       if (terminal) {
         const status = uncertain || structuredFailure.disposition.retryable ? 'dead_letter' : 'failed';
         if (!this.taskStore.updateTerminal(
-          taskId, owner, status, { failure: structuredFailure }, summary, timestamp,
+          taskId,
+          owner,
+          status,
+          { failure: structuredFailure, ...(finalization ? { finalization } : {}) },
+          summary,
+          timestamp,
         )) {
           throw new Error(`Task ${taskId} 租约已失效`);
         }
@@ -1117,7 +1124,7 @@ export class MimiStore {
         taskId,
         task.attemptCount,
         'failed',
-        undefined,
+        finalization ? { finalization } : undefined,
         summary,
         timestamp,
       ) && attemptId) {

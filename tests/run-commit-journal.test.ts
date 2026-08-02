@@ -87,3 +87,32 @@ test('run commit journal rejects a conflicting answer or action plan', async () 
     runtimeActions: [],
   }), /不同的提交计划/);
 });
+
+test('one durable execution selects the latest attempt and finalizes every prior attempt', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-run-commit-attempts-'));
+  const journal = new RunCommitJournal(path.join(root, 'journal.json'));
+  await journal.prepare({
+    sessionId: 'owner',
+    runId: 'attempt-1',
+    executionKey: 'event:retry',
+    answerDigest: runAnswerDigest('interrupted'),
+    outcome: 'interrupted',
+    runtimeActions: [],
+  });
+  await journal.prepare({
+    sessionId: 'owner',
+    runId: 'attempt-2',
+    executionKey: 'event:retry',
+    answerDigest: runAnswerDigest('completed'),
+    outcome: 'completed',
+    runtimeActions: [],
+  });
+
+  assert.equal((await journal.findByExecutionKey('owner', 'event:retry'))?.runId, 'attempt-2');
+  await journal.acknowledgeTask('owner', 'event:retry');
+  assert.equal((await journal.get('owner', 'attempt-1'))?.phase, 'task_committed');
+  assert.equal((await journal.get('owner', 'attempt-2'))?.phase, 'task_committed');
+  await journal.finalizeExecution('owner', 'event:retry');
+  assert.equal((await journal.get('owner', 'attempt-1'))?.phase, 'finalized');
+  assert.equal((await journal.get('owner', 'attempt-2'))?.phase, 'finalized');
+});
