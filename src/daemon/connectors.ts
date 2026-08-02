@@ -275,11 +275,11 @@ class ConnectorProcess implements NotificationSink {
   private restartTimer?: NodeJS.Timeout;
   private stableTimer?: NodeJS.Timeout;
   private healthTimer?: NodeJS.Timeout;
+  private statusExpiryTimer?: NodeJS.Timeout;
   private readinessMonitorTimer?: NodeJS.Timeout;
   private readinessMonitorRunning = false;
   private readinessFailureCount = 0;
   private restartAttempt = 0;
-  private healthState: 'initial' | 'outage' | 'healthy' = 'initial';
   private draining = false;
   private stdoutBuffer = '';
   private readonly pending = new Map<string, PendingDelivery>();
@@ -335,6 +335,7 @@ class ConnectorProcess implements NotificationSink {
     if (this.restartTimer) clearTimeout(this.restartTimer);
     if (this.stableTimer) clearTimeout(this.stableTimer);
     if (this.healthTimer) clearTimeout(this.healthTimer);
+    if (this.statusExpiryTimer) clearTimeout(this.statusExpiryTimer);
     if (this.readinessMonitorTimer) clearTimeout(this.readinessMonitorTimer);
     this.readinessMonitorTimer = undefined;
     this.rejectPending(new Error(`Connector ${this.id} 已停止`));
@@ -463,6 +464,8 @@ class ConnectorProcess implements NotificationSink {
       inbound: this.readiness.inbound === 'unknown' ? 'unavailable' : this.readiness.inbound,
       outbound: 'ready',
     };
+    this.scheduleStatusExpiry();
+    this.publishCurrentHealth(now);
   }
 
   private get isOnline(): boolean {
@@ -651,6 +654,8 @@ class ConnectorProcess implements NotificationSink {
         : { targetBindingStatus: message.targetBindingStatus }),
       ...(message.reasonCode === undefined ? {} : { reasonCode: message.reasonCode }),
     };
+    this.scheduleStatusExpiry();
+    this.publishCurrentHealth();
   }
 
   private handleAck(message: DeliveryAckMessage): void {
@@ -703,6 +708,8 @@ class ConnectorProcess implements NotificationSink {
     this.stableTimer = undefined;
     if (this.healthTimer) clearTimeout(this.healthTimer);
     this.healthTimer = undefined;
+    if (this.statusExpiryTimer) clearTimeout(this.statusExpiryTimer);
+    this.statusExpiryTimer = undefined;
     if (this.readinessMonitorTimer) clearTimeout(this.readinessMonitorTimer);
     this.readinessMonitorTimer = undefined;
     this.rejectPending(error);
@@ -780,10 +787,7 @@ class ConnectorProcess implements NotificationSink {
 
   private recordFailure(error: Error): void {
     if (this.stopping) return;
-    if (this.healthState !== 'outage') {
-      this.healthState = 'outage';
-      this.enqueueHealthEvent('offline', error);
-    }
+    this.publishHealthState('unavailable', this.healthReasonCode(error), this.healthErrorSummary(error));
     if (!this.config.restart) {
       process.stderr.write(`[MimiAgent connector:${this.id}] ${error.message}，不会自动重启\n`);
       return;
@@ -800,46 +804,71 @@ class ConnectorProcess implements NotificationSink {
   private markHealthy(): void {
     this.healthTimer = undefined;
     if (!this.isOnline || this.stopping) return;
-    const recovered = this.healthState === 'outage';
-    this.healthState = 'healthy';
-    if (recovered) this.enqueueHealthEvent('recovered');
+    this.publishCurrentHealth();
   }
 
-  private enqueueHealthEvent(status: 'offline' | 'recovered', error?: Error): void {
-    if (!this.config.healthEvents) return;
-    const now = new Date().toISOString();
-    const source = this.config.source ?? `connector:${this.id}`;
-    const automaticRestart = this.config.restart;
-    const prompt = status === 'offline'
-      ? `Connector “${this.id}” 已离线。${automaticRestart ? 'Daemon 正在自动重启；请核对实时状态并跟踪到恢复，只在无法自愈或影响事务时通知所有者。' : '该 Connector 未启用自动重启；请诊断并执行一次安全恢复，无法恢复时给出精确修复信息。'}`
-      : `Connector “${this.id}” 已稳定恢复在线。请清理恢复跟踪并处理仍可安全继续的工作，不要重放中断期间结果不确定的外部动作。`;
+  private publishCurrentHealth(now = Date.now()): void {
+    if (!this.isOnline) {
+      this.publishHealthState('unavailable', 'process_offline');
+      return;
+    }
+    const freshUntil = this.statusReportedAt && this.statusFreshForMs
+      ? Date.parse(this.statusReportedAt) + this.statusFreshForMs
+      : undefined;
+    if (freshUntil !== undefined && now >= freshUntil) {
+      this.publishHealthState('stale', this.readiness.reasonCode ?? 'readiness_expired');
+      return;
+    }
+    if (this.readiness.inbound === 'ready' || this.readiness.outbound === 'ready') {
+      this.publishHealthState('ready');
+      return;
+    }
+    if (this.readiness.inbound === 'unknown' && this.readiness.outbound === 'unknown') {
+      this.publishHealthState('unknown', this.readiness.reasonCode ?? 'readiness_unknown');
+      return;
+    }
+    this.publishHealthState('unavailable', this.readiness.reasonCode ?? 'readiness_unavailable');
+  }
+
+  private publishHealthState(
+    status: 'ready' | 'unavailable' | 'stale' | 'unknown',
+    reasonCode?: string,
+    detail?: string,
+  ): void {
     try {
-      this.store.ingestEvent({
-        id: randomUUID(),
-        externalId: `${this.id}:${status}:${randomUUID()}`,
-        source: 'system:connector-health',
-        kind: 'alert',
-        trust: 'system',
-        payload: {
-          prompt,
-          connectorHealth: {
-            connectorId: this.id,
-            connectorSource: source,
-            status,
-            automaticRestart,
-            ...(error ? { error: this.healthErrorSummary(error) } : {}),
-          },
-        },
-        occurredAt: now,
-        receivedAt: now,
-        priority: status === 'offline' ? 90 : 75,
+      this.store.recordConnectorHealthState({
+        connectorId: this.id,
+        connectorSource: this.config.source ?? `connector:${this.id}`,
+        status,
+        reasonCode,
+        detail,
+        automaticRestart: this.config.restart,
         profileId: this.config.profileId,
         sessionKey: derivedSessionId('connector-health', this.id),
-        replyRoute: { channel: 'system' },
+        eventsEnabled: this.config.healthEvents,
       });
     } catch (enqueueError) {
-      process.stderr.write(`[MimiAgent connector:${this.id}] 无法记录健康事件：${enqueueError instanceof Error ? enqueueError.message : String(enqueueError)}\n`);
+      process.stderr.write(`[MimiAgent connector:${this.id}] 无法记录健康状态：${enqueueError instanceof Error ? enqueueError.message : String(enqueueError)}\n`);
     }
+  }
+
+  private scheduleStatusExpiry(): void {
+    if (this.statusExpiryTimer) clearTimeout(this.statusExpiryTimer);
+    this.statusExpiryTimer = undefined;
+    if (!this.statusReportedAt || !this.statusFreshForMs) return;
+    const delay = Math.max(0, Date.parse(this.statusReportedAt) + this.statusFreshForMs - Date.now() + 1);
+    this.statusExpiryTimer = setTimeout(() => {
+      this.statusExpiryTimer = undefined;
+      this.publishCurrentHealth();
+    }, delay);
+    this.statusExpiryTimer.unref();
+  }
+
+  private healthReasonCode(error: Error): string {
+    if (error.message.includes('cwd 必须是绝对路径')) return 'configuration.invalid_cwd';
+    if (error.message.startsWith('退出 code=')) return 'process.exit';
+    const code = (error as NodeJS.ErrnoException).code;
+    return code ? `process.${code.toLowerCase()}` : 'process.error';
   }
 
   private healthErrorSummary(error: Error): string {

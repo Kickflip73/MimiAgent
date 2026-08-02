@@ -32,7 +32,7 @@ async function fixture(name: string, sink: NotificationSink) {
   }).event;
   const task = store.enqueueTask({
     id: `${name}-task`,
-    type: 'background',
+    type: 'conversation',
     idempotencyKey: `${name}-task`,
     authorityEventId: authority.id,
     profileId: 'owner',

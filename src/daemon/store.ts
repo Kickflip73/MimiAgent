@@ -33,6 +33,7 @@ import {
   hasLegacyEventTaskSchema,
 } from './persistence/schema/migrations/v12-event-task-cutover.js';
 import { TaskStore } from './task-store.js';
+import { validTaskRoute } from './task-routing.js';
 import {
   buildDailyResourceTrends,
   type DailyUsageSample,
@@ -89,6 +90,18 @@ const MEMORY_SEMANTIC_LINT_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
 export interface IngressRouteDecision {
   decision: 'task_created' | 'digest' | 'observe_only' | 'rejected';
   reasonCode: string;
+}
+
+export interface ConnectorHealthStateInput {
+  connectorId: string;
+  connectorSource: string;
+  status: 'ready' | 'unavailable' | 'stale' | 'unknown';
+  reasonCode?: string;
+  detail?: string;
+  automaticRestart: boolean;
+  profileId: string;
+  sessionKey: string;
+  eventsEnabled: boolean;
 }
 
 export interface HistoryPruneResult {
@@ -1220,6 +1233,87 @@ export class MimiStore {
     `).get() as Row).count);
   }
 
+  recordConnectorHealthState(
+    input: ConnectorHealthStateInput,
+    at = new Date(),
+  ): ImmutableEvent | undefined {
+    if (!/^[a-zA-Z0-9._-]{1,100}$/.test(input.connectorId)) {
+      throw new Error('Connector health state 的 connectorId 无效');
+    }
+    if (!['ready', 'unavailable', 'stale', 'unknown'].includes(input.status)) {
+      throw new Error('Connector health state 的 status 无效');
+    }
+    const connectorSource = input.connectorSource.trim().slice(0, 200);
+    const profileId = input.profileId.trim().slice(0, 100);
+    const sessionKey = assertSessionId(input.sessionKey);
+    if (!connectorSource || !profileId) throw new Error('Connector health state 缺少 source/profile');
+    const reasonCode = sanitizeSensitiveText(input.reasonCode)?.trim().slice(0, 200) || undefined;
+    const detail = sanitizeSensitiveText(input.detail)?.replace(/\s+/g, ' ').trim().slice(0, 500) || undefined;
+    const current = { status: input.status, reasonCode, detail };
+    const key = `connector-health:${input.connectorId}`;
+    return this.transaction(() => {
+      const row = this.database.prepare('SELECT value FROM attention_state WHERE key = ?')
+        .get(key) as Row | undefined;
+      let previous: typeof current | undefined;
+      try {
+        const parsed = parseJson<Partial<typeof current>>(row?.value);
+        if (parsed && ['ready', 'unavailable', 'stale', 'unknown'].includes(parsed.status ?? '')) {
+          previous = {
+            status: parsed.status as typeof current.status,
+            reasonCode: typeof parsed.reasonCode === 'string' ? parsed.reasonCode : undefined,
+            detail: typeof parsed.detail === 'string' ? parsed.detail : undefined,
+          };
+        }
+      } catch {
+        previous = undefined;
+      }
+      const timestamp = at.toISOString();
+      if (previous?.status === current.status
+        && previous.reasonCode === current.reasonCode
+        && previous.detail === current.detail) {
+        this.database.prepare('UPDATE attention_state SET updated_at = ? WHERE key = ?')
+          .run(timestamp, key);
+        return undefined;
+      }
+      this.database.prepare(`
+        INSERT INTO attention_state (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+      `).run(key, json(current), timestamp);
+      if (!input.eventsEnabled || !previous) return undefined;
+      const eventStatus = current.status === 'ready' ? 'recovered' : current.status;
+      const automaticRecovery = input.automaticRestart
+        ? 'Daemon 会继续执行既有自动恢复策略。'
+        : '该 Connector 未启用自动重启。';
+      const prompt = eventStatus === 'recovered'
+        ? `Connector “${input.connectorId}” 已恢复 ready；请只处理仍然存在的业务影响，不重放结果不确定的动作。`
+        : `Connector “${input.connectorId}” 当前为 ${eventStatus}。${automaticRecovery}`;
+      return this.ingestEvent({
+        id: randomUUID(),
+        externalId: `${input.connectorId}:${eventStatus}:${randomUUID()}`,
+        source: 'system:connector-health',
+        kind: 'alert',
+        trust: 'system',
+        payload: {
+          prompt,
+          connectorHealth: {
+            connectorId: input.connectorId,
+            connectorSource,
+            status: eventStatus,
+            automaticRestart: input.automaticRestart,
+            ...(reasonCode ? { reasonCode } : {}),
+            ...(detail ? { detail } : {}),
+          },
+        },
+        occurredAt: timestamp,
+        receivedAt: timestamp,
+        priority: eventStatus === 'recovered' ? 75 : 90,
+        profileId,
+        sessionKey,
+        replyRoute: { channel: 'system' },
+      }).event;
+    });
+  }
+
   rememberOwnerReplyRoute(profileId: string, route: ReplyRoute, at = new Date()): void {
     const channel = route.channel.trim();
     const target = route.target?.trim();
@@ -2096,7 +2190,7 @@ export class MimiStore {
         DELETE FROM schedules WHERE enabled = 0 AND updated_at < ?
       `).run(timestamp).changes);
       const attentionState = Number(this.database.prepare(`
-        DELETE FROM attention_state WHERE updated_at < ?
+        DELETE FROM attention_state WHERE updated_at < ? AND key NOT LIKE 'connector-health:%'
       `).run(timestamp).changes);
       const auditEvents = Number(this.database.prepare(`
         DELETE FROM audit_events
@@ -2468,7 +2562,7 @@ export class MimiStore {
         throw new Error('MimiAgent 数据库标记为 v15，但缺少最终 Event/Task 或 Memory observation schema');
       }
       ensureMemoryLintSchemaV13(this.database);
-      upgradeTaskExecutorOwnershipV16(this.database);
+      upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
       return;
     }
     if (version === 14) {
@@ -2477,7 +2571,7 @@ export class MimiStore {
       }
       ensureMemoryLintSchemaV13(this.database);
       upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
-      upgradeTaskExecutorOwnershipV16(this.database);
+      upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
       return;
     }
     if (version === 13) {
@@ -2487,7 +2581,7 @@ export class MimiStore {
       ensureMemoryLintSchemaV13(this.database);
       repairDigestedTaskRoutesV14(this.database);
       upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
-      upgradeTaskExecutorOwnershipV16(this.database);
+      upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
       return;
     }
     if (version === 12) {
@@ -2495,7 +2589,7 @@ export class MimiStore {
         upgradeMemoryObservationsV13(this.database);
         repairDigestedTaskRoutesV14(this.database);
         upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
-        upgradeTaskExecutorOwnershipV16(this.database);
+        upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
         return;
       }
       if (!hasLegacyEventTaskSchema(this.database)) {
@@ -2509,7 +2603,7 @@ export class MimiStore {
       upgradeMemoryObservationsV13(this.database);
       repairDigestedTaskRoutesV14(this.database);
       upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
-      upgradeTaskExecutorOwnershipV16(this.database);
+      upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
       return;
     }
     if (version === 0) {
@@ -2523,7 +2617,7 @@ export class MimiStore {
     upgradeMemoryObservationsV13(this.database);
     repairDigestedTaskRoutesV14(this.database);
     upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
-    upgradeTaskExecutorOwnershipV16(this.database);
+    upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
   }
 
   private backupBeforeTaskExecutorV16(): void {

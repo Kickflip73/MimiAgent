@@ -225,7 +225,7 @@ function connectorHealthPlaybook(event: EventEnvelope): string {
   const health = (event.payload as Record<string, unknown>).connectorHealth;
   if (!health || typeof health !== 'object') return '';
   const status = (health as Record<string, unknown>).status;
-  if (status === 'offline') {
+  if (status === 'offline' || status === 'unavailable' || status === 'stale' || status === 'unknown') {
     return [
       '## MimiAgent Connector 自愈执行剧本',
       '这是 Daemon Host 产生的可信 Connector 离线事件。先用 inspect_mimi_capabilities 核对 connectorId 的实时状态；若已经在线，取消同一 Connector 的失效恢复 Watch 并安静完成。',

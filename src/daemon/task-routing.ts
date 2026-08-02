@@ -28,11 +28,15 @@ export const TASK_ROUTE_CONTRACT: Readonly<Record<TaskType, TaskRouteContract>> 
   },
 };
 
-export function validTaskRoute(input: Pick<TaskInput, 'type' | 'executor' | 'workspaceAccess'>): boolean {
+export function validTaskRoute(input: {
+  type: string;
+  executor: string;
+  workspaceAccess: string;
+}): boolean {
   const contract = (TASK_ROUTE_CONTRACT as Readonly<Partial<Record<string, TaskRouteContract>>>)[input.type];
   if (!contract) return false;
-  return contract.executors.includes(input.executor)
-    && contract.workspaceAccess.includes(input.workspaceAccess);
+  return (contract.executors as readonly string[]).includes(input.executor)
+    && (contract.workspaceAccess as readonly string[]).includes(input.workspaceAccess);
 }
 
 export function validateTaskRoute(input: Pick<TaskInput, 'type' | 'executor' | 'workspaceAccess'>): void {

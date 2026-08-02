@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- make `Task.executor` the only daemon claim key, validate task route combinations
+  at enqueue, migrate queued Briefings to isolated read workers in schema v16,
+  collapse duplicate historical Connector-health Digest projections without
+  deleting Events, and emit health work only on degradation, reason changes, or
+  recovery while unchanged heartbeats remain model-free
 - keep Bun-backed user CLIs available to launchd-hosted Shell runs, stop legacy
   Connector app claims from hiding applications from native Computer Use, and
   return retryable app discovery guidance instead of aborting on an empty

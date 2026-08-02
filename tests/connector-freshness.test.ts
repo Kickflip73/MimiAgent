@@ -64,6 +64,53 @@ test('marks an online Connector stale after its declared readiness heartbeat exp
   }
 });
 
+test('readiness expiry records one stale transition without heartbeat spam', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-health-expiry-'));
+  const database = path.join(root, 'mimi.db');
+  const configFile = path.join(root, 'connectors.json');
+  await writeFile(configFile, JSON.stringify({
+    connectors: {
+      heartbeat: {
+        command: process.execPath,
+        args: ['-e', [
+          "process.stdout.write(JSON.stringify({type:'status',inbound:'ready',outbound:'ready',freshForMs:1000})+'\\n');",
+          'setInterval(() => {}, 60000);',
+        ].join('')],
+        restart: false,
+        healthEvents: true,
+        healthStabilityMs: 100,
+      },
+    },
+  }));
+  const store = new MimiStore(database);
+  const manager = await ConnectorManager.load(configFile, store, new NotifierRegistry());
+  manager.start();
+  try {
+    await waitUntil(() => manager.listCapabilities()[0]?.readiness.outbound === 'ready');
+    assert.equal(store.listEventSummaries(200).length, 0);
+    await waitUntil(() => store.listEventSummaries(200)
+      .some((event) => event.source === 'system:connector-health'));
+    const health = store.listEventSummaries(200)
+      .filter((event) => event.source === 'system:connector-health');
+    assert.equal(health.length, 1);
+    assert.equal(
+      (store.getImmutableEvent(health[0]!.id)?.payload as {
+        connectorHealth: { status: string };
+      }).connectorHealth.status,
+      'stale',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(
+      store.listEventSummaries(200)
+        .filter((event) => event.source === 'system:connector-health').length,
+      1,
+    );
+  } finally {
+    await manager.stop();
+    store.close();
+  }
+});
+
 test('readiness monitor ignores legacy write or unknown health actions', () => {
   for (const effect of ['write', 'unknown'] as const) {
     const config = parseConnectorConfig({

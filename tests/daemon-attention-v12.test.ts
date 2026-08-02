@@ -318,6 +318,41 @@ test('owner routes, routine occurrences, and digest briefings remain idempotent'
     assert.equal(briefingTask?.workspaceAccess, 'read');
     assert.equal(attention.emitDueBriefings(baseTime).length, 0);
     assert.ok(attention.forceBriefing(baseTime) === undefined);
+    assert.ok(briefingTask);
+    const executionAt = new Date(briefingTask.notBefore);
+    const claimedBriefing = store.claimTaskById(briefingTask.id, 'briefing-worker', 60_000, executionAt);
+    assert.ok(claimedBriefing);
+    const attempt = store.beginTaskAttempt(
+      briefingTask.id,
+      'briefing-worker',
+      briefingTask.sessionKey ?? 'mimi-briefing-fixture',
+      'worker',
+      executionAt,
+    );
+    const cyclic: { self?: unknown } = {};
+    cyclic.self = cyclic;
+    assert.throws(() => store.completeTask(
+      briefingTask.id,
+      'briefing-worker',
+      { answer: 'briefing' },
+      attempt.id,
+      new Date(executionAt.getTime() + 1),
+      { route: { channel: 'system' }, payload: cyclic },
+    ));
+    assert.equal(store.getTask(briefingTask.id)?.status, 'running');
+    assert.equal(store.pendingDigestCount(), 1);
+    assert.equal(store.listOutbox().length, 0);
+    store.completeTask(
+      briefingTask.id,
+      'briefing-worker',
+      { answer: 'briefing' },
+      attempt.id,
+      new Date(executionAt.getTime() + 2),
+      { route: { channel: 'system' }, payload: { text: 'briefing' } },
+    );
+    assert.equal(store.getTask(briefingTask.id)?.status, 'completed');
+    assert.equal(store.pendingDigestCount(), 0);
+    assert.equal(store.listOutbox().length, 1);
 
     const status = attention.status(baseTime);
     assert.equal((status.routines as { total: number }).total, 1);

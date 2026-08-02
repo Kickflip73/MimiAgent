@@ -12,7 +12,9 @@ import {
 import {
   prepareLegacyEventSchemaForV12,
 } from '../src/daemon/persistence/schema/migrations/v3-v11-legacy-event-preparation.js';
+import { upgradeTaskExecutorOwnershipV16 } from '../src/daemon/persistence/schema/migrations/v16-task-executor-ownership.js';
 import { MimiStore } from '../src/daemon/store.js';
+import { validTaskRoute } from '../src/daemon/task-routing.js';
 
 function createLegacyV2(file: string): void {
   const database = new DatabaseSync(file);
@@ -547,6 +549,23 @@ test('v16 migrates only the known queued Briefing route and records unresolved c
       authorityEventId: authority.id, profileId: 'owner', sessionKey: 'mimi-unknown-type', objective: {},
       executor: 'isolated_worker', workspaceAccess: 'read', priority: 83,
     });
+    store.setIngressRoutePolicy(() => ({ decision: 'digest', reasonCode: 'health_fixture' }));
+    for (const [index, status] of ['offline', 'offline', 'recovered'].entries()) {
+      const timestamp = new Date(Date.parse(at) + index * 1_000).toISOString();
+      store.ingestEvent({
+        id: `health-${index}`,
+        externalId: `health-${index}`,
+        source: 'system:connector-health',
+        kind: 'ambient',
+        trust: 'system',
+        payload: { connectorHealth: { connectorId: 'fixture', status } },
+        occurredAt: timestamp,
+        receivedAt: timestamp,
+        priority: 10,
+        profileId: 'owner',
+      });
+    }
+    assert.equal(store.pendingDigestCount(), 3);
   } finally {
     store.close();
   }
@@ -569,6 +588,12 @@ test('v16 migrates only the known queued Briefing route and records unresolved c
     assert.equal(migrated.getTask('unresolved-briefing')?.executor, 'codex');
     assert.equal(migrated.getTask('unresolved-briefing')?.workspaceAccess, 'write');
     assert.equal(migrated.getTask('unknown-historical-type')?.type, 'retired_worker_kind');
+    assert.equal(migrated.pendingDigestCount(), 2);
+    assert.equal(
+      migrated.listEventSummaries(200)
+        .filter((event) => event.source === 'system:connector-health').length,
+      3,
+    );
     assert.equal(
       migrated.activitySnapshot(20).recentTransitions.some((item) => (
         item.type === 'migration.task_executor_v16' && item.entityId === 'schema:v16'
@@ -588,12 +613,58 @@ test('v16 migrates only the known queued Briefing route and records unresolved c
   const audit = verified.prepare(`
     SELECT data_json FROM audit_events WHERE event_type = 'migration.task_executor_v16'
   `).get() as { data_json: string };
-  assert.equal(
-    (JSON.parse(audit.data_json) as { after: { unresolvedHistoricalCombinations: number } })
-      .after.unresolvedHistoricalCombinations,
-    2,
-  );
+  const auditData = JSON.parse(audit.data_json) as {
+    after: { unresolvedHistoricalCombinations: number; collapsedHealthDigestItems: number };
+  };
+  assert.equal(auditData.after.unresolvedHistoricalCombinations, 2);
+  assert.equal(auditData.after.collapsedHealthDigestItems, 1);
   verified.close();
+  const backups = await readdir(path.join(root, 'backups'), { recursive: true });
+  assert.equal(backups.some((entry) => entry.includes('task-executor-v16-')), true);
+  assert.equal(backups.some((entry) => entry.endsWith('mimi.db')), true);
+});
+
+test('v16 executor migration rolls back every projection when integrity fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-event-task-v16-rollback-'));
+  const file = path.join(root, 'mimi.db');
+  const store = new MimiStore(file);
+  try {
+    const authority = store.appendEvent({
+      id: 'rollback-authority', externalId: 'rollback-authority', source: 'fixture',
+      type: 'alert.received', trust: 'system', payload: {}, profileId: 'owner',
+      occurredAt: '2026-08-02T00:00:00.000Z', receivedAt: '2026-08-02T00:00:00.000Z',
+    }).event;
+    store.enqueueTask({
+      id: 'rollback-briefing', type: 'background', idempotencyKey: 'rollback-briefing',
+      authorityEventId: authority.id, profileId: 'owner', objective: {},
+      executor: 'isolated_worker', workspaceAccess: 'read', priority: 50,
+    });
+  } finally {
+    store.close();
+  }
+  const database = new DatabaseSync(file);
+  database.exec(`
+    PRAGMA foreign_keys = OFF;
+    UPDATE tasks SET type='briefing', executor='session_actor', workspace_access='write',
+      authority_event_id='missing-event' WHERE id='rollback-briefing';
+    DROP INDEX tasks_executor_ready_idx;
+    PRAGMA user_version = 15;
+  `);
+  assert.throws(() => upgradeTaskExecutorOwnershipV16(database, validTaskRoute), /完整性检查失败/);
+  const task = database.prepare(`
+    SELECT executor, workspace_access FROM tasks WHERE id='rollback-briefing'
+  `).get() as { executor: string; workspace_access: string };
+  assert.deepEqual({ ...task }, { executor: 'session_actor', workspace_access: 'write' });
+  assert.equal((database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version, 15);
+  assert.equal(
+    database.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='tasks_executor_ready_idx'").get(),
+    undefined,
+  );
+  assert.equal(
+    database.prepare("SELECT 1 FROM audit_events WHERE event_type='migration.task_executor_v16'").get(),
+    undefined,
+  );
+  database.close();
 });
 
 test('repairs an empty half-migrated v12 database before accepting new Events', async () => {
