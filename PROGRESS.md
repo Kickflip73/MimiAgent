@@ -21,6 +21,7 @@
 - ARC-104 自治资源闭环：Run 来源只按 Task type 与不可变 Event source/trust 投影为 `owner_conversation/connector/health/briefing/maintenance/routine/eval/unknown`；近 24 小时 Run/Token、采样完整度和预算耗尽状态进入 activity、Doctor、health 与脱敏诊断。预算分母只含自治来源并计入 queued/running Run 预留；达到 Run 或 Token 的小时/日/单来源上限时，非紧急 Connector 进入 Digest、Routine/定时 Briefing 在 Event/Task 前延后，owner、手动 Briefing、urgent 和已 dispatch 收尾不被阻断。历史 Token 缺失按 `token_usage_unavailable` 失败关闭，同一来源从耗尽到恢复只各写一次 audit。
 - ARC-104 真实副本验证：在 `/tmp/mimi-v16-failure-dryrun.GxsJHt/mimi.db` 用当前代码只读投影固定时点 2026-08-02 11:18Z；313 个 24h Run 全部归类为 owner=1、briefing=15、maintenance=12、routine=285，其余=0，unknown=0。全部历史 Token 明确为 sampling=unavailable、预算状态=0；integrity=ok、FK=0，真实 `~/.mimi-agent` 未修改。
 - ARC-104 回归：红测先证明来源分类、Run/Token 限额、缺用量 fail-closed 和 Briefing 预算缺口；实现后核心 5/5、Attention/health/diagnostics/Host/resource 聚焦 33/33、`npm run check`、`git diff --check`、`npm run build` 全绿；完整 `npm test` 为 864/864，fail/skip/todo=0。
+- ARC-104 clean-source CI：提交 `fa1c600` 的临时干净 worktree 原样运行 `npm run ci` exit 0；repo/release/dependency/asset、typecheck、864/864 coverage tests、build、package smoke 全绿，coverage `87.63/77.71/84.31`；临时 worktree 已删除。
 
 ## 2026-07-31 Browser / Computer 原生可靠性 Goal
 - 目标：主 Agent 直接、严格、可验证地使用 Browser 与 Computer，不再因两层能力发现、宽松 schema 或巨型观察结果陷入循环。
