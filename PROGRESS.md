@@ -735,3 +735,28 @@
 6. 本轮没有迁移或修改真实 `~/.mimi-agent` 数据库，也没有安装、部署、重启或建立 T0。真实旧
    Daemon 的 37 条 unclassified 只有在外部门禁恢复、同一 clean build 安全部署并执行受保护的
    v15→v16 迁移后才会按新分类展示；现在仍保持 NO-GO，不能用离线 dry-run 冒充生产收敛。
+
+## 2026-08-03 最终只读运行门禁复核
+
+1. `mimi daemon status --json`、PID、launchd 与 Socket 一致确认旧 Daemon 仍在线且 idle：
+   build=`0.12.0+54d3940e1185`，active Event/Task/Tool/Host mutation 与 Outbox pending/sending
+   全为 0。一次与 status/connectors 并发的 Doctor RPC 返回 `running=false`，没有启动或停止
+   动作；随后的四路检查和串行 Doctor 均证明 PID 63424 从未退出，故只记为只读 probe 瞬时
+   false negative，不把它冒充停机或 readiness。
+2. 串行 Doctor 仍为 `ready=false`：installed 为旧 manifest 标记的 dirty build，running 为上述
+   旧 build，aligned=false；Computer unavailable。Cua Driver 0.16.0 只读 `health_report` 与
+   `check_permissions(prompt=false)` 明确为 Accessibility=true、Screen Recording=false、
+   overall=degraded，没有触发授权提示。
+3. 8 个 enabled Connector 虽然进程 online，但只有 4 个 ready：`personal-daxiang` 渠道
+   unavailable，browser 与 macos-shortcuts stale，macos-screen readiness unknown。Task dead
+   letter=549，旧运行代码仍报告 unclassified=37；Digest 从 6671 增至 6673，故不满足 Phase 5
+   退出条件，也不能建立 T0。
+4. 最近一次 scheduled Task 在 Provider 前失败，原因为旧进程缺少 `GENIUSRD_API_KEY`。只读时间
+   对比证明 Daemon 于 2026-07-31 18:02 +08:00 启动，而 `.env` 与 `models.json` 于 19:13 后才
+   修改；当前配置声明该 credential 且文件中存在，因此这是未重启旧进程的环境快照，不是“本机
+   没有配置”。当前源码已用确定性测试覆盖冻结 target 和只转发所选 credential；安全切换后必须
+   重新验证真实 Task，不能在旧进程上补算。
+5. 操作审计：一次意图只输出 `.env` 变量名的只读正则缺少输出限定，导致四个 Provider 变量的
+   值进入本地 Codex 工具回显。值未写入仓库、PROGRESS、BLOCKED 或最终结论，`.env` 仍为 0600；
+   但工具回显不能撤销，必须轮换 Geniusrd/MIMI-compatible、DeepSeek 与 Friday 三组外部凭证。
+   未擅自删除本机值，因为删除既不能撤销暴露，又会破坏现有服务。

@@ -189,3 +189,17 @@
   人工核验，更不授权重放、归档或改真实库；当前运行中的旧 Daemon 仍会显示 37 条 unclassified。
   只有 TCC、Connector 与稳定目标等外部门禁恢复后，才能备份并把同一 clean build 安全部署到
   真实状态，再重新检查 Doctor 并建立不可补算的 T0。
+- **2026-08-03 最终只读门禁仍为 NO-GO**：旧 Daemon `0.12.0+54d3940e1185` 在线且 idle，
+  但串行 Doctor 为 ready=false、installed/running 不一致；Cua Driver 0.16.0 明确
+  Accessibility=true、Screen Recording=false，Computer unavailable。`personal-daxiang`
+  unavailable，browser/macos-shortcuts stale，macos-screen unknown；dead letter=549、旧分类器
+  unclassified=37、Digest=6673。最近 scheduled Task 还因旧进程未加载 `GENIUSRD_API_KEY` 在
+  Provider 前失败；Daemon 启动时间早于 `.env/models.json` 修改约 71 分钟，可在未来安全切换后
+  复核，但不能据此绕过当前 TCC/Connector/目标门禁或现在重启。ARC-402 的部署/T0 与
+  ARC-501～503 继续阻塞，24h/72h/7d 均尚未起算。
+- **2026-08-03 Provider 凭证需要外部轮换**：一次本地只读诊断命令的正则输出错误，使
+  `MIMI_PROVIDER_API_KEY`、`GENIUSRD_API_KEY`、`DEEPSEEK_API_KEY`、`FRIDAY_API_KEY` 的值进入
+  Codex 工具回显；本文件不复述原值，仓库未写入，真实 `.env` 仍为 0600。由于工具回显不可撤销，
+  必须在 Geniusrd/MIMI-compatible、DeepSeek、Friday 各自控制面吊销并重发，再原子更新 `.env`
+  并通过 Doctor/Provider canary 复核。没有对应外部控制面能力时不得伪称已轮换，也不得只删除
+  本机值来冒充处置完成。
