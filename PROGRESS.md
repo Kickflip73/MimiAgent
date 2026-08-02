@@ -589,3 +589,34 @@
 5. ARC-303 尚未关闭：以 `e1dd9a0` 开工口径计，相关生产文件基线约 9450 行，
    当前含新模块 10128 行（净 +678）；距离硬目标 8505 仍差 1623 行。此提交只保存
    已验证的职责所有权与热点门禁，不把纯搬文件冒充净 LOC 达标。
+
+## 2026-08-02 ARC-303 第二段与 ARC-401 副本验证
+
+1. Owner 权限已在配置读取边界一次折叠为固定 `permissionMode`；删除 Session/Chat
+   动态 SecurityProfile 切换、三套 Tool 重建和 RunScope profile 组合维度。首轮 Context
+   也不再预跑第二套 semantic/artifact view，SDK 每轮统一走一个有界 input filter。
+2. Task claim/control 与 v13～v16 迁移备份判定共用单一事务路径；Daemon management RPC
+   使用一个 operation table；Connector action metadata 只由一个同步函数更新。相关 Runtime
+   101/101、Store/Dispatcher/Migration 26/26、Context/Skill 46/46 聚焦回归全绿。
+3. ARC-303 第三轮完整门禁仍红：热点为 `1507/1664/1602`，全部显式生产面
+   `9471 > 8505`，还差 966 行；未改阈值、漏计文件、压缩格式或删除受测能力。全量
+   887 项首轮为 885/887：LOC 红线及一个因删重复 Context 预计算暴露的 Skill manifest
+   回归；后者已用无第二套模型视图的轻量初始 manifest 修复。排除架构预算文件后再次
+   顺序执行全部功能回归为 885/885，fail/skip/todo=0；架构预算复跑为 1/2，唯一红项
+   仍是同一个生产 LOC 断言 `9471 > 8505`。
+4. ARC-401 新增反向门禁：SQLite `user_version=17` 在 WAL PRAGMA 前拒绝，数据库字节
+   与目录项不变；`models.json version=2` 抛明确 `UnsupportedStateVersionError`，不隔离、
+   不覆盖。迁移/配置测试 22/22，`npm run check/build/test:package` 全绿；独立 JSON 边界已
+   提交为 `4f6112d`，SQLite 边界因与 ARC-303 的 `store.ts` 重构同文件交织，未混合提交。
+5. 真实备份 `/tmp/mimi-m1-arc000-20260802T1000Z` 只复制到
+   `/tmp/mimi-arc401.QZemLu` 演练：v15→v16 后 Task 1626 不变，旧 queued Briefing
+   `15→0`、最终 route `0→15`，pending Digest `5935→229`；audit 记录 health
+   `5719→13`、collapsed=5706、unresolved=0，integrity=ok、FK=0。
+6. 自动生成的 rollback backup 复读仍为 v15、Task=1626、旧 Briefing=15、Digest=5935、
+   integrity=ok、FK=0；全新库直接生成 v16/15 tables、integrity=ok、FK=0。真实库与
+   `models.json` 前后 SHA-256 分别保持 `2bdaf657…`、`c1812853…`，未迁移或重启真实 Daemon。
+7. ARC-402 前只读复核当前已安装 Daemon：运行面 idle（active Event/Task/Tool/Host mutation
+   与待投递 Outbox 均为 0），但 build 仍为 `0.12.0+54d3940e1185`，不是本轮源码；Doctor
+   `ready=false`，Cua Driver 0.16.0 的 Accessibility=true、Screen Recording=false，
+   `personal-daxiang` unavailable，另有 dead letter=549、Digest=6410。未把旧构建 idle
+   冒充新构建 readiness，也未越过 ARC-303 红线执行安装、重启或建立 T0。
