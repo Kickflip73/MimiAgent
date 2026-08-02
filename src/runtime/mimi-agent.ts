@@ -91,7 +91,9 @@ import { createSubAgentTools } from '../extensions/subagents.js';
 import { createTeamTools } from '../extensions/team.js';
 import { createComputerTools } from '../extensions/computer/tools.js';
 import type { ComputerManager } from '../extensions/computer/manager.js';
+import { QqPersonalMessageComputerAdapter } from '../extensions/computer/qq-personal-message.js';
 import type { ComputerAccess, ComputerTargetSummary } from '../extensions/computer/types.js';
+import type { PersonalMessageAuthorization } from '../core/personal-message.js';
 import { configuredProviders } from '../provider-config.js';
 import { createTools } from '../tools.js';
 import { HookBus, type RuntimeHook } from './hooks.js';
@@ -436,6 +438,7 @@ export class MimiAgent {
   private readonly sessions: SessionStatePort;
   private readonly mcp: MCPManager;
   private readonly computer?: ComputerManager;
+  private readonly qqPersonalMessages?: QqPersonalMessageComputerAdapter;
   private readonly hooks = new HookBus();
   private readonly completion: CompletionCoordinator;
   private readonly runtimeActions: RuntimeActionCoordinator;
@@ -522,6 +525,9 @@ export class MimiAgent {
     );
     this.mcp = components.mcp;
     this.computer = components.computer;
+    this.qqPersonalMessages = components.computer
+      ? new QqPersonalMessageComputerAdapter(components.computer, config.dataRoot)
+      : undefined;
     this.sessionId = components.sessionId;
     this.modelName = components.modelRuntime.name;
     this.modelProfile = components.modelRuntime.profile;
@@ -2431,6 +2437,43 @@ export class MimiAgent {
 
   computerStatus() {
     return this.computer?.status();
+  }
+
+  async prepareQqPersonalMessageScope(
+    authorization: PersonalMessageAuthorization,
+    computerAccess: ComputerAccess | undefined,
+    computerApps: readonly string[] | undefined,
+    signal?: AbortSignal,
+  ): Promise<PersonalMessageScope | undefined> {
+    if (!this.qqPersonalMessages || authorization.channel !== 'qq') return undefined;
+    if (!computerAccess || !['background', 'foreground', 'admin'].includes(computerAccess)) {
+      return undefined;
+    }
+    if (!computerApps?.includes('com.tencent.qq')) return undefined;
+    const probe = await this.qqPersonalMessages.probe(authorization, signal).catch(() => undefined);
+    if (!probe) return undefined;
+    const adapter = this.qqPersonalMessages;
+    return {
+      eventId: authorization.eventId,
+      channel: authorization.channel,
+      accountFingerprint: authorization.accountFingerprint,
+      conversationId: authorization.conversationId,
+      actorId: authorization.actorId,
+      messageMode: authorization.mode,
+      approvedText: authorization.approvedText,
+      capability: probe.capability,
+      getContext: (limit, requestSignal) => adapter.getContext(
+        authorization,
+        limit,
+        requestSignal,
+      ),
+      send: ({ text, latestFingerprint }, requestSignal) => adapter.send(
+        authorization,
+        text,
+        latestFingerprint,
+        requestSignal,
+      ),
+    };
   }
 
   assertReadOnlyDaemonProbePolicy(hostTools: readonly Tool[]): void {

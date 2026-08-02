@@ -124,7 +124,7 @@ test('personal message connector stays diagnosable when Daxiang config is missin
   }
 });
 
-test('QQ and WeChat do not have placeholder adapters', async () => {
+test('Connector host does not impersonate QQ Computer or an unavailable personal WeChat adapter', async () => {
   for (const channel of ['qq', 'wechat']) {
     const child = spawn(process.execPath, [connector, `--channel=${channel}`], {
       stdio: ['ignore', 'ignore', 'pipe'],

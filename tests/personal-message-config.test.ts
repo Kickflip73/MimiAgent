@@ -12,7 +12,7 @@ import {
 import { NotifierRegistry } from '../src/daemon/notifier.js';
 import { MimiStore } from '../src/daemon/store.js';
 
-test('personal channel templates are disabled and only Daxiang declares actions', async () => {
+test('personal channel templates stay disabled and only protocol-backed Daxiang declares Connector actions', async () => {
   const template = parseConnectorConfig(JSON.parse(
     await readFile(path.join(process.cwd(), 'mimi.connectors.example.json'), 'utf8'),
   ));

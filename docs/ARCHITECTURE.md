@@ -272,10 +272,13 @@ uncertain close 或 action 不能被模型、Daemon 或替代路线静默重放�
 通过统一渐进能力索引披露 `send_owner_message(channel,text)`；模型精确查询后取得
 schema，Host 绑定账号与 owner 自会话。Dispatcher
 仍只能从当前个人消息 Event、精确 Source Policy 和实时
-readiness 生成临时 `PersonalMessageScope`，其中 callback 已绑定 Connector、账号
-与稳定会话；Runtime 只把两个窄工具加入当前主 Agent，不传给 SubAgent、Team worker
+readiness 生成临时 `PersonalMessageScope`，其中 callback 已绑定 Connector 或当前
+Session Actor 的 QQ ComputerManager、账号与稳定会话；Runtime 只把两个窄工具加入当前主 Agent，不传给 SubAgent、Team worker
 或独立后台 Task。token 绑定 Run、Event、渠道、账号、会话、最新消息指纹和五分钟
-过期时间，并在外部写开始前 fencing 为已消费。
+过期时间，并在外部写开始前 fencing 为已消费。QQ route 只接受 Source Policy 明确
+授权的 `com.tencent.qq` 后台窗口，观察、草稿写入、Return 和动作后回读都复用
+ComputerManager 的新鲜 Observation、应用 allowlist、前台保护和全局动作串行化；
+发送后无法同时确认新增同文气泡与空输入框时结果为 uncertain，禁止换路重试。
 
 Daemon 的本地副作用账本使用稳定的 `eventId` 作为 execution scope，并以工具名和规范参数生成语义 call ID。模型重试时即使 SDK call ID 改变，相同动作也只重放已保存结果。账本只在 Event 成功提交后清理；retry、抢占和 dead letter 都保留它，因此 dead letter 原 ID 显式恢复时仍不会再次执行已经成功落账的相同动作。若进程在外部动作后、事件提交前崩溃，租约恢复后的重试也不会重复该动作。
 

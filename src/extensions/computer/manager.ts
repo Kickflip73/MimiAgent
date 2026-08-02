@@ -57,6 +57,15 @@ export interface ComputerManagerStatus {
   lastOperationalFailure?: string;
 }
 
+export interface ComputerHostObservation {
+  observationId: string;
+  target: ComputerTargetSummary;
+  frontmost?: boolean;
+  dimensions: { width: number; height: number };
+  elements: readonly ComputerElement[];
+  truncated: boolean;
+}
+
 const PROTECTED_CONTROL_PLANE_APPS = new Set([
   'com.apple.Terminal',
   'com.googlecode.iterm2',
@@ -282,23 +291,7 @@ export class ComputerManager {
     signal?: AbortSignal,
   ) {
     this.authorize(authority, 'observe');
-    const normalized = app.normalize('NFKC').trim().toLowerCase();
-    const targets = (await this.backend.listTargets({ query: app, limit: 50 }, signal))
-      .filter((target) => (
-        (!authority.allowedApps?.length || authority.allowedApps.includes(target.bundleId))
-        && !authority.deniedApps?.includes(target.bundleId)
-      ));
-    const score = (target: ComputerTargetSummary) => {
-      if (target.bundleId.normalize('NFKC').toLowerCase() === normalized) return 100;
-      if (target.appName.normalize('NFKC').toLowerCase() === normalized) return 90;
-      if (target.title.normalize('NFKC').toLowerCase() === normalized) return 80;
-      return 0;
-    };
-    const preferred = targets.find((candidate) => {
-      const selected = this.runs.get(authority.runId)?.preferredTargets.get(candidate.bundleId);
-      return selected !== undefined && targetKey(selected) === targetKey(candidate);
-    });
-    const target = preferred ?? [...targets].sort((left, right) => score(right) - score(left))[0];
+    const target = await this.targetForApp(authority, app, signal);
     if (!target) {
       const apps = await this.listApps(authority, app, signal);
       return {
@@ -314,6 +307,57 @@ export class ComputerManager {
       };
     }
     return this.observeTarget(authority, target, includeScreenshot, signal);
+  }
+
+  async listHostTargets(
+    authority: ComputerRunAuthority,
+    app: string,
+    signal?: AbortSignal,
+  ): Promise<ComputerTargetSummary[]> {
+    this.authorize(authority, 'observe');
+    const targets = await this.backend.listTargets({ query: app, limit: 50 }, signal);
+    return targets.filter((target) => {
+      try {
+        this.authorizeApp(authority, target.bundleId);
+        return target.bundleId.normalize('NFKC').toLowerCase()
+          === app.normalize('NFKC').toLowerCase();
+      } catch {
+        return false;
+      }
+    }).map((target) => structuredClone(target));
+  }
+
+  async observeHostTarget(
+    authority: ComputerRunAuthority,
+    target: ComputerTargetSummary,
+    signal?: AbortSignal,
+  ): Promise<ComputerHostObservation> {
+    this.authorize(authority, 'observe');
+    this.authorizeApp(authority, target.bundleId);
+    const result = await this.observe(authority, {
+      scope: 'window',
+      target: { bundleId: target.bundleId, pid: target.pid, windowId: target.windowId },
+      includeScreenshot: false,
+      maxElements: 400,
+      maxDepth: 12,
+    }, signal);
+    if ((result as { actionable?: boolean }).actionable !== true) {
+      const reason = (result as { blockedReason?: string }).blockedReason
+        ?? 'window observation is not actionable';
+      throw new Error(`computer_unavailable: ${reason}`);
+    }
+    const observation = this.latestTargetObservation(authority.runId);
+    if (!observation.target || !observation.dimensions) {
+      throw new Error('observation_unusable：Host Adapter 没有取得精确窗口和尺寸');
+    }
+    return {
+      observationId: observation.id,
+      target: { ...observation.target },
+      frontmost: observation.frontmost,
+      dimensions: { ...observation.dimensions },
+      elements: structuredClone(observation.elements ?? []),
+      truncated: observation.truncated ?? false,
+    };
   }
 
   async observeTarget(
@@ -749,6 +793,30 @@ export class ComputerManager {
     }
     if (!state.session) state.session = await this.backend.startSession({ sessionId: `mimi-${randomUUID()}`, captureScope: 'auto' }, signal);
     return state;
+  }
+
+  private async targetForApp(
+    authority: ComputerRunAuthority,
+    app: string,
+    signal?: AbortSignal,
+  ): Promise<ComputerTargetSummary | undefined> {
+    const normalized = app.normalize('NFKC').trim().toLowerCase();
+    const targets = (await this.backend.listTargets({ query: app, limit: 50 }, signal))
+      .filter((target) => (
+        (!authority.allowedApps?.length || authority.allowedApps.includes(target.bundleId))
+        && !authority.deniedApps?.includes(target.bundleId)
+      ));
+    const score = (target: ComputerTargetSummary) => {
+      if (target.bundleId.normalize('NFKC').toLowerCase() === normalized) return 100;
+      if (target.appName.normalize('NFKC').toLowerCase() === normalized) return 90;
+      if (target.title.normalize('NFKC').toLowerCase() === normalized) return 80;
+      return 0;
+    };
+    const preferred = targets.find((candidate) => {
+      const selected = this.runs.get(authority.runId)?.preferredTargets.get(candidate.bundleId);
+      return selected !== undefined && targetKey(selected) === targetKey(candidate);
+    });
+    return preferred ?? [...targets].sort((left, right) => score(right) - score(left))[0];
   }
 
   private freshObservation(state: RunState, runId: string, id: string): StoredObservation {

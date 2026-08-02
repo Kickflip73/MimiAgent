@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - bind Shortcuts execution to structured stable IDs issued by the latest live
   Connector catalog instead of accepting guessed shortcut names
+- route event-bound personal QQ context and single sends through
+  `PersonalMessageHub` and `ComputerManager`, with account/conversation
+  fingerprints, owner-activity and draft protection, and post-send readback
 - accept the live-certified Cua Driver 0.16.0 boundary while retaining the
   previously tested exact versions
 - unify each Run behind one immutable Host capability registry and one bounded

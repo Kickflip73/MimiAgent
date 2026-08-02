@@ -203,14 +203,18 @@ Connector 执行完成后返回：
 
 ## 个人账号消息 Connector
 
-`personal-message-connector.mjs` 是大象、QQ、微信个人账号 Adapter 的共享 NDJSON host。当前只实现 `--channel=daxiang`；`personal-qq` 和 `personal-wechat` 仅保留默认关闭、无 action 的配置槽位，启用时会明确报告尚未实现，不会冒充可用通道。
+`personal-message-connector.mjs` 是个人账号协议 Adapter 的共享 NDJSON host，当前只实现
+`--channel=daxiang`。QQ 的正式业务读写不伪装成 Connector：已绑定的 QQ Event 通过
+`PersonalMessageHub → ComputerManager/CUA` 执行；`personal-qq` 的 disabled 空配置只记录
+尚缺正式入站观察器这一 capability gap。`personal-wechat` 也保持默认关闭、无 action，
+启用两个空槽位都会明确报告尚未实现，不会冒充可用通道。
 
 M0 运行基线允许把尚未达到其所属阶段门禁的实验渠道暂时停用，但不得删除配置。
 当前阶段归属和恢复门禁如下：
 
 | Connector | 阶段 | 恢复启用门禁 |
 |---|---|---|
-| `personal-qq` | M1 | 真实 Adapter 已实现；账号、bounded coverage、稳定会话 ID、后台安全和超时 uncertain 测试全部通过 |
+| `personal-qq` | M1 | Hub→ComputerManager 窄路由、账号/会话指纹、bounded context、前台/草稿保护、动作后回读与 uncertain no-replay 已通过；另需正式入站观察器、Computer live readiness 和 owner 测试会话 canary |
 | `personal-daxiang` | M1 | 当前账号和后台网页会话已验证；owner 选择与 stable sid、账号指纹、会话类型和授权 revision 绑定；target-not-bound、页面失效和禁止跨 Browser/Computer/Shell 降级测试通过 |
 | `macos-life` | M4 | Calendar/Reminders TCC 已由 owner 授予；只读 probe、稳定 UID/ID、后台安全和动作后核验通过 |
 
@@ -219,7 +223,12 @@ M0 运行基线允许把尚未达到其所属阶段门禁的实验渠道暂时�
 unavailable 即重新停用并保留配置。恢复检查不得触发发送、日历写入或授权点击。
 
 个人消息 Event 由 Host 结构化绑定为 `PersonalMessageScope`，不是根据 owner 文本或渠道
-关键词分类。该 Scope 只开放 Daxiang Connector 的有界读取/发送工具；`list_targets`
+关键词分类。该 Scope 对 Daxiang 绑定 Connector callback，对 QQ 绑定当前 Session Actor
+的 ComputerManager callback；两者都只开放相同的有界读取/发送业务工具。QQ 必须由
+Source Policy 显式授予 `computerAccess>=background` 且 `computerApps` 包含
+`com.tencent.qq`，当前窗口、账号或稳定 `qq:visible_ax:sha256:*` 会话 ID 任一不匹配即
+失败关闭。QQ 不点击切换会话，不读取完整历史，不把可见 AX 覆盖冒充完整监听。
+`list_targets`
 从当前已验证账号的网页会话列表动态分页返回稳定 numeric sid，支持 `chat`、
 `groupchat`、`pubchat` 和 `collectchat`，顺序为最近活跃优先，默认仅返回最近一页。
 查看需注意消息时优先处理该页 unread/近期会话，不要求也不得无条件遍历全部会话；只有

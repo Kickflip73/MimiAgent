@@ -292,9 +292,12 @@ ACK 后游标和一次性观察式发送。专用标签由 Connector 自行补�
 不会再改变用户正在看的大象页面。读取不要求预配会话 allowlist；按姓名发起新会话使用
 `search_targets` 返回有界稳定候选，再以一次性 `candidateToken` 调用 `bind_target`，
 重名必须由 owner 消歧，显示名不能直接成为发送目标。监听和发送仍只允许 owner 明确
-绑定的稳定 sid，账号/页面指纹未锁定时失败关闭。个人 QQ、个人微信 Adapter 尚未实现，
-配置槽位无 action 且默认关闭。腾讯官方 `openclaw-weixin` 仍是独立 iLink Bot，QQ
-`qq-messenger-skill` 仍是当次 CUA 兜底，两者都不会冒充个人消息 Connector。
+绑定的稳定 sid，账号/页面指纹未锁定时失败关闭。个人 QQ 已有事件绑定的
+`PersonalMessageHub → ComputerManager/CUA` 窄路由：只读取当前唯一后台窗口，按界面
+账号与会话指纹复核目标，保护 owner 前台活动和已有草稿，并在唯一一次 Return 后重新
+观察同一会话；缺少正式入站观察器或 Computer 实机 readiness 时仍保持 unavailable，
+不会退回外部 Shell Skill。个人微信仍未达到真实 Adapter 门禁，配置槽位无 action 且
+默认关闭；腾讯官方 `openclaw-weixin` 仍是独立 iLink Bot，不能冒充个人微信。
 向 owner 自己发送时模型只调用 `send_owner_message(channel,text)`；自会话、账号、
 最新上下文和一次性发送由 Host 与 Connector 内部完成。
 owner 查询大象消息时通过稳定 capability 发现正式 action，再使用

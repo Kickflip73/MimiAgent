@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { SessionSummary } from '../core/session.js';
+import type { PersonalMessageAuthorization } from '../core/personal-message.js';
+import type { ComputerAccess } from '../extensions/computer/types.js';
 import type { AgentSessionSnapshot, MimiAgent } from './mimi-agent.js';
+import type { PersonalMessageScope } from './personal-message-hub.js';
 import {
   AgentRunService,
   type AgentRunObserver,
@@ -252,6 +255,29 @@ export class MimiHost {
       await this.selectSession(actor.agent, sessionId);
       signal?.throwIfAborted();
       return operation(actor.agent);
+    }, sessionId));
+  }
+
+  prepareQqPersonalMessageScope(
+    sessionId: string,
+    workspaceRoot: string | undefined,
+    authorization: PersonalMessageAuthorization,
+    computerAccess: ComputerAccess | undefined,
+    computerApps: readonly string[] | undefined,
+    signal?: AbortSignal,
+  ): Promise<PersonalMessageScope | undefined> {
+    this.assertOpen();
+    return this.actorFor(sessionId, workspaceRoot).then((actor) => this.enqueue(actor, async () => {
+      signal?.throwIfAborted();
+      await this.ensureWorkspace(actor, workspaceRoot);
+      await this.selectSession(actor.agent, sessionId);
+      signal?.throwIfAborted();
+      return actor.agent.prepareQqPersonalMessageScope(
+        authorization,
+        computerAccess,
+        computerApps,
+        signal,
+      );
     }, sessionId));
   }
 

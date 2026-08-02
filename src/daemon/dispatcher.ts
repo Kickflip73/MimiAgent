@@ -40,6 +40,7 @@ import {
   type PersonalMessageAuthorization,
 } from './personal-message.js';
 import type { PersonalMessageScope } from '../runtime/personal-message-hub.js';
+import type { ComputerAccess } from '../extensions/computer/types.js';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -451,7 +452,14 @@ export class MimiDispatcher {
       execution = { sessionId: decision.sessionId!, key: executionKey };
       const deliveryControl: MimiDeliveryControl = { suppressed: false };
       const personalMessage = decision.personalMessage
-        ? this.personalMessageScope(decision.personalMessage)
+        ? await this.personalMessageScope(
+            decision.personalMessage,
+            sessionId,
+            workspaceRoot,
+            decision.options?.computerAccess,
+            decision.options?.computerApps,
+            runSignal,
+          )
         : undefined;
       let completionDelivery: { suppressed: true; reason?: string } | undefined;
       const checkPreemption = () => {
@@ -841,9 +849,24 @@ export class MimiDispatcher {
     }
   }
 
-  private personalMessageScope(
+  private async personalMessageScope(
     authorization: PersonalMessageAuthorization,
-  ): PersonalMessageScope | undefined {
+    sessionId: string,
+    workspaceRoot: string | undefined,
+    computerAccess: ComputerAccess | undefined,
+    computerApps: readonly string[] | undefined,
+    signal: AbortSignal,
+  ): Promise<PersonalMessageScope | undefined> {
+    if (authorization.channel === 'qq') {
+      return this.host.prepareQqPersonalMessageScope(
+        sessionId,
+        workspaceRoot,
+        authorization,
+        computerAccess,
+        computerApps,
+        signal,
+      );
+    }
     const connectors = this.connectors;
     const target = personalConversationTarget(authorization);
     if (!connectors || !target) return undefined;
