@@ -139,6 +139,25 @@ test('malformed model config is quarantined and fails closed without creating an
   assert.equal(entries.includes('models.json'), false);
 });
 
+test('future model config versions are preserved and rejected without a write', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-model-config-future-'));
+  const file = path.join(root, 'models.json');
+  const source = `${JSON.stringify({
+    version: 2,
+    routeVersion: 1,
+    providers: [deepseek],
+    routing: {
+      globalDefault: { providerId: 'deepseek-main', modelId: 'deepseek-v4-pro' },
+      scenarios: {},
+    },
+  })}\n`;
+  await writeFile(file, source, { mode: 0o600 });
+
+  await assert.rejects(new ModelConfigStore(file).read(), /状态版本 2 高于当前支持的 1/);
+  assert.equal(await readFile(file, 'utf8'), source);
+  assert.deepEqual(await readdir(root), ['models.json']);
+});
+
 test('legacy environment synthesizes a compatible exact target without persisting credentials', () => {
   const config = legacyModelConfiguration({
     MIMI_MODEL_PROVIDER: 'openai-compatible',

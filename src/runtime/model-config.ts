@@ -9,7 +9,7 @@ import {
   type ModelRoutingConfig,
   type ProviderDefinition,
 } from '../core/model-routing.js';
-import { AtomicJsonStore } from '../core/state-file.js';
+import { AtomicJsonStore, UnsupportedStateVersionError } from '../core/state-file.js';
 import type { AppConfig } from '../config.js';
 
 export interface ModelsConfig {
@@ -109,6 +109,12 @@ export const modelsConfigSchema = z.object({
 });
 
 export function parseModelsConfig(value: unknown): ModelsConfig {
+  const version = value && typeof value === 'object'
+    ? (value as { version?: unknown }).version
+    : undefined;
+  if (typeof version === 'number' && Number.isSafeInteger(version) && version > 1) {
+    throw new UnsupportedStateVersionError('ModelsConfig', version, 1);
+  }
   return modelsConfigSchema.parse(value) as ModelsConfig;
 }
 
