@@ -22,6 +22,10 @@
 - ARC-104 真实副本验证：在 `/tmp/mimi-v16-failure-dryrun.GxsJHt/mimi.db` 用当前代码只读投影固定时点 2026-08-02 11:18Z；313 个 24h Run 全部归类为 owner=1、briefing=15、maintenance=12、routine=285，其余=0，unknown=0。全部历史 Token 明确为 sampling=unavailable、预算状态=0；integrity=ok、FK=0，真实 `~/.mimi-agent` 未修改。
 - ARC-104 回归：红测先证明来源分类、Run/Token 限额、缺用量 fail-closed 和 Briefing 预算缺口；实现后核心 5/5、Attention/health/diagnostics/Host/resource 聚焦 33/33、`npm run check`、`git diff --check`、`npm run build` 全绿；完整 `npm test` 为 864/864，fail/skip/todo=0。
 - ARC-104 clean-source CI：提交 `fa1c600` 的临时干净 worktree 原样运行 `npm run ci` exit 0；repo/release/dependency/asset、typecheck、864/864 coverage tests、build、package smoke 全绿，coverage `87.63/77.71/84.31`；临时 worktree 已删除。
+- ARC-201 单一能力注册表：每个 Run 只创建一个不可变 `HostCapabilityRegistry`，重复工具名失败关闭；SDK 实际 `getAllTools()` 结果只解析一次并直接生成模型工具面与 Capability Snapshot。`ToolSetBuilder` 只保留 policy/mode 分类，Browser、Computer、文件/Shell、Memory、Goal/Plan 与个人消息为 direct，Skill/MCP/普通 Connector 为 deferred；旧 `inspect_mimi_capabilities`、`inspect_runtime_capabilities`、`invoke_runtime_capability` 不再进入新 Run 权限面。
+- ARC-201 统一发现边界：模型侧只保留 `inspect_capabilities` / `invoke_capability` 两个 deferred gateway；Connector catalog 由 Host 直接调用 `ConnectorManager`，没有 Tool-to-Tool。发现缓存归 Run 内存所有，并只在可用性/readiness/action metadata 的语义 revision 变化时失效；探针时间戳不触发抖动。Browser/Desktop/personal Connector 只作为 direct Host 私有 backend，不会被 gateway 二次发现；个人消息模型面严格只有冻结 context/send 路由。
+- ARC-201 反作弊与回归：新增 50 Host + 50 MCP + 50 Connector action 的首轮模型面测试，实际只暴露 2 个 gateway schema 且估算 ≤4000 tokens；Snapshot 与 SDK 实际工具集合逐项相等；相同发现连续 3 次只读 catalog 一次，revision 改变后 invoke 强制重发现。显式临时移除 Browser 私有过滤后边界测试按预期 `9/10` 红，恢复后 Registry/Connector/Run pipeline `33/33`；完整 `npm test` 为 `870/870`，fail/skip/todo=0，`npm run check`、`npm run build`、`git diff --check` 与 credential-like diff 扫描均通过。
+- ARC-201 clean-source CI：提交 `cc184cb` 的临时干净 worktree 原样运行 `npm run ci` exit 0；repo/release/dependency/asset、typecheck、870/870 coverage tests、build、package smoke 全绿，coverage `87.69/77.79/84.18`；临时 worktree 及生成 `dist/` 已删除。
 
 ## 2026-07-31 Browser / Computer 原生可靠性 Goal
 - 目标：主 Agent 直接、严格、可验证地使用 Browser 与 Computer，不再因两层能力发现、宽松 schema 或巨型观察结果陷入循环。
