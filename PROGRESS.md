@@ -663,3 +663,8 @@
    `check:repo` 前三项通过，最后一项仅被明确范围外的
    `agent-reach`、`guizang-social-card-skill` 未分类资产阻断；未修改它们。ARC-303 已满足
    实现退出条件，但没有据此越过 Doctor/readiness 门禁部署或建立 T0。
+6. 生产收敛已独立提交为 `64a0bca`（72 文件，1921 additions/3594 deletions）；随后从该
+   提交建立 detached clean worktree，复用同一 lockfile/dependency tree 执行 `npm run ci`。
+   Repository hygiene、release consistency、dependency direction、asset boundary 全绿，
+   coverage 887/887、fail/skip/todo=0，line/branch/function=`88.21%/78.27%/84.55%`，
+   build 与 package smoke 继续全绿。主工作树两个范围外 Skill 没有进入冻结提交或 CI 样本。
