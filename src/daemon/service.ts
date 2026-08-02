@@ -104,6 +104,8 @@ import {
   daemonProtocolAction,
   daemonProtocolState,
   forcedRestartBlockers,
+  mimiBuildDiagnostics,
+  MIMI_BUILD_IDENTITY,
   MIMI_BUILD_VERSION,
   migrateLegacyMimiDaemon,
   mimiPaths,
@@ -127,6 +129,7 @@ export {
   daemonHasActiveWork,
   daemonProtocolAction,
   daemonProtocolState,
+  MIMI_BUILD_IDENTITY,
   MIMI_BUILD_VERSION,
   mimiPaths,
 } from './client-runtime.js';
@@ -467,6 +470,10 @@ export async function doctorMimi(config: AppConfig) {
       activity?.failureClassification?.unclassifiedDeadLetters ?? taskDeadLetters,
     ).map((risk) => risk.message));
   }
+  const build = mimiBuildDiagnostics(daemonStatus?.buildVersion, config.workspaceRoot);
+  if (build.aligned === false) {
+    issues.push(`构建漂移：installed=${build.installed}，running=${build.running ?? 'unknown'}`);
+  }
   let storage: DiagnosticStorageSnapshot | undefined;
   const capacityRisks = [
     ['database', 'SQLite', '运行 mimi daemon activity 检查保留策略和积压，再安排数据库备份与维护'],
@@ -489,6 +496,9 @@ export async function doctorMimi(config: AppConfig) {
   }
   if (missingScripts.length) nextActions.push('重新运行 npm install 或修复 Connector 脚本路径');
   if (!daemonStatus && configured && connectorConfig) nextActions.push('运行 mimi，后台服务会自动启动');
+  if (build.aligned === false) {
+    nextActions.push('满足安全切换门禁后，从同一 clean package 部署运行构建');
+  }
   if (health) {
     for (const action of health.risks.map((risk) => risk.nextAction)) {
       if (!nextActions.includes(action)) nextActions.push(action);
@@ -502,6 +512,7 @@ export async function doctorMimi(config: AppConfig) {
     platform,
     node: process.version,
     provider: { id: config.provider, configured },
+    build,
     paths,
     connectors: {
       configured: Boolean(connectorConfig),

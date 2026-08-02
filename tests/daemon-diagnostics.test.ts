@@ -63,6 +63,11 @@ test('diagnostic bundle exposes bounded health and capacity metadata without pri
     platform: process.platform,
     node: process.version,
     provider: { id: 'openai', configured: true },
+    build: {
+      installed: '0.12.0+g0123456789abcdef0123456789abcdef01234567.clean.fixture',
+      running: 'fixture',
+      aligned: false,
+    },
     paths,
     connectors: {
       configured: true,

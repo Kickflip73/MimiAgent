@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -18,13 +19,85 @@ import {
 export type DaemonStatusWire = Omit<DaemonStatus, 'protocolVersion'> & { protocolVersion?: unknown };
 export type DaemonProtocolState = 'legacy' | 'current' | 'newer';
 
-export function computeMimiBuildVersion(modulePath: string): string {
+export interface GitBuildState {
+  commitSha: string;
+  dirty: boolean;
+}
+
+export interface MimiBuildIdentity extends GitBuildState {
+  schemaVersion: 1;
+  packageVersion: string;
+  runtimeDigest: string;
+  source: 'manifest' | 'git' | 'invalid_manifest' | 'unavailable';
+  value: string;
+}
+
+interface MimiBuildManifest extends GitBuildState {
+  schemaVersion: 1;
+  packageVersion: string;
+}
+
+const GIT_COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+
+function unknownGitBuildState(): GitBuildState {
+  return { commitSha: 'unknown', dirty: true };
+}
+
+export function inspectGitBuildState(workspaceRoot: string): GitBuildState | undefined {
+  try {
+    const output = (args: string[]): string => execFileSync('git', ['-C', workspaceRoot, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const commitSha = output(['rev-parse', '--verify', 'HEAD']).toLowerCase();
+    if (!GIT_COMMIT_PATTERN.test(commitSha)) return undefined;
+    return {
+      commitSha,
+      dirty: output(['status', '--porcelain=v1', '--untracked-files=normal']).length > 0,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function readBuildManifest(
+  manifestPath: string,
+  packageVersion: string,
+): { state: GitBuildState; source: MimiBuildIdentity['source'] } | undefined {
+  if (!existsSync(manifestPath)) return undefined;
+  try {
+    const value = JSON.parse(readFileSync(manifestPath, 'utf8')) as Partial<MimiBuildManifest>;
+    const validCommit = typeof value.commitSha === 'string'
+      && (GIT_COMMIT_PATTERN.test(value.commitSha)
+        || (value.commitSha === 'unknown' && value.dirty === true));
+    if (value.schemaVersion !== 1
+      || value.packageVersion !== packageVersion
+      || typeof value.dirty !== 'boolean'
+      || !validCommit) {
+      return { state: unknownGitBuildState(), source: 'invalid_manifest' };
+    }
+    return {
+      state: { commitSha: value.commitSha as string, dirty: value.dirty },
+      source: 'manifest',
+    };
+  } catch {
+    return { state: unknownGitBuildState(), source: 'invalid_manifest' };
+  }
+}
+
+export function computeMimiBuildIdentity(modulePath: string): MimiBuildIdentity {
   try {
     const runtimeRoot = path.dirname(path.dirname(modulePath));
+    const projectRoot = path.join(runtimeRoot, '..');
     const manifest = JSON.parse(readFileSync(path.join(runtimeRoot, '..', 'package.json'), 'utf8')) as {
       version?: unknown;
     };
-    const version = typeof manifest.version === 'string' ? manifest.version : 'unknown';
+    const packageVersion = typeof manifest.version === 'string' ? manifest.version : 'unknown';
+    const packaged = readBuildManifest(path.join(runtimeRoot, 'build-identity.json'), packageVersion);
+    const liveGit = packaged ? undefined : inspectGitBuildState(projectRoot);
+    const state = packaged?.state ?? liveGit ?? unknownGitBuildState();
+    const source: MimiBuildIdentity['source'] = packaged?.source
+      ?? (liveGit ? 'git' : 'unavailable');
     const extension = path.extname(modulePath);
     const files: string[] = [];
     const directories = [runtimeRoot];
@@ -37,19 +110,58 @@ export function computeMimiBuildVersion(modulePath: string): string {
         else if (entry.isFile() && path.extname(entry.name) === extension) files.push(absolute);
       }
     }
-    files.sort((left, right) => left.localeCompare(right));
-    const hash = createHash('sha256').update(version).update('\0');
+    files.sort();
+    const hash = createHash('sha256').update(packageVersion).update('\0');
     for (const file of files) {
-      hash.update(path.relative(runtimeRoot, file)).update('\0').update(readFileSync(file)).update('\0');
+      const relative = path.relative(runtimeRoot, file).split(path.sep).join('/');
+      hash.update(relative).update('\0').update(readFileSync(file)).update('\0');
     }
-    const digest = hash.digest('hex').slice(0, 12);
-    return `${version}+${digest}`;
+    const runtimeDigest = hash.digest('hex').slice(0, 12);
+    const value = `${packageVersion}+g${state.commitSha}.${state.dirty ? 'dirty' : 'clean'}.${runtimeDigest}`;
+    return {
+      schemaVersion: 1,
+      packageVersion,
+      ...state,
+      runtimeDigest,
+      source,
+      value,
+    };
   } catch {
-    return 'unknown';
+    return {
+      schemaVersion: 1,
+      packageVersion: 'unknown',
+      ...unknownGitBuildState(),
+      runtimeDigest: 'unknown',
+      source: 'unavailable',
+      value: 'unknown+gunknown.dirty.unknown',
+    };
   }
 }
 
-export const MIMI_BUILD_VERSION = computeMimiBuildVersion(fileURLToPath(import.meta.url));
+export function computeMimiBuildVersion(modulePath: string): string {
+  return computeMimiBuildIdentity(modulePath).value;
+}
+
+export const MIMI_BUILD_IDENTITY = computeMimiBuildIdentity(fileURLToPath(import.meta.url));
+export const MIMI_BUILD_VERSION = MIMI_BUILD_IDENTITY.value;
+
+export function mimiBuildDiagnostics(
+  runningBuild: string | undefined,
+  workspaceRoot: string,
+): {
+  installed: string;
+  running: string | null;
+  aligned: boolean | null;
+  workspaceHead?: GitBuildState;
+} {
+  const workspaceHead = inspectGitBuildState(workspaceRoot);
+  return {
+    installed: MIMI_BUILD_VERSION,
+    running: runningBuild ?? null,
+    aligned: runningBuild ? runningBuild === MIMI_BUILD_VERSION : null,
+    ...(workspaceHead ? { workspaceHead } : {}),
+  };
+}
 
 export interface MimiPaths {
   root: string;

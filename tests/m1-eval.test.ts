@@ -6,7 +6,9 @@ import test from 'node:test';
 import {
   m1EvalManifestSchema,
   m1EvalRecordSchema,
+  m1CanaryBuildIdentity,
   isM1CanaryHostIdle,
+  isTraceableCleanBuildIdentity,
   readM1EvalManifest,
   readM1EvalRun,
   reportM1Eval,
@@ -17,6 +19,8 @@ import {
   type M1EvalEvidence,
   type M1EvalRun,
 } from '../src/runtime/m1-eval.js';
+
+const CLEAN_BUILD = '0.12.0+g0123456789abcdef0123456789abcdef01234567.clean.0123456789ab';
 
 test('M1 canary host-idle gate ignores unrelated connector readiness warnings', () => {
   const idleStatus = {
@@ -42,6 +46,24 @@ test('M1 canary host-idle gate ignores unrelated connector readiness warnings', 
       },
     },
   }), false);
+});
+
+test('M1 canary accepts only an exact clean Doctor build alignment', () => {
+  const doctor = {
+    build: {
+      installed: CLEAN_BUILD,
+      running: CLEAN_BUILD,
+      aligned: true,
+    },
+  };
+  assert.equal(m1CanaryBuildIdentity(doctor), CLEAN_BUILD);
+  assert.equal(m1CanaryBuildIdentity({
+    build: { ...doctor.build, running: CLEAN_BUILD.replace('.clean.', '.dirty.') },
+  }), undefined);
+  assert.equal(m1CanaryBuildIdentity({
+    build: { ...doctor.build, installed: `${CLEAN_BUILD}-different` },
+  }), undefined);
+  assert.equal(m1CanaryBuildIdentity({}), undefined);
 });
 
 function fixtureEvidence() {
@@ -115,7 +137,7 @@ async function completedRun(
 ): Promise<M1EvalRun> {
   let tick = 0;
   return runM1Eval(source, {
-    buildIdentity: 'fixture-build',
+    buildIdentity: source.evidenceKind === 'fixture' ? 'fixture-build' : CLEAN_BUILD,
     provider: 'deterministic',
     now: () => new Date(Date.UTC(2026, 6, 28, 0, 0, tick++)),
     execute: async (scenario) => ({
@@ -225,6 +247,23 @@ test('live action requires a registered fresh formal boundary and an action resu
   assert.equal(reportM1Eval(run).totals.qualifyingLiveActions, 1);
 });
 
+test('live and soak evidence reject dirty, unknown, or untraceable builds before execution', async () => {
+  assert.equal(isTraceableCleanBuildIdentity(CLEAN_BUILD), true);
+  assert.equal(isTraceableCleanBuildIdentity(CLEAN_BUILD.replace('.clean.', '.dirty.')), false);
+  assert.equal(isTraceableCleanBuildIdentity('0.12.0+gunknown.dirty.0123456789ab'), false);
+  assert.equal(isTraceableCleanBuildIdentity('working-tree'), false);
+  let executions = 0;
+  await assert.rejects(() => runM1Eval(manifest('live_action'), {
+    buildIdentity: CLEAN_BUILD.replace('.clean.', '.dirty.'),
+    provider: 'none',
+    execute: async () => {
+      executions += 1;
+      throw new Error('must not execute');
+    },
+  }), /clean traceable build/i);
+  assert.equal(executions, 0);
+});
+
 test('M1 uncertain records cannot be retried across runs', async () => {
   const first = await completedRun(manifest('live_action'), liveEvidence());
   first.records = [{
@@ -283,6 +322,8 @@ test('M1 cumulative reports reject duplicate runs and mixed revisions', async ()
   second.policyRevision = 'policy-v3';
   second.records = second.records.map((record) => ({ ...record, policyRevision: 'policy-v3' }));
   assert.throws(() => reportM1EvalRuns([first, second]), /one policy revision/);
+  const otherBuild = { ...await completedRun(), buildIdentity: 'fixture-build-2' };
+  assert.throws(() => reportM1EvalRuns([first, otherBuild]), /one build identity/);
 });
 
 test('versioned repository M1 manifest contains at least 50 fixture boundary scenarios', async () => {

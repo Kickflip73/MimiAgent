@@ -6,6 +6,25 @@ import { withExclusiveFileLock } from '../core/state-file.js';
 
 const revisionSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,79}$/);
 const identifierSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,119}$/);
+const traceableCleanBuildPattern = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9a-z.-]+)?\+g[0-9a-f]{40}\.clean\.[0-9a-f]{12}$/i;
+
+export function isTraceableCleanBuildIdentity(value: string): boolean {
+  return traceableCleanBuildPattern.test(value);
+}
+
+export function m1CanaryBuildIdentity(value: unknown): string | undefined {
+  const build = (value as {
+    build?: { installed?: unknown; running?: unknown; aligned?: unknown };
+  })?.build;
+  if (build?.aligned !== true
+    || typeof build.installed !== 'string'
+    || typeof build.running !== 'string'
+    || build.installed !== build.running
+    || !isTraceableCleanBuildIdentity(build.running)) {
+    return undefined;
+  }
+  return build.running;
+}
 
 export function isM1CanaryHostIdle(value: unknown): boolean {
   const root = value as {
@@ -301,6 +320,10 @@ export async function runM1Eval(
   },
 ): Promise<M1EvalRun> {
   const parsedManifest = m1EvalManifestSchema.parse(manifest);
+  if ((parsedManifest.evidenceKind === 'live_action' || parsedManifest.evidenceKind === 'soak')
+    && !isTraceableCleanBuildIdentity(options.buildIdentity)) {
+    throw new Error('M1 live/soak evidence requires a clean traceable build identity');
+  }
   const now = options.now ?? (() => new Date());
   const run: M1EvalRun = {
     schemaVersion: 2,
@@ -446,6 +469,7 @@ export function reportM1EvalRuns(runs: readonly M1EvalRun[]): M1EvalReport {
     ['datasetRevision', 'dataset revision'],
     ['policyRevision', 'policy revision'],
     ['toolSnapshotRevision', 'tool snapshot revision'],
+    ['buildIdentity', 'build identity'],
   ] as const) {
     if (new Set(parsed.map((run) => run[field])).size !== 1) {
       throw new Error(`M1 eval runs must use one ${label}`);

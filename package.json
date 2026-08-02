@@ -91,7 +91,7 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/index.js',0o755)\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/write-build-identity.mjs && node -e \"require('node:fs').chmodSync('dist/index.js',0o755)\"",
     "prepare": "npm run build",
     "dev": "tsx src/index.ts",
     "eval": "tsx src/eval.ts",

@@ -35,6 +35,7 @@ try {
   await Promise.all([
     access(path.join(packageRoot, 'dist', 'agent.d.ts')),
     access(path.join(packageRoot, 'dist', 'orchestration.d.ts')),
+    access(path.join(packageRoot, 'dist', 'build-identity.json')),
     access(path.join(packageRoot, 'MIMI.md')),
     access(path.join(packageRoot, 'skills', 'manifest.json')),
     access(path.join(packageRoot, 'knowledge', 'mimi-agent.md')),
@@ -65,6 +66,9 @@ try {
     access(path.join(packageRoot, 'mimi.connectors.example.json')),
   ]);
   const manifest = JSON.parse(await readFile(path.join(packageRoot, 'package.json'), 'utf8'));
+  const buildManifest = JSON.parse(
+    await readFile(path.join(packageRoot, 'dist', 'build-identity.json'), 'utf8'),
+  );
   const skillsManifest = JSON.parse(
     await readFile(path.join(packageRoot, 'skills', 'manifest.json'), 'utf8'),
   );
@@ -72,12 +76,35 @@ try {
     await readFile(path.join(packageRoot, 'evals', 'public-api-contract.json'), 'utf8'),
   );
   assert.equal(manifest.name, 'mimi-agent');
+  assert.deepEqual(Object.keys(buildManifest).sort(), [
+    'commitSha',
+    'dirty',
+    'packageVersion',
+    'schemaVersion',
+  ]);
+  assert.equal(buildManifest.schemaVersion, 1);
+  assert.equal(buildManifest.packageVersion, manifest.version);
+  assert.match(buildManifest.commitSha, /^(?:[0-9a-f]{40}|unknown)$/);
+  assert.equal(typeof buildManifest.dirty, 'boolean');
   assert.equal(apiContract.packageVersion, manifest.version);
   assert.deepEqual(manifest.bin, { mimi: 'dist/index.js' });
   for (const skill of skillsManifest.skills.filter((candidate) => candidate.published)) {
     await access(path.join(packageRoot, 'skills', skill.name, 'SKILL.md'));
   }
   assert.deepEqual(await readdir(path.join(packageRoot, 'knowledge')), ['mimi-agent.md']);
+  const packagedRuntime = await import(
+    pathToFileURL(path.join(packageRoot, 'dist', 'daemon', 'client-runtime.js')).href
+  );
+  assert.equal(packagedRuntime.MIMI_BUILD_IDENTITY.packageVersion, buildManifest.packageVersion);
+  assert.equal(packagedRuntime.MIMI_BUILD_IDENTITY.commitSha, buildManifest.commitSha);
+  assert.equal(packagedRuntime.MIMI_BUILD_IDENTITY.dirty, buildManifest.dirty);
+  assert.equal(packagedRuntime.MIMI_BUILD_IDENTITY.source, 'manifest');
+  assert.equal(packagedRuntime.MIMI_BUILD_IDENTITY.value, packagedRuntime.MIMI_BUILD_VERSION);
+  assert.match(
+    packagedRuntime.MIMI_BUILD_VERSION,
+    new RegExp(`^${manifest.version.replaceAll('.', '\\.')}`
+      + `\\+g(?:[0-9a-f]{40}|unknown)\\.(?:clean|dirty)\\.[0-9a-f]{12}$`),
+  );
   const cliTarget = path.join(packageRoot, manifest.bin.mimi);
   let cliCommand = process.execPath;
   let cliArguments = [cliTarget];

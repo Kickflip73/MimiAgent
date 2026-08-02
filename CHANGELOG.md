@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- bind every compiled daemon build to a packaged manifest containing the full Git
+  commit and dirty flag, retain a content digest that is stable across reinstall
+  timestamps, fail closed on stale or malformed provenance, and make Doctor report
+  installed/running build alignment plus the optional workspace HEAD without
+  changing the daemon or worktree
 - split the three oversized composition roots without adding a service,
   dependency, ORM, or state system: one Run Pipeline prepares and executes a
   frozen Run, one Commit Coordinator owns completion/failure/recovery, daemon

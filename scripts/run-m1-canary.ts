@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import {
   isM1CanaryHostIdle,
+  m1CanaryBuildIdentity,
   m1EvalEvidenceSchema,
   m1EvalManifestSchema,
   reportM1Eval,
@@ -190,9 +191,17 @@ async function main(): Promise<void> {
     scenarios,
   });
   const doctor = await commandJson('mimi', ['daemon', 'doctor']);
+  const runningBuild = m1CanaryBuildIdentity(doctor);
+  if (!runningBuild) {
+    throw new Error('M1 canary requires Doctor installed/running alignment on a clean traceable build');
+  }
+  const requestedBuild = argument('--build', runningBuild);
+  if (requestedBuild !== runningBuild) {
+    throw new Error('M1 canary --build must exactly match the running Doctor build identity');
+  }
   let stopReason = isM1CanaryHostIdle(doctor) ? undefined : 'daemon-not-idle';
   const run = await runM1Eval(manifest, {
-    buildIdentity: argument('--build', 'working-tree'),
+    buildIdentity: runningBuild,
     provider: 'none',
     execute: async (scenario): Promise<M1EvalObservation> => {
       if (stopReason) {
