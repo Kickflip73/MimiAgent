@@ -181,3 +181,11 @@
   Digest=6649。没有 owner TCC 与稳定消息目标时不得为追求 ready 而关闭能力、猜目标、清空
   积压或部署；外部条件恢复后仍需先安全备份/切换，再以同一 clean installed=running build
   建立全新 T0，完成 24h/72h/7d，旧窗口不补算。
+- **2026-08-03 历史 dead letter 已可确定分类，但生产状态未迁移**：提交 `ca7cdaf` 将处置值
+  收敛为计划规定的 `archive/retry_after_fix/blocked/manual_verify`；ARC-401 v16 备份上的 522 条
+  retained dead letter 只读 dry-run 全部为 `legacy_failure/manual_verify`、unclassified=0，且
+  DB/WAL/SHM 哈希不变。clean CI 为 892/892，冻结 identity 为
+  `0.12.0+gca7cdafa414a421ae1a96fc4c201cab211f65416.clean.d8fecfcbb50c`。这不代表 522 条已经
+  人工核验，更不授权重放、归档或改真实库；当前运行中的旧 Daemon 仍会显示 37 条 unclassified。
+  只有 TCC、Connector 与稳定目标等外部门禁恢复后，才能备份并把同一 clean build 安全部署到
+  真实状态，再重新检查 Doctor 并建立不可补算的 T0。

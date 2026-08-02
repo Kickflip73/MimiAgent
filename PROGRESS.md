@@ -708,3 +708,30 @@
    均来自间接 `@modelcontextprotocol/sdk -> @hono/node-server<2.0.5` 的 Windows `serve-static`
    encoded-backslash advisory；当前验收为 Darwin 且 MimiAgent 未开放该 static route，不阻断本轮，
    但按“不得为本 ARC 改依赖/lockfile”边界未自动升级，留作单独依赖治理。
+
+## 2026-08-03 ARC-402：历史 dead letter 收敛与冻结证据
+
+1. 对照计划 5.3 发现旧分类器输出 `archive_safe / external_blocked / investigate`，与唯一允许的
+   `archive / retry_after_fix / blocked / manual_verify` 不一致。先加入反向测试，聚焦结果为
+   18/21、3 项失败，实际旧值均为 `investigate`；没有修改断言或把未知记录静默归档。
+2. `DeadLetterClassification.disposition` 现只允许计划中的四种值：取消/被替代为 `archive`，
+   policy/connector 外部阻塞为 `blocked`，已知可修复错误保留 `retry_after_fix`；缺少结构化失败
+   事实为 `unknown/manual_verify`，历史保留记录为 `legacy_failure/manual_verify`。后两者绝不自动
+   重放，其中 unknown 仍计入 unclassified 并阻断 Doctor，`manual_verify` 仅表示处置类别，不表示
+   已人工核验完成。
+3. 实现提交为 `ca7cdaf`。分类、cutover、failure disposition、health 与 diagnostics 聚焦回归
+   31/31，`npm run check` 通过；从 ARC-401 的 v16 迁移备份只读 dry-run 共读取 522 条 retained
+   dead letter，全部归为 `legacy_failure/manual_verify`，unclassified=0、integrity=ok。
+4. dry-run 前后 DB/WAL/SHM SHA-256 完全一致（DB `e4e521…`、WAL 为空文件摘要、SHM
+   `fd4c9f…`），证明未归档、未重试、未写库。522 条结构事实仍分别保留为 scheduled 390、
+   conversation 75、memory maintenance 56、background 1，未用自然语言错误猜测可重放性。
+5. 从提交 `ca7cdafa414a421ae1a96fc4c201cab211f65416` 建立无 symlink 的独立 clean worktree，
+   按 lockfile `npm ci` 后确认 Git porcelain 为空，再执行完整 `npm run ci`：四项 repository checks
+   通过，coverage 892/892、fail/skip/todo=0，line/branch/function=
+   `88.24%/78.25%/84.58%`，build/package smoke 通过。manifest 为该完整 commit、dirty=false，
+   包内运行 identity 为
+   `0.12.0+gca7cdafa414a421ae1a96fc4c201cab211f65416.clean.d8fecfcbb50c`；CI 后 tracked、
+   staged 与 untracked diff 均为空。
+6. 本轮没有迁移或修改真实 `~/.mimi-agent` 数据库，也没有安装、部署、重启或建立 T0。真实旧
+   Daemon 的 37 条 unclassified 只有在外部门禁恢复、同一 clean build 安全部署并执行受保护的
+   v15→v16 迁移后才会按新分类展示；现在仍保持 NO-GO，不能用离线 dry-run 冒充生产收敛。
