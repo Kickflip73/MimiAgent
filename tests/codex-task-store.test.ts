@@ -99,8 +99,8 @@ test('Codex task completes directly without handing execution back to Mimi', asy
       lastEvent: 'turn.completed',
       checkpointedAt: startedAt.toISOString(),
     });
-    assert.equal(store.getTaskAttempt(attempt.id)?.status, 'completed');
-    assert.equal(store.listOutbox().length, 1);
+    assert.equal(store.runs.get(attempt.id)?.status, 'completed');
+    assert.equal(store.outbox.listSummaries().length, 1);
   } finally {
     store.close();
   }

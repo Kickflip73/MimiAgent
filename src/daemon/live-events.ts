@@ -1,6 +1,7 @@
 import { Buffer } from 'node:buffer';
 import type { RunStreamEvent } from '@openai/agents';
 import type { RuntimeEvent } from '../runtime/hooks.js';
+import { projectRunStreamEvent } from '../runtime/stream-projection.js';
 import type { MimiStreamEvent, MimiStreamTaskState, TaskRecord } from './types.js';
 
 type WithoutTransport<T> = T extends unknown ? Omit<T, 'sequence' | 'eventId'> : never;
@@ -54,30 +55,6 @@ function truncateJsonString(value: string, maxBytes: number): string {
   const finalCodeUnit = prefix.charCodeAt(prefix.length - 1);
   if (finalCodeUnit >= 0xD800 && finalCodeUnit <= 0xDBFF) prefix = prefix.slice(0, -1);
   return `${prefix}${suffix}`;
-}
-
-function compact(value: unknown, limit = 160): string | undefined {
-  if (value === undefined) return undefined;
-  let text: string | undefined;
-  try {
-    text = typeof value === 'string' ? value : JSON.stringify(value);
-  } catch {
-    text = String(value);
-  }
-  if (!text) return undefined;
-  const singleLine = text.replace(/\s+/g, ' ').trim();
-  const compacted = singleLine.length <= limit ? singleLine : `${singleLine.slice(0, limit - 3)}...`;
-  return truncateUtf8(compacted, STREAM_DETAIL_BYTES);
-}
-
-function detailed(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === 'string') return truncateUtf8(value, STREAM_TEXT_BYTES);
-  try {
-    return truncateUtf8(JSON.stringify(value, null, 2), STREAM_TEXT_BYTES);
-  } catch {
-    return truncateUtf8(String(value), STREAM_TEXT_BYTES);
-  }
 }
 
 function boundedEvent(event: PendingStreamEvent): PendingStreamEvent {
@@ -148,43 +125,11 @@ export function mimiStreamTaskState(task: TaskRecord | undefined): MimiStreamTas
 }
 
 export function mimiStreamEvent(event: RunStreamEvent): PendingStreamEvent | undefined {
-  if (event.type === 'agent_updated_stream_event') {
-    return { kind: 'status', tone: 'agent', title: event.agent.name, next: 'Agent 工作中' };
-  }
-  if (event.type === 'run_item_stream_event') {
-    const item = record(event.item);
-    const raw = record(item?.rawItem);
-    const name = typeof raw?.name === 'string' ? raw.name : undefined;
-    if (event.name === 'tool_called') {
-      return {
-        kind: 'status', tone: 'tool', title: name ?? 'unknown',
-        detail: compact(raw?.arguments), fullDetail: detailed(raw?.arguments),
-        next: `正在执行 ${name ?? 'unknown'}`,
-      };
-    }
-    if (event.name === 'tool_output') {
-      return {
-        kind: 'status', tone: 'success', title: name === 'run_team' ? 'Ultra Team' : name ?? 'tool',
-        detail: name === 'run_team' ? '本轮并行任务已结束' : compact(item?.output, 120),
-        fullDetail: detailed(item?.output), next: '模型继续思考',
-      };
-    }
-    if (event.name === 'reasoning_item_created') {
-      return { kind: 'status', tone: 'thinking', title: '推理阶段完成', next: '生成回答' };
-    }
-    return undefined;
-  }
-  if (event.type !== 'raw_model_stream_event') return undefined;
-  if (event.data.type === 'output_text_delta') return { kind: 'answer', text: event.data.delta };
-  if (event.data.type !== 'model') return undefined;
-  const providerEvent = record(event.data.event);
-  const choices = Array.isArray(providerEvent?.choices) ? providerEvent.choices : undefined;
-  const delta = record(record(choices?.[0])?.delta);
-  if (typeof delta?.reasoning_content === 'string') return { kind: 'reasoning', text: delta.reasoning_content };
-  if (providerEvent?.type === 'response.reasoning_summary_text.delta' && typeof providerEvent.delta === 'string') {
-    return { kind: 'reasoning', text: providerEvent.delta };
-  }
-  return undefined;
+  const projection = projectRunStreamEvent(event);
+  if (!projection) return undefined;
+  if (projection.kind !== 'status') return projection;
+  const { nextMotion: _nextMotion, ...transport } = projection;
+  return transport;
 }
 
 export function mimiRuntimeStreamEvent(event: RuntimeEvent): PendingStreamEvent | undefined {

@@ -441,7 +441,7 @@ export class TaskProcessSupervisor {
     this.pumping = true;
     try {
       this.terminateStaleWorkers();
-      this.store.emitDueMemoryMaintenanceTasks();
+      this.store.memoryObservations.emitDue();
       const limit = Math.max(1, Math.min(8, this.options.maxWorkers ?? 2));
       const activeWorkers = [...this.workers.values()];
       const attachedIds = new Set(activeWorkers.map((worker) => worker.taskId));

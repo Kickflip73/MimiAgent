@@ -12,23 +12,16 @@ import {
 import {
   preferredEnvironmentValue,
   privateRuntimePaths,
-  SECURITY_PROFILES,
   securityProfileSummary,
-  type AgentPermissionMode,
   type AppConfig,
-  type SecurityProfile,
 } from '../config.js';
 import {
-  ContextManager,
   estimateTokens,
   type ContextManifest,
   type ContextSemanticSummarizer,
-  type ContextStats,
   type MimiContextStatus,
 } from '../core/context.js';
-import { ProjectGuidanceLoader, SoulLoader } from '../core/guidance.js';
-import { ExecutionLedger, type ExecutionCallRecord } from '../core/execution-ledger.js';
-import type { ActionIntent, OneTimeActionAuthorization } from '../core/action-intent.js';
+import type { ExecutionCallRecord } from '../core/execution-ledger.js';
 import {
   type CompletionContract,
   type CompletionReport,
@@ -40,22 +33,16 @@ import {
   type MemoryRef,
   type SourceRef,
 } from '../core/memory.js';
-import type { PreferenceStore } from '../core/preferences.js';
-import { PlanStore, type PlanStep } from '../core/plan.js';
-import type { RunFinalizationRecord } from '../core/run-finalization.js';
-import type { RunCommitJournal } from '../core/run-commit-journal.js';
+import type { ContextUsageSnapshot, RunFinalizationRecord } from '../core/run-finalization.js';
 import { FileChangeJournal } from '../core/file-change-journal.js';
 import {
   defaultTeamTaskComplexity,
-  TeamTaskStore,
   type TeamTask,
   type TeamTaskInput,
 } from '../core/team.js';
 import {
   modelTargetKey,
   runModelBindingSchema,
-  type ProviderDefinition,
-  type ProviderTransport,
   type ModelTarget,
   type RunModelBinding,
   type WorkUnitModelProfile,
@@ -64,17 +51,11 @@ import {
   FileSession,
   type RunCheckpoint,
   type SessionPreferences,
-  type SessionSummary,
 } from '../core/session.js';
-import { TraceStore } from '../core/trace.js';
-import { MCPManager } from '../extensions/mcp.js';
 import { createMemoryTools } from '../extensions/memory/tools.js';
-import { SkillLoader } from '../extensions/skills.js';
 import { createComputerTools } from '../extensions/computer/tools.js';
-import type { ComputerManager } from '../extensions/computer/manager.js';
 import { QqPersonalMessageComputerAdapter } from '../extensions/computer/qq-personal-message.js';
-import type { ComputerAccess, ComputerTargetSummary } from '../extensions/computer/types.js';
-import type { PersonalMessageAuthorization } from '../core/personal-message.js';
+import type { ComputerAccess } from '../extensions/computer/types.js';
 import { configuredProviders } from '../provider-config.js';
 import { createTools } from '../tools.js';
 import { HookBus, type RuntimeHook } from './hooks.js';
@@ -86,35 +67,27 @@ import {
   type RuntimeOutputLevel,
 } from './control.js';
 import { AGENT_MODES, type AgentMode } from './instructions.js';
-import {
-  createModel,
-  resolveModelProfile,
-  type AgentModel,
-} from './model.js';
-import type { ModelProfile } from './model.js';
+import { createModelContext, createModelRuntime } from './model.js';
 import { buildResumePrompt } from './session-state.js';
 import {
   toolNamesForMode,
+  toolsForSecurity,
   type RunToolPolicy,
   type ToolCapability,
 } from './tool-policy.js';
-import { createRuntimeComponents, type RuntimeComponents } from './components.js';
+import { createModelResolver, createRuntimeComponents, type RuntimeComponents } from './components.js';
 import type { ModelsConfig } from './model-config.js';
 import { ModelGateway } from './model-gateway.js';
-import { WorkUnitModelResolver } from './work-unit-model-resolver.js';
-import type { SessionStatePort } from './state-ports.js';
 import { CompletionCoordinator } from './completion-coordinator.js';
 import { restrictedShellEnvironment } from './shell-environment.js';
 import { RunContextBuilder } from './run-context-builder.js';
 import { RuntimeActionCoordinator } from './runtime-action-coordinator.js';
-import {
-  RuntimeControlCoordinator,
-  type RuntimeControlHost,
-} from './runtime-control-coordinator.js';
+import { RuntimeControlCoordinator } from './runtime-control-coordinator.js';
 import { createPlanTools } from './plan-tools.js';
 import { ContextAssembler } from './pipeline/context-assembler.js';
 import {
   CapabilityResolver,
+  type RuntimeAccess,
 } from './pipeline/capability-resolver.js';
 import type {
   EffectiveCapabilityItem,
@@ -129,11 +102,9 @@ import { AgentRequestFactory } from './pipeline/request-factory.js';
 import {
   containsImageInput,
   executeRunPipeline,
-  type RunPipelineHost,
 } from './pipeline/run-pipeline.js';
 import {
   RunCommitCoordinator,
-  type RunCommitCoordinatorPort,
 } from './pipeline/run-commit-coordinator.js';
 import { RunFactCollector } from './pipeline/run-fact-collector.js';
 import { PersonalMessageHub, type PersonalMessageScope } from './personal-message-hub.js';
@@ -152,6 +123,7 @@ import {
 
 export { AGENT_MODES } from './instructions.js';
 export type { AgentMode } from './instructions.js';
+export type { ContextUsageSnapshot } from '../core/run-finalization.js';
 
 export interface ActiveRun {
   scope: RunScope;
@@ -169,8 +141,6 @@ export interface ActiveRun {
   goalCreatedAt?: string;
   requireDurableBlocker: boolean;
   recoveryRunId?: string;
-  plans?: PlanStore;
-  team?: TeamTaskStore;
   planOwned?: boolean;
   teamOwned?: boolean;
   availableToolNames?: readonly string[];
@@ -180,29 +150,6 @@ export interface ActiveRun {
   pendingContextResults: Map<string, AgentInputItem>;
   facts: RunFactCollector;
   ephemeralSensitiveAccess?: ActiveEphemeralOwnerInput;
-}
-
-export interface ContextUsageSnapshot {
-  lastRequestInputTokens?: number;
-  lastRequestOutputTokens?: number;
-  runInputTokens?: number;
-  runOutputTokens?: number;
-  runTotalTokens?: number;
-  providerId?: string;
-  modelId?: string;
-  scenario?: string;
-  selectionReason?: RunModelBinding['reason'];
-  cost?: 'unknown';
-}
-
-export interface CompletedExecutionReceipt {
-  runId: string;
-  answer: string;
-  finalization: RunFinalizationRecord;
-  usage?: ContextUsageSnapshot;
-  actions?: RuntimeAction[];
-  effects?: RuntimeEffect[];
-  delivery?: CompletionDeliveryDisposition;
 }
 
 export interface CompletionDeliveryDisposition {
@@ -241,17 +188,10 @@ export interface MimiRunOptions {
   executionKey?: string;
   retainExecutionLedger?: boolean;
   authorizeSideEffect?: (toolName: string, argumentsJson: string) => Promise<void>;
-  resolveActionAuthorization?: (
-    intent: ActionIntent,
-    authorizationId: string,
-  ) => Promise<OneTimeActionAuthorization | undefined>;
-  requireCompletionGate?: boolean;
   completionContract?: CompletionContract;
   resumeState?: boolean;
   computerAccess?: ComputerAccess;
   computerApps?: readonly string[];
-  /** @deprecated Legacy Connector app claims no longer filter a whole Computer Run. */
-  computerDeniedApps?: readonly string[];
   completionDelivery?: (calls?: readonly ExecutionCallRecord[]) => CompletionDeliveryDisposition | undefined
     | Promise<CompletionDeliveryDisposition | undefined>;
   personalMessage?: PersonalMessageScope;
@@ -263,29 +203,6 @@ export interface MimiRunOptions {
   };
   modelProfile?: WorkUnitModelProfile;
   scenario?: string;
-}
-
-export interface AgentSessionSnapshot {
-  sessionId: string;
-  summary: SessionSummary;
-  items: AgentInputItem[];
-  recovery?: RunCheckpoint;
-  plan: PlanStep[];
-  runtime: {
-    provider: string;
-    transport?: ProviderTransport;
-    model: string;
-    modelTarget?: ModelTarget;
-    mode: (typeof AGENT_MODES)[number];
-    outputLevel: RuntimeOutputLevel;
-    permissionMode: AgentPermissionMode;
-    securityProfile: ReturnType<typeof securityProfileSummary>;
-  };
-  context: {
-    estimatedTokens: number;
-    contextWindow: number;
-    status: MimiContextStatus;
-  };
 }
 
 export interface MimiAgentCreateOptions {
@@ -316,126 +233,85 @@ function initialOutputLevel(): RuntimeOutputLevel {
 }
 
 export class MimiAgent {
-  private readonly runner: Runner;
-  private context: ContextManager;
-  private readonly soul: SoulLoader;
-  private readonly preferences: PreferenceStore;
-  private readonly projectGuidance: ProjectGuidanceLoader;
-  private readonly memory: MemoryHub;
-  private readonly skills: SkillLoader;
-  private readonly plans: PlanStore;
-  private readonly team: TeamTaskStore;
-  private readonly traces: TraceStore;
-  private readonly ledger: ExecutionLedger;
-  private readonly runCommits: RunCommitJournal;
+  readonly runner: Runner;
+  readonly components: RuntimeComponents;
   private readonly fileChanges: FileChangeJournal;
-  private readonly sessions: SessionStatePort;
-  private readonly mcp: MCPManager;
-  private readonly computer?: ComputerManager;
-  private readonly qqPersonalMessages?: QqPersonalMessageComputerAdapter;
-  private readonly hooks = new HookBus();
-  private readonly completion: CompletionCoordinator;
-  private readonly runCommitCoordinator: RunCommitCoordinator;
+  readonly qqPersonalMessages?: QqPersonalMessageComputerAdapter;
+  readonly hooks = new HookBus();
+  readonly completion: CompletionCoordinator;
+  readonly runCommitCoordinator: RunCommitCoordinator;
   private readonly runtimeControlCoordinator: RuntimeControlCoordinator;
-  private readonly runtimeActions: RuntimeActionCoordinator;
-  private readonly runContexts: RunContextBuilder;
-  private readonly contextAssembler = new ContextAssembler();
-  private readonly capabilityResolver = new CapabilityResolver();
-  private readonly toolSetBuilder = new ToolSetBuilder();
-  private readonly requestFactory = new AgentRequestFactory();
-  private modelConfig: ModelsConfig;
-  private modelGateway: ModelGateway;
-  private modelResolver: WorkUnitModelResolver;
-  private readonly fixedModelBinding?: RunModelBinding;
-  private readonly legacyModels: boolean;
-  private readonly personalMessages = new PersonalMessageHub();
-  private readonly localTools: Readonly<Record<SecurityProfile, {
-    hosted: Tool[];
-    portable: Tool[];
-  }>>;
+  readonly runtimeActions: RuntimeActionCoordinator;
+  readonly runContexts: RunContextBuilder;
+  readonly contextAssembler = new ContextAssembler();
+  readonly capabilityResolver = new CapabilityResolver();
+  readonly toolSetBuilder = new ToolSetBuilder();
+  readonly requestFactory = new AgentRequestFactory();
+  readonly fixedModelBinding?: RunModelBinding;
+  readonly personalMessages = new PersonalMessageHub();
+  private readonly localTools: Readonly<{ hosted: Tool[]; portable: Tool[] }>;
   private readonly extensionTools: Tool[];
   private readonly mcpTools: Tool[];
-  private session: FileSession;
-  private sessionId: string;
-  private mode: AgentMode = initialMode();
-  private outputLevel: RuntimeOutputLevel = initialOutputLevel();
+  session: FileSession;
+  sessionId: string;
+  mode: AgentMode = initialMode();
+  outputLevel: RuntimeOutputLevel = initialOutputLevel();
   private readonly defaultMode: AgentMode;
   private readonly defaultOutputLevel: RuntimeOutputLevel;
-  private defaultModelTarget: ModelTarget;
-  private permissionMode: AgentPermissionMode;
-  private securityProfile: SecurityProfile;
-  private defaultPermissionMode: AgentPermissionMode;
-  private defaultSecurityProfile: SecurityProfile;
+  private get defaultModelTarget() { return this.components.modelConfig.routing.globalDefault; }
+  readonly runtimeSecurity: ReturnType<typeof securityProfileSummary>;
+  readonly runtimeAccess: Readonly<RuntimeAccess>;
+  readonly authorizeTools: (tools: Tool[]) => Tool[];
   private boundSessionActorId?: string;
-  private activeRun?: ActiveRun;
-  private lastCapabilitySnapshot?: Readonly<EffectiveCapabilitySnapshot>;
-  private lastContextTokens = 0;
-  private lastContextStats?: ContextStats;
-  private lastContextManifest?: ContextManifest;
-  private lastCompressionCount = 0;
-  private modelProfile: ModelProfile;
-  private lastUsage?: ContextUsageSnapshot;
-  private lastCommittedAnswer?: string;
-  private lastFinalization?: RunFinalizationRecord;
-  private lastModelBinding?: RunModelBinding;
-  private readonly runtimeRoot = path.resolve(fileURLToPath(new URL('../../', import.meta.url)));
-  private readonly contextSemanticSummarizer?: ContextSemanticSummarizer;
+  activeRun?: ActiveRun;
+  lastCapabilitySnapshot?: Readonly<EffectiveCapabilitySnapshot>;
+  lastContextManifest?: ContextManifest;
+  lastModelBinding?: RunModelBinding;
+  readonly runtimeRoot = path.resolve(fileURLToPath(new URL('../../', import.meta.url)));
+  readonly contextSemanticSummarizer?: ContextSemanticSummarizer;
 
   private constructor(
-    private readonly config: AppConfig,
+    readonly config: AppConfig,
     components: RuntimeComponents,
     createOptions: MimiAgentCreateOptions = {},
   ) {
-    this.modelConfig = components.modelConfig;
-    this.modelGateway = components.modelGateway;
-    this.modelResolver = components.modelResolver;
+    this.components = components;
     this.fixedModelBinding = createOptions.modelBinding
       ? runModelBindingSchema.parse(structuredClone(createOptions.modelBinding))
       : undefined;
     this.contextSemanticSummarizer = createOptions.contextSemanticSummarizer;
-    this.legacyModels = components.legacyModels;
-    this.context = components.context;
-    this.soul = components.soul;
-    this.preferences = components.preferences;
-    this.projectGuidance = components.projectGuidance;
-    this.memory = components.memory;
-    this.skills = components.skills;
-    this.plans = components.state.goalsAndPlans.store;
-    this.team = components.state.team.store;
-    this.traces = components.state.traces;
-    this.ledger = components.state.executionLedger.store;
-    this.runCommits = components.state.runCommits;
     this.fileChanges = new FileChangeJournal(
       path.join(config.dataRoot, 'file-changes'),
       config.workspaceRoot,
       () => this.activeRun?.options?.executionKey ?? this.activeRun?.runId,
     );
-    this.sessions = components.state.sessions;
-    this.completion = new CompletionCoordinator(this.ledger);
+    this.completion = new CompletionCoordinator(components.state.executionLedger.store);
     this.runtimeActions = new RuntimeActionCoordinator(
-      this.ledger,
+      components.state.executionLedger.store,
       (action, originSessionId, executionKey) =>
         this.applyRuntimeAction(action, originSessionId, executionKey),
     );
-    this.mcp = components.mcp;
-    this.computer = components.computer;
     this.qqPersonalMessages = components.computer
       ? new QqPersonalMessageComputerAdapter(components.computer, config.dataRoot)
       : undefined;
     this.sessionId = components.sessionId;
-    this.modelName = components.modelRuntime.name;
-    this.modelProfile = components.modelRuntime.profile;
     const initialSecurity = securityProfileSummary(config);
-    this.permissionMode = initialSecurity.permissionMode;
-    this.securityProfile = initialSecurity.id;
+    this.runtimeSecurity = initialSecurity;
+    this.runtimeAccess = Object.freeze({
+      workspaceWrite: initialSecurity.permissionMode !== 'read-only',
+      computer: initialSecurity.id === 'full-owner',
+      mcp: initialSecurity.externalTransactions,
+      ephemeralSensitiveModelAccess: initialSecurity.ephemeralSensitiveModelAccess,
+      policyRevision: initialSecurity.permissionMode,
+    });
+    this.authorizeTools = (tools) => toolsForSecurity(initialSecurity.id, tools);
     this.runContexts = new RunContextBuilder(config.workspaceRoot, () => this.sessionId);
     this.defaultMode = this.mode;
     this.defaultOutputLevel = this.outputLevel;
-    this.defaultModelTarget = { ...components.modelConfig.routing.globalDefault };
-    this.defaultPermissionMode = this.permissionMode;
-    this.defaultSecurityProfile = this.securityProfile;
-    this.session = this.createSession(this.sessionId);
-    this.plans.onChange((sessionId, steps) => this.hooks.emit({ type: 'plan_updated', sessionId, steps }));
+    this.session = components.state.sessions.open(this.sessionId);
+    components.state.goalsAndPlans.store.onChange(
+      (sessionId, steps) => this.hooks.emit({ type: 'plan_updated', sessionId, steps }),
+    );
     this.runner = new Runner({
       workflowName: 'MimiAgent',
       // Local JSONL traces stay provider-independent and avoid sending tool data elsewhere.
@@ -446,21 +322,17 @@ export class MimiAgent {
       // of aborting the entire user run before any tool executes.
       toolNotFoundBehavior: 'return_error_to_model',
     });
-    this.runCommitCoordinator = new RunCommitCoordinator(
-      this as unknown as RunCommitCoordinatorPort,
-    );
-    this.runtimeControlCoordinator = new RuntimeControlCoordinator(
-      this as unknown as RuntimeControlHost,
-    );
+    this.runCommitCoordinator = new RunCommitCoordinator(this);
+    this.runtimeControlCoordinator = new RuntimeControlCoordinator(this);
     this.hooks.on(async (event) => {
       const traceType = event.type === 'run_start'
         ? 'turn_start'
         : event.type === 'run_end'
           ? 'turn_end'
           : event.type === 'run_error' ? (event.interrupted ? 'turn_interrupted' : 'error') : event.type;
-      await this.traces.record(event.sessionId, traceType, event);
+      await components.state.traces.record(event.sessionId, traceType, event);
     });
-    const createLocalTools = (
+    const createToolsForAccess = (
       access: Parameters<typeof createTools>[3],
       includeOpenAIHostedTools: boolean,
     ) => createTools(
@@ -470,29 +342,23 @@ export class MimiAgent {
       access,
     );
     const baseShellEnvironment = createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env);
-    const localToolAccess: Record<SecurityProfile, Parameters<typeof createTools>[3]> = {
-      safe: {
+    const localToolAccess: Parameters<typeof createTools>[3] = initialSecurity.id === 'safe'
+      ? {
         readablePaths: ['.'],
         writablePaths: [],
         allowWrite: false,
         allowShell: false,
         mutationObserver: this.fileChanges,
-      },
-      workstation: {
+      }
+      : initialSecurity.id === 'workstation' ? {
         readablePaths: ['.'],
         writablePaths: ['.'],
         allowWrite: true,
         allowShell: true,
         shellEnvironment: baseShellEnvironment,
         shellDetachedProcessGroup: createOptions.shellDetachedProcessGroup,
-        // Full-owner sessions may intentionally invoke an activated, owner-installed Skill whose
-        // verified CLI transport is CuaDriver (for example qq-messenger-skill). Workstation mode
-        // remains unable to reach the Computer backend socket, while full-owner preserves the
-        // owner's explicit local-machine authority. GUI routing instructions still prohibit ad-hoc
-        // shell automation; this exception only removes the transport-level false negative.
         mutationObserver: this.fileChanges,
-      },
-      'full-owner': {
+      } : {
         ...(createOptions.restrictReadsToWorkspace ? { readablePaths: ['.'] } : {}),
         allowProtectedPathShellAccess: createOptions.protectRuntimePathsFromShell !== true,
         allowShell: true,
@@ -510,27 +376,16 @@ export class MimiAgent {
           ],
         } : {}),
         mutationObserver: this.fileChanges,
-      },
-    };
+      };
     this.localTools = {
-      safe: {
-        hosted: createLocalTools(localToolAccess.safe, true),
-        portable: createLocalTools(localToolAccess.safe, false),
-      },
-      workstation: {
-        hosted: createLocalTools(localToolAccess.workstation, true),
-        portable: createLocalTools(localToolAccess.workstation, false),
-      },
-      'full-owner': {
-        hosted: createLocalTools(localToolAccess['full-owner'], true),
-        portable: createLocalTools(localToolAccess['full-owner'], false),
-      },
+      hosted: createToolsForAccess(localToolAccess, true),
+      portable: createToolsForAccess(localToolAccess, false),
     };
-    const computerTools = this.computer ? createComputerTools(this.computer, () => {
+    const computerTools = components.computer ? createComputerTools(components.computer, () => {
       const active = this.activeRun;
       if (!active) return undefined;
       const policy = active.options?.policy;
-      const ownerAuthorized = active.scope.securityProfile === 'full-owner'
+      const ownerAuthorized = this.runtimeAccess.computer
         && (!active.options?.cause || active.options.cause.trust === 'owner');
       return {
         runId: active.runId,
@@ -539,14 +394,14 @@ export class MimiAgent {
           ? { allowedApps: active.options?.computerApps ?? policy?.computerApps }
           : {}),
         supportsImageInput: active.scope.modelBinding
-          ? this.modelGateway.inspect(active.scope.modelBinding.target).capabilities.imageInput
-          : this.modelProfile.supportsImageInput,
+          ? this.components.modelGateway.inspect(active.scope.modelBinding.target).capabilities.imageInput
+          : this.components.modelRuntime.profile.supportsImageInput,
       };
     }) : [];
-    this.mcpTools = this.mcp.createTools();
+    this.mcpTools = components.mcp.createTools();
     this.extensionTools = [
       ...computerTools,
-      ...this.skills.createTools({
+      ...components.skills.createTools({
         access: () => ({
           canReadLocal: this.activeRun?.canReadLocal === true,
           availableTools: this.activeRun?.availableToolNames,
@@ -578,8 +433,7 @@ export class MimiAgent {
           if (!this.activeRun) throw new Error('当前没有可绑定的运行，无法调度操作');
           this.activeRun.pendingActions.push(action);
         },
-      }).filter((tool) => this.legacyModels
-        || (tool.name !== 'switch_model' && tool.name !== 'switch_provider')),
+      }).filter((tool) => tool.name !== 'switch_model' && tool.name !== 'switch_provider'),
       ...createModelControlTools({
         list: () => this.modelControl({ action: 'list' }),
         inspect: (target) => this.modelControl({ action: 'inspect', target }),
@@ -605,191 +459,99 @@ export class MimiAgent {
         },
       }),
       ...createMediaTools({
-        runtime: () => new MediaRuntime(this.modelGateway, this.modelResolver),
-        routeVersion: () => this.modelConfig.routeVersion,
+        runtime: () => new MediaRuntime(this.components.modelGateway, this.components.modelResolver),
+        routeVersion: () => this.components.modelConfig.routeVersion,
       }),
-      ...createMimiPreferenceTools(this.preferences),
+      ...createMimiPreferenceTools(components.preferences),
     ];
   }
 
-  private registeredTools(
-    profile = this.securityProfile,
-    binding = this.activeRun?.scope.modelBinding,
-  ): Tool[] {
+  registeredTools(binding = this.activeRun?.scope.modelBinding): Tool[] {
     const transport = binding
-      ? this.providerForTarget(binding.target).transport
-      : this.providerForTarget(this.defaultModelTarget).transport;
-    return [
+      ? this.components.modelGateway.provider(binding.target).transport
+      : this.components.modelGateway.provider(this.defaultModelTarget).transport;
+    return this.authorizeTools([
       ...(transport === 'openai-responses'
-        ? this.localTools[profile].hosted
-        : this.localTools[profile].portable),
+        ? this.localTools.hosted
+        : this.localTools.portable),
       ...this.extensionTools,
-      ...(profile === 'full-owner' ? this.mcpTools : []),
-    ];
+      ...this.mcpTools,
+    ]);
   }
 
-  private currentSecuritySummary(
-    profile = this.securityProfile,
-  ): ReturnType<typeof securityProfileSummary> {
-    return securityProfileSummary({
-      ...this.config,
-      securityProfile: profile,
-      permissionMode: SECURITY_PROFILES[profile].permissionMode,
-    });
+  installModelConfiguration(next: ModelsConfig): void {
+    this.components.modelConfig = structuredClone(next);
+    this.components.modelGateway = new ModelGateway({ providers: next.providers });
+    this.components.modelResolver = createModelResolver(next, true);
   }
 
-  private modelName: string;
-
-  private providerForTarget(target: ModelTarget): ProviderDefinition {
-    const provider = this.modelConfig.providers.find((item) => item.id === target.providerId);
-    if (!provider) throw new Error(`模型 Provider 未注册：${target.providerId}`);
-    return provider;
-  }
-
-  private configuredModelProviders(): Array<{
-    id: string;
-    label: string;
-    model?: string;
-    models: string[];
-    transport?: ProviderTransport;
-    configured?: boolean;
-  }> {
-    return this.modelConfig.providers.map((provider) => ({
-      id: provider.id,
-      label: provider.label,
-      model: provider.models[0]?.target.modelId,
-      transport: provider.transport,
-      configured: Boolean(process.env[provider.apiKeyEnv]?.trim()),
-      models: provider.models.map((registration) => registration.target.modelId),
-    }));
-  }
-
-  private installModelConfiguration(next: ModelsConfig): void {
-    this.modelConfig = structuredClone(next);
-    this.modelGateway = new ModelGateway({ providers: this.modelConfig.providers });
-    this.modelResolver = new WorkUnitModelResolver({
-      providers: this.modelConfig.providers,
-      routing: this.modelConfig.routing,
-      isConfigured: (provider) => Boolean(process.env[provider.apiKeyEnv]?.trim()),
-    });
-    this.defaultModelTarget = { ...this.modelConfig.routing.globalDefault };
-  }
-
-  private async refreshModelConfiguration(): Promise<void> {
-    if (this.legacyModels || this.fixedModelBinding || !this.config.modelsConfig) return;
+  async refreshModelConfiguration(): Promise<void> {
+    if (this.fixedModelBinding || !this.config.modelsConfig) return;
     const next = await new ModelConfigStore(this.config.modelsConfig).read();
-    if (isDeepStrictEqual(next, this.modelConfig)) return;
+    if (isDeepStrictEqual(next, this.components.modelConfig)) return;
     this.installModelConfiguration(next);
   }
 
-  private exactRoute(binding: RunModelBinding | undefined): {
-    provider: string;
-    transport?: ProviderTransport;
-  } {
-    if (!binding) return { provider: this.config.provider };
-    const provider = this.providerForTarget(binding.target);
-    return { provider: provider.id, transport: provider.transport };
+  runtimeForBinding(binding: RunModelBinding) {
+    return createModelRuntime(this.config, this.components.modelGateway, binding);
   }
 
-  private runtimeForBinding(binding: RunModelBinding): {
-    model: AgentModel;
-    name: string;
-    profile: ModelProfile;
-  } {
-    const runtime = this.legacyModels
-      ? undefined
-      : this.modelGateway.createAgentRuntime(binding.target, binding.reasoning);
-    const profile = resolveModelProfile(this.config, binding.target.modelId);
-    const contextWindow = binding.contextWindow ?? profile.contextWindow;
-    const outputReserve = binding.maxOutputTokens
-      ?? (binding.contextWindow === undefined
-        ? profile.outputReserve
-        : Math.min(profile.outputReserve, Math.max(256, Math.floor(contextWindow * 0.1))));
-    if (outputReserve >= contextWindow) {
-      throw new Error(
-        `模型请求预算非法：maxOutputTokens=${outputReserve} 必须小于 contextWindow=${contextWindow}`,
-      );
-    }
-    return {
-      model: runtime?.model ?? createModel(this.config, binding.target.modelId).model,
-      name: binding.target.modelId,
-      profile: {
-        ...profile,
-        contextWindow,
-        outputReserve,
-        supportsImageInput: runtime
-          ? runtime.registration.capabilities.imageInput
-          : this.modelGateway.inspect(binding.target).capabilities.imageInput,
-      },
-    };
-  }
-
-  private legacySessionTarget(preferences: SessionPreferences): ModelTarget | undefined {
-    if (!preferences.model) return undefined;
-    const matches = this.modelConfig.providers.flatMap((provider) =>
-      provider.models.filter((registration) => {
-        if (registration.target.modelId !== preferences.model) return false;
-        if (!preferences.provider) return true;
-        if (preferences.provider === 'openai') return provider.transport === 'openai-responses';
-        if (preferences.provider === 'deepseek') return provider.id === 'deepseek-main';
-        return provider.transport === 'openai-chat-completions' && provider.id !== 'deepseek-main';
-      }).map((registration) => registration.target));
-    return matches.length === 1 ? { ...matches[0]! } : undefined;
-  }
-
-  private targetRuntime(target: ModelTarget): {
-    model: AgentModel;
-    name: string;
-    profile: ModelProfile;
-  } {
-    const registration = this.modelGateway.inspect(target);
-    const binding: RunModelBinding = {
-      target,
-      kind: registration.kind,
-      reasoning: 'auto',
+  targetRuntime(target: ModelTarget) {
+    return this.runtimeForBinding(this.components.modelResolver.resolve({
       scenario: 'conversation.default',
-      reason: 'session-preference',
-      routeVersion: this.modelConfig.routeVersion,
-      ...(registration.contextWindow ? { contextWindow: registration.contextWindow } : {}),
-    };
-    return this.runtimeForBinding(binding);
+      profile: { modelTarget: target },
+      routeVersion: this.components.modelConfig.routeVersion,
+    }));
   }
 
-  private bindingForSubAgent(
+  private sessionRuntime(preferences: SessionPreferences) {
+    const mode = AGENT_MODES.find((item) => item.id === preferences.mode)
+      ?? AGENT_MODES.find((item) => item.id === this.defaultMode)!;
+    const outputLevel = RUNTIME_OUTPUT_LEVELS.includes(preferences.outputLevel as RuntimeOutputLevel)
+      ? preferences.outputLevel as RuntimeOutputLevel
+      : this.defaultOutputLevel;
+    const requestedTarget = preferences.modelTarget
+      ?? this.components.modelGateway.legacyAgentTarget(preferences.model, preferences.provider)
+      ?? this.defaultModelTarget;
+    try {
+      return { mode, outputLevel, target: requestedTarget, model: this.targetRuntime(requestedTarget) };
+    } catch {
+      return {
+        mode,
+        outputLevel,
+        target: this.defaultModelTarget,
+        model: this.targetRuntime(this.defaultModelTarget),
+      };
+    }
+  }
+
+  bindingForSubAgent(
     role: 'researcher' | 'reviewer' | 'architect',
     profile: WorkUnitModelProfile,
   ): RunModelBinding {
-    return this.modelResolver.resolve({
+    return this.components.modelResolver.resolve({
       scenario: `subagent.${role}`,
       profile,
-      routeVersion: this.modelConfig.routeVersion,
+      routeVersion: this.components.modelConfig.routeVersion,
     });
   }
 
-  private bindingForTeamTask(task: TeamTask): RunModelBinding {
+  bindingForTeamTask(task: TeamTask | TeamTaskInput): RunModelBinding {
     const complexity = task.complexity ?? defaultTeamTaskComplexity(task.role);
-    return this.modelResolver.resolve({
+    return this.components.modelResolver.resolve({
       scenario: `team.${complexity}`,
       profile: {
         complexity,
         ...(task.modelRequirements ? { requirements: task.modelRequirements } : {}),
         ...(task.modelTarget ? { modelTarget: task.modelTarget } : {}),
       },
-      routeVersion: task.routeVersion ?? this.modelConfig.routeVersion,
+      routeVersion: task.routeVersion ?? this.components.modelConfig.routeVersion,
     });
   }
 
-  private freezeTeamTask(task: TeamTaskInput): TeamTaskInput {
+  freezeTeamTask(task: TeamTaskInput): TeamTaskInput {
     const complexity = task.complexity ?? defaultTeamTaskComplexity(task.role);
-    const binding = this.modelResolver.resolve({
-      scenario: `team.${complexity}`,
-      profile: {
-        complexity,
-        ...(task.modelRequirements ? { requirements: task.modelRequirements } : {}),
-        ...(task.modelTarget ? { modelTarget: task.modelTarget } : {}),
-      },
-      routeVersion: this.modelConfig.routeVersion,
-    });
+    const binding = this.bindingForTeamTask(task);
     return {
       ...task,
       complexity,
@@ -826,14 +588,14 @@ export class MimiAgent {
     return modelTargetKey(this.resolveRunModelBinding(input, options, preferences).target);
   }
 
-  private resolveRunModelBinding(
+  resolveRunModelBinding(
     input: string | AgentInputItem[],
     options: MimiRunOptions | undefined,
     preferences: SessionPreferences,
   ): RunModelBinding {
     const scenario = options?.scenario
       ?? (options?.cause ? 'background.default' : 'conversation.default');
-    return this.fixedModelBinding ?? this.modelResolver.resolve({
+    return this.fixedModelBinding ?? this.components.modelResolver.resolve({
       scenario,
       profile: {
         ...options?.modelProfile,
@@ -843,14 +605,15 @@ export class MimiAgent {
           toolCalling: options?.modelProfile?.requirements?.imageOutput ? false : true,
         },
       },
-      sessionTarget: preferences.modelTarget ?? this.legacySessionTarget(preferences),
-      routeVersion: this.modelConfig.routeVersion,
+      sessionTarget: preferences.modelTarget
+        ?? this.components.modelGateway.legacyAgentTarget(preferences.model, preferences.provider),
+      routeVersion: this.components.modelConfig.routeVersion,
     });
   }
 
 
   async stream(input: string | AgentInputItem[], signal?: AbortSignal, options?: MimiRunOptions) {
-    return executeRunPipeline(this as unknown as RunPipelineHost, input, signal, options);
+    return executeRunPipeline(this, input, signal, options);
   }
 
   async switchSession(sessionId: string): Promise<void> {
@@ -862,93 +625,42 @@ export class MimiAgent {
   }
 
   private async restoreSessionState(sessionId: string): Promise<void> {
-    const nextSession = this.createSession(sessionId);
+    const nextSession = this.components.state.sessions.open(sessionId);
     await nextSession.ensure();
     const preferences = await nextSession.getPreferences();
-    const nextMode = AGENT_MODES.some((item) => item.id === preferences.mode)
-      ? preferences.mode as AgentMode
-      : this.defaultMode;
-    const nextOutputLevel = RUNTIME_OUTPUT_LEVELS.includes(preferences.outputLevel as RuntimeOutputLevel)
-      ? preferences.outputLevel as RuntimeOutputLevel
-      : this.defaultOutputLevel;
-    const nextSecurityProfile = this.defaultSecurityProfile;
-    const nextPermissionMode = this.defaultPermissionMode;
-    const requestedTarget = preferences.modelTarget
-      ?? this.legacySessionTarget(preferences)
-      ?? this.defaultModelTarget;
-    let nextModel;
-    try {
-      nextModel = this.targetRuntime(requestedTarget);
-    } catch {
-      nextModel = this.targetRuntime(this.defaultModelTarget);
-    }
+    const runtime = this.sessionRuntime(preferences);
     const checkpoint = await nextSession.getCheckpoint();
     const recoveredCheckpoint = await nextSession.recoverInterruptedRun(checkpoint?.runId);
 
     this.sessionId = sessionId;
     this.session = nextSession;
-    this.mode = nextMode;
-    this.outputLevel = nextOutputLevel;
-    this.securityProfile = nextSecurityProfile;
-    this.permissionMode = nextPermissionMode;
-    this.modelName = nextModel.name;
-    this.modelProfile = nextModel.profile;
-    this.context = new ContextManager(
-      this.config.historyLimit,
-      nextModel.profile.contextWindow,
-      0.55,
-      nextModel.profile.outputReserve,
-    );
-    this.plans.useSession(sessionId);
-    this.team.useSession(sessionId);
-    if (recoveredCheckpoint?.status !== 'running') await this.team.recoverExpired(sessionId);
-    this.lastContextTokens = 0;
-    this.lastContextStats = undefined;
+    this.mode = runtime.mode.id;
+    this.outputLevel = runtime.outputLevel;
+    this.components.modelRuntime = runtime.model;
+    this.components.state.goalsAndPlans.store.useSession(sessionId);
+    this.components.state.team.store.useSession(sessionId);
+    if (recoveredCheckpoint?.status !== 'running') {
+      await this.components.state.team.store.recoverExpired(sessionId);
+    }
     this.lastContextManifest = undefined;
-    this.lastUsage = undefined;
   }
 
-  async listSessions(): Promise<string[]> {
-    return FileSession.list(path.join(this.config.dataRoot, 'sessions'));
-  }
+  listSessionSummaries = () => FileSession.listSummaries(path.join(this.config.dataRoot, 'sessions'));
+  history = (): Promise<AgentInputItem[]> => this.session.getItems();
 
-  async listSessionSummaries() {
-    return FileSession.listSummaries(path.join(this.config.dataRoot, 'sessions'));
-  }
-
-  async history(): Promise<AgentInputItem[]> {
-    return this.session.getItems();
-  }
-
-  async sessionSnapshot(sessionId = this.sessionId): Promise<AgentSessionSnapshot> {
+  async sessionSnapshot(sessionId = this.sessionId) {
     if (!this.activeRun) await this.refreshModelConfiguration();
-    const session = this.createSession(sessionId);
+    const session = this.components.state.sessions.open(sessionId);
     await session.ensure();
     const [items, checkpoint, preferences, summaries, plan] = await Promise.all([
       session.getItems(),
       session.getCheckpoint(),
       session.getPreferences(),
       FileSession.listSummaries(path.join(this.config.dataRoot, 'sessions')),
-      new PlanStore(path.join(this.config.dataRoot, 'plans.json'), sessionId).get(),
+      this.components.state.goalsAndPlans.open(sessionId).get(),
     ]);
-    const mode = AGENT_MODES.find((item) => item.id === preferences.mode)
-      ?? AGENT_MODES.find((item) => item.id === this.defaultMode)!;
-    const outputLevel = RUNTIME_OUTPUT_LEVELS.includes(preferences.outputLevel as RuntimeOutputLevel)
-      ? preferences.outputLevel as RuntimeOutputLevel
-      : this.defaultOutputLevel;
-    const securityProfile = this.defaultSecurityProfile;
-    const permissionMode = this.defaultPermissionMode;
-    const requestedTarget = preferences.modelTarget
-      ?? this.legacySessionTarget(preferences)
-      ?? this.defaultModelTarget;
-    let model;
-    let actualTarget = requestedTarget;
-    try {
-      model = this.targetRuntime(requestedTarget);
-    } catch {
-      actualTarget = this.defaultModelTarget;
-      model = this.targetRuntime(actualTarget);
-    }
+    const runtime = this.sessionRuntime(preferences);
+    const permissionMode = this.runtimeSecurity.permissionMode;
     const summary = summaries.find((item) => item.id === sessionId);
     if (!summary) throw new Error(`Session ${sessionId} 不存在`);
 
@@ -959,19 +671,17 @@ export class MimiAgent {
       recovery: checkpoint && checkpoint.status !== 'completed' ? checkpoint : undefined,
       plan,
       runtime: {
-        provider: actualTarget.providerId,
-        transport: this.providerForTarget(actualTarget).transport,
-        model: model.name,
-        modelTarget: { ...actualTarget },
-        mode,
-        outputLevel,
+        provider: runtime.target.providerId,
+        transport: this.components.modelGateway.provider(runtime.target).transport,
+        model: runtime.model.name,
+        modelTarget: { ...runtime.target },
+        mode: runtime.mode,
+        outputLevel: runtime.outputLevel,
         permissionMode,
-        securityProfile: this.currentSecuritySummary(securityProfile),
       },
       context: {
-        estimatedTokens: this.contextStatusFor(sessionId, items, model.profile.contextWindow).value,
-        contextWindow: model.profile.contextWindow,
-        status: this.contextStatusFor(sessionId, items, model.profile.contextWindow),
+        contextWindow: runtime.model.profile.contextWindow,
+        status: this.contextStatusFor(sessionId, items, runtime.model.profile.contextWindow),
       },
     };
   }
@@ -983,21 +693,21 @@ export class MimiAgent {
 
   async listSkills() {
     const bindings = await this.session.getActiveSkills();
-    return this.skills.list().map((skill) => {
+    return this.components.skills.list().map((skill) => {
       const binding = bindings.find((candidate) => candidate.name === skill.name);
       const active = Boolean(binding
         && binding.sourceId === skill.source.id
         && binding.file === skill.file
         && binding.contentHash === skill.contentHash);
-      const availability = this.skills.evaluateAvailability(this.skills.get(skill.name)!, {
+      const availability = this.components.skills.evaluateAvailability(this.components.skills.get(skill.name)!, {
         canReadLocal: true,
         availableTools: this.toolNames,
         ...(binding ? { binding } : {}),
       });
       return {
         ...skill,
-        enabled: !this.skills.preference(skill.name).disabled,
-        disabledScope: this.skills.preference(skill.name).scope,
+        enabled: !this.components.skills.preference(skill.name).disabled,
+        disabledScope: this.components.skills.preference(skill.name).scope,
         active,
         stale: Boolean(binding && !active),
         available: availability.available,
@@ -1010,7 +720,7 @@ export class MimiAgent {
   async activeSkills() {
     const bindings = await this.session.getActiveSkills();
     return bindings.map((binding) => {
-      const skill = this.skills.get(binding.name);
+      const skill = this.components.skills.get(binding.name);
       return {
         ...binding,
         stale: !skill
@@ -1028,97 +738,64 @@ export class MimiAgent {
 
   async setSkillEnabled(name: string, scope: 'project' | 'user', enabled: boolean): Promise<void> {
     if (this.activeRun) throw new Error('当前 Session 仍有任务运行中，不能修改 Skill 状态');
-    await this.skills.setEnabled(name, scope, enabled);
+    await this.components.skills.setEnabled(name, scope, enabled);
     if (!enabled) await this.session.deactivateSkill(name);
   }
 
   async reloadSkills() {
-    await this.skills.load();
+    await this.components.skills.load();
     return {
-      skills: this.skills.list(),
-      warnings: this.skills.diagnostics(),
-      diagnostics: this.skills.diagnosticDetails(),
+      skills: this.components.skills.list(),
+      warnings: this.components.skills.diagnostics(),
+      diagnostics: this.components.skills.diagnosticDetails(),
     };
   }
 
-  listUndoableRuns(limit = 20) {
-    return this.fileChanges.list(limit);
-  }
-
-  previewUndo(runId: string) {
-    return this.fileChanges.preview(runId);
-  }
+  listUndoableRuns = (limit = 20) => this.fileChanges.list(limit);
+  previewUndo = (runId: string) => this.fileChanges.preview(runId);
 
   async undoRun(runId: string) {
     if (this.activeRun) throw new Error('当前 Session 仍有任务运行中，不能撤销文件变更');
     return this.fileChanges.undo(runId);
   }
 
-  async memoryList(scope: 'private' | 'workspace' | 'all' = 'all') {
-    return this.memory.list(this.runContexts.forInspection(), { scope });
-  }
-
-  async memorySearch(query: string, scope: 'private' | 'workspace' | 'all' = 'all') {
-    return this.memory.search(query, this.runContexts.forInspection(), { scope });
-  }
-
-  async memoryRead(ref: import('../core/memory.js').MemoryRef) {
-    return this.memory.read(ref, this.runContexts.forInspection());
-  }
-
-  async memoryForget(ref: import('../core/memory.js').MemoryRef) {
-    return this.memory.forget(ref, this.runContexts.forInspection());
-  }
+  memoryList = (scope: 'private' | 'workspace' | 'all' = 'all') =>
+    this.components.memory.list(this.runContexts.forInspection(), { scope });
+  memorySearch = (query: string, scope: 'private' | 'workspace' | 'all' = 'all') =>
+    this.components.memory.search(query, this.runContexts.forInspection(), { scope });
+  memoryRead = (ref: import('../core/memory.js').MemoryRef) =>
+    this.components.memory.read(ref, this.runContexts.forInspection());
+  memoryForget = (ref: import('../core/memory.js').MemoryRef) =>
+    this.components.memory.forget(ref, this.runContexts.forInspection());
 
   async memoryIngest(target: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    return this.memory.ingest(target, this.runContexts.forInspection());
+    return this.components.memory.ingest(target, this.runContexts.forInspection());
   }
 
-  async memoryCapture(input: CaptureInput, profileId = 'owner') {
-    return this.memory.capture(input, this.runContexts.forInspection(profileId, 'memory-maintenance'));
-  }
+  memoryCapture = (input: CaptureInput, profileId = 'owner') =>
+    this.components.memory.capture(input, this.memoryMaintenanceContext(profileId));
+  memoryMerge = (input: Parameters<MemoryHub['merge']>[0], profileId = 'owner') =>
+    this.components.memory.merge(input, this.memoryMaintenanceContext(profileId));
 
-  async memoryMerge(input: Parameters<MemoryHub['merge']>[0], profileId = 'owner') {
-    return this.memory.merge(input, this.runContexts.forInspection(profileId, 'memory-maintenance'));
-  }
-
-  async memorySupersede(
+  memorySupersede = (
     ref: MemoryRef,
     replacementRef: MemoryRef | undefined,
     reasonCode: string,
     profileId = 'owner',
-  ) {
-    return this.memory.supersede(
-      ref,
-      replacementRef,
-      reasonCode,
-      this.runContexts.forInspection(profileId, 'memory-maintenance'),
-    );
-  }
+  ) => this.components.memory.supersede(
+    ref, replacementRef, reasonCode, this.memoryMaintenanceContext(profileId),
+  );
 
-  async memoryAddLinks(ref: MemoryRef, links: string[], reasonCode: string, profileId = 'owner') {
-    return this.memory.addLinks(
-      ref,
-      links,
-      reasonCode,
-      this.runContexts.forInspection(profileId, 'memory-maintenance'),
-    );
-  }
+  memoryAddLinks = (ref: MemoryRef, links: string[], reasonCode: string, profileId = 'owner') =>
+    this.components.memory.addLinks(ref, links, reasonCode, this.memoryMaintenanceContext(profileId));
 
-  async memoryMove(
+  memoryMove = (
     ref: MemoryRef,
     targetScope: 'private' | 'workspace',
     reasonCode: string,
     profileId = 'owner',
-  ) {
-    return this.memory.move(
-      ref,
-      targetScope,
-      reasonCode,
-      this.runContexts.forInspection(profileId, 'memory-maintenance'),
-    );
-  }
+  ) => this.components.memory.move(ref, targetScope, reasonCode, this.memoryMaintenanceContext(profileId));
 
   async memoryCaptureRound(roundRef?: string) {
     const value = roundRef?.trim();
@@ -1132,7 +809,7 @@ export class MimiAgent {
         ? `episode_${createHash('sha256').update(`${round[1]}\0${round[2]}`).digest('hex').slice(0, 24)}`
         : undefined);
       if (!id) throw new Error('RoundRef 必须是 sessionId@runId 或 private:episode_<id>');
-      const episode = await this.memory.read(
+      const episode = await this.components.memory.read(
         { scope: 'private', profileId: 'owner', id },
         { ...this.runContexts.forInspection(), allowEpisodeEvidence: true },
       );
@@ -1151,63 +828,35 @@ export class MimiAgent {
         digest: `sha256:${contentDigest(content)}`, occurredAt: checkpoint.updatedAt, trust: 'owner',
       }];
     }
-    return this.memory.capture({
+    return this.components.memory.capture({
       title, content, sourceRefs, scope: 'private', kind: 'synthesis',
       confidence: 'user-confirmed', reasonCode: 'owner_manual_capture',
     }, this.runContexts.forInspection());
   }
 
-  async memoryReject(sourceRefs: SourceRef[], reasonCode: string, profileId = 'owner') {
-    return this.memory.reject(sourceRefs, reasonCode, this.runContexts.forInspection(profileId, 'memory-maintenance'));
-  }
-
-  async memoryConflicts(limit = 50) {
-    return this.memory.conflicts(this.runContexts.forInspection(), limit);
-  }
-
-  async memoryAudit(limit = 50) {
-    return this.memory.audit(this.runContexts.forInspection(), limit);
-  }
-
-  async memoryLint(profileId = 'owner') {
-    return this.memory.lint(this.runContexts.forInspection(profileId, 'memory-lint'));
-  }
-
-  async memoryRefresh(limit = 20, profileId = 'owner') {
-    return this.memory.refreshStale(limit, this.runContexts.forInspection(profileId, 'memory-maintenance'));
-  }
-
-  async memoryReindex() {
-    return this.memory.reindex(this.runContexts.forInspection());
-  }
-
-  async memoryStatus() {
-    return this.memory.status(this.runContexts.forInspection());
-  }
-
-  async currentPlan() {
-    return this.plans.get();
-  }
-
-  async currentGoal() {
-    return this.plans.getGoal();
-  }
-
-  async currentTeam() {
-    return this.team.list();
-  }
-
-  async setGoal(objective: string) {
-    return this.plans.setGoal(objective);
-  }
+  memoryReject = (sourceRefs: SourceRef[], reasonCode: string, profileId = 'owner') =>
+    this.components.memory.reject(sourceRefs, reasonCode, this.memoryMaintenanceContext(profileId));
+  memoryConflicts = (limit = 50) => this.components.memory.conflicts(this.runContexts.forInspection(), limit);
+  memoryAudit = (limit = 50) => this.components.memory.audit(this.runContexts.forInspection(), limit);
+  memoryLint = (profileId = 'owner') => this.components.memory.lint(
+    this.runContexts.forInspection(profileId, 'memory-lint'),
+  );
+  memoryRefresh = (limit = 20, profileId = 'owner') =>
+    this.components.memory.refreshStale(limit, this.memoryMaintenanceContext(profileId));
+  memoryReindex = () => this.components.memory.reindex(this.runContexts.forInspection());
+  memoryStatus = () => this.components.memory.status(this.runContexts.forInspection());
+  currentPlan = () => this.components.state.goalsAndPlans.store.get();
+  currentGoal = () => this.components.state.goalsAndPlans.store.getGoal();
+  currentTeam = () => this.components.state.team.store.list();
+  setGoal = (objective: string) => this.components.state.goalsAndPlans.store.setGoal(objective);
 
   async resumePrompt(): Promise<string> {
     const [goal, steps, checkpoint, team, teamTasks] = await Promise.all([
-      this.plans.getGoal(),
-      this.plans.get(),
+      this.components.state.goalsAndPlans.store.getGoal(),
+      this.components.state.goalsAndPlans.store.get(),
       this.session.getCheckpoint(),
-      this.team.summary(),
-      this.team.list(),
+      this.components.state.team.store.summary(),
+      this.components.state.team.store.list(),
     ]);
     return buildResumePrompt({ goal, steps, checkpoint, teamSummary: team, teamTasks });
   }
@@ -1219,138 +868,76 @@ export class MimiAgent {
 
   async compactContext() {
     const [history, previous] = await Promise.all([this.session.getItems(), this.session.getContextArchive()]);
-    const archive = this.context.compactArchive(history, previous, 'full');
+    const archive = createModelContext(this.config, this.components.modelRuntime.profile)
+      .compactArchive(history, previous, 'full');
     if (!archive || archive.coveredItems === previous?.coveredItems) {
       return { changed: false, archive: previous, message: '历史不足两轮，无需压缩。' };
     }
     await this.session.setContextArchive(archive);
-    this.lastContextTokens = 0;
-    this.lastContextStats = undefined;
     this.lastContextManifest = undefined;
     return { changed: true, archive, message: `已归档 ${archive.coveredItems} 个历史条目。` };
   }
 
-  async runtimeInfo() {
-    return this.runtimeControlCoordinator.runtimeInfo();
-  }
+  runtimeInfo = () => this.runtimeControlCoordinator.runtimeInfo();
+  runtimeStatus = (projection: 'summary' | 'detail' = 'summary') =>
+    this.runtimeControlCoordinator.runtimeStatus(projection);
+  currentCapabilitySnapshot = (): Readonly<EffectiveCapabilitySnapshot> | undefined =>
+    this.runtimeControlCoordinator.currentCapabilitySnapshot();
+  computerStatus = () => this.runtimeControlCoordinator.computerStatus();
 
-  async runtimeStatus(projection: 'summary' | 'detail' = 'summary') {
-    return this.runtimeControlCoordinator.runtimeStatus(projection);
-  }
-
-  currentCapabilitySnapshot(): Readonly<EffectiveCapabilitySnapshot> | undefined {
-    return this.runtimeControlCoordinator.currentCapabilitySnapshot();
-  }
-
-  computerStatus() {
-    return this.runtimeControlCoordinator.computerStatus();
-  }
-
-  async prepareQqPersonalMessageScope(
-    authorization: PersonalMessageAuthorization,
-    computerAccess: ComputerAccess | undefined,
-    computerApps: readonly string[] | undefined,
-    signal?: AbortSignal,
-  ): Promise<PersonalMessageScope | undefined> {
-    return this.runtimeControlCoordinator.prepareQqPersonalMessageScope(
-      authorization,
-      computerAccess,
-      computerApps,
-      signal,
-    );
-  }
+  prepareQqPersonalMessageScope = (
+    ...args: Parameters<RuntimeControlCoordinator['prepareQqPersonalMessageScope']>
+  ) => this.runtimeControlCoordinator.prepareQqPersonalMessageScope(...args);
 
   assertReadOnlyDaemonProbePolicy(hostTools: readonly Tool[]): void {
     this.runtimeControlCoordinator.assertReadOnlyDaemonProbePolicy(hostTools);
   }
 
-  async probeReadOnlyComputerWindow(
-    allowedApps: readonly string[],
-    deniedApps: readonly string[],
-    signal?: AbortSignal,
-    expectedTarget?: Pick<ComputerTargetSummary, 'bundleId' | 'pid' | 'windowId'>,
-  ) {
-    return this.runtimeControlCoordinator.probeReadOnlyComputerWindow(
-      allowedApps,
-      deniedApps,
-      signal,
-      expectedTarget,
-    );
-  }
+  probeReadOnlyComputerWindow = (
+    ...args: Parameters<RuntimeControlCoordinator['probeReadOnlyComputerWindow']>
+  ) => this.runtimeControlCoordinator.probeReadOnlyComputerWindow(...args);
 
-  async guidanceInfo() {
-    return this.runtimeControlCoordinator.guidanceInfo();
-  }
-
-  async modelControl(rawRequest: unknown): Promise<unknown> {
-    return this.runtimeControlCoordinator.modelControl(rawRequest);
-  }
-
-  availableModels(): string[] {
-    return this.runtimeControlCoordinator.availableModels();
-  }
-
-  async switchModel(modelName: string): Promise<void> {
-    return this.runtimeControlCoordinator.switchModel(modelName);
-  }
-
-  async switchModelTarget(target: ModelTarget): Promise<void> {
-    return this.runtimeControlCoordinator.switchModelTarget(target);
-  }
-
-  private assertModelAvailable(modelName: string): void {
-    this.runtimeControlCoordinator.assertModelAvailable(modelName);
-  }
-
-  availableModes() {
-    return this.runtimeControlCoordinator.availableModes();
-  }
-
-  async switchMode(mode: string): Promise<void> {
-    return this.runtimeControlCoordinator.switchMode(mode);
-  }
-
-  async switchSecurityProfile(profile: string): Promise<void> {
-    return this.runtimeControlCoordinator.switchSecurityProfile(profile);
-  }
-
-  async setOutputLevel(level: RuntimeOutputLevel): Promise<void> {
-    return this.runtimeControlCoordinator.setOutputLevel(level);
-  }
-
-  async contextInfo() {
-    return this.runtimeControlCoordinator.contextInfo();
-  }
+  guidanceInfo = () => this.runtimeControlCoordinator.guidanceInfo();
+  modelControl = (rawRequest: unknown): Promise<unknown> =>
+    this.runtimeControlCoordinator.modelControl(rawRequest);
+  availableModels = (): string[] => this.runtimeControlCoordinator.availableModels();
+  switchModel = (modelName: string): Promise<void> => this.runtimeControlCoordinator.switchModel(modelName);
+  switchModelTarget = (target: ModelTarget): Promise<void> =>
+    this.runtimeControlCoordinator.switchModelTarget(target);
+  availableModes = () => this.runtimeControlCoordinator.availableModes();
+  switchMode = (mode: string): Promise<void> => this.runtimeControlCoordinator.switchMode(mode);
+  setOutputLevel = (level: RuntimeOutputLevel): Promise<void> =>
+    this.runtimeControlCoordinator.setOutputLevel(level);
+  contextInfo = () => this.runtimeControlCoordinator.contextInfo();
 
   get toolNames(): string[] {
     const scoped = [
       ...this.registeredTools(),
-      ...createMemoryTools(this.memory, () => this.runContexts.forInspection()),
-      ...createPlanTools(this.plans),
+      ...createMemoryTools(this.components.memory, () => this.runContexts.forInspection()),
+      ...createPlanTools(this.components.state.goalsAndPlans.store),
     ];
-    return toolNamesForMode(this.mode, scoped, this.permissionMode, this.securityProfile);
+    return toolNamesForMode(this.mode, scoped, this.runtimeSecurity.permissionMode);
   }
 
   async visibleToolNames(hostTools: Tool[] = []): Promise<string[]> {
     const scoped = [
       ...this.registeredTools(),
       ...hostTools,
-      ...createMemoryTools(this.memory, () => this.runContexts.forInspection()),
-      ...createPlanTools(this.plans),
+      ...createMemoryTools(this.components.memory, () => this.runContexts.forInspection()),
+      ...createPlanTools(this.components.state.goalsAndPlans.store),
     ];
     const functionNames = toolNamesForMode(
       this.mode,
       scoped,
-      this.permissionMode,
-      this.securityProfile,
+      this.runtimeSecurity.permissionMode,
     );
     if (
       this.mode === 'plan'
-      || this.securityProfile !== 'full-owner'
-      || this.mcp.servers.length === 0
+      || this.runtimeSecurity.permissionMode !== 'trusted'
+      || this.components.mcp.servers.length === 0
     ) return functionNames;
     const mcpTools = await getAllMcpTools({
-      mcpServers: this.mcp.servers,
+      mcpServers: this.components.mcp.servers,
       includeServerInToolNames: true,
       reservedToolNames: new Set(functionNames),
     });
@@ -1372,17 +959,8 @@ export class MimiAgent {
     this.boundSessionActorId = sessionId;
   }
 
-  get mcpServerNames(): string[] {
-    return this.mcp.servers.map((server) => server.name);
-  }
-
-  mcpStatuses() {
-    return this.mcp.statuses();
-  }
-
-  async reloadMcp() {
-    return this.mcp.reload();
-  }
+  mcpStatuses = () => this.components.mcp.statuses();
+  reloadMcp = () => this.components.mcp.reload();
 
   async recordEvent(type: string, data?: unknown): Promise<void> {
     const run = this.activeRun;
@@ -1391,7 +969,7 @@ export class MimiAgent {
     const safeData = redactActiveEphemeralData(data, run?.ephemeralSensitiveAccess);
     if (type === 'status' && safeData && typeof safeData === 'object') {
       const value = safeData as Record<string, unknown>;
-      await this.traces.record(sessionId, type, {
+      await this.components.state.traces.record(sessionId, type, {
         kind: value.kind,
         tone: value.tone,
         title: value.title,
@@ -1405,26 +983,14 @@ export class MimiAgent {
       );
       return;
     }
-    await this.traces.record(sessionId, type, safeData);
+    await this.components.state.traces.record(sessionId, type, safeData);
   }
 
-  onRuntimeEvent(hook: RuntimeHook): () => void {
-    return this.hooks.on(hook);
-  }
-
-  async completeRun(answer: string, usage?: ContextUsageSnapshot): Promise<RuntimeEffect[]> {
-    return this.runCommitCoordinator.complete({ answer, usage });
-  }
+  onRuntimeEvent = (hook: RuntimeHook): (() => void) => this.hooks.on(hook);
+  completeRun = (answer: string, usage?: ContextUsageSnapshot) =>
+    this.runCommitCoordinator.complete({ answer, usage });
   get completionGateRequired(): boolean {
     return this.activeRun?.completionRequired === true;
-  }
-
-  get completedRunAnswer(): string | undefined {
-    return this.lastCommittedAnswer;
-  }
-
-  get completedRunFinalization(): RunFinalizationRecord | undefined {
-    return this.lastFinalization;
   }
 
   get activeRunHasEphemeralSensitiveAccess(): boolean {
@@ -1456,38 +1022,24 @@ export class MimiAgent {
       interruptedAnswer,
     });
   }
-  async finalizeExecutionLedger(sessionId: string, executionKey: string): Promise<void> {
-    return this.runCommitCoordinator.finalizeExecutionLedger(sessionId, executionKey);
-  }
+  finalizeExecutionLedger = (sessionId: string, executionKey: string): Promise<void> =>
+    this.runCommitCoordinator.finalizeExecutionLedger(sessionId, executionKey);
 
   /**
    * Removes only the completed-run receipt so a paused/blocked durable Event
    * can ask the model for a new turn. Successful side-effect tool entries stay
    * fenced and therefore cannot be silently repeated after resume.
    */
-  async reopenExecutionLedger(sessionId: string, executionKey: string): Promise<void> {
-    return this.runCommitCoordinator.reopenExecutionLedger(sessionId, executionKey);
-  }
+  reopenExecutionLedger = (sessionId: string, executionKey: string): Promise<void> =>
+    this.runCommitCoordinator.reopenExecutionLedger(sessionId, executionKey);
 
-  async completedExecution(
-    sessionId: string,
-    executionKey: string,
-  ): Promise<CompletedExecutionReceipt | undefined> {
-    return this.runCommitCoordinator.completedExecution(sessionId, executionKey);
-  }
+  completedExecution = (...args: Parameters<RunCommitCoordinator['completedExecution']>) =>
+    this.runCommitCoordinator.completedExecution(...args);
   async close(): Promise<void> {
-    await Promise.all([this.mcp.close(), this.computer?.close()]);
+    await Promise.all([this.components.mcp.close(), this.components.computer?.close()]);
   }
 
-  private createSession(id: string): FileSession {
-    return this.sessions.open(id);
-  }
-
-  private createIsolatedSession(id: string): FileSession {
-    return this.sessions.open(id, true);
-  }
-
-  private createEphemeralRedactingSession(
+  createEphemeralRedactingSession(
     session: FileSession,
     access: ActiveEphemeralOwnerInput,
   ): FileSession {
@@ -1509,15 +1061,9 @@ export class MimiAgent {
     retainedExecutionKey?: string,
   ): Promise<RuntimeEffect> {
     if (action.type === 'switch_model') {
-      this.assertModelAvailable(action.model);
-      if (this.sessionId === originSessionId) await this.switchModel(action.model);
-      else {
-        const runtime = createModel(this.config, action.model);
-        await this.createSession(originSessionId).setPreferences({
-          provider: this.config.provider,
-          model: runtime.name,
-        });
-      }
+      const target = this.components.modelGateway.resolveAgentTarget(action.model);
+      if (this.sessionId === originSessionId) await this.switchModelTarget(target);
+      else await this.components.state.sessions.open(originSessionId).setPreferences({ modelTarget: target });
       return { type: 'model_changed', model: action.model };
     }
     if (action.type === 'switch_provider') {
@@ -1526,16 +1072,18 @@ export class MimiAgent {
     if (action.type === 'switch_mode') {
       if (!AGENT_MODES.some((mode) => mode.id === action.mode)) throw new Error(`未知模式：${action.mode}`);
       if (this.sessionId === originSessionId) await this.switchMode(action.mode);
-      else await this.createSession(originSessionId).setPreferences({ mode: action.mode });
+      else await this.components.state.sessions.open(originSessionId).setPreferences({ mode: action.mode });
       return { type: 'mode_changed', mode: action.mode };
     }
     if (action.type === 'set_output_level') {
       if (this.sessionId === originSessionId) await this.setOutputLevel(action.level);
-      else await this.createSession(originSessionId).setPreferences({ outputLevel: action.level });
+      else await this.components.state.sessions.open(originSessionId).setPreferences({ outputLevel: action.level });
       return { type: 'output_level_changed', level: action.level };
     }
     if (action.type === 'clear_session') {
-      const origin = this.sessionId === originSessionId ? this.session : this.createSession(originSessionId);
+      const origin = this.sessionId === originSessionId
+        ? this.session
+        : this.components.state.sessions.open(originSessionId);
       await this.clearSessionState(originSessionId, origin, retainedExecutionKey);
       return { type: 'session_cleared', sessionId: originSessionId };
     }
@@ -1544,12 +1092,12 @@ export class MimiAgent {
       await this.reloadMcp();
       return { type: 'mcp_reloaded' };
     }
-    if (this.boundSessionActorId) await this.createSession(action.sessionId).ensure();
+    if (this.boundSessionActorId) await this.components.state.sessions.open(action.sessionId).ensure();
     else await this.switchSession(action.sessionId);
     return { type: 'session_changed', sessionId: action.sessionId };
   }
 
-  private validUsage(
+  validUsage(
     usage?: ContextUsageSnapshot,
     binding?: RunModelBinding,
   ): ContextUsageSnapshot | undefined {
@@ -1565,7 +1113,7 @@ export class MimiAgent {
     } : usage;
   }
 
-  private applyManifestActual(usage?: ContextUsageSnapshot): void {
+  applyManifestActual(usage?: ContextUsageSnapshot): void {
     if (!this.lastContextManifest || !usage?.lastRequestInputTokens) return;
     const inputTokens = usage.lastRequestInputTokens;
     const outputTokens = usage.lastRequestOutputTokens ?? 0;
@@ -1573,6 +1121,9 @@ export class MimiAgent {
       inputTokens,
       outputTokens,
       totalTokens: inputTokens + outputTokens,
+      ...(usage.runInputTokens !== undefined ? { runInputTokens: usage.runInputTokens } : {}),
+      ...(usage.runOutputTokens !== undefined ? { runOutputTokens: usage.runOutputTokens } : {}),
+      ...(usage.runTotalTokens !== undefined ? { runTotalTokens: usage.runTotalTokens } : {}),
       receivedAt: new Date().toISOString(),
     };
   }
@@ -1585,29 +1136,20 @@ export class MimiAgent {
     const manifest = this.lastContextManifest?.sessionId === sessionId
       ? this.lastContextManifest
       : undefined;
-    if (manifest?.actual) {
-      return {
-        value: manifest.actual.inputTokens,
-        source: 'actual',
-        contextWindow,
-        requestId: manifest.requestId,
-        ...(manifest.compression.length
-          ? { compressedFrom: Math.max(...manifest.compression.map((record) => record.beforeTokens)) }
-          : {}),
-      };
-    }
-    if (manifest) {
-      return {
-        value: manifest.estimatedInputTokens,
-        source: 'estimate',
-        contextWindow,
-        requestId: manifest.requestId,
-        ...(manifest.compression.length
-          ? { compressedFrom: Math.max(...manifest.compression.map((record) => record.beforeTokens)) }
-          : {}),
-      };
-    }
-    return { value: estimateTokens(items), source: 'raw-history', contextWindow };
+    if (!manifest) return { value: estimateTokens(items), source: 'raw-history', contextWindow };
+    return {
+      value: manifest.actual?.inputTokens ?? manifest.estimatedInputTokens,
+      source: manifest.actual ? 'actual' : 'estimate',
+      contextWindow,
+      requestId: manifest.requestId,
+      ...(manifest.compression.length
+        ? { compressedFrom: Math.max(...manifest.compression.map((record) => record.beforeTokens)) }
+        : {}),
+    };
+  }
+
+  private memoryMaintenanceContext(profileId: string) {
+    return this.runContexts.forInspection(profileId, 'memory-maintenance');
   }
 
   private async clearSessionState(
@@ -1616,12 +1158,17 @@ export class MimiAgent {
     retainedExecutionKey?: string,
   ): Promise<void> {
     await session.clearSession(async () => Promise.all([
-      this.plans.clear(sessionId),
-      this.team.clear(sessionId),
+      this.components.state.goalsAndPlans.store.clear(sessionId),
+      this.components.state.team.store.clear(sessionId),
       retainedExecutionKey
-        ? this.ledger.clearSessionExcept(sessionId, retainedExecutionKey)
-        : this.ledger.clearSession(sessionId),
+        ? this.components.state.executionLedger.store.clearSessionExcept(sessionId, retainedExecutionKey)
+        : this.components.state.executionLedger.store.clearSession(sessionId),
     ]).then(() => undefined));
   }
 
 }
+
+export type AgentSessionSnapshot = Awaited<ReturnType<MimiAgent['sessionSnapshot']>>;
+export type CompletedExecutionReceipt = NonNullable<Awaited<ReturnType<
+  MimiAgent['completedExecution']
+>>>;

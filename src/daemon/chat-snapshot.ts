@@ -41,7 +41,6 @@ export async function createMimiChatSnapshot(
     mode: snapshot.runtime.mode.label,
     outputLevel: snapshot.runtime.outputLevel,
     permissionMode: snapshot.runtime.permissionMode,
-    securityProfile: snapshot.runtime.securityProfile,
     contextUsed: snapshot.context.status.value,
     contextWindow: snapshot.context.contextWindow,
     contextStatus: snapshot.context.status,

@@ -90,6 +90,9 @@ export interface ContextManifest {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    runInputTokens?: number;
+    runOutputTokens?: number;
+    runTotalTokens?: number;
     receivedAt: string;
   };
   createdAt: string;

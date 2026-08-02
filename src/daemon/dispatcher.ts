@@ -32,7 +32,6 @@ import type { BackgroundTaskBlockRequest, BackgroundTaskPauseResult } from './ta
 import type {
   DaemonWorkerStatus,
   ImmutableEvent,
-  ReplyRoute,
   TaskRecord,
 } from './types.js';
 import {
@@ -230,7 +229,7 @@ export class MimiDispatcher {
     this.runMaintenanceIfDue();
     this.attention.emitDueRoutines();
     this.attention.emitDueBriefings();
-    this.store.emitDueSchedules();
+    this.store.schedules.emitDue();
     if (this.preferOutbox && await this.delivery.deliverOne()) {
       this.preferOutbox = false;
       return true;
@@ -282,7 +281,7 @@ export class MimiDispatcher {
     this.runMaintenanceIfDue();
     this.attention.emitDueRoutines();
     this.attention.emitDueBriefings();
-    this.store.emitDueSchedules();
+    this.store.schedules.emitDue();
     let worked = false;
     if (this.preferOutbox && this.delivery.start()) {
       this.preferOutbox = false;
@@ -444,7 +443,7 @@ export class MimiDispatcher {
           runController.abort(new Error(`Agent 连续 ${runIdleTimeoutMs}ms 无进展，已中止并等待重试`));
         }, runIdleTimeoutMs);
       };
-      if (task.type !== 'scheduled') this.store.wakeWatches(decision.sessionId!, task.id);
+      if (task.type !== 'scheduled') this.store.schedules.wake(decision.sessionId!, task.id);
       const attempt = this.store.beginTaskAttempt(task.id, this.workerId, decision.sessionId!);
       attemptId = attempt.id;
       const executionKey = task.idempotencyKey.startsWith('migration:event:')

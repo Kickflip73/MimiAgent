@@ -13,7 +13,7 @@ import {
   type ComputerHostObservation,
   type ComputerRunAuthority,
 } from './manager.js';
-import type { ComputerElement, ComputerTargetSummary } from './types.js';
+import type { ComputerAccess, ComputerElement, ComputerTargetSummary } from './types.js';
 
 const QQ_BUNDLE_ID = 'com.tencent.qq';
 const MAX_QQ_SEND_CHARS = 500;
@@ -202,6 +202,33 @@ export class QqPersonalMessageComputerAdapter {
     private readonly manager: ComputerManager,
     private readonly dataRoot: string,
   ) {}
+
+  async prepareScope(
+    authorization: PersonalMessageAuthorization,
+    access: ComputerAccess | undefined,
+    apps: readonly string[] | undefined,
+    signal?: AbortSignal,
+  ) {
+    if (authorization.channel !== 'qq'
+      || !access || !['background', 'foreground', 'admin'].includes(access)
+      || !apps?.includes(QQ_BUNDLE_ID)) return undefined;
+    const probe = await this.probe(authorization, signal).catch(() => undefined);
+    if (!probe) return undefined;
+    return {
+      eventId: authorization.eventId,
+      channel: authorization.channel,
+      accountFingerprint: authorization.accountFingerprint,
+      conversationId: authorization.conversationId,
+      actorId: authorization.actorId,
+      messageMode: authorization.mode,
+      approvedText: authorization.approvedText,
+      capability: probe.capability,
+      getContext: (limit: number, requestSignal?: AbortSignal) =>
+        this.getContext(authorization, limit, requestSignal),
+      send: (input: { text: string; latestFingerprint: string }, requestSignal?: AbortSignal) =>
+        this.send(authorization, input.text, input.latestFingerprint, requestSignal),
+    };
+  }
 
   async probe(
     authorization: PersonalMessageAuthorization,

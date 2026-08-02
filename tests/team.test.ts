@@ -399,10 +399,10 @@ test('does not let read-only Ultra builders regain mutation tools', () => {
   };
   const root = path.resolve('/tmp/nano-read-only-worker');
   const readOnly = createTeamWorkerTools({
-    workspaceRoot: root, dataRoot: path.join(root, '.mimi-agent'), permissionMode: 'read-only', task,
+    workspaceRoot: root, dataRoot: path.join(root, '.mimi-agent'), canWrite: false, task,
   }).map((tool) => tool.name);
   const workspace = createTeamWorkerTools({
-    workspaceRoot: root, dataRoot: path.join(root, '.mimi-agent'), permissionMode: 'workspace', task,
+    workspaceRoot: root, dataRoot: path.join(root, '.mimi-agent'), canWrite: true, task,
   }).map((tool) => tool.name);
   assert.ok(!readOnly.includes('write_file'));
   assert.ok(!readOnly.includes('edit_file'));
@@ -421,7 +421,7 @@ test('protects both MimiAgent and legacy MimiAgent state from Team workers', asy
     await writeFile(path.join(root, directory, 'private.txt'), `${directory}-private`);
   }
   const tools = createTeamWorkerTools({
-    workspaceRoot: root, dataRoot: path.join(root, 'custom-state'), permissionMode: 'workspace', task,
+    workspaceRoot: root, dataRoot: path.join(root, 'custom-state'), canWrite: true, task,
   });
   const read = tools.find((tool) => tool.name === 'read_file');
   assert.ok(read && 'invoke' in read);

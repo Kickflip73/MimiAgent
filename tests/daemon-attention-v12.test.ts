@@ -341,7 +341,7 @@ test('owner routes, routine occurrences, and digest briefings remain idempotent'
     ));
     assert.equal(store.getTask(briefingTask.id)?.status, 'running');
     assert.equal(store.pendingDigestCount(), 1);
-    assert.equal(store.listOutbox().length, 0);
+    assert.equal(store.outbox.listSummaries().length, 0);
     store.completeTask(
       briefingTask.id,
       'briefing-worker',
@@ -352,7 +352,7 @@ test('owner routes, routine occurrences, and digest briefings remain idempotent'
     );
     assert.equal(store.getTask(briefingTask.id)?.status, 'completed');
     assert.equal(store.pendingDigestCount(), 0);
-    assert.equal(store.listOutbox().length, 1);
+    assert.equal(store.outbox.listSummaries().length, 1);
 
     const status = attention.status(baseTime);
     assert.equal((status.routines as { total: number }).total, 1);

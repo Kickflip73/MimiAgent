@@ -1,18 +1,18 @@
 import type { Tool } from '@openai/agents';
-import { privateRuntimePaths, type AgentPermissionMode } from '../config.js';
+import { privateRuntimePaths } from '../config.js';
 import type { TeamTask } from '../core/team.js';
 import { createTools } from '../tools.js';
 
 export interface TeamWorkerToolOptions {
   workspaceRoot: string;
   dataRoot: string;
-  permissionMode: AgentPermissionMode;
+  canWrite: boolean;
   task: TeamTask;
   memorySearchTool?: Tool;
 }
 
 export function createTeamWorkerTools(options: TeamWorkerToolOptions): Tool[] {
-  const canWrite = options.task.role === 'builder' && options.permissionMode !== 'read-only';
+  const canWrite = options.task.role === 'builder' && options.canWrite;
   return [
     ...createTools(
       options.workspaceRoot,

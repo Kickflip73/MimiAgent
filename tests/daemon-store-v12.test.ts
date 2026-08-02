@@ -58,12 +58,11 @@ test('v12 task lifecycle enforces idempotency, selectors, leases, attempts, and 
       () => store.enqueueTask(taskInput(authority.id, 'conflict', { idempotencyKey: 'high' })),
       /幂等键冲突/,
     );
-    assert.throws(
-      () => store.enqueueTask(taskInput(authority.id, 'invalid-conversation', {
-        type: 'conversation', executor: 'isolated_worker', workspaceAccess: 'write',
-      })),
-      /conversation.*executor=session_actor/,
-    );
+    const executorOwned = store.enqueueTask(taskInput(authority.id, 'executor-owned', {
+      type: 'conversation', executor: 'isolated_worker', workspaceAccess: 'write',
+      notBefore: new Date(base.getTime() + 60 * 60_000).toISOString(),
+    }));
+    assert.equal(executorOwned.executor, 'isolated_worker');
     assert.throws(
       () => store.enqueueTask(taskInput(authority.id, 'invalid-briefing', {
         type: 'briefing', executor: 'isolated_worker', workspaceAccess: 'write',
@@ -106,21 +105,21 @@ test('v12 task lifecycle enforces idempotency, selectors, leases, attempts, and 
       { route: { channel: 'connector:test', target: 'owner' }, payload: { text: 'done' } },
     );
     assert.equal(completed.status, 'completed');
-    assert.equal(store.getTaskAttempt(attempt.id)?.status, 'completed');
-    assert.equal(store.listOutbox().length, 1);
-    assert.equal(store.listRuns().length, 1);
-    assert.equal(store.listRunSummaries()[0]?.answerAvailable, true);
+    assert.equal(store.runs.get(attempt.id)?.status, 'completed');
+    assert.equal(store.outbox.listSummaries().length, 1);
+    assert.equal(store.runs.listSummaries().length, 1);
+    assert.equal(store.runs.listSummaries()[0]?.answerAvailable, true);
     assert.throws(
       () => store.completeTask(high.id, 'worker-1', {}, undefined, new Date(base.getTime() + 5_000)),
       /租约已失效/,
     );
 
-    const message = store.claimOutbox('delivery-1', 60_000, new Date(base.getTime() + 5_000));
+    const message = store.outbox.claim('delivery-1', 60_000, new Date(base.getTime() + 5_000));
     assert.ok(message);
-    assert.equal(store.claimOutbox('delivery-2', 60_000, new Date(base.getTime() + 5_000)), undefined);
-    store.completeOutbox(message.id, 'delivery-1');
-    assert.equal(store.getOutbox(message.id)?.status, 'sent');
-    assert.throws(() => store.completeOutbox(message.id, 'delivery-1'), /租约已失效/);
+    assert.equal(store.outbox.claim('delivery-2', 60_000, new Date(base.getTime() + 5_000)), undefined);
+    store.outbox.complete(message.id, 'delivery-1');
+    assert.equal(store.outbox.get(message.id)?.status, 'sent');
+    assert.throws(() => store.outbox.complete(message.id, 'delivery-1'), /租约已失效/);
   } finally {
     store.close();
   }
@@ -150,7 +149,7 @@ test('pause, resume, block, cancel, and safe-boundary control preserve Task owne
       store.settleTaskControl(running.id, 'worker', attempt.id, new Date(base.getTime() + 6_000))?.status,
       'paused',
     );
-    assert.equal(store.getTaskAttempt(attempt.id)?.status, 'interrupted');
+    assert.equal(store.runs.get(attempt.id)?.status, 'interrupted');
     assert.equal(store.settleTaskControl(running.id, 'worker'), undefined);
 
     store.resumeTask(running.id, undefined, new Date(base.getTime() + 7_000));
@@ -249,7 +248,7 @@ test('retry, preemption, terminal failure, and dead-letter recovery are explicit
       new Date(base.getTime() + 7_000),
     );
     assert.equal(failed.status, 'failed');
-    assert.equal(store.getTaskAttempt(thirdAttempt.id)?.status, 'failed');
+    assert.equal(store.runs.get(thirdAttempt.id)?.status, 'failed');
 
     const dead = store.enqueueTask(taskInput(authority.id, 'dead-task', { maxAttempts: 1 }));
     store.claimTaskById(dead.id, 'worker-dead', 60_000, new Date(base.getTime() + 8_000));
@@ -299,32 +298,32 @@ test('Outbox retries are route-scoped and terminal delivery creates one system f
     };
     completeWithDelivery('delivery-a', 'a');
     completeWithDelivery('delivery-b', 'b');
-    const first = store.claimOutbox('sender-a', 60_000, new Date(base.getTime() + 2_000), [
+    const first = store.outbox.claim('sender-a', 60_000, new Date(base.getTime() + 2_000), [
       { channel: 'connector:test', target: 'b' },
     ]);
     assert.equal(first?.target, 'a');
-    store.failOutbox(first!.id, 'sender-a', 'temporary', 2, new Date(base.getTime() + 3_000));
-    assert.equal(store.getOutbox(first!.id)?.status, 'pending');
+    store.outbox.fail(first!.id, 'sender-a', 'temporary', 2, new Date(base.getTime() + 3_000));
+    assert.equal(store.outbox.get(first!.id)?.status, 'pending');
 
     const retryAt = new Date(base.getTime() + 5_000);
-    const retried = store.claimOutbox('sender-a2', 60_000, retryAt, [
+    const retried = store.outbox.claim('sender-a2', 60_000, retryAt, [
       { channel: 'connector:test', target: 'b' },
     ]);
     assert.equal(retried?.id, first?.id);
-    store.failOutbox(retried!.id, 'sender-a2', 'terminal', 2, new Date(base.getTime() + 6_000));
-    assert.equal(store.getOutbox(retried!.id)?.status, 'dead_letter');
-    assert.ok(store.listOutbox().some((message) => message.channel === 'system'));
-    assert.equal(store.retryDeadLetterOutbox(retried!.id, new Date(base.getTime() + 7_000)).status, 'pending');
+    store.outbox.fail(retried!.id, 'sender-a2', 'terminal', 2, new Date(base.getTime() + 6_000));
+    assert.equal(store.outbox.get(retried!.id)?.status, 'dead_letter');
+    assert.ok(store.outbox.listSummaries().some((message) => message.channel === 'system'));
+    assert.equal(store.outbox.retryDeadLetter(retried!.id, new Date(base.getTime() + 7_000)).status, 'pending');
 
-    const pending = store.claimOutbox('sender-a3', 60_000, new Date(base.getTime() + 8_000), [
+    const pending = store.outbox.claim('sender-a3', 60_000, new Date(base.getTime() + 8_000), [
       { channel: 'connector:test', target: 'b' },
       { channel: 'system' },
     ]);
     assert.equal(pending?.id, retried?.id);
-    store.failOutbox(pending!.id, 'sender-a3', 'terminal again', 1, new Date(base.getTime() + 9_000));
-    assert.equal(store.archiveDeadLetterOutbox(pending!.id, new Date(base.getTime() + 10_000)).status, 'archived');
-    assert.throws(() => store.archiveDeadLetterOutbox(pending!.id), /不是 dead letter/);
-    assert.ok(store.listOutboxSummaries().length >= 3);
+    store.outbox.fail(pending!.id, 'sender-a3', 'terminal again', 1, new Date(base.getTime() + 9_000));
+    assert.equal(store.outbox.archiveDeadLetter(pending!.id, new Date(base.getTime() + 10_000)).status, 'archived');
+    assert.throws(() => store.outbox.archiveDeadLetter(pending!.id), /不是 dead letter/);
+    assert.ok(store.outbox.listSummaries().length >= 3);
   } finally {
     store.close();
   }
@@ -333,7 +332,7 @@ test('Outbox retries are route-scoped and terminal delivery creates one system f
 test('schedules retain authority, wake matching watches, emit once, and cancel queued occurrences', async () => {
   const { store, authority } = await fixture('mimi-store-schedule-v12');
   try {
-    const watch = store.addSchedule({
+    const watch = store.schedules.add({
       name: 'watch build',
       type: 'watch',
       value: '60000',
@@ -345,7 +344,7 @@ test('schedules retain authority, wake matching watches, emit once, and cancel q
       trust: 'owner',
       nextRunAt: new Date(base.getTime() + 60_000).toISOString(),
     });
-    const at = store.addSchedule({
+    const at = store.schedules.add({
       name: 'one shot',
       type: 'at',
       value: base.toISOString(),
@@ -355,22 +354,22 @@ test('schedules retain authority, wake matching watches, emit once, and cancel q
       trust: 'owner',
       nextRunAt: base.toISOString(),
     });
-    assert.equal(store.scheduleCount(), 2);
-    const revision = store.scheduleRevision();
-    assert.equal(store.wakeWatches('other-session', 'trigger', base), 0);
-    assert.equal(store.wakeWatches('schedule-session', 'trigger', base), 1);
-    assert.notEqual(store.scheduleRevision(), revision);
-    const emitted = store.emitDueSchedules(new Date(base.getTime() + 1_000));
+    assert.equal(store.schedules.count(), 2);
+    const revision = store.schedules.revision();
+    assert.equal(store.schedules.wake('other-session', 'trigger', base), 0);
+    assert.equal(store.schedules.wake('schedule-session', 'trigger', base), 1);
+    assert.notEqual(store.schedules.revision(), revision);
+    const emitted = store.schedules.emitDue(new Date(base.getTime() + 1_000));
     assert.equal(emitted.length, 2);
-    assert.equal(store.getSchedule(at.id)?.enabled, false);
-    assert.equal(store.getSchedule(watch.id)?.enabled, true);
-    assert.equal(store.listScheduleSummaries(1, 0).length, 1);
-    assert.equal(store.removeSchedule(watch.id, new Date(base.getTime() + 2_000)), true);
-    assert.equal(store.removeSchedule(watch.id), false);
-    assert.equal(store.scheduleCount(), 1);
+    assert.equal(store.schedules.get(at.id)?.enabled, false);
+    assert.equal(store.schedules.get(watch.id)?.enabled, true);
+    assert.equal(store.schedules.listSummaries(1, 0).length, 1);
+    assert.equal(store.schedules.remove(watch.id, new Date(base.getTime() + 2_000)), true);
+    assert.equal(store.schedules.remove(watch.id), false);
+    assert.equal(store.schedules.count(), 1);
     assert.equal(store.listTasks().filter((candidate) => candidate.status === 'cancelled').length, 1);
 
-    assert.throws(() => store.addSchedule({
+    assert.throws(() => store.schedules.add({
       name: 'external without authority',
       type: 'at',
       value: base.toISOString(),

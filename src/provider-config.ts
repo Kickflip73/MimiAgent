@@ -50,7 +50,7 @@ function optionValue(args: string[], index: number, name: string): string {
   return value;
 }
 
-function providerApiKeyName(provider: ModelProvider): string {
+export function providerApiKeyName(provider: ModelProvider): string {
   if (provider === 'deepseek') return 'DEEPSEEK_API_KEY';
   if (provider === 'openai-compatible') return 'MIMI_PROVIDER_API_KEY';
   return 'OPENAI_API_KEY';

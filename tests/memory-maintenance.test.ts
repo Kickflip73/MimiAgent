@@ -38,17 +38,17 @@ test('terminal Tasks atomically register observations and emit one bounded maint
   try {
     const at = new Date();
     for (let index = 0; index < 10; index += 1) addTask(store, `task-${index}`, at);
-    const observations = store.listMemoryObservations('owner');
+    const observations = store.memoryObservations.list('owner');
     assert.equal(observations.length, 10);
     assert.equal(observations[0]?.sourceRef.type, 'mimi-event');
     assert.deepEqual(observations[0]?.result, { answer: 'durable result task-0' });
 
-    const emitted = store.emitDueMemoryMaintenanceTasks(at);
+    const emitted = store.memoryObservations.emitDue(at);
     assert.equal(emitted.length, 1);
     assert.equal(emitted[0]?.type, 'memory_maintenance');
     assert.equal(emitted[0]?.priority, 0);
     assert.equal(emitted[0]?.workspaceAccess, 'read');
-    assert.deepEqual(store.emitDueMemoryMaintenanceTasks(at), []);
+    assert.deepEqual(store.memoryObservations.emitDue(at), []);
     assert.equal(store.getImmutableEvent(emitted[0]!.triggerEventId!)?.trust, 'system');
     const decision = decideEvent({
       id: 'maintenance-authority', externalId: 'maintenance-authority', source: 'mimi:memory-maintenance',
@@ -87,7 +87,7 @@ test('terminal Tasks atomically register observations and emit one bounded maint
       kind: 'lesson', status: 'active', reasonCode: 'repeated_success',
     });
     assert.equal(await invoke('complete_memory_observations', { sourceKeys }) as unknown, 10);
-    assert.equal(store.memoryObservationStatus('owner').pending, 0);
+    assert.equal(store.memoryObservations.status('owner').pending, 0);
   } finally {
     store.close();
   }
@@ -123,7 +123,7 @@ test('terminal Task observations retain an immutable evidence snapshot bounded t
       executionAt,
     );
     store.completeTask('task-large', 'worker-large', { answer: large }, attempt.id, executionAt);
-    const observation = store.listMemoryObservations('owner')[0]!;
+    const observation = store.memoryObservations.list('owner')[0]!;
     assert.equal(
       Buffer.byteLength(JSON.stringify(observation.evidenceSnapshot)) <= MAX_MEMORY_EVIDENCE_SNAPSHOT_BYTES,
       true,
@@ -150,7 +150,7 @@ test('terminal Task observations retain an immutable evidence snapshot bounded t
 
   const reopened = new MimiStore(file);
   try {
-    const observation = reopened.listMemoryObservations('owner')[0]!;
+    const observation = reopened.memoryObservations.list('owner')[0]!;
     assert.notEqual(
       (observation.objective as { preview: string }).preview,
       JSON.stringify({ prompt: 'mutated' }),
@@ -182,7 +182,7 @@ test('v15 migration backfills bounded evidence for existing v14 observations', a
 
   const migrated = new MimiStore(file);
   try {
-    const observation = migrated.listMemoryObservations('owner')[0]!;
+    const observation = migrated.memoryObservations.list('owner')[0]!;
     assert.deepEqual(observation.objective, { prompt: 'objective legacy-observation' });
     assert.deepEqual(observation.result, { answer: 'durable result legacy-observation' });
   } finally {
@@ -202,7 +202,7 @@ test('maintenance cannot promote one untrusted observation to active memory', as
   try {
     const at = new Date();
     addTask(store, 'external-one', at, 'external');
-    const maintenance = store.emitDueMemoryMaintenanceTasks(at, 'owner')[0]!;
+    const maintenance = store.memoryObservations.emitDue(at, 'owner')[0]!;
     let captures = 0;
     const tools = createMemoryMaintenanceTools(store, maintenance, {
       capture: async (input, profileId) => {
@@ -254,17 +254,17 @@ test('observation completion is profile scoped and requires explicit receipts', 
   try {
     const at = new Date();
     addTask(store, 'task-one', at);
-    const observation = store.listMemoryObservations('owner')[0]!;
+    const observation = store.memoryObservations.list('owner')[0]!;
     assert.throws(
-      () => store.completeMemoryObservations('other', [{ sourceKey: observation.sourceKey, receiptId: 'receipt-1' }]),
+      () => store.memoryObservations.complete('other', [{ sourceKey: observation.sourceKey, receiptId: 'receipt-1' }]),
       /profile 不匹配/,
     );
-    assert.equal(store.completeMemoryObservations('owner', [{
+    assert.equal(store.memoryObservations.complete('owner', [{
       sourceKey: observation.sourceKey, receiptId: 'receipt-1',
     }]), 1);
-    assert.equal(store.memoryObservationStatus('owner').pending, 0);
+    assert.equal(store.memoryObservations.status('owner').pending, 0);
     assert.throws(
-      () => store.completeMemoryObservations('owner', [{ sourceKey: observation.sourceKey, receiptId: 'receipt-2' }]),
+      () => store.memoryObservations.complete('owner', [{ sourceKey: observation.sourceKey, receiptId: 'receipt-2' }]),
       /已完成/,
     );
   } finally {
@@ -277,8 +277,8 @@ test('empty automatic maintenance stays dormant while owner can request semantic
   const store = new MimiStore(path.join(root, 'mimi.db'));
   try {
     const at = new Date();
-    assert.deepEqual(store.emitDueMemoryMaintenanceTasks(at), []);
-    const task = store.emitDueMemoryMaintenanceTasks(at, 'owner')[0]!;
+    assert.deepEqual(store.memoryObservations.emitDue(at), []);
+    const task = store.memoryObservations.emitDue(at, 'owner')[0]!;
     assert.equal(task.type, 'memory_maintenance');
     assert.equal((task.objective as { semanticLint?: boolean }).semanticLint, true);
     assert.equal(store.getImmutableEvent(task.authorityEventId)?.trust, 'system');
@@ -293,12 +293,12 @@ test('page changes trigger semantic lint at 50 and successful maintenance resets
   try {
     const at = new Date();
     for (let index = 0; index < 10; index += 1) {
-      assert.equal(store.recordMemoryPageChanges('owner', `receipt-${index}`, 5, at), true);
-      assert.equal(store.recordMemoryPageChanges('owner', `receipt-${index}`, 5, at), false);
+      assert.equal(store.memoryObservations.recordPageChanges('owner', `receipt-${index}`, 5, at), true);
+      assert.equal(store.memoryObservations.recordPageChanges('owner', `receipt-${index}`, 5, at), false);
     }
-    assert.equal(store.memoryObservationStatus('owner').changesSinceSemanticLint, 50);
-    assert.equal(store.memoryObservationStatus('owner').semanticLintDue, true);
-    const task = store.emitDueMemoryMaintenanceTasks(at)[0]!;
+    assert.equal(store.memoryObservations.status('owner').changesSinceSemanticLint, 50);
+    assert.equal(store.memoryObservations.status('owner').semanticLintDue, true);
+    const task = store.memoryObservations.emitDue(at)[0]!;
     assert.equal((task.objective as { semanticLint?: boolean }).semanticLint, true);
     const owner = 'lint-worker';
     const executionAt = new Date(at.getTime() + 1_000);
@@ -308,15 +308,15 @@ test('page changes trigger semantic lint at 50 and successful maintenance resets
       () => store.completeTask(task.id, owner, { answer: 'semantic lint completed' }, attempt.id, executionAt),
       /缺少 semantic lint completion receipt/,
     );
-    store.completeMemorySemanticLint('owner', task.id, executionAt);
+    store.memoryObservations.completeSemanticLint('owner', task.id, executionAt);
     store.completeTask(task.id, owner, { answer: 'semantic lint completed' }, attempt.id, executionAt);
-    const status = store.memoryObservationStatus('owner');
+    const status = store.memoryObservations.status('owner');
     assert.equal(status.changesSinceSemanticLint, 0);
     assert.equal(status.semanticLintDue, false);
     assert.equal(status.lastSemanticLintAt, executionAt.toISOString());
     const staleChangeAt = new Date(at.getTime() - 8 * 24 * 60 * 60_000);
-    store.recordMemoryPageChanges('owner', 'receipt-stale-change', 1, staleChangeAt);
-    const aged = store.emitDueMemoryMaintenanceTasks(new Date(at.getTime() + 2_000))[0]!;
+    store.memoryObservations.recordPageChanges('owner', 'receipt-stale-change', 1, staleChangeAt);
+    const aged = store.memoryObservations.emitDue(new Date(at.getTime() + 2_000))[0]!;
     assert.equal((aged.objective as { semanticLint?: boolean }).semanticLint, true);
   } finally {
     store.close();

@@ -27,6 +27,11 @@ export interface DaxiangWebConfig {
 }
 
 export function parseDaxiangConfig(raw: unknown): DaxiangWebConfig;
+export function countMissingDaxiangOwnerBindings(config: {
+  expectedAccountFingerprint?: unknown;
+  selfConversation?: { binding?: Record<string, unknown> };
+  watch?: { conversations?: Array<{ binding?: Record<string, unknown> }> };
+}): number;
 export function loadDaxiangConfig(file: string): Promise<{ file: string; config: DaxiangWebConfig }>;
 
 export class ChromeJxaDriver {

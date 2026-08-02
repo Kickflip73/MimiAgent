@@ -54,7 +54,7 @@ export function createMemoryMaintenanceTools(
   if (task.type !== 'memory_maintenance' || !runtime) return [];
   const receipts = new Map<string, string>();
   let pageUpserts = 0;
-  const observations = () => store.listMemoryObservations(task.profileId, 20);
+  const observations = () => store.memoryObservations.list(task.profileId, 20);
   return [
     tool({
       name: 'list_memory_observations',
@@ -133,7 +133,7 @@ export function createMemoryMaintenanceTools(
         }
         if (action === 'upsert') {
           pageUpserts += 1;
-          store.recordMemoryPageChanges(task.profileId, receipt.id, Math.max(1, receipt.pageRefs.length));
+          store.memoryObservations.recordPageChanges(task.profileId, receipt.id, Math.max(1, receipt.pageRefs.length));
         }
         for (const sourceKey of sourceKeys) receipts.set(sourceKey, receipt.id);
         return receipt;
@@ -154,7 +154,7 @@ export function createMemoryMaintenanceTools(
         if (!runtime.merge) throw new Error('Memory merge runtime 未配置');
         const receipt = await runtime.merge({ targetRef, mergedRefs, title, content, reasonCode }, task.profileId);
         pageUpserts += 1;
-        store.recordMemoryPageChanges(task.profileId, `governance:${receipt.timestamp}`, receipt.affectedRefs.length);
+        store.memoryObservations.recordPageChanges(task.profileId, `governance:${receipt.timestamp}`, receipt.affectedRefs.length);
         return receipt;
       },
     }),
@@ -171,7 +171,7 @@ export function createMemoryMaintenanceTools(
         if (!runtime.supersede) throw new Error('Memory supersede runtime 未配置');
         const receipt = await runtime.supersede(ref, replacementRef, reasonCode, task.profileId);
         pageUpserts += 1;
-        store.recordMemoryPageChanges(task.profileId, `governance:${receipt.timestamp}`, receipt.affectedRefs.length);
+        store.memoryObservations.recordPageChanges(task.profileId, `governance:${receipt.timestamp}`, receipt.affectedRefs.length);
         return receipt;
       },
     }),
@@ -188,7 +188,7 @@ export function createMemoryMaintenanceTools(
         if (!runtime.addLinks) throw new Error('Memory link runtime 未配置');
         const receipt = await runtime.addLinks(ref, links, reasonCode, task.profileId);
         pageUpserts += 1;
-        store.recordMemoryPageChanges(task.profileId, `governance:${receipt.timestamp}`, receipt.affectedRefs.length);
+        store.memoryObservations.recordPageChanges(task.profileId, `governance:${receipt.timestamp}`, receipt.affectedRefs.length);
         return receipt;
       },
     }),
@@ -205,7 +205,7 @@ export function createMemoryMaintenanceTools(
         if (!runtime.move) throw new Error('Memory move runtime 未配置');
         const receipt = await runtime.move(ref, targetScope, reasonCode, task.profileId);
         pageUpserts += 1;
-        store.recordMemoryPageChanges(task.profileId, `governance:${receipt.timestamp}`, receipt.affectedRefs.length);
+        store.memoryObservations.recordPageChanges(task.profileId, `governance:${receipt.timestamp}`, receipt.affectedRefs.length);
         return receipt;
       },
     }),
@@ -225,14 +225,14 @@ export function createMemoryMaintenanceTools(
         sourceKeys: z.array(z.string().min(1)).max(20),
       }),
       execute: ({ sourceKeys }) => {
-        const completed = sourceKeys.length ? store.completeMemoryObservations(task.profileId, sourceKeys.map((sourceKey) => {
+        const completed = sourceKeys.length ? store.memoryObservations.complete(task.profileId, sourceKeys.map((sourceKey) => {
           const receiptId = receipts.get(sourceKey);
           if (!receiptId) throw new Error(`Observation 尚无本轮 applied/rejected receipt：${sourceKey}`);
           return { sourceKey, receiptId };
         })) : 0;
         if (task.objective && typeof task.objective === 'object'
           && (task.objective as Record<string, unknown>).semanticLint === true) {
-          store.completeMemorySemanticLint(task.profileId, task.id);
+          store.memoryObservations.completeSemanticLint(task.profileId, task.id);
         }
         return completed;
       },

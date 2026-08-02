@@ -62,7 +62,7 @@ function renderBanner(version: string, snapshot: MimiChatSnapshot): string {
     `模型    ${snapshot.provider} · ${snapshot.model}`,
     `对话    ${snapshot.draft ? '新对话（发送消息后创建）' : snapshot.sessionId}`,
     `工作区  ${snapshot.workspaceRoot}`,
-    `权限    ${snapshot.securityProfile.label} · /security 上下选择`,
+    `权限    ${snapshot.permissionMode === 'trusted' ? 'Full Owner' : snapshot.permissionMode === 'workspace' ? 'Workstation' : 'Safe'} · 启动配置冻结`,
   ].join('\n');
 }
 
@@ -279,23 +279,6 @@ export async function runMimiCli(
       label: `${mode.id === current ? '● ' : ''}${mode.label}`,
       detail: mode.description,
     })), '选择模式', current),
-    selectSecurityProfile: async (profiles, current) => terminal.select(profiles.map((profile) => {
-      const workspaceAccess = profile.id === 'safe'
-        ? '只读工作区'
-        : profile.id === 'workstation' ? '工作区可写' : '当前 OS 用户权限';
-      const capabilities = [
-        profile.shell ? 'Shell' : '无 Shell',
-        profile.externalTransactions ? '外部写事务' : '无外部写事务',
-        profile.computerUse ? '可配置 Computer Use' : '无 Computer Use',
-        profile.trustedWorkspaceMcp ? '受信工作区 MCP' : '无受信工作区 MCP',
-        profile.ephemeralSensitiveModelAccess ? '敏感值可发模型' : '敏感值不发模型',
-      ].join(' · ');
-      return {
-        value: profile.id,
-        label: `${profile.id === current ? '● ' : ''}${profile.label}`,
-        detail: `${workspaceAccess} · ${capabilities}`,
-      };
-    }), '选择当前对话安全档位', current),
     getOutputLevel: () => normalizeOutputLevel(snapshot.outputLevel),
     setOutputLevel: async (level) => {
       await target.setOutputLevel(level);

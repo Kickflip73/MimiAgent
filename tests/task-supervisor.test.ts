@@ -42,7 +42,7 @@ test('process supervisor schedules Codex background tasks instead of ignoring th
   const codexTask = task('codex-task', 'codex');
   let readySelector: unknown;
   const store = {
-    emitDueMemoryMaintenanceTasks: () => [],
+    memoryObservations: { emitDue: () => [] },
     runningTasks: () => [],
     readyTasks: (selector: unknown) => {
       readySelector = selector;
@@ -74,7 +74,7 @@ test('detached Codex write task keeps the workspace reservation', async () => {
   const queued = task('queued-task', 'isolated_worker');
   const runningCodex = { ...task('running-codex', 'codex'), status: 'running' as const };
   const store = {
-    emitDueMemoryMaintenanceTasks: () => [],
+    memoryObservations: { emitDue: () => [] },
     runningTasks: () => [runningCodex],
     readyTasks: () => [queued],
   };

@@ -25,6 +25,7 @@ import { AgentRequestFactory } from '../src/runtime/pipeline/request-factory.js'
 import { captureRunScope } from '../src/runtime/pipeline/run-scope.js';
 import { RunStateLoader } from '../src/runtime/pipeline/state-loader.js';
 import { RunFactCollector } from '../src/runtime/pipeline/run-fact-collector.js';
+import { toolsForSecurity } from '../src/runtime/tool-policy.js';
 import {
   ToolSetBuilder,
   withoutPersonalMessageDesktopFallback,
@@ -38,8 +39,6 @@ function scope() {
     provider: 'openai',
     model: 'gpt-test',
     mode: 'general',
-    permissionMode: 'trusted',
-    securityProfile: 'workstation',
     input: 'inspect',
     options: {
       executionKey: 'event-1',
@@ -53,10 +52,26 @@ function scope() {
   });
 }
 
+const workspaceAccess = {
+  workspaceWrite: true,
+  computer: false,
+  mcp: false,
+  ephemeralSensitiveModelAccess: false,
+  policyRevision: 'workspace',
+};
+const fullOwnerAccess = {
+  ...workspaceAccess,
+  computer: true,
+  mcp: true,
+  ephemeralSensitiveModelAccess: true,
+  policyRevision: 'trusted',
+};
+
 test('captures an immutable run scope before delayed pipeline work', () => {
   const captured = scope();
   assert.equal(captured.profileId, 'owner');
   assert.equal(captured.executionKey, 'event-1');
+  assert.equal('permissionMode' in captured, false);
   assert.ok(Object.isFrozen(captured));
   assert.ok(Object.isFrozen(captured.cause));
   assert.throws(() => {
@@ -152,6 +167,7 @@ test('capability resolver preserves provenance, mode, and completion boundaries'
   const resolver = new CapabilityResolver();
   const owner = resolver.resolve({
     scope: scope(),
+    runtimeAccess: workspaceAccess,
     defaultComputerAccess: 'background',
   });
   assert.equal(owner.canReadLocal, true);
@@ -164,8 +180,6 @@ test('capability resolver preserves provenance, mode, and completion boundaries'
     provider: 'openai',
     model: 'gpt-test',
     mode: 'general',
-    permissionMode: 'trusted',
-    securityProfile: 'full-owner',
     input: 'inspect',
     options: {
       cause: {
@@ -177,16 +191,19 @@ test('capability resolver preserves provenance, mode, and completion boundaries'
   });
   assert.equal(resolver.resolve({
     scope: fullOwnerScope,
+    runtimeAccess: fullOwnerAccess,
     defaultComputerAccess: 'background',
   }).computerAccess, 'background');
   assert.equal(resolver.resolve({
     scope: fullOwnerScope,
+    runtimeAccess: fullOwnerAccess,
     requestedComputerAccess: 'observe',
     defaultComputerAccess: 'background',
   }).computerAccess, 'observe');
 
   const restricted = resolver.resolve({
     scope: scope(),
+    runtimeAccess: workspaceAccess,
     policy: {
       allowedCapabilities: ['delivery-control'],
       allowedTools: ['finish_mimi_silently'],
@@ -211,8 +228,6 @@ test('tool set builder keeps mode and run-policy filtering in one stage', () => 
     [tool('read_file'), tool('write_file')],
     [tool('run_team')],
     [tool('delegate_research')],
-    'trusted',
-    'workstation',
     {
       allowedCapabilities: ['read'],
       allowSideEffects: false,
@@ -770,9 +785,7 @@ test('Workstation retains sandboxed shell and excludes external or GUI transacti
   const tool = (name: string) => ({ name }) as Tool;
   assert.deepEqual(
     new ToolSetBuilder().scoped(
-      [tool('run_shell'), tool('connector_action'), tool('computer_act')],
-      'trusted',
-      'workstation',
+      toolsForSecurity('workstation', [tool('run_shell'), tool('connector_action'), tool('computer_act')]),
       undefined,
       true,
     )
@@ -785,9 +798,7 @@ test('tool selection is independent from shell command strings', () => {
   const tool = (name: string) => ({ name }) as Tool;
   const builder = new ToolSetBuilder();
   const selected = () => builder.scoped(
-    [tool('run_shell'), tool('connector_action')],
-    'trusted',
-    'workstation',
+    toolsForSecurity('workstation', [tool('run_shell'), tool('connector_action')]),
     undefined,
     true,
   ).map((item) => item.name);

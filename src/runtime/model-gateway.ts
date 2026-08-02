@@ -69,8 +69,47 @@ export class ModelGateway {
     return structuredClone(this.registered(target).registration);
   }
 
+  provider(target: ModelTarget): ProviderDefinition {
+    return structuredClone(this.registered(target).provider);
+  }
+
   list(): ModelRegistration[] {
     return [...this.models.values()].map(({ registration }) => structuredClone(registration));
+  }
+
+  resolveAgentTarget(modelName: string): ModelTarget {
+    if (!/^[a-zA-Z0-9._:/-]+$/.test(modelName)) throw new Error('模型名称格式无效');
+    const slash = modelName.indexOf('/');
+    const candidates = slash > 0
+      ? [{ providerId: modelName.slice(0, slash), modelId: modelName.slice(slash + 1) }]
+        .filter((target) => this.models.get(modelTargetKey(target))?.registration.kind === 'agent')
+      : [...this.models.values()]
+        .filter(({ registration }) => registration.kind === 'agent'
+          && registration.target.modelId === modelName)
+        .map(({ registration }) => registration.target);
+    if (candidates.length !== 1) {
+      const available = [...new Set(this.list()
+        .filter((model) => model.kind === 'agent').map((model) => model.target.modelId))];
+      throw new Error(candidates.length
+        ? `模型名称不唯一，请使用 providerId/modelId：${modelName}`
+        : `模型不可用：${modelName}。可用模型：${available.join('、')}`);
+    }
+    return structuredClone(candidates[0]!);
+  }
+
+  legacyAgentTarget(
+    modelName: string | undefined,
+    provider?: 'openai' | 'deepseek' | 'openai-compatible',
+  ): ModelTarget | undefined {
+    if (!modelName) return undefined;
+    const matches = [...this.models.values()].filter(({ provider: candidate, registration }) => {
+      if (registration.kind !== 'agent' || registration.target.modelId !== modelName) return false;
+      if (!provider) return true;
+      if (provider === 'openai') return candidate.transport === 'openai-responses';
+      if (provider === 'deepseek') return candidate.id === 'deepseek-main';
+      return candidate.transport === 'openai-chat-completions' && candidate.id !== 'deepseek-main';
+    });
+    return matches.length === 1 ? structuredClone(matches[0]!.registration.target) : undefined;
   }
 
   createAgentRuntime(
@@ -81,10 +120,19 @@ export class ModelGateway {
     if (registration.kind !== 'agent' || !registration.capabilities.toolCalling) {
       throw new Error(`模型 ${modelTargetKey(target)} 不是可运行工具循环的 Agent Runtime`);
     }
+    const credential = this.environment[provider.apiKeyEnv]?.trim();
+    if (!credential && provider.transport === 'openai-responses' && !provider.baseUrl) {
+      return {
+        model: registration.target.modelId,
+        target: registration.target,
+        registration,
+        reasoning,
+      };
+    }
     return this.adapter(provider).createAgentRuntime(
       provider,
       registration,
-      this.credential(provider),
+      credential ?? this.credential(provider),
       reasoning,
     );
   }

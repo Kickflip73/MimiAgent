@@ -9,7 +9,7 @@ import {
 import { assertSessionId } from '../core/session-id.js';
 import { runFailureRecord, type RunFailureRecord } from '../core/run-failure.js';
 import type { RunFinalizationRecord } from '../core/run-finalization.js';
-import { EventStore } from './event-store.js';
+import { EventStore, listEventSummaries } from './event-store.js';
 import { EventRouter } from './event-router.js';
 import { sanitizedMemoryEvidenceSnapshot } from './memory-evidence.js';
 import { createFreshV16Schema } from './persistence/schema/current.js';
@@ -47,29 +47,23 @@ import {
 } from './schedule-store.js';
 import { MemoryObservationStore } from './memory-observation-store.js';
 import { RunStore } from './run-store.js';
-import { validTaskRoute } from './task-routing.js';
 import {
-  type AutonomousBudgetExhaustion,
-  type AutonomousBudgetReason,
-} from './run-source.js';
+  errorSummary,
+  hashedStateKey,
+  managementLimit,
+  optionalText as optional,
+  parseOptionalJson as parseJson,
+  type SqliteRow as Row,
+} from './sqlite-domain.js';
+import { validTaskRoute } from './task-routing.js';
 import type {
   EventEnvelope,
   EventRouteReceipt,
   DigestItem,
-  HostRunRecord,
   IngressTaskRoute,
   ImmutableEvent,
   ImmutableEventInput,
-  MimiActivitySnapshot,
   MimiEventSummary,
-  MemoryObservationCard,
-  MemoryObservationStatus,
-  MimiOutboxSummary,
-  MimiRunSummary,
-  MimiScheduleSummary,
-  MimiSessionActivity,
-  OutboxMessage,
-  OutboxStatus,
   ReplyRoute,
   ScheduleRecord,
   TaskAttemptRecord,
@@ -78,19 +72,12 @@ import type {
   TaskRecord,
   TaskRouteInput,
   TaskSelector,
-  TaskStatus,
 } from './types.js';
-
-type Row = Record<string, string | number | null | undefined>;
 
 const MAX_TASK_RESUME_CONTEXT_LENGTH = 4_000;
 const MAX_TASK_PROMPT_LENGTH = 64_000;
-const MEMORY_MAINTENANCE_BATCH_SIZE = 20;
 
-export interface IngressRouteDecision {
-  decision: 'task_created' | 'digest' | 'observe_only' | 'rejected';
-  reasonCode: string;
-}
+type IngressRouteDecision = Pick<EventRouteReceipt, 'decision' | 'reasonCode'>;
 
 export interface ConnectorHealthStateInput {
   connectorId: string;
@@ -102,18 +89,6 @@ export interface ConnectorHealthStateInput {
   profileId: string;
   sessionKey: string;
   eventsEnabled: boolean;
-}
-
-export interface HistoryPruneResult {
-  memoryObservations: number;
-  outbox: number;
-  digestItems: number;
-  runs: number;
-  tasks: number;
-  events: number;
-  schedules: number;
-  attentionState: number;
-  auditEvents: number;
 }
 
 function nowIso(): string {
@@ -128,17 +103,10 @@ function sanitizedJson(value: unknown): string {
   return JSON.stringify(sanitizeSensitiveData(value ?? null));
 }
 
-function parseJson<T>(value: string | number | null | undefined): T | undefined {
-  if (typeof value !== 'string') return undefined;
-  return JSON.parse(value) as T;
-}
-
-function optional(value: string | number | null | undefined): string | undefined {
-  return typeof value === 'string' && value ? value : undefined;
-}
-
-function managementLimit(value: number, fallback = 50): number {
-  return Number.isSafeInteger(value) ? Math.max(1, Math.min(200, value)) : fallback;
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function profileBoundSessionKey(profileId: string, sessionKey: string | undefined): string | undefined {
@@ -148,13 +116,6 @@ function profileBoundSessionKey(profileId: string, sessionKey: string | undefine
   }`;
 }
 
-function errorSummary(error: unknown, limit = 500): string {
-  return (sanitizeSensitiveText(error instanceof Error ? error.message : String(error)) ?? '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, limit) || '未知错误';
-}
-
 function resumedTaskPayload(payload: unknown, additionalContext?: string): unknown {
   if (additionalContext === undefined) return payload;
   const context = additionalContext.trim();
@@ -162,20 +123,14 @@ function resumedTaskPayload(payload: unknown, additionalContext?: string): unkno
   if (context.length > MAX_TASK_RESUME_CONTEXT_LENGTH) {
     throw new Error(`后台任务恢复上下文不能超过 ${MAX_TASK_RESUME_CONTEXT_LENGTH} 个字符`);
   }
-  const record = payload && typeof payload === 'object' && !Array.isArray(payload)
-    ? { ...payload as Record<string, unknown> }
-    : {};
-  const prompt = typeof record.prompt === 'string' ? record.prompt.trimEnd() : '';
+  const values = { ...record(payload) };
+  const prompt = typeof values.prompt === 'string' ? values.prompt.trimEnd() : '';
   const resumedPrompt = [prompt, `## 恢复补充上下文\n${context}`].filter(Boolean).join('\n\n');
   if (resumedPrompt.length > MAX_TASK_PROMPT_LENGTH) {
     throw new Error(`后台任务累计提示词不能超过 ${MAX_TASK_PROMPT_LENGTH} 个字符`);
   }
-  record.prompt = resumedPrompt;
-  return record;
-}
-
-function ownerRouteKey(profileId: string): string {
-  return `owner-route:${createHash('sha256').update(profileId).digest('hex').slice(0, 24)}`;
+  values.prompt = resumedPrompt;
+  return values;
 }
 
 function digestFromRow(row: Row): DigestItem {
@@ -194,43 +149,44 @@ function digestFromRow(row: Row): DigestItem {
   };
 }
 
-export class MimiStore {
+export class MimiStore extends ActivityStore {
   readonly file: string;
-  private readonly database: DatabaseSync;
   private readonly eventStore: EventStore;
   private readonly eventRouter: EventRouter;
   private readonly taskStore: TaskStore;
-  private readonly activityStore: ActivityStore;
-  private readonly outboxStore: OutboxStore;
-  private readonly scheduleStore: ScheduleStore;
-  private readonly memoryObservationStore: MemoryObservationStore;
-  private readonly runStore: RunStore;
+  readonly outbox: OutboxStore;
+  readonly schedules: ScheduleStore;
+  readonly memoryObservations: MemoryObservationStore;
+  readonly runs: RunStore;
   private ingressRoutePolicy?: (event: EventEnvelope, at: Date) => IngressRouteDecision;
 
   constructor(file: string) {
-    this.file = path.resolve(file);
-    mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
-    chmodSync(path.dirname(this.file), 0o700);
-    this.database = new DatabaseSync(this.file, { timeout: 5_000 });
+    const resolved = path.resolve(file);
+    mkdirSync(path.dirname(resolved), { recursive: true, mode: 0o700 });
+    chmodSync(path.dirname(resolved), 0o700);
+    const database = new DatabaseSync(resolved, { timeout: 5_000 });
+    super(database);
+    this.file = resolved;
+    const version = Number((database.prepare('PRAGMA user_version').get() as Row).user_version);
+    if (version > 16) {
+      database.close();
+      throw new Error(`不支持的 MimiAgent 数据库版本：${version}`);
+    }
     this.database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;');
     this.eventStore = new EventStore(this.database);
     this.taskStore = new TaskStore(this.database);
-    this.activityStore = new ActivityStore(this.database);
-    this.outboxStore = new OutboxStore(this.database, this.eventStore, this.taskStore);
-    this.memoryObservationStore = new MemoryObservationStore(
+    this.outbox = new OutboxStore(this.database, this.eventStore, this.taskStore);
+    this.memoryObservations = new MemoryObservationStore(
       this.database,
       this.eventStore,
       this.taskStore,
       (input, timestamp) => this.enqueueTaskRecord(input, timestamp),
     );
-    this.runStore = new RunStore(this.database);
-    this.backupBeforeMemoryHubCutover();
-    this.backupBeforeTaskRouteRepairV14();
-    this.backupBeforeMemoryEvidenceV15();
-    this.backupBeforeTaskExecutorV16();
+    this.runs = new RunStore(this.database, this.taskStore);
+    this.backupBeforeMigrations();
     this.migrate();
     this.eventRouter = new EventRouter(this, 'ingress-v1');
-    this.scheduleStore = new ScheduleStore(this.database, this.eventStore, this.taskStore, {
+    this.schedules = new ScheduleStore(this.database, this.eventStore, this.taskStore, {
       ensureConversationAuthority: (event) => this.ensureConversationAuthority(event),
       ingestEvent: (event, schedule) => this.ingestEvent(event, {
         type: 'scheduled',
@@ -287,10 +243,6 @@ export class MimiStore {
     return event;
   }
 
-  listImmutableEvents(limit = 50): ImmutableEvent[] {
-    return this.eventStore.list(managementLimit(limit));
-  }
-
   getEventRouteReceipt(eventId: string): EventRouteReceipt | undefined {
     return this.eventStore.getReceipt(eventId);
   }
@@ -343,34 +295,6 @@ export class MimiStore {
     return this.taskStore.listRunning(selector, managementLimit(limit));
   }
 
-  listMemoryObservations(profileId: string, limit = MEMORY_MAINTENANCE_BATCH_SIZE): MemoryObservationCard[] {
-    return this.memoryObservationStore.list(profileId, limit);
-  }
-
-  memoryObservationStatus(profileId: string): MemoryObservationStatus {
-    return this.memoryObservationStore.status(profileId);
-  }
-
-  recordMemoryPageChanges(profileId: string, receiptId: string, pageCount: number, at = new Date()): boolean {
-    return this.memoryObservationStore.recordPageChanges(profileId, receiptId, pageCount, at);
-  }
-
-  completeMemorySemanticLint(profileId: string, taskId: string, at = new Date()): void {
-    this.memoryObservationStore.completeSemanticLint(profileId, taskId, at);
-  }
-
-  completeMemoryObservations(
-    profileId: string,
-    completions: Array<{ sourceKey: string; receiptId: string }>,
-    at = new Date(),
-  ): number {
-    return this.memoryObservationStore.complete(profileId, completions, at);
-  }
-
-  emitDueMemoryMaintenanceTasks(at = new Date(), forceProfileId?: string): TaskRecord[] {
-    return this.memoryObservationStore.emitDue(at, forceProfileId);
-  }
-
   taskChildCount(parentTaskId: string): number {
     const row = this.database.prepare('SELECT COUNT(*) AS count FROM tasks WHERE parent_task_id = ?')
       .get(parentTaskId) as Row;
@@ -389,14 +313,8 @@ export class MimiStore {
       for (let scanned = 0; scanned < 100; scanned += 1) {
         const candidate = this.taskStore.claimCandidate(selector, timestamp);
         if (!candidate) return undefined;
-        const leaseUntil = new Date(at.getTime() + leaseMs).toISOString();
-        if (!this.taskStore.claim(candidate.id, owner, leaseUntil, timestamp)) continue;
-        const task = this.taskStore.get(candidate.id)!;
-        this.appendTaskLifecycleEvent(task, 'task.started', timestamp, {
-          attemptNo: task.attemptCount,
-          workerId: owner,
-        });
-        return task;
+        const claimed = this.claimReadyTask(candidate.id, owner, leaseMs, at, timestamp);
+        if (claimed) return claimed;
       }
       return undefined;
     });
@@ -413,14 +331,7 @@ export class MimiStore {
       this.recoverExpiredTasks(timestamp);
       const task = this.taskStore.get(taskId);
       if (!task || task.status !== 'queued' || task.notBefore > timestamp) return undefined;
-      const leaseUntil = new Date(at.getTime() + leaseMs).toISOString();
-      if (!this.taskStore.claim(taskId, owner, leaseUntil, timestamp)) return undefined;
-      const claimed = this.taskStore.get(taskId)!;
-      this.appendTaskLifecycleEvent(claimed, 'task.started', timestamp, {
-        attemptNo: claimed.attemptCount,
-        workerId: owner,
-      });
-      return claimed;
+      return this.claimReadyTask(taskId, owner, leaseMs, at, timestamp);
     });
   }
 
@@ -440,11 +351,7 @@ export class MimiStore {
     at = new Date(),
   ): TaskAttemptRecord {
     return this.transaction(() => {
-      const task = this.taskStore.get(taskId);
-      if (!task || task.status !== 'running' || task.leaseOwner !== owner
-        || !task.leaseUntil || task.leaseUntil <= at.toISOString()) {
-        throw new Error(`Task ${taskId} 租约已失效`);
-      }
+      const task = this.leasedTask(taskId, owner, at.toISOString());
       return this.taskStore.beginAttempt(randomUUID(), task, sessionKey, workerId, at.toISOString());
     });
   }
@@ -469,10 +376,6 @@ export class MimiStore {
     };
   }
 
-  getTaskAttempt(id: string): TaskAttemptRecord | undefined {
-    return this.taskStore.getAttempt(id);
-  }
-
   settleTaskControl(
     taskId: string,
     owner: string,
@@ -484,73 +387,12 @@ export class MimiStore {
       if (!task || task.status !== 'running' || task.leaseOwner !== owner || !task.controlIntent) {
         return undefined;
       }
-      const timestamp = at.toISOString();
-      const cancelled = task.controlIntent === 'cancel';
-      const reason = task.controlReason
-        ?? (cancelled ? 'owner cancelled Task' : 'owner paused Task');
-      const updated = this.database.prepare(`
-        UPDATE tasks SET status = ?, error = ?, lease_owner = NULL, lease_until = NULL,
-          control_intent = NULL, control_reason = NULL, updated_at = ?
-        WHERE id = ? AND status = 'running' AND lease_owner = ? AND control_intent = ?
-      `).run(cancelled ? 'cancelled' : 'paused', reason, timestamp, taskId, owner, task.controlIntent);
-      if (Number(updated.changes) !== 1) return undefined;
-      if (!this.taskStore.finishAttempt(
-        attemptId,
-        taskId,
-        task.attemptCount,
-        'interrupted',
-        undefined,
-        reason,
-        timestamp,
-      ) && attemptId) {
-        throw new Error(`Task Attempt ${attemptId} 已终止或不存在`);
-      }
-      const settled = this.taskStore.get(taskId)!;
-      this.appendTaskLifecycleEvent(
-        settled,
-        cancelled ? 'task.cancelled' : 'task.paused',
-        timestamp,
-        { reason, phase: 'safe_boundary' },
-      );
-      return settled;
+      return this.settleRunningTaskControl(task, at.toISOString(), 'safe_boundary', attemptId);
     });
   }
 
   pauseTask(taskId: string, reason = 'owner paused Task', at = new Date()): TaskRecord {
-    return this.transaction(() => {
-      const task = this.taskStore.get(taskId);
-      if (!task) throw new Error(`Task 不存在：${taskId}`);
-      const timestamp = at.toISOString();
-      const summary = errorSummary(reason, 4_000);
-      if (task.status === 'queued') {
-        const updated = this.database.prepare(`
-          UPDATE tasks SET status = 'paused', control_reason = ?, updated_at = ?
-          WHERE id = ? AND status = 'queued'
-        `).run(summary, timestamp, taskId);
-        if (Number(updated.changes) !== 1) throw new Error(`Task ${taskId} 状态已变化`);
-        const paused = this.taskStore.get(taskId)!;
-        this.appendTaskLifecycleEvent(paused, 'task.paused', timestamp, { reason: summary });
-        return paused;
-      }
-      if (task.status === 'running') {
-        if (task.controlIntent === 'cancel' || task.controlIntent === 'pause') return task;
-        const updated = this.database.prepare(`
-          UPDATE tasks SET
-            control_intent = CASE WHEN control_intent = 'cancel' THEN control_intent ELSE 'pause' END,
-            control_reason = CASE WHEN control_intent = 'cancel' THEN control_reason ELSE ? END,
-            updated_at = ?
-          WHERE id = ? AND status = 'running'
-        `).run(summary, timestamp, taskId);
-        if (Number(updated.changes) !== 1) throw new Error(`Task ${taskId} 状态已变化`);
-        const requested = this.taskStore.get(taskId)!;
-        if (requested.controlIntent === 'pause') {
-          this.appendTaskLifecycleEvent(requested, 'task.pause_requested', timestamp, { reason: summary });
-        }
-        return requested;
-      }
-      if (task.status === 'paused') return task;
-      throw new Error(`Task ${taskId} 不是可暂停状态：${task.status}`);
-    });
+    return this.controlTask(taskId, 'pause', reason, at);
   }
 
   resumeTask(taskId: string, context?: string, at = new Date()): TaskRecord {
@@ -577,33 +419,55 @@ export class MimiStore {
   }
 
   cancelTask(taskId: string, reason = 'owner cancelled Task', at = new Date()): TaskRecord {
+    return this.controlTask(taskId, 'cancel', reason, at);
+  }
+
+  private controlTask(
+    taskId: string,
+    intent: TaskControlIntent,
+    reason: string,
+    at: Date,
+  ): TaskRecord {
     return this.transaction(() => {
       const task = this.taskStore.get(taskId);
       if (!task) throw new Error(`Task 不存在：${taskId}`);
       const timestamp = at.toISOString();
       const summary = errorSummary(reason, 4_000);
       if (task.status === 'running') {
-        if (task.controlIntent === 'cancel') return task;
-        this.database.prepare(`
-          UPDATE tasks SET control_intent = 'cancel', control_reason = ?, updated_at = ?
+        if (task.controlIntent === 'cancel' || task.controlIntent === intent) return task;
+        const updated = this.database.prepare(`
+          UPDATE tasks SET control_intent = ?, control_reason = ?, updated_at = ?
           WHERE id = ? AND status = 'running'
-        `).run(summary, timestamp, taskId);
+        `).run(intent, summary, timestamp, taskId);
+        if (Number(updated.changes) !== 1) throw new Error(`Task ${taskId} 状态已变化`);
         const requested = this.taskStore.get(taskId)!;
-        this.appendTaskLifecycleEvent(requested, 'task.cancel_requested', timestamp, { reason: summary });
+        this.appendTaskLifecycleEvent(requested, `task.${intent}_requested`, timestamp, { reason: summary });
         return requested;
       }
-      if (task.status === 'queued' || task.status === 'paused' || task.status === 'blocked') {
+      const pausable = intent === 'pause' && task.status === 'queued';
+      const cancellable = intent === 'cancel'
+        && (task.status === 'queued' || task.status === 'paused' || task.status === 'blocked');
+      if (pausable || cancellable) {
+        const status = intent === 'pause' ? 'paused' : 'cancelled';
         const updated = this.database.prepare(`
-          UPDATE tasks SET status = 'cancelled', error = ?, control_intent = NULL,
-            control_reason = NULL, updated_at = ?
-          WHERE id = ? AND status IN ('queued', 'paused', 'blocked')
-        `).run(summary, timestamp, taskId);
+          UPDATE tasks SET status = ?, error = ?, control_intent = NULL,
+            control_reason = ?, updated_at = ?
+          WHERE id = ? AND status = ?
+        `).run(
+          status,
+          intent === 'cancel' ? summary : null,
+          intent === 'pause' ? summary : null,
+          timestamp,
+          taskId,
+          task.status,
+        );
         if (Number(updated.changes) !== 1) throw new Error(`Task ${taskId} 状态已变化`);
-        const cancelled = this.taskStore.get(taskId)!;
-        this.appendTaskLifecycleEvent(cancelled, 'task.cancelled', timestamp, { reason: summary });
-        return cancelled;
+        const controlled = this.taskStore.get(taskId)!;
+        this.appendTaskLifecycleEvent(controlled, `task.${status}`, timestamp, { reason: summary });
+        return controlled;
       }
-      return task;
+      if (intent === 'cancel' || task.status === 'paused') return task;
+      throw new Error(`Task ${taskId} 不是可暂停状态：${task.status}`);
     });
   }
 
@@ -617,14 +481,9 @@ export class MimiStore {
   ): TaskRecord {
     return this.transaction(() => {
       const timestamp = at.toISOString();
-      const current = this.taskStore.get(taskId);
-      if (!current || current.status !== 'running' || current.leaseOwner !== owner
-        || !current.leaseUntil || current.leaseUntil <= timestamp) {
-        throw new Error(`Task ${taskId} 租约已失效`);
-      }
+      const current = this.leasedTask(taskId, owner, timestamp);
       const requiresSemanticLintReceipt = current.type === 'memory_maintenance'
-        && current.objective !== null && typeof current.objective === 'object'
-        && (current.objective as Record<string, unknown>).semanticLint === true;
+        && record(current.objective)?.semanticLint === true;
       if (requiresSemanticLintReceipt && !this.database.prepare(`
         SELECT 1 FROM memory_lint_task_receipts WHERE task_id=? AND profile_id=?
       `).get(current.id, current.profileId)) {
@@ -633,17 +492,7 @@ export class MimiStore {
       if (!this.taskStore.updateTerminal(taskId, owner, 'completed', result, undefined, timestamp)) {
         throw new Error(`Task ${taskId} 租约已失效`);
       }
-      if (!this.taskStore.finishAttempt(
-        attemptId,
-        taskId,
-        current.attemptCount,
-        'completed',
-        result,
-        undefined,
-        timestamp,
-      ) && attemptId) {
-        throw new Error(`Task Attempt ${attemptId} 已终止或不存在`);
-      }
+      this.finishTaskAttempt(current, attemptId, 'completed', result, undefined, timestamp);
       const task = this.taskStore.get(taskId)!;
       if (task.type === 'briefing' && task.triggerEventId) {
         this.database.prepare(`
@@ -651,9 +500,7 @@ export class MimiStore {
           WHERE briefing_event_id = ? AND digested_at IS NULL
         `).run(timestamp, task.triggerEventId);
       }
-      if (task.type === 'memory_maintenance'
-        && task.objective && typeof task.objective === 'object'
-        && (task.objective as Record<string, unknown>).semanticLint === true) {
+      if (requiresSemanticLintReceipt) {
         this.database.prepare(`
           INSERT INTO memory_lint_state (profile_id, changes_since_lint, first_changed_at, last_lint_at)
           VALUES (?, 0, NULL, ?)
@@ -662,7 +509,7 @@ export class MimiStore {
         `).run(task.profileId, timestamp);
       }
       this.appendTaskLifecycleEvent(task, 'task.completed', timestamp, { resultAvailable: result !== undefined });
-      this.memoryObservationStore.recordTask(task, 'completed', result, attemptId, timestamp);
+      this.memoryObservations.recordTask(task, 'completed', result, attemptId, timestamp);
       if (delivery) this.insertOutbox(taskId, delivery.route, delivery.payload, timestamp);
       return task;
     });
@@ -688,12 +535,8 @@ export class MimiStore {
     delivery?: { route: ReplyRoute; payload: unknown },
   ): TaskRecord {
     return this.transaction(() => {
-      const task = this.taskStore.get(taskId);
       const timestamp = at.toISOString();
-      if (!task || task.status !== 'running' || task.leaseOwner !== owner
-        || !task.leaseUntil || task.leaseUntil <= timestamp || task.controlIntent !== undefined) {
-        throw new Error(`Task ${taskId} 租约已失效`);
-      }
+      const task = this.leasedTask(taskId, owner, timestamp, true);
       const updated = this.database.prepare(`
         UPDATE tasks SET status = 'blocked', result_json = ?, error = ?, lease_owner = NULL,
           lease_until = NULL, control_intent = NULL, control_reason = NULL, updated_at = ?
@@ -701,17 +544,7 @@ export class MimiStore {
           AND lease_until > ? AND control_intent IS NULL
       `).run(sanitizedJson(result), errorSummary(reason, 4_000), timestamp, taskId, owner, timestamp);
       if (Number(updated.changes) !== 1) throw new Error(`Task ${taskId} 租约已失效`);
-      if (!this.taskStore.finishAttempt(
-        attemptId,
-        taskId,
-        task.attemptCount,
-        'interrupted',
-        result,
-        reason,
-        timestamp,
-      ) && attemptId) {
-        throw new Error(`Task Attempt ${attemptId} 已终止或不存在`);
-      }
+      this.finishTaskAttempt(task, attemptId, 'interrupted', result, reason, timestamp);
       const blocked = this.taskStore.get(taskId)!;
       this.appendTaskLifecycleEvent(blocked, 'task.blocked', timestamp, { reason });
       if (delivery) this.insertOutbox(taskId, delivery.route, delivery.payload, timestamp);
@@ -721,12 +554,8 @@ export class MimiStore {
 
   requeueTask(taskId: string, owner: string, reason: string, attemptId?: string, at = new Date()): TaskRecord {
     return this.transaction(() => {
-      const task = this.taskStore.get(taskId);
       const timestamp = at.toISOString();
-      if (!task || task.status !== 'running' || task.leaseOwner !== owner
-        || !task.leaseUntil || task.leaseUntil <= timestamp || task.controlIntent) {
-        throw new Error(`Task ${taskId} 租约已失效`);
-      }
+      const task = this.leasedTask(taskId, owner, timestamp, true);
       if (!this.taskStore.requeueFailure(
         taskId,
         owner,
@@ -745,9 +574,7 @@ export class MimiStore {
       )) {
         throw new Error(`Task ${taskId} 租约已失效`);
       }
-      if (!this.taskStore.finishAttempt(
-        attemptId, taskId, task.attemptCount, 'interrupted', undefined, reason, timestamp,
-      ) && attemptId) throw new Error(`Task Attempt ${attemptId} 已终止或不存在`);
+      this.finishTaskAttempt(task, attemptId, 'interrupted', undefined, reason, timestamp);
       const queued = this.taskStore.get(taskId)!;
       this.appendTaskLifecycleEvent(queued, 'task.retry_scheduled', timestamp, { reason, notBefore: timestamp });
       return queued;
@@ -757,11 +584,7 @@ export class MimiStore {
   preemptTask(taskId: string, owner: string, reason: string, attemptId?: string, at = new Date()): TaskRecord {
     return this.transaction(() => {
       const timestamp = at.toISOString();
-      const task = this.taskStore.get(taskId);
-      if (!task || task.status !== 'running' || task.leaseOwner !== owner
-        || !task.leaseUntil || task.leaseUntil <= timestamp || task.controlIntent) {
-        throw new Error(`Task ${taskId} 租约已失效`);
-      }
+      const task = this.leasedTask(taskId, owner, timestamp, true);
       const updated = this.database.prepare(`
         UPDATE tasks SET status = 'queued', max_attempts = max_attempts + 1,
           not_before = ?, error = ?, lease_owner = NULL, lease_until = NULL, updated_at = ?
@@ -769,9 +592,7 @@ export class MimiStore {
           AND lease_until > ? AND control_intent IS NULL
       `).run(timestamp, errorSummary(reason, 4_000), timestamp, taskId, owner, timestamp);
       if (Number(updated.changes) !== 1) throw new Error(`Task ${taskId} 租约已失效`);
-      if (!this.taskStore.finishAttempt(
-        attemptId, taskId, task.attemptCount, 'interrupted', undefined, reason, timestamp,
-      ) && attemptId) throw new Error(`Task Attempt ${attemptId} 已终止或不存在`);
+      this.finishTaskAttempt(task, attemptId, 'interrupted', undefined, reason, timestamp);
       const queued = this.taskStore.get(taskId)!;
       this.appendTaskLifecycleEvent(queued, 'task.preempted', timestamp, { reason });
       return queued;
@@ -791,12 +612,8 @@ export class MimiStore {
     return this.transaction(() => {
       const structuredFailure = runFailureRecord(failure);
       if (!structuredFailure) throw new Error('Task failure 缺少有效的结构化 disposition');
-      const task = this.taskStore.get(taskId);
-      if (!task || task.status !== 'running' || task.leaseOwner !== owner
-        || !task.leaseUntil || task.leaseUntil <= at.toISOString()) {
-        throw new Error(`Task ${taskId} 租约已失效`);
-      }
       const timestamp = at.toISOString();
+      const task = this.leasedTask(taskId, owner, timestamp);
       const summary = errorSummary(error, 4_000);
       const uncertain = structuredFailure.disposition.kind === 'uncertain';
       const effectiveAttemptLimit = Math.max(
@@ -829,17 +646,9 @@ export class MimiStore {
           timestamp,
         )) throw new Error(`Task ${taskId} 租约已失效`);
       }
-      if (!this.taskStore.finishAttempt(
-        attemptId,
-        taskId,
-        task.attemptCount,
-        'failed',
-        finalization ? { finalization } : undefined,
-        summary,
-        timestamp,
-      ) && attemptId) {
-        throw new Error(`Task Attempt ${attemptId} 已终止或不存在`);
-      }
+      this.finishTaskAttempt(
+        task, attemptId, 'failed', finalization ? { finalization } : undefined, summary, timestamp,
+      );
       const updated = this.taskStore.get(taskId)!;
       this.appendTaskLifecycleEvent(updated, terminal
         ? (updated.status === 'failed' ? 'task.failed' : 'task.dead_letter')
@@ -850,7 +659,7 @@ export class MimiStore {
         notBefore: updated.notBefore,
       });
       if (terminal && updated.status === 'dead_letter') {
-        this.memoryObservationStore.recordTask(
+        this.memoryObservations.recordTask(
           updated,
           'dead_letter',
           { error: summary, failure: structuredFailure },
@@ -926,9 +735,7 @@ export class MimiStore {
         }
         return appended;
       }
-      const payload = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload)
-        ? event.payload as Record<string, unknown>
-        : {};
+      const payload = record(event.payload) ?? {};
       const taskType = route.type ?? 'conversation';
       const authorityEventId = route.authorityEventId ?? appended.event.id;
       const taskInput: TaskInput = {
@@ -979,23 +786,7 @@ export class MimiStore {
   }
 
   listEventSummaries(requestedLimit = 50): MimiEventSummary[] {
-    return (this.database.prepare(`
-      SELECT id, external_id, source, type, trust, subject_type, subject_id,
-        profile_id, occurred_at, received_at, created_at
-      FROM events ORDER BY received_at DESC, rowid DESC LIMIT ?
-    `).all(managementLimit(requestedLimit)) as Row[]).map((row) => ({
-      id: String(row.id),
-      externalId: String(row.external_id).slice(0, 500),
-      source: String(row.source).slice(0, 200),
-      type: String(row.type),
-      trust: String(row.trust) as ImmutableEvent['trust'],
-      subjectType: optional(row.subject_type) as ImmutableEvent['subjectType'],
-      subjectId: optional(row.subject_id),
-      profileId: String(row.profile_id).slice(0, 100),
-      occurredAt: String(row.occurred_at),
-      receivedAt: String(row.received_at),
-      createdAt: String(row.created_at),
-    }));
+    return listEventSummaries(this.database, requestedLimit);
   }
 
   retryDeadLetterTask(id: string, at = new Date()): TaskRecord {
@@ -1051,11 +842,9 @@ export class MimiStore {
     const current = { status: input.status, reasonCode, detail };
     const key = `connector-health:${input.connectorId}`;
     return this.transaction(() => {
-      const row = this.database.prepare('SELECT value FROM attention_state WHERE key = ?')
-        .get(key) as Row | undefined;
       let previous: typeof current | undefined;
       try {
-        const parsed = parseJson<Partial<typeof current>>(row?.value);
+        const parsed = parseJson<Partial<typeof current>>(this.attentionState(key));
         if (parsed && ['ready', 'unavailable', 'stale', 'unknown'].includes(parsed.status ?? '')) {
           previous = {
             status: parsed.status as typeof current.status,
@@ -1074,10 +863,7 @@ export class MimiStore {
           .run(timestamp, key);
         return undefined;
       }
-      this.database.prepare(`
-        INSERT INTO attention_state (key, value, updated_at) VALUES (?, ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-      `).run(key, json(current), timestamp);
+      this.upsertAttentionState(key, json(current), timestamp);
       if (!input.eventsEnabled || !previous) return undefined;
       const eventStatus = current.status === 'ready' ? 'recovered' : current.status;
       const automaticRecovery = input.automaticRestart
@@ -1122,13 +908,13 @@ export class MimiStore {
     this.database.prepare(`
       INSERT INTO attention_state (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run(ownerRouteKey(profileId), json({ channel, target }), at.toISOString());
+    `).run(hashedStateKey('owner-route', profileId), json({ channel, target }), at.toISOString());
   }
 
   recentOwnerReplyRoute(profileId: string, maxAgeMs: number, at = new Date()): ReplyRoute | undefined {
     const row = this.database.prepare(`
       SELECT value FROM attention_state WHERE key = ? AND updated_at >= ?
-    `).get(ownerRouteKey(profileId), new Date(at.getTime() - maxAgeMs).toISOString()) as Row | undefined;
+    `).get(hashedStateKey('owner-route', profileId), new Date(at.getTime() - maxAgeMs).toISOString()) as Row | undefined;
     try {
       const route = row ? parseJson<ReplyRoute>(row.value) : undefined;
       if (
@@ -1192,45 +978,11 @@ export class MimiStore {
         UPDATE digest_items SET briefing_event_id = ?
         WHERE id IN (${items.map(() => '?').join(', ')})
       `).run(result.event.id, ...items.map((item) => item.id));
-      this.insertAudit('briefing.created', result.event.id, { checkpointKey, items: items.length }, timestamp);
+      this.audit('briefing.created', result.event.id, { checkpointKey, items: items.length }, timestamp);
       return result.event;
     });
   }
 
-  countRunsSince(since: Date, source?: string): number {
-    return this.activityStore.countRunsSince(since, source);
-  }
-
-  autonomousBudgetUsageSince(
-    since: Date,
-    source?: string,
-  ): {
-    runs: number;
-    reservedRuns: number;
-    unmeteredRuns: number;
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-  } {
-    return this.activityStore.autonomousBudgetUsageSince(since, source);
-  }
-
-  recordAutonomousBudgetExhaustion(
-    source: string,
-    reasonCode: AutonomousBudgetReason,
-    retryAt: Date,
-    at = new Date(),
-  ): boolean {
-    return this.activityStore.recordAutonomousBudgetExhaustion(source, reasonCode, retryAt, at);
-  }
-
-  clearAutonomousBudgetExhaustion(source: string, at = new Date()): boolean {
-    return this.activityStore.clearAutonomousBudgetExhaustion(source, at);
-  }
-
-  activeAutonomousBudgetExhaustions(at = new Date()): AutonomousBudgetExhaustion[] {
-    return this.activityStore.activeAutonomousBudgetExhaustions(at);
-  }
 
   completeCodexTask(
     id: string,
@@ -1250,12 +1002,8 @@ export class MimiStore {
     at = new Date(),
   ): TaskRecord {
     const task = this.taskStore.get(id);
-    const current = task?.objective && typeof task.objective === 'object' && !Array.isArray(task.objective)
-      ? task.objective as Record<string, unknown>
-      : {};
-    const previousCodex = current.codex && typeof current.codex === 'object' && !Array.isArray(current.codex)
-      ? current.codex as Record<string, unknown>
-      : {};
+    const current = record(task?.objective) ?? {};
+    const previousCodex = record(current.codex) ?? {};
     const threadId = result.threadId
       ?? (typeof previousCodex.threadId === 'string' ? previousCodex.threadId : undefined);
     const completedAt = at.toISOString();
@@ -1287,7 +1035,7 @@ export class MimiStore {
         text: `Codex 后台任务已完成（${id}）：${result.answer}`.slice(0, 4_000),
       },
     } : undefined);
-    this.insertAudit('task.codex_completed', id, {
+    this.audit('task.codex_completed', id, {
       threadId, exitCode: result.exitCode, runnerPid: result.runnerPid, codexPid: result.codexPid,
     }, completedAt);
     return completed;
@@ -1309,17 +1057,9 @@ export class MimiStore {
   ): TaskRecord {
     return this.transaction(() => {
       const timestamp = at.toISOString();
-      const task = this.taskStore.get(id);
-      if (!task || task.status !== 'running' || task.leaseOwner !== owner || task.controlIntent
-        || !task.leaseUntil || task.leaseUntil <= timestamp) {
-        throw new Error(`Codex Task ${id} 租约已失效`);
-      }
-      const current = task.objective && typeof task.objective === 'object' && !Array.isArray(task.objective)
-        ? task.objective as Record<string, unknown>
-        : {};
-      const previousCodex = current.codex && typeof current.codex === 'object' && !Array.isArray(current.codex)
-        ? current.codex as Record<string, unknown>
-        : {};
+      const task = this.leasedTask(id, owner, timestamp, true);
+      const current = record(task.objective) ?? {};
+      const previousCodex = record(current.codex) ?? {};
       const objective = {
         ...current,
         codex: { ...previousCodex, ...checkpoint, checkpointedAt: at.toISOString() },
@@ -1330,54 +1070,9 @@ export class MimiStore {
           AND lease_until > ? AND control_intent IS NULL
       `).run(json(objective), timestamp, id, owner, timestamp);
       if (Number(updated.changes) !== 1) throw new Error(`Codex Task ${id} 租约已失效`);
-      this.insertAudit('task.executor_checkpoint', id, { executor: 'codex', ...checkpoint }, timestamp);
+      this.audit('task.executor_checkpoint', id, { executor: 'codex', ...checkpoint }, timestamp);
       return this.taskStore.get(id)!;
     });
-  }
-
-  claimOutbox(
-    owner: string,
-    leaseMs = 180_000,
-    at = new Date(),
-    excludedRoutes: readonly ReplyRoute[] = [],
-  ): OutboxMessage | undefined {
-    return this.outboxStore.claim(owner, leaseMs, at, excludedRoutes);
-  }
-
-  completeOutbox(id: string, owner: string): void {
-    this.outboxStore.complete(id, owner);
-  }
-
-  failOutbox(id: string, owner: string, error: unknown, maxAttempts = 8, at = new Date()): void {
-    this.outboxStore.fail(id, owner, error, maxAttempts, at);
-  }
-
-  listOutbox(limit = 50): OutboxMessage[] {
-    return this.outboxStore.list(limit);
-  }
-
-  listOutboxSummaries(requestedLimit = 50): MimiOutboxSummary[] {
-    return this.outboxStore.listSummaries(requestedLimit);
-  }
-
-  retryDeadLetterOutbox(id: string, at = new Date()): OutboxMessage {
-    return this.outboxStore.retryDeadLetter(id, at);
-  }
-
-  archiveDeadLetterOutbox(id: string, at = new Date()): OutboxMessage {
-    return this.outboxStore.archiveDeadLetter(id, at);
-  }
-
-  listRuns(limit = 50): HostRunRecord[] {
-    return this.runStore.list(limit);
-  }
-
-  listRunSummaries(requestedLimit = 50): MimiRunSummary[] {
-    return this.runStore.listSummaries(requestedLimit);
-  }
-
-  sessionActivity(sessionKey: string, limit = 20): MimiSessionActivity[] {
-    return this.runStore.sessionActivity(sessionKey, limit);
   }
 
   cancelInterruptedSessionTask(sessionKey: string, taskId: string, reason: string, at = new Date()): boolean {
@@ -1393,52 +1088,7 @@ export class MimiStore {
     });
   }
 
-  addSchedule(input: Omit<ScheduleRecord, 'id' | 'enabled' | 'lastRunAt' | 'createdAt' | 'updatedAt'>): ScheduleRecord {
-    return this.scheduleStore.add(input);
-  }
-
-  listSchedules(): ScheduleRecord[] {
-    return this.scheduleStore.list();
-  }
-
-  listScheduleSummaries(requestedLimit = 200, requestedOffset = 0): MimiScheduleSummary[] {
-    return this.scheduleStore.listSummaries(requestedLimit, requestedOffset);
-  }
-
-  scheduleCount(): number {
-    return this.scheduleStore.count();
-  }
-
-  scheduleRevision(): string {
-    return this.scheduleStore.revision();
-  }
-
-  removeSchedule(id: string, at = new Date()): boolean {
-    return this.scheduleStore.remove(id, at);
-  }
-
-  wakeWatches(sessionKey: string, triggeringEventId: string, at = new Date()): number {
-    return this.scheduleStore.wake(sessionKey, triggeringEventId, at);
-  }
-
-  emitDueSchedules(at = new Date()): ImmutableEvent[] {
-    return this.scheduleStore.emitDue(at);
-  }
-
-  counts(): {
-    events: { total: number };
-    tasks: Record<TaskStatus, number>;
-    outbox: Record<OutboxStatus, number>;
-    enabledSchedules: number;
-  } {
-    return this.activityStore.counts();
-  }
-
-  activitySnapshot(requestedLimit = 10, at = new Date()): MimiActivitySnapshot {
-    return this.activityStore.activitySnapshot(requestedLimit, at);
-  }
-
-  pruneHistory(cutoff: Date): HistoryPruneResult {
+  pruneHistory(cutoff: Date) {
     if (!Number.isFinite(cutoff.getTime())) throw new Error('历史保留 cutoff 不是有效时间');
     const timestamp = cutoff.toISOString();
     const result = this.transaction(() => {
@@ -1524,26 +1174,48 @@ export class MimiStore {
     return result;
   }
 
-  getOutbox(id: string): OutboxMessage | undefined {
-    return this.outboxStore.get(id);
-  }
-
-  getRun(id: string): HostRunRecord | undefined {
-    return this.runStore.get(id);
-  }
-
-  getSchedule(id: string): ScheduleRecord | undefined {
-    return this.scheduleStore.get(id);
-  }
-
   private insertOutbox(subjectId: string, route: ReplyRoute, payload: unknown, timestamp: string): string {
-    return this.outboxStore.insert(subjectId, route, payload, timestamp);
+    return this.outbox.insert(subjectId, route, payload, timestamp);
   }
 
-  private insertAudit(type: string, entityId: string, data: unknown, timestamp: string): void {
-    this.database.prepare(`
-      INSERT INTO audit_events (id, event_type, entity_id, data_json, created_at) VALUES (?, ?, ?, ?, ?)
-    `).run(randomUUID(), type, entityId, json(data), timestamp);
+  private claimReadyTask(
+    taskId: string,
+    owner: string,
+    leaseMs: number,
+    at: Date,
+    timestamp: string,
+  ): TaskRecord | undefined {
+    if (!this.taskStore.claim(
+      taskId, owner, new Date(at.getTime() + leaseMs).toISOString(), timestamp,
+    )) return undefined;
+    const task = this.taskStore.get(taskId)!;
+    this.appendTaskLifecycleEvent(task, 'task.started', timestamp, {
+      attemptNo: task.attemptCount,
+      workerId: owner,
+    });
+    return task;
+  }
+
+  private leasedTask(taskId: string, owner: string, timestamp: string, uncontrolled = false): TaskRecord {
+    const task = this.taskStore.get(taskId);
+    if (!task || task.status !== 'running' || task.leaseOwner !== owner
+      || !task.leaseUntil || task.leaseUntil <= timestamp || (uncontrolled && task.controlIntent)) {
+      throw new Error(`Task ${taskId} 租约已失效`);
+    }
+    return task;
+  }
+
+  private finishTaskAttempt(
+    task: TaskRecord,
+    attemptId: string | undefined,
+    status: Exclude<TaskAttemptRecord['status'], 'running'>,
+    answer: unknown,
+    error: string | undefined,
+    timestamp: string,
+  ): void {
+    if (!this.taskStore.finishAttempt(
+      attemptId, task.id, task.attemptCount, status, answer, error, timestamp,
+    ) && attemptId) throw new Error(`Task Attempt ${attemptId} 已终止或不存在`);
   }
 
   private enqueueTaskRecord(input: TaskInput, timestamp: string): TaskRecord {
@@ -1610,6 +1282,38 @@ export class MimiStore {
     return event;
   }
 
+  private settleRunningTaskControl(
+    task: TaskRecord,
+    timestamp: string,
+    phase: 'safe_boundary' | 'lease_recovery',
+    attemptId?: string,
+  ): TaskRecord | undefined {
+    const intent = task.controlIntent;
+    if (!intent || !task.leaseOwner) return undefined;
+    const cancelled = intent === 'cancel';
+    const reason = task.controlReason ?? (cancelled ? 'owner cancelled Task' : 'owner paused Task');
+    const updated = this.database.prepare(`
+      UPDATE tasks SET status = ?, error = ?, lease_owner = NULL, lease_until = NULL,
+        control_intent = NULL, control_reason = NULL, updated_at = ?
+      WHERE id = ? AND status = 'running' AND lease_owner = ? AND control_intent = ?
+    `).run(cancelled ? 'cancelled' : 'paused', reason, timestamp, task.id, task.leaseOwner, intent);
+    if (Number(updated.changes) !== 1) return undefined;
+    if (phase === 'lease_recovery') {
+      this.database.prepare(`
+        UPDATE runs SET status = 'interrupted', completed_at = ?, error = ?
+        WHERE task_id = ? AND status = 'running'
+      `).run(timestamp, reason, task.id);
+    } else {
+      this.finishTaskAttempt(task, attemptId, 'interrupted', undefined, reason, timestamp);
+    }
+    const settled = this.taskStore.get(task.id)!;
+    this.appendTaskLifecycleEvent(settled, cancelled ? 'task.cancelled' : 'task.paused', timestamp, {
+      reason,
+      phase,
+    });
+    return settled;
+  }
+
   private recoverExpiredTasks(timestamp: string): void {
     const rows = this.database.prepare(`
       SELECT id FROM tasks
@@ -1620,33 +1324,7 @@ export class MimiStore {
       const task = this.taskStore.get(String(row.id));
       if (!task || task.status !== 'running' || !task.leaseOwner) continue;
       if (task.controlIntent) {
-        const cancelled = task.controlIntent === 'cancel';
-        const reason = task.controlReason
-          ?? (cancelled ? 'owner cancelled Task' : 'owner paused Task');
-        const updatedControl = this.database.prepare(`
-          UPDATE tasks SET status = ?, error = ?, lease_owner = NULL, lease_until = NULL, control_intent = NULL,
-            control_reason = NULL, updated_at = ?
-          WHERE id = ? AND status = 'running' AND lease_owner = ? AND control_intent = ?
-        `).run(
-          cancelled ? 'cancelled' : 'paused',
-          reason,
-          timestamp,
-          task.id,
-          task.leaseOwner,
-          task.controlIntent,
-        );
-        if (Number(updatedControl.changes) !== 1) continue;
-        this.database.prepare(`
-          UPDATE runs SET status = 'interrupted', completed_at = ?, error = ?
-          WHERE task_id = ? AND status = 'running'
-        `).run(timestamp, reason, task.id);
-        const controlled = this.taskStore.get(task.id)!;
-        this.appendTaskLifecycleEvent(
-          controlled,
-          cancelled ? 'task.cancelled' : 'task.paused',
-          timestamp,
-          { reason, phase: 'lease_recovery' },
-        );
+        this.settleRunningTaskControl(task, timestamp, 'lease_recovery');
         continue;
       }
       const summary = 'Task lease expired';
@@ -1680,171 +1358,68 @@ export class MimiStore {
     }
   }
 
-  private transaction<T>(operation: () => T): T {
-    if (this.database.isTransaction) return operation();
-    this.database.exec('BEGIN IMMEDIATE');
-    try {
-      const result = operation();
-      this.database.exec('COMMIT');
-      return result;
-    } catch (error) {
-      this.database.exec('ROLLBACK');
-      throw error;
-    }
-  }
-
   private migrate(): void {
     const version = Number((this.database.prepare('PRAGMA user_version').get() as Row).user_version);
-    if (version > 16) throw new Error(`不支持的 MimiAgent 数据库版本：${version}`);
-    if (version === 16) {
-      if (!hasFinalEventTaskV12Schema(this.database)
-        || !hasMemoryObservationSourceKey(this.database)
-        || !hasMemoryEvidenceSnapshot(this.database)
-        || !hasTaskExecutorOwnershipV16(this.database)) {
-        throw new Error('MimiAgent 数据库标记为 v16，但缺少最终 Event/Task、Memory 或 executor schema');
-      }
-      ensureMemoryLintSchemaV13(this.database);
-      if (needsTaskFailureFactsRepairV16(this.database)) {
-        repairTaskFailureFactsV16(this.database);
-      }
-      return;
+    if (version === 0) return void createFreshV16Schema(this.database);
+    if (version >= 13 && (!hasFinalEventTaskV12Schema(this.database)
+      || !hasMemoryObservationSourceKey(this.database))) {
+      throw new Error(`MimiAgent 数据库标记为 v${version}，但缺少最终 Event/Task 或 Memory observation schema`);
     }
-    if (version === 15) {
-      if (!hasFinalEventTaskV12Schema(this.database)
-        || !hasMemoryObservationSourceKey(this.database)
-        || !hasMemoryEvidenceSnapshot(this.database)) {
-        throw new Error('MimiAgent 数据库标记为 v15，但缺少最终 Event/Task 或 Memory observation schema');
-      }
-      ensureMemoryLintSchemaV13(this.database);
-      upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
-      return;
+    if (version >= 15 && !hasMemoryEvidenceSnapshot(this.database)) {
+      throw new Error(`MimiAgent 数据库标记为 v${version}，但缺少 Memory evidence schema`);
     }
-    if (version === 14) {
-      if (!hasFinalEventTaskV12Schema(this.database) || !hasMemoryObservationSourceKey(this.database)) {
-        throw new Error('MimiAgent 数据库标记为 v14，但缺少最终 Event/Task 或 Memory observation schema');
-      }
-      ensureMemoryLintSchemaV13(this.database);
-      upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
-      upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
-      return;
-    }
-    if (version === 13) {
-      if (!hasFinalEventTaskV12Schema(this.database) || !hasMemoryObservationSourceKey(this.database)) {
-        throw new Error('MimiAgent 数据库标记为 v13，但缺少最终 Event/Task 或 Memory observation schema');
-      }
-      ensureMemoryLintSchemaV13(this.database);
-      repairDigestedTaskRoutesV14(this.database);
-      upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
-      upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
-      return;
+    if (version === 16 && !hasTaskExecutorOwnershipV16(this.database)) {
+      throw new Error('MimiAgent 数据库标记为 v16，但缺少 executor schema');
     }
     if (version === 12) {
-      if (hasFinalEventTaskV12Schema(this.database)) {
-        upgradeMemoryObservationsV13(this.database);
-        repairDigestedTaskRoutesV14(this.database);
-        upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
-        upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
-        return;
-      }
-      if (!hasLegacyEventTaskSchema(this.database)) {
+      if (!hasFinalEventTaskV12Schema(this.database) && !hasLegacyEventTaskSchema(this.database)) {
         throw new Error('MimiAgent 数据库标记为 v12，但表结构既不是最终 v12 也不是可恢复的旧 Event schema');
       }
-      assertEmptyPartialEventTaskV12Tables(this.database);
+      if (!hasFinalEventTaskV12Schema(this.database)) {
+        assertEmptyPartialEventTaskV12Tables(this.database);
+        cutoverEventTaskV12(this.database, {
+          removePartialV12: true,
+          backfillScheduleAuthorities: () => this.backfillScheduleAuthorities(),
+        });
+      }
+    } else if (version < 12) {
+      prepareLegacyEventSchemaForV12(this.database, version);
       cutoverEventTaskV12(this.database, {
-        removePartialV12: true,
         backfillScheduleAuthorities: () => this.backfillScheduleAuthorities(),
       });
-      upgradeMemoryObservationsV13(this.database);
-      repairDigestedTaskRoutesV14(this.database);
-      upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
-      upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
-      return;
     }
-    if (version === 0) {
-      createFreshV16Schema(this.database);
-      return;
-    }
-    prepareLegacyEventSchemaForV12(this.database, version);
-    cutoverEventTaskV12(this.database, {
-      backfillScheduleAuthorities: () => this.backfillScheduleAuthorities(),
-    });
-    upgradeMemoryObservationsV13(this.database);
-    repairDigestedTaskRoutesV14(this.database);
-    upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
-    upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
+    if (version < 13) upgradeMemoryObservationsV13(this.database);
+    ensureMemoryLintSchemaV13(this.database);
+    if (version < 14) repairDigestedTaskRoutesV14(this.database);
+    if (version < 15) upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
+    if (version < 16) upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
+    else if (needsTaskFailureFactsRepairV16(this.database)) repairTaskFailureFactsV16(this.database);
   }
 
-  private backupBeforeTaskExecutorV16(): void {
+  private backupBeforeMigrations(): void {
     const version = Number((this.database.prepare('PRAGMA user_version').get() as Row).user_version);
-    if (!hasFinalEventTaskV12Schema(this.database)) return;
+    const finalEventSchema = hasFinalEventTaskV12Schema(this.database);
     const repairExistingV16 = version === 16 && hasTaskExecutorOwnershipV16(this.database)
       && needsTaskFailureFactsRepairV16(this.database);
-    if (version !== 15 && !repairExistingV16) return;
-    this.database.exec('PRAGMA wal_checkpoint(FULL);');
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupRoot = path.join(
-      path.dirname(this.file),
-      'backups',
-      `${repairExistingV16 ? 'task-failure-facts-v16' : 'task-executor-v16'}-${stamp}-${randomUUID().slice(0, 8)}`,
-    );
-    mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
-    chmodSync(backupRoot, 0o700);
-    for (const suffix of ['', '-wal', '-shm']) {
-      const source = `${this.file}${suffix}`;
-      if (!existsSync(source)) continue;
-      const target = path.join(backupRoot, `${path.basename(this.file)}${suffix}`);
-      copyFileSync(source, target);
-      chmodSync(target, 0o600);
-    }
-  }
-
-  private backupBeforeMemoryEvidenceV15(): void {
-    const version = Number((this.database.prepare('PRAGMA user_version').get() as Row).user_version);
-    if (version !== 14 || !hasFinalEventTaskV12Schema(this.database)) return;
-    this.database.exec('PRAGMA wal_checkpoint(FULL);');
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupRoot = path.join(
-      path.dirname(this.file),
-      'backups',
-      `memory-evidence-v15-${stamp}-${randomUUID().slice(0, 8)}`,
-    );
-    mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
-    chmodSync(backupRoot, 0o700);
-    for (const suffix of ['', '-wal', '-shm']) {
-      const source = `${this.file}${suffix}`;
-      if (!existsSync(source)) continue;
-      const target = path.join(backupRoot, `${path.basename(this.file)}${suffix}`);
-      copyFileSync(source, target);
-      chmodSync(target, 0o600);
-    }
-  }
-
-  private backupBeforeTaskRouteRepairV14(): void {
-    const version = Number((this.database.prepare('PRAGMA user_version').get() as Row).user_version);
-    if (version !== 13 || !hasFinalEventTaskV12Schema(this.database)) return;
-    this.database.exec('PRAGMA wal_checkpoint(FULL);');
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupRoot = path.join(path.dirname(this.file), 'backups', `task-route-v14-${stamp}-${randomUUID().slice(0, 8)}`);
-    mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
-    chmodSync(backupRoot, 0o700);
-    for (const suffix of ['', '-wal', '-shm']) {
-      const source = `${this.file}${suffix}`;
-      if (!existsSync(source)) continue;
-      const target = path.join(backupRoot, `${path.basename(this.file)}${suffix}`);
-      copyFileSync(source, target);
-      chmodSync(target, 0o600);
-    }
-  }
-
-  private backupBeforeMemoryHubCutover(): void {
-    const version = Number((this.database.prepare('PRAGMA user_version').get() as Row).user_version);
-    if (version <= 0 || version > 13) return;
-    if (version === 13 && this.database.prepare(`
+    const memoryHubCurrent = version === 13 && this.database.prepare(`
       SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_lint_state'
-    `).get()) return;
+    `).get();
+    const labels = [
+      ...(version > 0 && version <= 13 && !memoryHubCurrent ? ['memoryhub-v13'] : []),
+      ...(version === 13 && finalEventSchema ? ['task-route-v14'] : []),
+      ...(version === 14 && finalEventSchema ? ['memory-evidence-v15'] : []),
+      ...(version === 15 && finalEventSchema ? ['task-executor-v16'] : []),
+      ...(repairExistingV16 && finalEventSchema ? ['task-failure-facts-v16'] : []),
+    ];
+    for (const label of labels) this.backupDatabase(label);
+  }
+
+  private backupDatabase(label: string): void {
     this.database.exec('PRAGMA wal_checkpoint(FULL);');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupRoot = path.join(path.dirname(this.file), 'backups', `memoryhub-v13-${stamp}-${randomUUID().slice(0, 8)}`);
+    const backupRoot = path.join(
+      path.dirname(this.file), 'backups', `${label}-${stamp}-${randomUUID().slice(0, 8)}`,
+    );
     mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
     chmodSync(backupRoot, 0o700);
     for (const suffix of ['', '-wal', '-shm']) {

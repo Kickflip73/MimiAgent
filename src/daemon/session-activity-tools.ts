@@ -11,7 +11,7 @@ export function createMimiSessionActivityTools(store: MimiStore, sessionKey: str
       limit: z.number().int().min(1).max(20).default(10),
     }),
     execute: async ({ query, limit }) => {
-      const activities = store.sessionActivity(sessionKey, query ? 100 : limit);
+      const activities = store.runs.sessionActivity(sessionKey, query ? 100 : limit);
       if (!query) return activities.slice(0, limit);
       const wanted = query.toLocaleLowerCase();
       return activities.filter((activity) => [

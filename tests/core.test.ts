@@ -62,7 +62,7 @@ test('daemon read probes must pass runtime policy and cannot invent an unregiste
       /ComputerManager 未注册/,
     );
     let observed: unknown;
-    (agent as unknown as { computer: unknown }).computer = {
+    (agent as unknown as { components: { computer?: unknown } }).components.computer = {
       close: async () => undefined,
       observeStableBackgroundWindow: async (...args: unknown[]) => {
         observed = args;
@@ -136,21 +136,18 @@ test('keeps ordinary preferences per Session while Owner access applies to the r
     await agent.switchMode('plan');
     await agent.switchModel('gpt-5-mini');
     await agent.setOutputLevel('trace');
-    await agent.switchSecurityProfile('safe');
-
     await agent.switchSession('second');
     info = await agent.runtimeInfo();
     assert.equal(info.mode.id, 'general');
     assert.equal(info.model, 'gpt-5.4-mini');
     assert.equal(info.outputLevel, 'tools');
-    assert.equal(info.securityProfile.id, 'safe');
-    assert.equal(info.permissionMode, 'read-only');
-    assert.ok(!agent.toolNames.includes('write_file'));
+    assert.equal(info.securityProfile.id, 'full-owner');
+    assert.equal(info.permissionMode, 'trusted');
+    assert.ok(agent.toolNames.includes('write_file'));
 
     await agent.switchMode('ultra');
     await agent.switchModel('gpt-5.4');
     await agent.setOutputLevel('answer');
-    await agent.switchSecurityProfile('workstation');
     assert.ok(agent.toolNames.includes('write_file'));
     assert.ok(agent.toolNames.includes('run_shell'));
 
@@ -159,8 +156,8 @@ test('keeps ordinary preferences per Session while Owner access applies to the r
     assert.equal(info.mode.id, 'plan');
     assert.equal(info.model, 'gpt-5-mini');
     assert.equal(info.outputLevel, 'trace');
-    assert.equal(info.securityProfile.id, 'workstation');
-    assert.equal(info.permissionMode, 'workspace');
+    assert.equal(info.securityProfile.id, 'full-owner');
+    assert.equal(info.permissionMode, 'trusted');
     assert.ok(!agent.toolNames.includes('write_file'));
     assert.ok(!agent.toolNames.includes('run_shell'));
 
@@ -169,8 +166,8 @@ test('keeps ordinary preferences per Session while Owner access applies to the r
     assert.equal(info.mode.id, 'ultra');
     assert.equal(info.model, 'gpt-5.4');
     assert.equal(info.outputLevel, 'answer');
-    assert.equal(info.securityProfile.id, 'workstation');
-    assert.equal(info.permissionMode, 'workspace');
+    assert.equal(info.securityProfile.id, 'full-owner');
+    assert.equal(info.permissionMode, 'trusted');
   } finally {
     await agent.close();
     if (previous.session === undefined) delete process.env.AGENT_SESSION;
@@ -184,7 +181,7 @@ test('keeps ordinary preferences per Session while Owner access applies to the r
   }
 });
 
-test('raises and lowers the live tool boundary without restarting the runtime', async () => {
+test('freezes the tool boundary from startup configuration', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-live-security-profile-'));
   const agent = await MimiAgent.create({
     provider: 'openai',
@@ -201,16 +198,11 @@ test('raises and lowers the live tool boundary without restarting the runtime', 
     assert.ok(!agent.toolNames.includes('write_file'));
     assert.ok(!agent.toolNames.includes('run_shell'));
 
-    await agent.switchSecurityProfile('workstation');
-    assert.ok(agent.toolNames.includes('write_file'));
-    assert.ok(agent.toolNames.includes('run_shell'));
-
-    await agent.switchSecurityProfile('full-owner');
-    assert.ok(agent.toolNames.includes('write_file'));
-    assert.ok(agent.toolNames.includes('run_shell'));
-    assert.equal((await agent.runtimeInfo()).permissionMode, 'trusted');
-
-    await assert.rejects(agent.switchSecurityProfile('unsafe'), /未知安全档位/);
+    await agent.switchSession('another');
+    assert.ok(!agent.toolNames.includes('write_file'));
+    assert.ok(!agent.toolNames.includes('run_shell'));
+    assert.equal((await agent.runtimeInfo()).permissionMode, 'read-only');
+    assert.equal('switchSecurityProfile' in agent, false);
   } finally {
     await agent.close();
   }
@@ -249,7 +241,7 @@ test('reads a requested Session snapshot without changing the active Session', a
     assert.equal(snapshot.runtime.mode.id, 'plan');
     assert.equal(snapshot.runtime.model, 'gpt-5-mini');
     assert.equal(snapshot.runtime.outputLevel, 'trace');
-    assert.ok(snapshot.context.estimatedTokens > 0);
+    assert.ok(snapshot.context.status.value > 0);
     assert.equal(snapshot.context.contextWindow, 400_000);
     assert.equal(agent.currentSessionId, 'active');
   } finally {
@@ -445,7 +437,6 @@ test('failed durable attempts retain owner input after legacy history cleanup ch
   try {
     await assert.rejects(agent.stream('retry task', undefined, {
       executionKey: 'event:cleanup-rollback', retainExecutionLedger: true,
-      requireCompletionGate: false,
     }), /simulated durable attempt failure/);
     const serialized = JSON.stringify(await session.getItems());
     assert.match(serialized, /STABLE_HISTORY/);
@@ -503,7 +494,6 @@ test('terminal cancellation preserves visible context without retaining incomple
       options: {
         executionKey: 'event:terminal-cancel',
         retainExecutionLedger: true,
-        requireCompletionGate: false,
       },
     }), /AbortError/);
     assert.deepEqual(await new FileSession(path.join(dataRoot, 'sessions'), sessionId).getItems(), [
@@ -716,7 +706,6 @@ test('restores durable Session state while runtime access returns to startup con
     await first.switchMode('ultra');
     await first.switchModel('gpt-5.4');
     await first.setOutputLevel('trace');
-    await first.switchSecurityProfile('workstation');
     await new FileSession(sessions, 'durable').addItems([
       { role: 'user', content: '继续完整状态恢复' },
     ] as AgentInputItem[]);
@@ -1722,8 +1711,9 @@ test('ordinary Run finalization does not turn inactive Plan UI state into a fail
 
     const plans = new PlanStore(path.join(dataRoot, 'plans.json'), 'plan-run-consistency');
     await plans.update([{ id: 'finalize', description: '完成汇总', status: 'running' }]);
-    assert.deepEqual(await agent.completeRun('本轮读取已闭合'), []);
-    assert.equal(agent.completedRunFinalization?.outcome, 'completed');
+    const committed = await agent.completeRun('本轮读取已闭合');
+    assert.deepEqual(committed.effects, []);
+    assert.equal(committed.finalization.outcome, 'completed');
     assert.equal((await plans.get())[0]?.status, 'running');
     assert.equal((await new FileSession(
       path.join(dataRoot, 'sessions'),

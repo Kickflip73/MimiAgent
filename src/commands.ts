@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { MimiAgent } from './agent.js';
-import { SECURITY_PROFILES } from './config.js';
-import type { ModelProvider, SecurityProfile, SecurityProfileSummary } from './config.js';
+import type { ModelProvider } from './config.js';
 import type { MemoryRef, MemoryScope } from './core/memory.js';
 import {
   modelTargetSchema,
@@ -122,7 +121,6 @@ export interface CommandTarget {
   switchModel(model: string): ReturnType<MimiAgent['switchModel']>;
   availableModes(): MaybePromise<ReturnType<MimiAgent['availableModes']>>;
   switchMode(mode: string): ReturnType<MimiAgent['switchMode']>;
-  switchSecurityProfile(profile: string): ReturnType<MimiAgent['switchSecurityProfile']>;
   switchSession(sessionId: string): ReturnType<MimiAgent['switchSession']>;
   prepareNewSession?(sessionId?: string): MaybePromise<void>;
   listSessionSummaries(): ReturnType<MimiAgent['listSessionSummaries']>;
@@ -253,10 +251,6 @@ export interface CommandUI {
   ) => Promise<ModelChoice | undefined>;
   switchProvider?: (provider: ModelProvider, model: string) => void | Promise<void>;
   selectMode?: (modes: ReturnType<MimiAgent['availableModes']>, current: string) => Promise<string | undefined>;
-  selectSecurityProfile?: (
-    profiles: SecurityProfileSummary[],
-    current: SecurityProfile,
-  ) => Promise<string | undefined>;
   getOutputLevel?: () => OutputLevel;
   setOutputLevel?: (level: OutputLevel) => void | Promise<void>;
   selectOutputLevel?: (current: OutputLevel) => Promise<string | undefined>;
@@ -539,37 +533,22 @@ export class CommandHandler {
       ].join('\n'));
     }
     if (command === '/security') {
+      if (argument) {
+        throw new Error('运行权限由启动配置冻结；请修改 MIMI_SECURITY_PROFILE 后安全重启 Daemon');
+      }
       const info = await this.agent.runtimeInfo();
       const active = info.securityProfile?.id ?? (
         info.permissionMode === 'trusted'
           ? 'full-owner'
           : info.permissionMode === 'workspace' ? 'workstation' : 'safe'
       );
-      const profiles = Object.values(SECURITY_PROFILES);
-      const selected = argument || await this.ui.selectSecurityProfile?.(profiles, active);
-      if (selected) {
-        await this.agent.switchSecurityProfile(selected);
-        const updated = await this.agent.runtimeInfo();
-        const profile = updated.securityProfile ?? SECURITY_PROFILES[
-          updated.permissionMode === 'trusted'
-            ? 'full-owner'
-            : updated.permissionMode === 'workspace' ? 'workstation' : 'safe'
-        ];
-        return this.handled(
-          `已临时调整当前运行权限为 ${profile.label} (${profile.id}/${profile.permissionMode})；`
-          + `${profile.ephemeralSensitiveModelAccess
-            ? '认证直接 Owner 本轮提交的敏感值可临时发送给配置模型 Provider；'
-            : '敏感值不会发送给模型 Provider；'}从下一轮开始生效，重启后恢复启动配置。`,
-        );
-      }
-      if (this.ui.selectSecurityProfile) return 'handled';
       const effective = info.securityProfile;
       return this.handled([
-        `当前权限  ${SECURITY_PROFILES[active].label} (${active}/${info.permissionMode ?? SECURITY_PROFILES[active].permissionMode})`,
+        `当前权限  ${effective?.label ?? active} (${active}/${info.permissionMode})`,
         `当前能力  ${effective?.shell ? 'Shell' : '无 Shell'} · ${effective?.externalTransactions ? '外部写事务' : '无外部写事务'} · ${effective?.computerUse ? 'Computer Use 已配置' : 'Computer Use 未配置'} · ${effective?.trustedWorkspaceMcp ? '受信工作区 MCP 已配置' : '受信工作区 MCP 未配置'} · ${effective?.ephemeralSensitiveModelAccess ? '本轮敏感值可发模型 Provider' : '敏感值不发模型'}`,
         '',
         '本机认证 Owner 默认直接工作；外部事件和后台任务仍按来源策略隔离。',
-        '如需临时收紧，可使用 /security safe 或 /security workstation；恢复使用 /security full-owner。',
+        '该能力集合在启动时冻结；如需调整，请修改 MIMI_SECURITY_PROFILE 后安全重启 Daemon。',
       ].join('\n'));
     }
     if (command === '/models') {

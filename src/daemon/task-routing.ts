@@ -1,32 +1,26 @@
 import type { TaskExecutor, TaskInput, TaskType, TaskWorkspaceAccess } from './types.js';
 
-interface TaskRouteContract {
-  executors: readonly TaskExecutor[];
-  workspaceAccess: readonly TaskWorkspaceAccess[];
-}
+interface TaskRouteContract { workspaceAccess: readonly TaskWorkspaceAccess[] }
 
 export const TASK_ROUTE_CONTRACT: Readonly<Record<TaskType, TaskRouteContract>> = {
   conversation: {
-    executors: ['session_actor'],
     workspaceAccess: ['none', 'read', 'write'],
   },
   background: {
-    executors: ['isolated_worker', 'codex'],
     workspaceAccess: ['read', 'write'],
   },
   scheduled: {
-    executors: ['isolated_worker'],
     workspaceAccess: ['read', 'write'],
   },
   briefing: {
-    executors: ['isolated_worker'],
     workspaceAccess: ['read'],
   },
   memory_maintenance: {
-    executors: ['isolated_worker'],
     workspaceAccess: ['read'],
   },
 };
+
+const TASK_EXECUTORS = new Set<TaskExecutor>(['session_actor', 'isolated_worker', 'codex']);
 
 export function validTaskRoute(input: {
   type: string;
@@ -35,7 +29,7 @@ export function validTaskRoute(input: {
 }): boolean {
   const contract = (TASK_ROUTE_CONTRACT as Readonly<Partial<Record<string, TaskRouteContract>>>)[input.type];
   if (!contract) return false;
-  return (contract.executors as readonly string[]).includes(input.executor)
+  return TASK_EXECUTORS.has(input.executor as TaskExecutor)
     && (contract.workspaceAccess as readonly string[]).includes(input.workspaceAccess);
 }
 
@@ -44,9 +38,7 @@ export function validateTaskRoute(input: Pick<TaskInput, 'type' | 'executor' | '
   if (!contract) {
     throw new Error(`不支持的 Task type=${input.type}`);
   }
-  if (!contract.executors.includes(input.executor)) {
-    throw new Error(`Task type=${input.type} 只允许 executor=${contract.executors.join('|')}`);
-  }
+  if (!TASK_EXECUTORS.has(input.executor)) throw new Error(`不支持的 Task executor=${input.executor}`);
   if (!contract.workspaceAccess.includes(input.workspaceAccess)) {
     throw new Error(
       `Task type=${input.type} 只允许 workspaceAccess=${contract.workspaceAccess.join('|')}`,

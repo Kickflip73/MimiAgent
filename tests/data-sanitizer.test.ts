@@ -90,9 +90,9 @@ test('Task persistence and management WorkUnit views redact sensitive fixtures',
       attempt.id,
     );
     assertFixtureAbsent(store.getTask(task.id));
-    assertFixtureAbsent(store.getRun(attempt.id));
-    assertFixtureAbsent(store.listRunSummaries());
-    const schedule = store.addSchedule({
+    assertFixtureAbsent(store.runs.get(attempt.id));
+    assertFixtureAbsent(store.runs.listSummaries());
+    const schedule = store.schedules.add({
       name: `follow up ${fixture.email}`,
       type: 'at',
       value: 'once',
@@ -102,7 +102,7 @@ test('Task persistence and management WorkUnit views redact sensitive fixtures',
       nextRunAt: '2030-01-01T00:00:00.000Z',
     });
     assertFixtureAbsent(schedule);
-    assertFixtureAbsent(store.listScheduleSummaries());
+    assertFixtureAbsent(store.schedules.listSummaries());
 
     store.close();
     const database = new DatabaseSync(path.join(root, 'mimi.db'), { readOnly: true });

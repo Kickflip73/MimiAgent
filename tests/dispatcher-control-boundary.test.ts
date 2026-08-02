@@ -159,10 +159,8 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
       finalization?: unknown;
     }).finalization;
     assert.deepEqual(taskFinalization, finalization);
-    assert.deepEqual(
-      (store.listOutbox()[0]?.payload as { finalization?: unknown }).finalization,
-      finalization,
-    );
+    const outboxId = store.outbox.listSummaries()[0]!.id;
+    assert.deepEqual((store.outbox.get(outboxId)?.payload as { finalization?: unknown }).finalization, finalization);
     assert.equal(dispatcher.status().activeEventCount, 0);
     assert.equal(dispatcher.status().activeToolCount, 0);
   } finally {
@@ -230,10 +228,8 @@ test('dispatcher persists the Host failure Finalization on the terminal Task', a
       (terminal?.result as { finalization?: unknown }).finalization,
       finalization,
     );
-    assert.deepEqual(
-      (store.listRuns(1)[0]?.answer as { finalization?: unknown }).finalization,
-      finalization,
-    );
+    const runId = store.runs.listSummaries(1)[0]!.id;
+    assert.deepEqual((store.runs.get(runId)?.answer as { finalization?: unknown }).finalization, finalization);
   } finally {
     store.close();
   }

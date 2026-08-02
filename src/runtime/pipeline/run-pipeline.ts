@@ -1,54 +1,31 @@
 import { createHash } from 'node:crypto';
-import path from 'node:path';
 import {
-  RunContext,
   tool,
   type AgentInputItem,
-  type Runner,
   type Usage,
 } from '@openai/agents';
 import { z } from 'zod';
 import {
-  securityProfileSummary,
-  type SecurityProfile,
-} from '../../config.js';
-import {
-  ContextManager,
   estimateTokens,
-  type ContextSemanticSummarizer,
   type WorkSnapshot,
 } from '../../core/context.js';
-import type { ExecutionLedger } from '../../core/execution-ledger.js';
 import {
   assertCompletionContractForTask,
-  type CompletionGateDecision,
 } from '../../core/completion.js';
-import { PlanStore } from '../../core/plan.js';
-import {
-  TeamTaskStore,
-  type TeamTask,
-  type TeamTaskInput,
-} from '../../core/team.js';
-import type {
-  RunModelBinding,
-  WorkUnitModelProfile,
-} from '../../core/model-routing.js';
+import type { RunModelBinding } from '../../core/model-routing.js';
 import {
   registerSessionRunOwner,
   type ActivatedSkill,
   type ContextWorkSnapshot,
-  type FileSession,
-  type SessionPreferences,
 } from '../../core/session.js';
-import type { RunFinalizationRecord } from '../../core/run-finalization.js';
+import type { WorkUnitObservation } from '../../core/work-unit.js';
+import { escapeXmlAttribute } from '../../core/xml.js';
 import { createMemoryTools } from '../../extensions/memory/tools.js';
 import { parseSkillInvocation } from '../../extensions/skill-invocation.js';
 import type { Skill } from '../../extensions/skills.js';
 import { createSubAgentTools } from '../../extensions/subagents.js';
 import { createTeamTools } from '../../extensions/team.js';
-import { createModel, normalizeModelInput, prepareComputerHistoryForModelInput } from '../model.js';
-import type { AgentModel, ModelProfile } from '../model.js';
-import type { HookBus } from '../hooks.js';
+import { createModel, createModelContext, normalizeModelInput, prepareComputerHistoryForModelInput } from '../model.js';
 import { AGENT_MODES, BASE_INSTRUCTIONS } from '../instructions.js';
 import { withExecutionLedger } from '../tool-ledger.js';
 import { materializeMcpTools } from '../mcp-ledger.js';
@@ -58,19 +35,15 @@ import { inputText } from '../attachments.js';
 import { isTerminalRunInterruption } from '../run-outcome.js';
 import { createCompletionTools } from '../completion.js';
 import { createPlanTools } from '../plan-tools.js';
-import type { PersonalMessageHub } from '../personal-message-hub.js';
-import type { RuntimeControlHost } from '../runtime-control-coordinator.js';
 import { withoutMimiPreferenceTools } from '../preference-tools.js';
 import {
   activateEphemeralOwnerInput,
   containsActiveEphemeralValue,
   ephemeralOwnerInputInstructions,
   redactActiveEphemeralData,
-  type ActiveEphemeralOwnerInput,
 } from '../ephemeral-owner-input.js';
 import { sessionStateSummary, recoverySummary } from '../session-state.js';
-import type { ActiveRun, MimiRunOptions } from '../mimi-agent.js';
-import type { ContextAssembler } from './context-assembler.js';
+import type { ActiveRun, MimiAgent, MimiRunOptions } from '../mimi-agent.js';
 import { renderEffectiveCapabilitySnapshot } from './capability-resolver.js';
 import { captureRunScope } from './run-scope.js';
 import { RunStateLoader } from './state-loader.js';
@@ -81,57 +54,7 @@ import {
   withoutPersonalMessageDesktopFallback,
   withoutPersonalMessageFallbackHistory,
 } from './tool-set-builder.js';
-import type { AgentRequestFactory } from './request-factory.js';
 import { RunFactCollector } from './run-fact-collector.js';
-
-export interface RunPipelineHost extends Pick<RuntimeControlHost,
-  'config' | 'modelGateway' | 'session' | 'sessionId' | 'mode' | 'permissionMode'
-  | 'securityProfile' | 'capabilityResolver' | 'runContexts' | 'memory' | 'soul'
-  | 'preferences' | 'projectGuidance' | 'computer' | 'mcp' | 'skills' | 'toolSetBuilder'
-  | 'runtimeRoot' | 'outputLevel' | 'activeRun' | 'lastCapabilitySnapshot'
-  | 'lastContextManifest' | 'lastContextStats' | 'lastContextTokens'
-  | 'refreshModelConfiguration' | 'exactRoute' | 'registeredTools'> {
-  readonly fixedModelBinding?: RunModelBinding;
-  readonly hooks: HookBus;
-  readonly ledger: ExecutionLedger;
-  readonly personalMessages: PersonalMessageHub;
-  readonly requestFactory: AgentRequestFactory;
-  readonly contextAssembler: ContextAssembler;
-  readonly runner: Runner;
-  readonly contextSemanticSummarizer?: ContextSemanticSummarizer;
-  lastCommittedAnswer?: string;
-  lastCompressionCount: number;
-  lastFinalization?: RunFinalizationRecord;
-  lastModelBinding?: RunModelBinding;
-  resolveRunModelBinding(
-    input: string | AgentInputItem[],
-    options: MimiRunOptions | undefined,
-    preferences: SessionPreferences,
-  ): RunModelBinding;
-  runtimeForBinding(binding: RunModelBinding): {
-    model: AgentModel;
-    name: string;
-    profile: ModelProfile;
-  };
-  currentSecuritySummary(profile?: SecurityProfile): ReturnType<typeof securityProfileSummary>;
-  createIsolatedSession(id: string): FileSession;
-  createEphemeralRedactingSession(
-    session: FileSession,
-    access: ActiveEphemeralOwnerInput,
-  ): FileSession;
-  bindingForSubAgent(
-    role: 'researcher' | 'reviewer' | 'architect',
-    profile: WorkUnitModelProfile,
-  ): RunModelBinding;
-  bindingForTeamTask(task: TeamTask): RunModelBinding;
-  freezeTeamTask(task: TeamTaskInput): TeamTaskInput;
-  evaluateRunCompletion(
-    run: ActiveRun,
-    plans: PlanStore,
-    team: TeamTaskStore,
-  ): Promise<{ gate: CompletionGateDecision; progressFingerprint: string }>;
-  redactRunError(error: unknown, access: ActiveEphemeralOwnerInput | undefined): unknown;
-}
 
 export function containsImageInput(input: string | AgentInputItem[]): boolean {
   if (typeof input === 'string') return false;
@@ -146,18 +69,10 @@ export function containsImageInput(input: string | AgentInputItem[]): boolean {
   });
 }
 
-function xmlAttribute(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
-}
-
 function renderActiveSkills(skills: readonly Skill[]): string {
   if (!skills.length) return '';
   const content = skills.map((skill) => [
-    `<skill_content name="${xmlAttribute(skill.name)}" source="${skill.source.id}" content_hash="${skill.contentHash}">`,
+    `<skill_content name="${escapeXmlAttribute(skill.name)}" source="${skill.source.id}" content_hash="${skill.contentHash}">`,
     skill.content,
     `Skill directory: ${skill.root}`,
     'Relative paths resolve from this directory.',
@@ -177,7 +92,7 @@ class RunContextLimitReachedError extends Error {
 }
 
 export async function executeRunPipeline(
-  host: RunPipelineHost,
+  host: MimiAgent,
   input: string | AgentInputItem[],
   signal?: AbortSignal,
   options?: MimiRunOptions,
@@ -186,8 +101,6 @@ export async function executeRunPipeline(
     await host.refreshModelConfiguration();
     const textInput = inputText(input);
     if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
-    host.lastCommittedAnswer = undefined;
-    host.lastFinalization = undefined;
     const preferences = await host.session.getPreferences();
     const routeConfig = options?.providerRoute
       ? { ...host.config, provider: options.providerRoute.provider }
@@ -202,7 +115,7 @@ export async function executeRunPipeline(
     if (
       host.fixedModelBinding
       && containsImageInput(input)
-      && !host.modelGateway.inspect(host.fixedModelBinding.target).capabilities.imageInput
+      && !host.components.modelGateway.inspect(host.fixedModelBinding.target).capabilities.imageInput
     ) {
       throw new Error('冻结模型不满足 imageInput/图片输入硬能力');
     }
@@ -212,40 +125,38 @@ export async function executeRunPipeline(
     const routeModel = options?.providerRoute
       ? createModel(routeConfig, options.providerRoute.model)
       : host.runtimeForBinding(binding!);
-    const exactRoute = host.exactRoute(binding);
+    const routeProvider = binding
+      ? host.components.modelGateway.provider(binding.target)
+      : undefined;
     const scope = captureRunScope({
       sessionId: host.sessionId,
       workspaceRoot: host.config.workspaceRoot,
-      provider: exactRoute.provider,
-      transport: exactRoute.transport,
+      provider: routeProvider?.id ?? routeConfig.provider,
+      transport: routeProvider?.transport,
       model: routeModel.name,
       modelBinding: binding,
       mode: host.mode,
-      permissionMode: host.permissionMode,
-      securityProfile: host.securityProfile,
       input: textInput,
       options,
     });
     const mode = scope.mode;
-    const permissionMode = scope.permissionMode;
-    const securityProfile = scope.securityProfile;
     const ephemeralSensitiveAccess = activateEphemeralOwnerInput(options?.ephemeralOwnerInput, {
       ...scope,
-      ephemeralSensitiveModelAccess: host.currentSecuritySummary(securityProfile)
-        .ephemeralSensitiveModelAccess,
+      ephemeralSensitiveModelAccess: host.runtimeAccess.ephemeralSensitiveModelAccess,
     });
     const runOptions = options
       ? (({ ephemeralOwnerInput: _ephemeralOwnerInput, ...retained }) => retained)(options)
       : undefined;
     const capabilities = host.capabilityResolver.resolve({
       scope,
+      runtimeAccess: host.runtimeAccess,
       policy: options?.policy,
       requestedComputerAccess: options?.computerAccess,
       defaultComputerAccess: host.config.computer?.defaultAccess,
     });
     const completionToolsAllowed = capabilities.completionToolsAllowed;
     const baseRunSession = options?.policy?.allowSessionContext === false
-      ? host.createIsolatedSession(host.sessionId)
+      ? host.components.state.sessions.open(host.sessionId, true)
       : host.session;
     const run: ActiveRun = {
       scope,
@@ -271,22 +182,26 @@ export async function executeRunPipeline(
     run.releaseOwner = registerSessionRunOwner(run.ownerId);
     host.activeRun = run;
     if (binding) host.lastModelBinding = binding;
+    const executionRunId = run.options?.executionKey ?? run.runId;
+    const semanticCallIds = Boolean(run.options?.executionKey);
+    const emitModelBinding = (
+      workUnitKind: 'conversation' | 'background' | 'subagent' | 'team-worker',
+      workUnitId: string,
+      selected: RunModelBinding,
+    ) => host.hooks.emit({
+      type: 'model_binding_event', sessionId: run.sessionId, workUnitKind, workUnitId, binding: selected,
+    });
+    const emitWorkUnit = (observation: WorkUnitObservation) => host.hooks.emit({
+      type: 'work_unit_event', sessionId: run.sessionId, observation,
+    });
     let began = false;
     try {
-    const runPlans = new PlanStore(path.join(host.config.dataRoot, 'plans.json'), run.sessionId);
-    const runTeam = new TeamTaskStore(path.join(host.config.dataRoot, 'teams.json'), run.sessionId);
-    run.plans = runPlans;
-    run.team = runTeam;
-    runPlans.onChange((sessionId, steps) => host.hooks.emit({ type: 'plan_updated', sessionId, steps }));
+    const runPlans = host.components.state.goalsAndPlans.store;
+    const runTeam = host.components.state.team.store;
     const model = routeModel.model;
     const modelName = routeModel.name;
     const modelProfile = routeModel.profile;
-    const context = new ContextManager(
-      host.config.historyLimit,
-      modelProfile.contextWindow,
-      0.55,
-      modelProfile.outputReserve,
-    );
+    const context = createModelContext(host.config, modelProfile);
     const runPolicy = options?.policy;
     const focusedOwnerRun = options?.cause?.trust === 'owner'
       && options.cause.source === 'local-cli'
@@ -294,10 +209,10 @@ export async function executeRunPipeline(
     const { canReadLocal, canReadSessionContext } = capabilities;
     run.canReadLocal = canReadLocal;
     const runComputerAccess = capabilities.computerAccess;
-    const availableScopedTools = [
-      ...host.registeredTools(securityProfile),
+    const availableScopedTools = host.authorizeTools([
+      ...host.registeredTools(),
       ...(options?.hostTools ?? []),
-    ].filter((tool) => runComputerAccess !== 'none'
+    ]).filter((tool) => runComputerAccess !== 'none'
       || (tool.name !== 'computer_observe' && tool.name !== 'computer_act'));
     const personalConnectorOnly = options?.personalConnectorOnly === true;
     const prepareRunHistory = (items: AgentInputItem[]) => {
@@ -330,22 +245,20 @@ export async function executeRunPipeline(
       && (recovery.input.trim() === textInput.trim() || options?.resumeState === true);
     await host.hooks.emit({ type: 'run_start', sessionId: run.sessionId, input: textInput });
     if (binding) {
-      await host.hooks.emit({
-        type: 'model_binding_event',
-        sessionId: run.sessionId,
-        workUnitKind: scenario === 'background.default'
+      await emitModelBinding(
+        scenario === 'background.default'
           || scenario === 'scheduled.default'
           || scenario === 'memory-maintenance.default'
           ? 'background'
           : 'conversation',
-        workUnitId: run.runId,
+        run.runId,
         binding,
-      });
+      );
     }
     const memoryContext = host.runContexts.forRun(run, options?.cause);
     const state = await new RunStateLoader({
-      hotProfile: () => host.memory.hotProfile(memoryContext),
-      searchMemories: (recallState) => host.memory.search(
+      hotProfile: () => host.components.memory.hotProfile(memoryContext),
+      searchMemories: (recallState) => host.components.memory.search(
         host.runContexts.memoryQuery(textInput, options?.cause, recallState),
         memoryContext,
       ),
@@ -353,9 +266,9 @@ export async function executeRunPipeline(
       loadGoal: () => runPlans.getGoal(),
       loadTeamSummary: () => runTeam.summary(),
       loadHistory: () => run.session.getItems().then(prepareRunHistory),
-      loadSoul: () => host.soul.load(),
-      loadPreferences: () => host.preferences.load(),
-      loadProjectGuidance: () => host.projectGuidance.loadForDevelopment(),
+      loadSoul: () => host.components.soul.load(),
+      loadPreferences: () => host.components.preferences.load(),
+      loadProjectGuidance: () => host.components.projectGuidance.loadForDevelopment(),
       loadArchive: () => run.session.getContextArchive(),
       loadActiveSkills: () => run.session.getActiveSkills(),
     }).load(capabilities, {
@@ -373,10 +286,9 @@ export async function executeRunPipeline(
     } = state;
     const memories = [...state.memories];
     const plan = [...state.plan];
-    const history = [...state.history];
     const persistentInstructions = [soul.instructions, projectGuidance.instructions].filter(Boolean).join('\n\n');
-    const memoryTools = createMemoryTools(host.memory, () => memoryContext);
-    const delegatedMemoryTools = createMemoryTools(host.memory, () => memoryContext, { workspaceOnly: true });
+    const memoryTools = createMemoryTools(host.components.memory, () => memoryContext);
+    const delegatedMemoryTools = createMemoryTools(host.components.memory, () => memoryContext, { workspaceOnly: true });
     const delegatedTools = [
       ...scopedTools.filter((tool) => (
         !ephemeralSensitiveAccess || tool.name !== 'run_shell'
@@ -448,38 +360,29 @@ export async function executeRunPipeline(
       mode,
       model,
       tools: delegatedTools,
-      parentRunId: run.options?.executionKey ?? run.runId,
+      parentRunId: executionRunId,
       persistentInstructions: canReadLocal ? persistentInstructions : '',
       bindingForDelegation: (role, profile) => host.bindingForSubAgent(role, profile),
       modelForDelegation: (role, profile, binding) => {
         const selected = binding ?? host.bindingForSubAgent(role, profile);
         return host.runtimeForBinding(selected).model;
       },
-      onModelBinding: async (_role, selected, workUnitId) => host.hooks.emit({
-        type: 'model_binding_event',
-        sessionId: run.sessionId,
-        workUnitKind: 'subagent',
-        workUnitId,
-        binding: selected,
-      }),
+      onModelBinding: async (_role, selected, workUnitId) =>
+        emitModelBinding('subagent', workUnitId, selected),
       onEvent: async (agent, eventType) => host.hooks.emit({
         type: 'subagent_event',
         sessionId: run.sessionId,
         agent,
         eventType,
       }),
-      onWorkUnit: async (observation) => host.hooks.emit({
-        type: 'work_unit_event',
-        sessionId: run.sessionId,
-        observation,
-      }),
+      onWorkUnit: emitWorkUnit,
     });
     const teamTools = createTeamTools({
       store: runTeam,
       model,
       tools: delegatedTools,
       workspaceRoot: host.config.workspaceRoot,
-      parentRunId: run.options?.executionKey ?? run.runId,
+      parentRunId: executionRunId,
       persistentInstructions: canReadLocal ? persistentInstructions : '',
       maxConcurrency: host.config.teamMaxConcurrency ?? 4,
       freezeTask: (task) => host.freezeTeamTask(task),
@@ -488,26 +391,20 @@ export async function executeRunPipeline(
         const selected = binding ?? host.bindingForTeamTask(task);
         return host.runtimeForBinding(selected).model;
       },
-      onModelBinding: async (task, selected) => host.hooks.emit({
-        type: 'model_binding_event',
-        sessionId: run.sessionId,
-        workUnitKind: 'team-worker',
-        workUnitId: task.id,
-        binding: selected,
-      }),
+      onModelBinding: async (task, selected) => emitModelBinding('team-worker', task.id, selected),
       workerToolFactory: (task) => withExecutionLedger(
         createTeamWorkerTools({
           workspaceRoot: host.config.workspaceRoot,
           dataRoot: host.config.dataRoot,
-          permissionMode,
+          canWrite: host.runtimeAccess.workspaceWrite,
           task,
           memorySearchTool: delegatedMemoryTools.find((tool) => tool.name === 'memory_search'),
         }),
-        host.ledger,
+        host.components.state.executionLedger.store,
         () => ({
           sessionId: run.sessionId,
-          runId: `${run.options?.executionKey ?? run.runId}:team:${task.id}:${task.claimId ?? 'unknown'}`,
-          semanticCallIds: Boolean(run.options?.executionKey),
+          runId: `${executionRunId}:team:${task.id}:${task.claimId ?? 'unknown'}`,
+          semanticCallIds,
         }),
       ),
       signal,
@@ -520,11 +417,7 @@ export async function executeRunPipeline(
         result: task.result,
         eventType,
       }),
-      onWorkUnit: async (observation) => host.hooks.emit({
-        type: 'work_unit_event',
-        sessionId: run.sessionId,
-        observation,
-      }),
+      onWorkUnit: emitWorkUnit,
     });
     const assertCurrentRun = (kind: string): void => {
       if (host.activeRun !== run) throw new Error(`${kind}所属 Run 已失效或已被新的 owner 工作单元取代`);
@@ -562,7 +455,7 @@ export async function executeRunPipeline(
         beforeGoalSet: () => runTeam.clear(),
         completionContract: () => run.completionContract,
         verifyExternalReceiptRef: (reference) =>
-          host.ledger.isConfirmedExternalReceipt(reference, run.sessionId),
+          host.components.state.executionLedger.store.isConfirmedExternalReceipt(reference, run.sessionId),
         onGoalSet: async (createdGoal) => {
           run.goalCreatedAt = createdGoal.createdAt;
           run.completionRequired = completionToolsAllowed;
@@ -587,7 +480,7 @@ export async function executeRunPipeline(
           assertCurrentRun('Completion Gate ');
           if (!run.goalCreatedAt) throw new Error('普通任务不使用 Completion Gate；请直接根据实际结果回答');
           run.completionReport = report;
-          const { gate } = await host.evaluateRunCompletion(run, runPlans, runTeam);
+          const { gate } = await host.runCommitCoordinator.evaluate(run);
           await run.session.updateRunCompletion({
             completionContract: run.completionContract,
             completionReport: report,
@@ -602,19 +495,17 @@ export async function executeRunPipeline(
       runTools,
       teamTools,
       subAgentTools,
-      permissionMode,
-      securityProfile,
       runPolicy,
     );
     const localTools = withExecutionLedger(
       preparedTools,
-      host.ledger,
+      host.components.state.executionLedger.store,
       () => ({
         sessionId: run.sessionId,
-        runId: run.options?.executionKey ?? run.runId,
-        semanticCallIds: Boolean(run.options?.executionKey),
+        runId: executionRunId,
+        semanticCallIds,
         policyRevision: [
-          host.securityProfile,
+          host.runtimeAccess.policyRevision,
           mode,
           run.options?.policy ? 'run-policy' : 'default-policy',
         ].join(':'),
@@ -658,17 +549,19 @@ export async function executeRunPipeline(
         },
         authorizeSideEffect,
         sanitizeResult: (value) => redactActiveEphemeralData(value, run.ephemeralSensitiveAccess),
-        sanitizeError: (error) => host.redactRunError(error, run.ephemeralSensitiveAccess),
+        sanitizeError: (error) => host.runCommitCoordinator.redactError(
+          error, run.ephemeralSensitiveAccess,
+        ),
       }),
     );
     const mcpAllowed = mode !== 'plan'
-      && securityProfile === 'full-owner'
+      && host.runtimeAccess.mcp
       && runPolicy?.allowMcp !== false
       && !personalConnectorOnly;
     const mcpRunIdentity = () => ({
       sessionId: run.sessionId,
-      runId: run.options?.executionKey ?? run.runId,
-      semanticCallIds: Boolean(run.options?.executionKey),
+      runId: executionRunId,
+      semanticCallIds,
       authorizeSideEffect: async (toolName: string, argumentsJson: string) => {
         assertCurrentRun('MCP 副作用调用');
         if (containsActiveEphemeralValue(argumentsJson, run.ephemeralSensitiveAccess)) {
@@ -677,26 +570,22 @@ export async function executeRunPipeline(
         await authorizeSideEffect(toolName, argumentsJson);
       },
       sanitizeResult: <T>(value: T) => redactActiveEphemeralData(value, run.ephemeralSensitiveAccess),
-      sanitizeError: (error: unknown) => host.redactRunError(error, run.ephemeralSensitiveAccess),
+      sanitizeError: (error: unknown) => host.runCommitCoordinator.redactError(
+        error, run.ephemeralSensitiveAccess,
+      ),
     });
     const mcpTools = mcpAllowed
       ? await materializeMcpTools({
-          servers: host.mcp.servers,
-          ledger: host.ledger,
+          servers: host.components.mcp.servers,
+          ledger: host.components.state.executionLedger.store,
           currentRun: mcpRunIdentity,
           model,
           reservedTools: localTools,
         })
       : [];
     const catalogTools = [...localTools, ...mcpTools];
-    const allTools = await host.requestFactory.create({
-      model,
-      instructions: '',
-      tools: catalogTools,
-      outputReserve: modelProfile.outputReserve,
-    }).agent.getAllTools(new RunContext({}));
     const capabilityRegistry = new HostCapabilityRegistry(
-      allTools,
+      catalogTools,
       options?.capabilityCatalog,
     );
     const classifiedTools = host.toolSetBuilder.classify(
@@ -721,27 +610,22 @@ export async function executeRunPipeline(
         ? []
         : capabilityRegistry.gatewayTools(classifiedTools.deferred),
     );
-    const modelTools = run.facts.wrap(await host.requestFactory.create({
-      model,
-      instructions: '',
-      tools: selectedModelTools,
-      outputReserve: modelProfile.outputReserve,
-    }).agent.getAllTools(new RunContext({})));
+    const modelTools = run.facts.wrap(selectedModelTools);
     run.availableToolNames = capabilityRegistry.authorizedTools().map((candidate) => candidate.name);
-    const availableSkillNames = host.skills.list()
+    const availableSkillNames = host.components.skills.list()
       .filter((candidate) => {
-        const skill = host.skills.get(candidate.name);
-        return skill !== undefined && host.skills.evaluateAvailability(skill, {
+        const skill = host.components.skills.get(candidate.name);
+        return skill !== undefined && host.components.skills.evaluateAvailability(skill, {
           canReadLocal,
           availableTools: run.availableToolNames,
         }).available;
       })
       .map((skill) => skill.name);
-    const computerStatus = host.computer?.status();
+    const computerStatus = host.components.computer?.status();
     run.capabilitySnapshot = capabilityRegistry.snapshot({
       runId: run.runId,
       policyRevision: [
-        host.securityProfile,
+        host.runtimeAccess.policyRevision,
         mode,
         runPolicy ? 'run-policy' : 'default-policy',
       ].join(':'),
@@ -767,7 +651,7 @@ export async function executeRunPipeline(
           freshness: 'fresh' as const,
           coverage: 'bounded' as const,
           permissionSource: [
-            host.securityProfile,
+            host.runtimeAccess.policyRevision,
             runComputerAccess,
           ].join(':'),
           safeFallback: 'none' as const,
@@ -779,7 +663,7 @@ export async function executeRunPipeline(
       const value = tool as unknown as Record<string, unknown>;
       return { name: value.name, description: value.description, parameters: value.parameters };
     });
-    const skillsDisclosed = allTools.some((tool) => (
+    const skillsDisclosed = catalogTools.some((tool) => (
       tool.name === 'list_skills' || tool.name === 'use_skill' || tool.name === 'read_skill_resource'
     ));
     const budget = context.requestBudget(toolSchemas);
@@ -802,23 +686,14 @@ export async function executeRunPipeline(
     );
     let activeRecords: readonly Readonly<ActivatedSkill>[] = storedActiveSkills;
     for (const name of invocation.names) {
-      const skill = host.skills.get(name);
-      if (!skill) throw new Error(`未找到 Skill：${name}`);
-      const availability = host.skills.evaluateAvailability(skill, {
+      const skill = host.components.skills.activate(name, {
         canReadLocal,
         availableTools: run.availableToolNames,
         instructionBudget,
       });
-      if (!availability.available) {
-        host.skills.activate(name, {
-          canReadLocal,
-          availableTools: run.availableToolNames,
-          instructionBudget,
-        });
-      }
       const status = await run.session.activateSkill({
         name: skill.name,
-        sourceId: skill.source.id,
+        sourceId: skill.sourceId,
         file: skill.file,
         contentHash: skill.contentHash,
       }, run.runId);
@@ -828,9 +703,9 @@ export async function executeRunPipeline(
     const activeSkillDefinitions: Skill[] = [];
     if (canReadLocal) {
       for (const binding of activeRecords) {
-        const skill = host.skills.get(binding.name);
+        const skill = host.components.skills.get(binding.name);
         if (!skill) continue;
-        const availability = host.skills.evaluateAvailability(skill, {
+        const availability = host.components.skills.evaluateAvailability(skill, {
           canReadLocal,
           availableTools: run.availableToolNames,
           binding: binding as ActivatedSkill,
@@ -847,7 +722,7 @@ export async function executeRunPipeline(
       runtimeContext: [
         `当前模式：${currentMode.label}。${currentMode.instruction}`,
         canReadLocal
-          ? `当前工作区：${host.config.workspaceRoot}。MimiAgent 运行时代码目录：${host.runtimeRoot}。Security：${securityProfile}。用户要求检查或修改项目/Agent 自身时，使用当前 Security 提供的文件工具和 Shell（若可用）实际读取、编辑并验证。`
+          ? `当前工作区：${host.config.workspaceRoot}。MimiAgent 运行时代码目录：${host.runtimeRoot}。Capability set：${run.capabilitySnapshot?.snapshotDigest ?? 'unavailable'}。用户要求检查或修改项目/Agent 自身时，使用当前能力集合提供的文件工具和 Shell（若可用）实际读取、编辑并验证。`
           : '本轮来源无权读取本地工作区、Skills、记忆或持久状态；不要猜测、泄露或声称访问了这些数据。',
         host.runContexts.causeInstructions(options?.cause),
         personalConnectorOnly
@@ -856,7 +731,7 @@ export async function executeRunPipeline(
         run.capabilitySnapshot
           ? renderEffectiveCapabilitySnapshot(run.capabilitySnapshot)
           : '',
-        host.computer
+        host.components.computer
           ? '电脑 GUI 操作只使用当前能力快照中的正式 API、Connector、Browser 或 Computer 工具；通用 Shell 不得调用 osascript、Shortcuts、open 或其他 GUI 自动化路径。Computer 只按 app 操作：先用 computer_observe 读取当前界面；未运行时只使用结果 apps[].bundleId 调用 computer_act(launch_app)，apps 为空时省略 app 重新列出应用，不猜名称或空参数。Host 会绑定本轮 launch 新建的窗口，并在 computer_act 结果中直接返回 fresh state。继续使用该 state，只有返回 next=computer_observe 或 state 不足时才再观察。一次只执行一个动作，不管理 Session、PID、窗口句柄、投递模式或执行状态，不重复已提交的动作。'
           : '',
         options?.hostInstructions
@@ -875,7 +750,7 @@ export async function executeRunPipeline(
       }) : '',
       projectGuidance: canReadLocal ? projectGuidance.instructions : '',
       historySummary: '',
-      skillCatalog: canReadLocal && skillsDisclosed ? host.skills.catalog({
+      skillCatalog: canReadLocal && skillsDisclosed ? host.components.skills.catalog({
         canReadLocal,
         availableTools: run.availableToolNames,
       }, { includeLocations: true }) : '',
@@ -887,82 +762,12 @@ export async function executeRunPipeline(
       recoverySummary: resumesCheckpoint ? recoverySummary(recovery) : '',
     }, instructionBudget, requiredInstructionBudget);
     const instructions = builtInstructions.text;
-    const currentContextInput = typeof input === 'string'
-      ? [{ role: 'user', content: input } as AgentInputItem]
-      : input;
     const semanticSummarizer = host.contextSemanticSummarizer
       ?? (typeof model === 'string' ? undefined : new ModelContextSemanticSummarizer(model));
     const drainSemanticUsages = (): Usage[] => semanticSummarizer instanceof ModelContextSemanticSummarizer
       ? semanticSummarizer.drainUsages()
       : [];
-    const initialSemanticUsages: Usage[] = [];
-    const initialContextInput = [...history, ...currentContextInput];
-    let initialSemanticSnapshot: WorkSnapshot | ContextWorkSnapshot | undefined = persistedContextSnapshot;
-    if ((estimateTokens(initialContextInput) + estimateTokens(instructions))
-      / Math.max(1, budget.inputBudget) >= 0.7
-      && semanticSummarizer) {
-      try {
-        initialSemanticSnapshot = await context.prepareSemanticSnapshot(
-          initialContextInput,
-          semanticSummarizer,
-          {
-            persistedSnapshot: persistedContextSnapshot,
-            seedSnapshot: contextSnapshotSeed,
-          },
-        );
-        await persistContextSnapshot(initialSemanticSnapshot);
-      } catch {
-        // Preparatory semantic checkpoint failures are non-blocking while the
-        // canonical-derived request still fits or an older snapshot verifies.
-      } finally {
-        initialSemanticUsages.push(...drainSemanticUsages());
-      }
-    }
-    host.lastCompressionCount = 0;
-    const initialArtifacts = canReadSessionContext
-      ? await run.session.registerContextToolArtifacts(history, run.runId)
-      : [];
-    if (initialArtifacts.length) {
-      await run.session.markContextToolArtifactsConsumed(
-        initialArtifacts.map((artifact) => artifact.ref),
-        run.runId,
-      );
-    }
-    const consumedArtifactRefs = new Set(initialArtifacts.map((artifact) => artifact.ref));
-    const initialView = context.modelContextView(
-      initialContextInput,
-      instructions,
-      budget.inputBudget,
-      {
-        consumedArtifactRefs,
-        toolArtifacts: initialArtifacts,
-        persistedSnapshot: persistedContextSnapshot,
-        semanticSnapshot: initialSemanticSnapshot,
-        seedSnapshot: contextSnapshotSeed,
-      },
-    );
-    await persistContextSnapshot(initialView.snapshot);
-    const effectiveResult = {
-      items: initialView.input,
-      records: initialView.records,
-      rawTokens: initialView.rawTokens,
-      effectiveTokens: initialView.effectiveTokens,
-    };
-    const effectiveHistory = effectiveResult.items;
-    host.lastContextTokens = budget.toolSchemaTokens
-      + estimateTokens(instructions) + estimateTokens(effectiveHistory);
-    host.lastContextStats = context.stats(history, effectiveHistory, archive, 1);
-    host.lastContextStats.effectiveTokens = host.lastContextTokens;
-    host.lastContextManifest = host.contextAssembler.manifest({
-      scope,
-      budget,
-      instructions: builtInstructions,
-      effective: effectiveResult,
-      archive,
-      archiveInput: [],
-      currentInput: currentContextInput,
-      toolCount: toolSchemas.length,
-    });
+    const consumedArtifactRefs = new Set<string>();
     const request = host.requestFactory.create({
       model,
       instructions,
@@ -976,16 +781,15 @@ export async function executeRunPipeline(
       sessionHistory: AgentInputItem[],
       currentInput: AgentInputItem[],
     ) => normalizeModelInput(
-      exactRoute.transport ?? routeConfig.provider,
+      routeProvider?.transport ?? routeConfig.provider,
       canReadSessionContext
         ? [...prepareRunHistory(sessionHistory), ...currentInput]
         : currentInput,
     );
     const modelCallLimit = binding?.maxTurns ?? host.config.maxTurns;
-    let modelCalls = initialSemanticUsages.reduce((total, usage) => total + usage.requests, 0);
-    let runCompressionEvents = 0;
+    let modelCalls = 0;
     let runUsage: { add(usage: Usage): void } | undefined;
-    const pendingSemanticUsages: Usage[] = [...initialSemanticUsages];
+    const pendingSemanticUsages: Usage[] = [];
     const recordSemanticUsage = (usage: Usage): void => {
       modelCalls += usage.requests;
       if (runUsage) runUsage.add(usage);
@@ -1068,20 +872,11 @@ export async function executeRunPipeline(
         throw new RunContextLimitReachedError(reason);
       }
       modelCalls += 1;
-      runCompressionEvents += view.records.length;
-      host.lastCompressionCount = runCompressionEvents;
       if (canReadSessionContext && view.consumedArtifactRefs.length) {
         await run.session.markContextToolArtifactsConsumed(view.consumedArtifactRefs, run.runId);
         view.consumedArtifactRefs.forEach((ref) => consumedArtifactRefs.add(ref));
       }
       await persistContextSnapshot(view.snapshot);
-      host.lastContextStats = {
-        rawTokens: estimateTokens(await run.session.getItems()),
-        effectiveTokens: view.effectiveTokens + budget.toolSchemaTokens,
-        archiveTokens: view.snapshot ? estimateTokens(view.snapshot) : 0,
-        coveredItems: view.records.find((record) => record.strategy === 'semantic-summary')?.affectedItems ?? 0,
-        strategies: view.records.map((record) => record.strategy),
-      };
       const currentStart = context.startOfLastUserTurn(view.input);
       const perCallCurrentInput = currentStart >= 0 ? view.input.slice(currentStart) : [];
       host.lastContextManifest = host.contextAssembler.manifest({
@@ -1131,7 +926,7 @@ export async function executeRunPipeline(
     return streamResult;
     } catch (error) {
       if (host.activeRun === run) host.activeRun = undefined;
-      await host.computer?.endRun(run.runId).catch(() => undefined);
+      await host.components.computer?.endRun(run.runId).catch(() => undefined);
       run.releaseOwner();
       if (began) {
         const budgetPaused = error instanceof RunContextLimitReachedError;

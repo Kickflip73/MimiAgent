@@ -259,7 +259,7 @@ test('a draft can list and select an existing Session without materializing itse
   }
 });
 
-test('a security selection is sent to the draft Session and materializes it', async () => {
+test('a runtime security mutation is rejected before a draft Session materializes', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-security-draft-'));
   const socket = path.join(root, 'mimi.sock');
   let invocation: Record<string, unknown> | undefined;
@@ -281,12 +281,10 @@ test('a security selection is sent to the draft Session and materializes it', as
     } as AppConfig);
     const target = new RemoteCommandTarget(client, 'mimi-chat-security-draft', false);
 
-    await target.switchSecurityProfile('workstation');
-
-    assert.equal(target.sessionReady, true);
-    assert.equal(invocation?.operation, 'security.set');
-    assert.equal(invocation?.value, 'workstation');
-    assert.equal(invocation?.sessionKey, 'mimi-chat-security-draft');
+    const handler = new CommandHandler(target, async () => undefined);
+    await assert.rejects(handler.execute('/security workstation'), /启动配置冻结/);
+    assert.equal(target.sessionReady, false);
+    assert.equal(invocation, undefined);
   } finally {
     await server.close();
   }

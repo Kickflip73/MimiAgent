@@ -4,6 +4,7 @@ import type { Tool } from '@openai/agents';
 import { AgentRequestFactory } from '../src/runtime/pipeline/request-factory.js';
 import { HostCapabilityRegistry } from '../src/runtime/pipeline/capability-registry.js';
 import { ToolSetBuilder } from '../src/runtime/pipeline/tool-set-builder.js';
+import { toolsForSecurity } from '../src/runtime/tool-policy.js';
 
 const tool = (name: string): Tool => ({ name }) as Tool;
 
@@ -11,13 +12,11 @@ for (const scenario of [
   {
     name: 'general workstation',
     mode: 'general' as const,
-    permissionMode: 'workspace' as const,
     securityProfile: 'workstation' as const,
   },
   {
     name: 'plan full owner',
     mode: 'plan' as const,
-    permissionMode: 'trusted' as const,
     securityProfile: 'full-owner' as const,
   },
 ]) {
@@ -25,17 +24,15 @@ for (const scenario of [
     const builder = new ToolSetBuilder();
     const actualTools = builder.final(
       scenario.mode,
-      [
+      toolsForSecurity(scenario.securityProfile, [
         tool('read_file'),
         tool('write_file'),
         tool('run_shell'),
         tool('runtime_status'),
         tool('update_plan'),
-      ],
+      ]),
       [],
       [],
-      scenario.permissionMode,
-      scenario.securityProfile,
     );
     const snapshot = new HostCapabilityRegistry(actualTools).snapshot({
       runId: `run-${scenario.name}`,

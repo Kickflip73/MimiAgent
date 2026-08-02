@@ -36,6 +36,27 @@ export const runFinalizationRecordSchema = z.object({
 
 export type ToolExecutionManifestEntry = z.infer<typeof toolExecutionManifestEntrySchema>;
 export type RunFinalizationRecord = z.infer<typeof runFinalizationRecordSchema>;
+
+export const contextUsageSnapshotSchema = z.object({
+  lastRequestInputTokens: z.number().finite().nonnegative().optional(),
+  lastRequestOutputTokens: z.number().finite().nonnegative().optional(),
+  runInputTokens: z.number().finite().nonnegative().optional(),
+  runOutputTokens: z.number().finite().nonnegative().optional(),
+  runTotalTokens: z.number().finite().nonnegative().optional(),
+  providerId: z.string().min(1).max(100).optional(),
+  modelId: z.string().min(1).max(200).optional(),
+  scenario: z.string().min(1).max(100).optional(),
+  selectionReason: z.enum([
+    'explicit-work-unit',
+    'team-override',
+    'session-preference',
+    'scenario-route',
+    'global-default',
+    'safe-fallback',
+  ]).optional(),
+  cost: z.literal('unknown').optional(),
+}).strict();
+export type ContextUsageSnapshot = z.infer<typeof contextUsageSnapshotSchema>;
 const ERROR_FINALIZATIONS = new WeakMap<Error, RunFinalizationRecord>();
 
 export function attachRunFinalization(

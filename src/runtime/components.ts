@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { access } from 'node:fs/promises';
 import OpenAI from 'openai';
 import { preferredEnvironmentValue, type AppConfig } from '../config.js';
-import { ContextManager } from '../core/context.js';
 import { ProjectGuidanceLoader, SoulLoader } from '../core/guidance.js';
 import type { MemoryHub } from '../core/memory.js';
 import { PreferenceStore } from '../core/preferences.js';
@@ -15,7 +14,7 @@ import { SkillPreferenceStore } from '../extensions/skill-preferences.js';
 import { ComputerManager } from '../extensions/computer/manager.js';
 import { CuaDriverClient } from '../extensions/computer/cua-driver-client.js';
 import { sharedCuaDriverLifecycle } from '../extensions/computer/cua-driver-lifecycle.js';
-import { createModel, resolveModelProfile, type ModelRuntime } from './model.js';
+import { createModelRuntime, type ModelRuntime } from './model.js';
 import {
   legacyModelConfigurationForAppConfig,
   loadModelConfiguration,
@@ -30,8 +29,6 @@ export interface RuntimeComponents {
   modelConfig: ModelsConfig;
   modelGateway: ModelGateway;
   modelResolver: WorkUnitModelResolver;
-  legacyModels: boolean;
-  context: ContextManager;
   soul: SoulLoader;
   preferences: PreferenceStore;
   projectGuidance: ProjectGuidanceLoader;
@@ -115,6 +112,16 @@ export function skillSources(config: AppConfig, homeDirectory = os.homedir()): S
   ];
 }
 
+export function createModelResolver(config: ModelsConfig, requireConfigured: boolean): WorkUnitModelResolver {
+  return new WorkUnitModelResolver({
+    providers: config.providers,
+    routing: config.routing,
+    ...(requireConfigured ? {
+      isConfigured: (provider) => Boolean(process.env[provider.apiKeyEnv]?.trim()),
+    } : {}),
+  });
+}
+
 export async function createRuntimeComponents(
   config: AppConfig,
   requestedSessionId?: string,
@@ -131,46 +138,12 @@ export async function createRuntimeComponents(
     ? await loadModelConfiguration(config.modelsConfig)
     : legacyModelConfigurationForAppConfig(config));
   const modelGateway = new ModelGateway({ providers: modelConfig.providers });
-  const modelResolver = new WorkUnitModelResolver({
-    providers: modelConfig.providers,
-    routing: modelConfig.routing,
-    ...(hasExplicitModelConfig ? {
-      isConfigured: (provider) => Boolean(process.env[provider.apiKeyEnv]?.trim()),
-    } : {}),
-  });
+  const modelResolver = createModelResolver(modelConfig, hasExplicitModelConfig);
   const defaultBinding = modelResolver.resolve({
     scenario: 'conversation.default',
     routeVersion: modelConfig.routeVersion,
   });
-  const agentRuntime = hasExplicitModelConfig
-    ? modelGateway.createAgentRuntime(defaultBinding.target, defaultBinding.reasoning)
-    : undefined;
-  const resolvedProfile = resolveModelProfile(config, defaultBinding.target.modelId);
-  const contextWindow = defaultBinding.contextWindow ?? resolvedProfile.contextWindow;
-  const outputReserve = defaultBinding.maxOutputTokens
-    ?? (defaultBinding.contextWindow === undefined
-      ? resolvedProfile.outputReserve
-      : Math.min(
-          resolvedProfile.outputReserve,
-          Math.max(256, Math.floor(contextWindow * 0.1)),
-        ));
-  if (outputReserve >= contextWindow) {
-    throw new Error(
-      `模型请求预算非法：maxOutputTokens=${outputReserve} 必须小于 contextWindow=${contextWindow}`,
-    );
-  }
-  const modelRuntime: ModelRuntime = {
-    model: agentRuntime?.model ?? createModel(config, defaultBinding.target.modelId).model,
-    name: defaultBinding.target.modelId,
-    profile: {
-      ...resolvedProfile,
-      contextWindow,
-      outputReserve,
-      supportsImageInput: agentRuntime
-        ? agentRuntime.registration.capabilities.imageInput
-        : modelGateway.inspect(defaultBinding.target).capabilities.imageInput,
-    },
-  };
+  const modelRuntime = createModelRuntime(config, modelGateway, defaultBinding);
   const embeddingConfig = embeddingClientConfig();
   const embeddingClient = embeddingConfig
     ? new OpenAI({ ...embeddingConfig, fetch: globalThis.fetch })
@@ -231,13 +204,6 @@ export async function createRuntimeComponents(
     modelConfig,
     modelGateway,
     modelResolver,
-    legacyModels: !hasExplicitModelConfig,
-    context: new ContextManager(
-      config.historyLimit,
-      modelRuntime.profile.contextWindow,
-      0.55,
-      modelRuntime.profile.outputReserve,
-    ),
     soul,
     preferences,
     projectGuidance: new ProjectGuidanceLoader(config.workspaceRoot),

@@ -12,6 +12,14 @@ import {
 } from '../src/runtime/run-service.js';
 import { ProviderCircuitBreaker } from '../src/runtime/provider-reliability.js';
 
+function committed(answer: string) {
+  return {
+    answer,
+    effects: [],
+    finalization: createRunFinalization({ runId: 'run-service-fixture', answer, calls: [] }),
+  };
+}
+
 test('shared run service owns completion, usage and observer isolation', async () => {
   let completedAnswer = '';
   let stopped = false;
@@ -28,7 +36,7 @@ test('shared run service owns completion, usage and observer isolation', async (
     onRuntimeEvent: () => () => { stopped = true; },
     stream: async () => stream,
     recordEvent: async () => undefined,
-    completeRun: async (answer: string) => { completedAnswer = answer; return []; },
+    completeRun: async (answer: string) => { completedAnswer = answer; return committed(answer); },
     failRun: async () => assert.fail('successful run must not fail'),
   } as unknown as MimiAgent;
   const result = await new AgentRunService(agent).execute({ input: 'work' }, {
@@ -78,7 +86,7 @@ test('shared run service streams visible deltas and records bounded progress eve
     onRuntimeEvent: () => () => undefined,
     stream: async () => stream,
     recordEvent: async (_type: string, event: unknown) => { progress.push(event); },
-    completeRun: async () => [],
+    completeRun: async (answer: string) => committed(answer),
     failRun: async () => assert.fail('visible stream must complete'),
   } as unknown as MimiAgent;
 
@@ -122,7 +130,7 @@ test('shared run service does not reinterpret model answers with keyword heurist
     onRuntimeEvent: () => () => undefined,
     stream: async () => stream,
     recordEvent: async () => undefined,
-    completeRun: async () => { completed = true; return []; },
+    completeRun: async (answer: string) => { completed = true; return committed(answer); },
     failRun: async () => { failed = true; },
   } as unknown as MimiAgent;
 
@@ -185,7 +193,7 @@ test('ephemeral sensitive Runs suppress text streaming and redact final output a
     redactActiveRunError: (error: unknown) =>
       new Error(redact(error instanceof Error ? error.message : String(error))),
     recordEvent: async (_type: string, event: unknown) => { progress.push(event); },
-    completeRun: async (answer: string) => { completed = answer; return []; },
+    completeRun: async (answer: string) => { completed = answer; return committed(answer); },
     failRun: async () => assert.fail('sensitive output run must complete'),
   } as unknown as MimiAgent;
 
@@ -333,7 +341,7 @@ test('shared run service isolates model-scoped rate limits within one Provider',
       return stream;
     },
     recordEvent: async () => undefined,
-    completeRun: async () => [],
+    completeRun: async (answer: string) => committed(answer),
     failRun: async () => undefined,
   } as unknown as MimiAgent;
   const service = new AgentRunService(agent, {
@@ -381,7 +389,7 @@ test('shared run service uses one configured backup only before a stream starts'
     recordEvent: async () => undefined,
     completeRun: async (answer: string) => {
       completed.push(answer);
-      return [];
+      return committed(answer);
     },
     failRun: async () => { failed = true; },
   } as unknown as MimiAgent;
@@ -577,7 +585,6 @@ test('shared run service commits visible interrupted output for Session continui
 
 test('an unfinished Goal completes the Event once with the Host-committed safe answer', async () => {
   const safeAnswer = '长期 Goal 尚未通过验收，已保留当前 Goal 和检查点，不会从头自动重跑。';
-  let committedAnswer: string | undefined;
   let failed = false;
   const stream = {
     rawResponses: [],
@@ -596,8 +603,7 @@ test('an unfinished Goal completes the Event once with the Host-committed safe a
     onRuntimeEvent: () => () => undefined,
     stream: async () => stream,
     recordEvent: async () => undefined,
-    completeRun: async () => { committedAnswer = safeAnswer; return []; },
-    get completedRunAnswer() { return committedAnswer; },
+    completeRun: async () => committed(safeAnswer),
     failRun: async () => { failed = true; },
   } as unknown as MimiAgent;
 

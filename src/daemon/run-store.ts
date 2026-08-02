@@ -1,43 +1,34 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { sanitizeSensitiveData, sanitizeSensitiveText } from '../core/data-sanitizer.js';
-import type { HostRunRecord, MimiRunSummary, MimiSessionActivity } from './types.js';
-import { optionalText as optional, type SqliteRow as Row } from './sqlite-domain.js';
+import type { TaskStore } from './task-store.js';
+import { classifyRunSource } from './run-source.js';
+import type {
+  HostRunRecord,
+  ImmutableEvent,
+  MimiRunSummary,
+  MimiSessionActivity,
+  TaskType,
+} from './types.js';
+import { managementLimit, optionalText as optional, type SqliteRow as Row } from './sqlite-domain.js';
 
-function fromRow(row: Row): HostRunRecord {
-  return sanitizeSensitiveData({
-    id: String(row.id),
-    taskId: String(row.task_id),
-    attemptNo: Number(row.attempt_no),
-    workerId: String(row.worker_id),
-    sessionKey: String(row.session_key),
-    status: String(row.status) as HostRunRecord['status'],
-    startedAt: String(row.started_at),
-    completedAt: optional(row.completed_at),
-    answer: typeof row.answer_json === 'string' ? JSON.parse(row.answer_json) : undefined,
-    error: optional(row.error),
-  });
-}
-
-export class RunStore {
-  constructor(private readonly database: DatabaseSync) {}
-
-  get(id: string): HostRunRecord | undefined {
-    const row = this.database.prepare('SELECT * FROM runs WHERE id = ?').get(id) as Row | undefined;
-    return row ? fromRow(row) : undefined;
-  }
-
-  list(limit = 50): HostRunRecord[] {
-    return (this.database.prepare('SELECT * FROM runs ORDER BY started_at DESC LIMIT ?')
-      .all(limit) as Row[]).map(fromRow);
-  }
-
-  listSummaries(requestedLimit = 50): MimiRunSummary[] {
-    const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(200, requestedLimit)) : 50;
-    return (this.database.prepare(`
-      SELECT id, task_id, attempt_no, session_key, status, started_at, completed_at,
-        answer_json IS NOT NULL AS answer_available, error
-      FROM runs ORDER BY started_at DESC, rowid DESC LIMIT ?
-    `).all(limit) as Row[]).map((row) => ({
+export function listRunSummaries(
+  database: DatabaseSync,
+  requestedLimit = 50,
+  order: 'started' | 'updated' = 'started',
+): MimiRunSummary[] {
+  const orderBy = order === 'updated' ? 'COALESCE(runs.completed_at, runs.started_at)' : 'runs.started_at';
+  return (database.prepare(`
+    SELECT runs.id, runs.task_id, runs.attempt_no, runs.session_key, runs.status,
+      runs.started_at, runs.completed_at, runs.answer_json IS NOT NULL AS answer_available,
+      runs.error, tasks.type, COALESCE(trigger.source, authority.source) AS source,
+      COALESCE(trigger.trust, authority.trust) AS trust
+    FROM runs JOIN tasks ON tasks.id = runs.task_id
+    LEFT JOIN events trigger ON trigger.id = tasks.trigger_event_id
+    JOIN events authority ON authority.id = tasks.authority_event_id
+    ORDER BY ${orderBy} DESC, runs.rowid DESC LIMIT ?
+  `).all(managementLimit(requestedLimit)) as Row[]).map((row) => {
+    const source = String(row.source ?? '');
+    return {
       id: String(row.id),
       taskId: String(row.task_id),
       attemptNo: Number(row.attempt_no),
@@ -47,7 +38,28 @@ export class RunStore {
       completedAt: optional(row.completed_at),
       answerAvailable: Number(row.answer_available) === 1,
       error: optional(row.error)?.slice(0, 500),
-    }));
+      source,
+      sourceCategory: classifyRunSource({
+        taskType: String(row.type) as TaskType,
+        source,
+        trust: String(row.trust) as ImmutableEvent['trust'],
+      }),
+    };
+  });
+}
+
+export class RunStore {
+  constructor(
+    private readonly database: DatabaseSync,
+    private readonly tasks: TaskStore,
+  ) {}
+
+  get(id: string): HostRunRecord | undefined {
+    return this.tasks.getAttempt(id);
+  }
+
+  listSummaries(requestedLimit = 50): MimiRunSummary[] {
+    return listRunSummaries(this.database, requestedLimit);
   }
 
   sessionActivity(sessionKey: string, requestedLimit = 20): MimiSessionActivity[] {

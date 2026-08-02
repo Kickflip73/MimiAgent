@@ -7,7 +7,6 @@ import { RunContext, tool, type AgentInputItem } from '@openai/agents';
 import { z } from 'zod';
 import { ExecutionLedger, type ExecutionCall } from '../src/core/execution-ledger.js';
 import { runFinalizationFromError } from '../src/core/run-finalization.js';
-import type { RunCommitJournal } from '../src/core/run-commit-journal.js';
 import { FileSession } from '../src/core/session.js';
 import { MimiHost, type HostedRunExecutor } from '../src/runtime/mimi-host.js';
 import { MimiAgent } from '../src/runtime/mimi-agent.js';
@@ -19,8 +18,6 @@ interface RuntimeCall {
 }
 
 interface AgentInternals {
-  ledger: ExecutionLedger;
-  runCommits: RunCommitJournal;
   runner: { run: (agent: unknown) => Promise<unknown> };
 }
 
@@ -65,7 +62,7 @@ function runControlCalls(agent: MimiAgent, calls: RuntimeCall[], outputs: unknow
 }
 
 function crashBeforeRuntimeActions(agent: MimiAgent): void {
-  const ledger = (agent as unknown as AgentInternals).ledger;
+  const ledger = agent.components.state.executionLedger.store;
   const executeOnce = ledger.executeOnce.bind(ledger) as ExecutionLedger['executeOnce'];
   ledger.executeOnce = (<T>(call: ExecutionCall, operation: () => Promise<T>) => {
     if (call.toolName === '__mimi_runtime_action__') {
@@ -84,7 +81,7 @@ function completingExecutor(
       await agent.stream(request.input, request.signal, request.options);
       await afterStream?.(request.input);
       const answer = `done:${request.input}`;
-      return { answer, effects: await agent.completeRun(answer) };
+      return agent.completeRun(answer);
     },
   };
 }
@@ -96,21 +93,27 @@ test('defers model and mode changes and restores them from a completion receipt 
   const targetMode = before.mode.id === 'ultra' ? 'plan' : 'ultra';
   const outputs: unknown[] = [];
   runControlCalls(first, [
-    { name: 'switch_model', input: { model: 'runtime-action-test-model' } },
     { name: 'switch_mode', input: { mode: targetMode } },
   ], outputs);
   await first.stream('下一轮切换模型和模式', undefined, {
     executionKey: 'event:model-mode', retainExecutionLedger: true,
   });
+  await first.components.state.executionLedger.store.executeOnce({
+    sessionId: 'owner',
+    runId: 'event:model-mode',
+    toolName: 'switch_model',
+    callId: 'legacy-model-action',
+    argumentsJson: JSON.stringify({ model: 'runtime-action-test-model' }),
+  }, async () => ({ effective: 'next_turn', model: 'runtime-action-test-model' }));
   assert.equal((await first.runtimeInfo()).model, before.model);
   assert.equal((await first.runtimeInfo()).mode.id, before.mode.id);
   crashBeforeRuntimeActions(first);
   await assert.rejects(first.completeRun('scheduled'), /simulated crash/);
-  const pendingCommit = await (first as unknown as AgentInternals).runCommits
+  const pendingCommit = await first.components.state.runCommits
     .findByExecutionKey('owner', 'event:model-mode');
   assert.equal(pendingCommit?.phase, 'goal_committed');
   assert.equal(JSON.stringify(pendingCommit).includes('scheduled'), false);
-  const receipt = await (first as unknown as AgentInternals).ledger.getReceipt<Record<string, unknown>>(
+  const receipt = await first.components.state.executionLedger.store.getReceipt<Record<string, unknown>>(
     'owner', 'event:model-mode',
   );
   assert.deepEqual(receipt?.actions, [
@@ -153,7 +156,6 @@ test('completion receipt preserves final-delivery suppression across process rec
   await first.stream('检查状态', undefined, {
     executionKey: 'event:silent',
     retainExecutionLedger: true,
-    requireCompletionGate: false,
     completionDelivery: () => control.suppressed
       ? { suppressed: true, reason: control.reason }
       : undefined,
@@ -187,7 +189,6 @@ test('recovers the generated new Session id from the successful tool output', as
   runControlCalls(first, [{ name: 'new_session', input: {} }], outputs);
   await first.stream('请创建新会话', undefined, {
     executionKey: 'event:new-session', retainExecutionLedger: true,
-    requireCompletionGate: false,
   });
   const generated = (outputs[0] as { sessionId: string }).sessionId;
   crashBeforeRuntimeActions(first);
@@ -230,7 +231,7 @@ test('a keyed Session actor emits navigation without switching into a concurrent
     },
   });
   const runningTarget = host.execute({
-    sessionId: 'target', input: 'long target run', options: { requireCompletionGate: false },
+    sessionId: 'target', input: 'long target run',
   });
   try {
     await targetStarted.promise;
@@ -239,7 +240,7 @@ test('a keyed Session actor emits navigation without switching into a concurrent
     assert.equal(checkpointBefore?.status, 'running');
 
     const navigated = await host.execute({
-      sessionId: 'source', input: '/switch target', options: { requireCompletionGate: false },
+      sessionId: 'source', input: '/switch target',
     });
     assert.deepEqual(navigated.effects, [{ type: 'session_changed', sessionId: 'target' }]);
     assert.equal(source.currentSessionId, 'source');
@@ -250,8 +251,8 @@ test('a keyed Session actor emits navigation without switching into a concurrent
     await runningTarget;
     runControlCalls(source, [], []);
     const [sourceFollowup, targetFollowup] = await Promise.all([
-      host.execute({ sessionId: 'source', input: 'source follow-up', options: { requireCompletionGate: false } }),
-      host.execute({ sessionId: 'target', input: 'target follow-up', options: { requireCompletionGate: false } }),
+      host.execute({ sessionId: 'source', input: 'source follow-up' }),
+      host.execute({ sessionId: 'target', input: 'target follow-up' }),
     ]);
     assert.equal(sourceFollowup.answer, 'done:source follow-up');
     assert.equal(targetFollowup.answer, 'done:target follow-up');
@@ -357,8 +358,8 @@ test('clear_session retains the current receipt and is not replayed onto later d
     await agent.stream('请清空当前会话', undefined, {
       executionKey: 'event:clear', retainExecutionLedger: true,
     });
-    assert.deepEqual(await agent.completeRun('cleared'), [{ type: 'session_cleared', sessionId: 'owner' }]);
-    const ledger = (agent as unknown as AgentInternals).ledger;
+    assert.deepEqual((await agent.completeRun('cleared')).effects, [{ type: 'session_cleared', sessionId: 'owner' }]);
+    const ledger = agent.components.state.executionLedger.store;
     assert.ok(await ledger.getReceipt('owner', 'event:clear'));
     assert.deepEqual(await session.getItems(), []);
 
@@ -379,7 +380,7 @@ test('rejects an invalid persisted RuntimeAction before applying it', async () =
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-runtime-actions-invalid-'));
   const agent = await createAgent(root, 'owner');
   try {
-    await (agent as unknown as AgentInternals).ledger.commitReceipt('owner', 'event:invalid', {
+    await agent.components.state.executionLedger.store.commitReceipt('owner', 'event:invalid', {
       runId: 'runtime-run', answer: 'unsafe', actions: [{ type: 'switch_session', sessionId: '../escape' }],
     });
     await assert.rejects(agent.completedExecution('owner', 'event:invalid'), /会话 ID|RuntimeAction|invalid/i);
@@ -393,7 +394,7 @@ test('recovers a pre-manifest completion receipt without replaying work', async 
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-runtime-actions-legacy-receipt-'));
   const agent = await createAgent(root, 'owner');
   try {
-    await (agent as unknown as AgentInternals).ledger.commitReceipt('owner', 'event:legacy', {
+    await agent.components.state.executionLedger.store.commitReceipt('owner', 'event:legacy', {
       runId: 'legacy-run',
       answer: 'legacy answer',
       actions: [],
@@ -427,7 +428,6 @@ test('Provider disconnect writes one interrupted Finalization to error, Session,
       options: {
         executionKey: 'event:disconnect',
         retainExecutionLedger: true,
-        requireCompletionGate: false,
       },
     }), (error: Error) => {
       finalization = runFinalizationFromError(error);
@@ -438,7 +438,7 @@ test('Provider disconnect writes one interrupted Finalization to error, Session,
     const session = new FileSession(path.join(root, '.mimi-agent', 'sessions'), 'owner');
     assert.deepEqual((await session.getCheckpoint())?.finalization, finalization);
     assert.deepEqual(
-      (await (agent as unknown as AgentInternals).runCommits
+      (await agent.components.state.runCommits
         .findByExecutionKey('owner', 'event:disconnect'))?.finalization,
       finalization,
     );

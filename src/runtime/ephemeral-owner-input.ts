@@ -3,7 +3,6 @@ import {
   redactExactSensitiveData,
   redactExactSensitiveText,
 } from '../core/data-sanitizer.js';
-import type { AgentPermissionMode, SecurityProfile } from '../config.js';
 import type { AgentMode } from './instructions.js';
 
 export const DIRECT_OWNER_SENSITIVE_INPUT_SOURCES = [
@@ -38,8 +37,6 @@ export interface EphemeralOwnerInputScope {
   sessionId: string;
   profileId: string;
   mode: AgentMode;
-  permissionMode: AgentPermissionMode;
-  securityProfile: SecurityProfile;
   ephemeralSensitiveModelAccess: boolean;
   cause?: {
     eventId: string;
@@ -96,13 +93,7 @@ export function activateEphemeralOwnerInput(
   if (provenanceMismatch) {
     throw new Error('临时敏感输入的 provenance 与当前 Owner Run 不匹配');
   }
-  if (
-    !scope.ephemeralSensitiveModelAccess
-    || scope.securityProfile !== 'full-owner'
-    || scope.permissionMode !== 'trusted'
-  ) {
-    return undefined;
-  }
+  if (!scope.ephemeralSensitiveModelAccess) return undefined;
   return Object.freeze({
     runId: scope.runId,
     ownerId: scope.ownerId,

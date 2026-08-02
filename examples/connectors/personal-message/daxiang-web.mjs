@@ -182,6 +182,13 @@ export function parseDaxiangConfig(raw) {
   };
 }
 
+export function countMissingDaxiangOwnerBindings(config) {
+  const targets = [config?.selfConversation, ...(config?.watch?.conversations || [])];
+  return targets.filter((target) => target?.binding?.selectedBy !== 'owner'
+    || target.binding.accountFingerprint !== config?.expectedAccountFingerprint
+    || !/^[A-Za-z0-9._:-]{1,120}$/.test(target.binding.authorizationRevision || '')).length;
+}
+
 export async function loadDaxiangConfig(file) {
   const resolved = path.resolve(file);
   const config = parseDaxiangConfig(JSON.parse(await readFile(resolved, 'utf8')));
@@ -502,11 +509,9 @@ export class DaxiangWebAdapter {
             : 'unavailable';
       const pageAllowed = this.config.allowedPageFingerprints.includes(pageFingerprint);
       const writeContractConfigured = this.config.allowedPageFingerprints.length > 0;
-      const configuredBindings = [
-        this.config.selfConversation,
-        ...this.config.watch.conversations,
-      ].filter((target) => target.binding?.selectedBy === 'owner'
-        && target.binding.accountFingerprint === accountFingerprint);
+      const configuredBindings = [this.config.selfConversation, ...this.config.watch.conversations]
+        .filter((target) => target.binding?.selectedBy === 'owner'
+          && target.binding.accountFingerprint === accountFingerprint);
       let targetBound = false;
       if (accountVerified) {
         for (const target of configuredBindings) {

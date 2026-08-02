@@ -374,10 +374,19 @@ test('activation survives restart collapse and full compact without fake history
   const first = await MimiAgent.create(config, 'demo');
   let firstInstructions = '';
   const firstRunner = (first as unknown as {
-    runner: { run: (runtimeAgent: { instructions: string }) => Promise<object> };
+    runner: { run: (
+      runtimeAgent: { instructions: string },
+      input: unknown,
+      options: { callModelInputFilter?: (value: {
+        modelData: { input: never[]; instructions: string };
+      }) => Promise<unknown> },
+    ) => Promise<object> };
   }).runner;
-  firstRunner.run = async (runtimeAgent) => {
+  firstRunner.run = async (runtimeAgent, _input, options) => {
     firstInstructions = runtimeAgent.instructions;
+    await options.callModelInputFilter?.({
+      modelData: { input: [], instructions: runtimeAgent.instructions },
+    });
     return {};
   };
   try {

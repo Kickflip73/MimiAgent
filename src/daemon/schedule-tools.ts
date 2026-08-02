@@ -9,7 +9,7 @@ const MAX_FOLLOW_UP_DELAY_MS = 5 * 365 * 24 * 60 * 60_000;
 const MIN_ROUTINE_MINUTES = 5;
 
 function assertScheduleCapacity(store: MimiStore): void {
-  const enabled = store.listSchedules().filter((schedule) => schedule.enabled).length;
+  const enabled = store.schedules.list().filter((schedule) => schedule.enabled).length;
   if (enabled >= MAX_ENABLED_SCHEDULES) {
     throw new Error(`已达到 ${MAX_ENABLED_SCHEDULES} 个启用中计划的上限，请先清理旧计划`);
   }
@@ -85,7 +85,7 @@ function currentSchedule(store: MimiStore, task: TaskRecord, event: ImmutableEve
     ? task.objective as Record<string, unknown>
     : undefined;
   if (typeof payload?.scheduleId !== 'string') return undefined;
-  const schedule = store.getSchedule(payload.scheduleId);
+  const schedule = store.schedules.get(payload.scheduleId);
   if (!schedule || (schedule.type !== 'interval' && schedule.type !== 'watch')) return undefined;
   return isAuthenticScheduleTask(store, schedule, task, event) ? schedule : undefined;
 }
@@ -112,7 +112,7 @@ export function createMimiScheduleTools(
       if (!Number.isFinite(target)) throw new Error('runAt 不是有效的 ISO 8601 时间');
       if (target < now + MIN_FOLLOW_UP_DELAY_MS) throw new Error('后续唤醒至少应在 5 秒之后');
       if (target > now + MAX_FOLLOW_UP_DELAY_MS) throw new Error('后续唤醒不能超过 5 年');
-      return store.addSchedule({
+      return store.schedules.add({
         ...baseSchedule(store, task, event, fallbackRoute, activeSessionKey),
         name, prompt, type: 'at', value: new Date(target).toISOString(),
         nextRunAt: new Date(target).toISOString(),
@@ -131,7 +131,7 @@ export function createMimiScheduleTools(
     execute: async ({ name, prompt, everyMinutes }) => {
       assertScheduleCapacity(store);
       const interval = everyMinutes * 60_000;
-      return store.addSchedule({
+      return store.schedules.add({
         ...baseSchedule(store, task, event, fallbackRoute, activeSessionKey),
         name, prompt, type: 'interval', value: String(interval),
         nextRunAt: new Date(Date.now() + interval).toISOString(),
@@ -157,7 +157,7 @@ export function createMimiScheduleTools(
         `结束条件：${stopWhen}`,
         '直接使用可用工具完成能推进的步骤。若结束条件已成立，调用 complete_current_mimi_schedule 停止后续检查并汇报结果；若尚未成立且没有值得 owner 关注的新变化，调用 finish_mimi_silently。',
       ].join('\n');
-      return store.addSchedule({
+      return store.schedules.add({
         ...baseSchedule(store, task, event, fallbackRoute, activeSessionKey),
         name, prompt, type: 'watch', value: String(interval),
         nextRunAt: new Date(Date.now() + interval).toISOString(),
@@ -169,14 +169,14 @@ export function createMimiScheduleTools(
     name: 'list_mimi_schedules',
     description: '列出 MimiAgent 当前的一次性后续唤醒和周期巡检，包括 ID、下次时间与是否启用。',
     parameters: z.object({}),
-    execute: async () => store.listSchedules().slice(0, MAX_ENABLED_SCHEDULES),
+    execute: async () => store.schedules.list().slice(0, MAX_ENABLED_SCHEDULES),
   });
 
   const cancel = tool({
     name: 'cancel_mimi_schedule',
     description: '按精确 ID 取消一个 MimiAgent 后续唤醒或周期巡检。当用户要求取消或原事务确定结束时使用。',
     parameters: z.object({ id: z.string().uuid() }),
-    execute: async ({ id }) => ({ id, removed: store.removeSchedule(id) }),
+    execute: async ({ id }) => ({ id, removed: store.schedules.remove(id) }),
   });
 
   const activeSchedule = currentSchedule(store, task, event);
@@ -184,7 +184,7 @@ export function createMimiScheduleTools(
     name: 'complete_current_mimi_schedule',
     description: '仅当本次周期巡检的目标或结束条件已经明确达成时，完成并停止当前计划，防止继续无意义轮询。无需查找或传入计划 ID。',
     parameters: z.object({}),
-    execute: async () => ({ id: activeSchedule.id, completed: store.removeSchedule(activeSchedule.id) }),
+    execute: async () => ({ id: activeSchedule.id, completed: store.schedules.remove(activeSchedule.id) }),
   })] : [];
 
   return [followUp, routine, watch, list, cancel, ...completeCurrent];

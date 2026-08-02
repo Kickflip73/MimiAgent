@@ -1,8 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import type {
-  AgentPermissionMode,
-  SecurityProfile,
-} from '../../config.js';
 import type { AgentMode } from '../instructions.js';
 import type { RunModelBinding } from '../../core/model-routing.js';
 import type { ProviderTransport } from '../../core/model-routing.js';
@@ -30,8 +26,6 @@ export interface RunScope {
   readonly model: string;
   readonly modelBinding?: Readonly<RunModelBinding>;
   readonly mode: AgentMode;
-  readonly permissionMode: AgentPermissionMode;
-  readonly securityProfile: SecurityProfile;
   readonly input: string;
   readonly cause?: Readonly<RunScopeCause>;
   readonly executionKey?: string;
@@ -45,8 +39,6 @@ export interface RunScopeInput {
   model: string;
   modelBinding?: RunModelBinding;
   mode: AgentMode;
-  permissionMode: AgentPermissionMode;
-  securityProfile: SecurityProfile;
   input: string;
   options?: {
     cause?: RunScopeCause;
@@ -74,8 +66,6 @@ export function captureRunScope(input: RunScopeInput): RunScope {
         })
       : undefined,
     mode: input.mode,
-    permissionMode: input.permissionMode,
-    securityProfile: input.securityProfile,
     input: input.input,
     cause,
     executionKey: input.options?.executionKey,

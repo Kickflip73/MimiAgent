@@ -2,43 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { AtomicJsonStore } from '../core/state-file.js';
 
-export type DaemonLifecyclePhase =
-  | 'starting'
-  | 'online'
-  | 'stopping'
-  | 'stopped'
-  | 'failed'
-  | 'unknown_ungraceful';
-
-export type DaemonLifecycleStopReason =
-  | 'owner_shutdown'
-  | 'signal'
-  | 'runtime_failure'
-  | 'cleanup_failure'
-  | 'missing_terminal_receipt';
-
-export interface DaemonLifecycleEpoch {
-  epochId: string;
-  buildVersion: string;
-  pid: number;
-  workerId: string;
-  workspaceRoot: string;
-  supervisor: 'launchd' | 'detached' | 'foreground';
-  phase: DaemonLifecyclePhase;
-  startedAt: string;
-  updatedAt: string;
-  recoveredFromEpochId?: string;
-  reason?: DaemonLifecycleStopReason;
-  signal?: 'SIGINT' | 'SIGTERM';
-  exitCode?: number;
-  error?: string;
-}
-
-interface DaemonLifecycleFile {
-  version: 1;
-  epochs: DaemonLifecycleEpoch[];
-}
-
 const phaseSchema = z.enum([
   'starting',
   'online',
@@ -75,6 +38,11 @@ const lifecycleFileSchema = z.object({
   epochs: z.array(epochSchema),
 }).strict();
 
+export type DaemonLifecyclePhase = z.infer<typeof phaseSchema>;
+export type DaemonLifecycleStopReason = z.infer<typeof reasonSchema>;
+export type DaemonLifecycleEpoch = z.infer<typeof epochSchema>;
+type DaemonLifecycleFile = z.infer<typeof lifecycleFileSchema>;
+
 const ACTIVE_PHASES = new Set<DaemonLifecyclePhase>(['starting', 'online', 'stopping']);
 const ALLOWED_TRANSITIONS: Readonly<Record<DaemonLifecyclePhase, ReadonlySet<DaemonLifecyclePhase>>> = {
   starting: new Set(['online', 'stopping', 'failed', 'unknown_ungraceful']),
@@ -85,20 +53,10 @@ const ALLOWED_TRANSITIONS: Readonly<Record<DaemonLifecyclePhase, ReadonlySet<Dae
   unknown_ungraceful: new Set(),
 };
 
-export interface DaemonLifecycleBegin {
-  buildVersion: string;
-  pid: number;
-  workerId: string;
-  workspaceRoot: string;
-  supervisor: DaemonLifecycleEpoch['supervisor'];
-}
-
-export interface DaemonLifecycleTransition {
-  reason?: DaemonLifecycleStopReason;
-  signal?: DaemonLifecycleEpoch['signal'];
-  exitCode?: number;
-  error?: string;
-}
+export type DaemonLifecycleBegin = Pick<DaemonLifecycleEpoch,
+  'buildVersion' | 'pid' | 'workerId' | 'workspaceRoot' | 'supervisor'>;
+export type DaemonLifecycleTransition = Partial<Pick<DaemonLifecycleEpoch,
+  'reason' | 'signal' | 'exitCode' | 'error'>>;
 
 export class DaemonMutationGate {
   private activeCount = 0;
@@ -189,20 +147,16 @@ export class DaemonLifecycleStore {
       }
       epoch.phase = phase;
       epoch.updatedAt = new Date().toISOString();
-      if (update.reason !== undefined) epoch.reason = update.reason;
-      if (update.signal !== undefined) epoch.signal = update.signal;
-      if (update.exitCode !== undefined) epoch.exitCode = update.exitCode;
-      if (update.error !== undefined) epoch.error = update.error.slice(0, 4_000);
+      Object.assign(epoch, update, update.error ? { error: update.error.slice(0, 4_000) } : {});
       return { result: { ...epoch }, changed: true };
     });
   }
 
-  async latest(): Promise<DaemonLifecycleEpoch | undefined> {
+  latest = async (): Promise<DaemonLifecycleEpoch | undefined> => {
     const epoch = (await this.state.read()).epochs.at(-1);
     return epoch ? { ...epoch } : undefined;
-  }
+  };
 
-  async history(): Promise<DaemonLifecycleEpoch[]> {
-    return (await this.state.read()).epochs.map((epoch) => ({ ...epoch }));
-  }
+  history = async (): Promise<DaemonLifecycleEpoch[]> =>
+    (await this.state.read()).epochs.map((epoch) => ({ ...epoch }));
 }

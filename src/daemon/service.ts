@@ -15,7 +15,7 @@ import {
   type AgentPermissionMode,
   type AppConfig,
 } from '../config.js';
-import { persistEnvironmentValues } from '../provider-config.js';
+import { persistEnvironmentValues, providerApiKeyName } from '../provider-config.js';
 import { MimiAgent } from '../agent.js';
 import { sanitizeSensitiveData } from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
@@ -56,7 +56,6 @@ import { backgroundTaskSummary, inspectBackgroundTaskSummary } from './task-tool
 import {
   buildDaemonHealth,
   doctorBlockingHealthRisks,
-  type DaemonHealthSnapshot,
 } from './health-model.js';
 import {
   inspectDiagnosticStorage,
@@ -84,9 +83,7 @@ import {
 } from './chat-snapshot.js';
 import { pathExists as exists, writeAtomicJson } from './json-file.js';
 import {
-  connectorScriptPath,
   initializeMimi,
-  runtimeRoot,
 } from './initialization.js';
 import {
   daemonLaunchEnvironment,
@@ -111,14 +108,13 @@ import {
   migrateLegacyMimiDaemon,
   mimiPaths,
   type DaemonStatusWire,
-  type MimiPaths,
 } from './client-runtime.js';
 import {
   DAEMON_PROTOCOL_VERSION,
+  eventKindSchema,
+  eventTrustSchema,
   type DaemonStatus,
   type EventEnvelope,
-  type EventKind,
-  type EventTrust,
   type MimiActivitySnapshot,
   type MimiChatSnapshot,
   type MimiSchedulePage,
@@ -196,10 +192,7 @@ export function daemonSupervisorAction(
     : 'reuse';
 }
 
-async function daemonSupervisorState(config: AppConfig): Promise<{
-  launchAgentInstalled: boolean;
-  startupMode: DaemonStartupMode;
-}> {
+async function daemonSupervisorState(config: AppConfig) {
   const launchAgentInstalled = await exists(launchAgentFile());
   const persistentProviderConfigured = process.platform === 'darwin'
     && await launchAgentProviderConfigured(config);
@@ -286,53 +279,6 @@ export async function resolveDaemonWorkspaceConfig(config: AppConfig): Promise<A
   return resolved;
 }
 
-export interface MimiDoctorReport {
-  ready: boolean;
-  platform: NodeJS.Platform;
-  node: string;
-  provider: { id: AppConfig['provider']; configured: boolean };
-  paths: MimiPaths;
-  connectors: {
-    configured: boolean;
-    total: number;
-    enabled: string[];
-    missingScripts: string[];
-    runtime?: {
-      online: string[];
-      offline: string[];
-      inboundReady: string[];
-      outboundReady: string[];
-      unavailable: string[];
-    };
-  };
-  systemBinaries: Array<{ path: string; available: boolean }>;
-  daemon: {
-    running: boolean;
-    status?: DaemonStatus;
-    health?: DaemonHealthSnapshot;
-    activity?: {
-      needsAttention: boolean;
-      workPending: number;
-      taskDeadLetters: number;
-      outboxDeadLetters: number;
-      resourceTrends: MimiActivitySnapshot['resourceTrends'];
-      runUsageBySource: MimiActivitySnapshot['runUsageBySource'];
-      autonomousBudgetExhaustions: MimiActivitySnapshot['autonomousBudgetExhaustions'];
-      failureClassification: MimiActivitySnapshot['failureClassification'];
-    };
-  };
-  launchAgent: { installed: boolean; file: string };
-  computer: {
-    configured: boolean;
-    backend?: 'cua';
-    ready?: boolean;
-    diagnostics?: Record<string, unknown>;
-  };
-  storage?: DiagnosticStorageSnapshot;
-  issues: string[];
-  nextActions: string[];
-}
-
 function launchctl(args: string[], ignoreFailure = false): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn('/bin/launchctl', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -347,51 +293,22 @@ function launchctl(args: string[], ignoreFailure = false): Promise<void> {
   });
 }
 
-interface SubmitParams {
+interface SubmitParams extends Partial<Pick<EventEnvelope,
+  'externalId' | 'source' | 'trust' | 'priority' | 'profileId' | 'sessionKey'
+  | 'actor' | 'conversation' | 'replyRoute'>> {
   eventId?: string;
   text?: string;
   payload?: unknown;
-  externalId?: string;
-  source?: string;
-  kind?: EventKind;
-  trust?: EventTrust;
-  priority?: number;
-  profileId?: string;
-  sessionKey?: string;
+  kind?: EventEnvelope['kind'];
   workspaceRoot?: string;
   resumeState?: boolean;
   approvedPersonalMessageText?: string;
   attachments?: LocalAttachmentRequest[];
-  actor?: EventEnvelope['actor'];
-  conversation?: EventEnvelope['conversation'];
-  replyRoute?: ReplyRoute;
 }
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('RPC 参数必须是对象');
   return value as Record<string, unknown>;
-}
-
-export function countMissingDaxiangOwnerBindings(raw: unknown): number {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 0;
-  const config = raw as Record<string, unknown>;
-  const expectedAccountFingerprint = config.expectedAccountFingerprint;
-  if (typeof expectedAccountFingerprint !== 'string' || !expectedAccountFingerprint) return 0;
-  const selfConversation = config.selfConversation;
-  const watch = config.watch && typeof config.watch === 'object' && !Array.isArray(config.watch)
-    ? config.watch as Record<string, unknown>
-    : undefined;
-  const watched = Array.isArray(watch?.conversations) ? watch.conversations : [];
-  return [selfConversation, ...watched].filter((target) => {
-    if (!target || typeof target !== 'object' || Array.isArray(target)) return true;
-    const binding = (target as Record<string, unknown>).binding;
-    if (!binding || typeof binding !== 'object' || Array.isArray(binding)) return true;
-    const value = binding as Record<string, unknown>;
-    return value.selectedBy !== 'owner'
-      || value.accountFingerprint !== expectedAccountFingerprint
-      || typeof value.authorizationRevision !== 'string'
-      || !/^[A-Za-z0-9._:-]{1,120}$/.test(value.authorizationRevision);
-  }).length;
 }
 
 function requiredString(value: unknown, name: string): string {
@@ -407,25 +324,13 @@ function optionalAbsoluteDirectory(value: unknown, name: string): string | undef
   return path.resolve(selected);
 }
 
-function eventKind(value: unknown): EventKind {
-  if (value === undefined) return 'command';
-  if (typeof value === 'string' && ['command', 'alert', 'ambient', 'schedule', 'webhook'].includes(value)) {
-    return value as EventKind;
-  }
-  throw new Error('kind 不是有效事件类型');
-}
-
-function eventTrust(value: unknown): EventTrust {
-  if (value === undefined) return 'owner';
-  if (typeof value === 'string' && ['owner', 'trusted', 'external', 'public', 'system'].includes(value)) {
-    return value as EventTrust;
-  }
-  throw new Error('trust 不是有效信任等级');
-}
-
 function limit(value: unknown, fallback = 50): number {
   const parsed = Number(value ?? fallback);
   return Number.isSafeInteger(parsed) ? Math.max(1, Math.min(200, parsed)) : fallback;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function createWebhook(store: MimiStore): MimiWebhookServer | undefined {
@@ -448,24 +353,6 @@ function runtimeHttpConfiguration(): { port: number; token: string } | undefined
   return { port, token };
 }
 
-function providerConfigured(config: AppConfig): boolean {
-  return config.provider === 'deepseek'
-    ? Boolean(process.env.DEEPSEEK_API_KEY)
-    : config.provider === 'openai-compatible'
-      ? Boolean(process.env.MIMI_PROVIDER_API_KEY)
-      : Boolean(process.env.OPENAI_API_KEY);
-}
-
-function providerKeyName(
-  config: AppConfig,
-): 'OPENAI_API_KEY' | 'DEEPSEEK_API_KEY' | 'MIMI_PROVIDER_API_KEY' {
-  return config.provider === 'deepseek'
-    ? 'DEEPSEEK_API_KEY'
-    : config.provider === 'openai-compatible'
-      ? 'MIMI_PROVIDER_API_KEY'
-      : 'OPENAI_API_KEY';
-}
-
 export async function launchAgentProviderConfigured(
   config: AppConfig,
   environmentFile = resolveEnvironmentFile(),
@@ -477,7 +364,7 @@ export async function launchAgentProviderConfigured(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
     throw error;
   }
-  return Boolean(parseDotenv(contents)[providerKeyName(config)]?.trim());
+  return Boolean(parseDotenv(contents)[providerApiKeyName(config.provider)]?.trim());
 }
 
 export async function persistLaunchAgentProviderApiKey(
@@ -485,27 +372,27 @@ export async function persistLaunchAgentProviderApiKey(
   environmentFile = resolveEnvironmentFile(),
 ): Promise<void> {
   if (await launchAgentProviderConfigured(config, environmentFile)) return;
-  const keyName = providerKeyName(config);
+  const keyName = providerApiKeyName(config.provider);
   const value = process.env[keyName]?.trim();
   if (!value) return;
   await persistEnvironmentValues(environmentFile, { [keyName]: value });
 }
 
-export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
+export async function doctorMimi(config: AppConfig) {
   const paths = mimiPaths(config);
   const platform = process.platform;
   const issues: string[] = [];
   try {
     providerBackupRouteFromEnvironment(config.provider);
   } catch (error) {
-    issues.push(`Provider 主备配置无效：${error instanceof Error ? error.message : String(error)}`);
+    issues.push(`Provider 主备配置无效：${errorMessage(error)}`);
   }
   let connectorConfig: ConnectorFileConfig | undefined;
   if (await exists(paths.connectorsConfig)) {
     try {
       connectorConfig = parseConnectorConfig(JSON.parse(await readFile(paths.connectorsConfig, 'utf8')) as unknown);
     } catch (error) {
-      issues.push(`Connector 配置无效：${error instanceof Error ? error.message : String(error)}`);
+      issues.push(`Connector 配置无效：${errorMessage(error)}`);
     }
   } else {
     issues.push('尚未初始化 connectors.json');
@@ -514,54 +401,6 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
     ? Object.entries(connectorConfig.connectors).filter(([, connector]) => connector.enabled).map(([id]) => id)
     : [];
   if (connectorConfig && enabled.length === 0) issues.push('没有启用任何 Connector');
-  const daxiangEnabled = enabled.includes('personal-daxiang');
-  const daxiangConnector = connectorConfig?.connectors['personal-daxiang'];
-  const daxiangScript = daxiangConnector ? connectorScriptPath(daxiangConnector) : undefined;
-  const packagedDaxiangScript = path.join(
-    runtimeRoot(),
-    'examples',
-    'connectors',
-    'personal-message-connector.mjs',
-  );
-  const daxiangManagedScriptDrift = daxiangEnabled
-    && daxiangConnector?.syncTemplateActions !== false
-    && daxiangScript !== undefined
-    && path.basename(daxiangScript) === path.basename(packagedDaxiangScript)
-    && path.resolve(daxiangScript) !== path.resolve(packagedDaxiangScript);
-  const daxiangConfigFile = process.env.DAXIANG_WEB_CONFIG
-    ? path.resolve(process.env.DAXIANG_WEB_CONFIG)
-    : path.join(paths.root, 'personal-daxiang.json');
-  let daxiangConfigMissing = false;
-  let daxiangFingerprintsMissing = false;
-  let daxiangBindingsMissing = 0;
-  if (daxiangEnabled) {
-    if (platform !== 'darwin') issues.push('personal-daxiang 只支持 macOS Google Chrome');
-    if (daxiangManagedScriptDrift) {
-      issues.push(`personal-daxiang 仍指向其他 checkout 的托管脚本：${daxiangScript}`);
-    }
-    if (!await exists(daxiangConfigFile)) {
-      daxiangConfigMissing = true;
-      issues.push(`personal-daxiang 业务配置不存在：${daxiangConfigFile}`);
-    } else {
-      try {
-        const daxiangConfig = JSON.parse(await readFile(daxiangConfigFile, 'utf8')) as Record<string, unknown>;
-        daxiangFingerprintsMissing = typeof daxiangConfig.expectedAccountFingerprint !== 'string'
-          || !daxiangConfig.expectedAccountFingerprint
-          || !Array.isArray(daxiangConfig.allowedPageFingerprints)
-          || daxiangConfig.allowedPageFingerprints.length === 0;
-        if (daxiangFingerprintsMissing) {
-          issues.push('personal-daxiang 尚未锁定账号指纹和页面指纹，只能执行 health_check probe');
-        } else {
-          daxiangBindingsMissing = countMissingDaxiangOwnerBindings(daxiangConfig);
-          if (daxiangBindingsMissing > 0) {
-            issues.push(`personal-daxiang 有 ${daxiangBindingsMissing} 个 allowlist 目标缺少当前账号的 owner binding`);
-          }
-        }
-      } catch (error) {
-        issues.push(`personal-daxiang 业务配置无效：${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-  }
   const scriptPaths = connectorConfig
     ? [...new Set(Object.values(connectorConfig.connectors)
       .flatMap((connector) => connector.args)
@@ -570,38 +409,14 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
   const missingScripts: string[] = [];
   for (const script of scriptPaths) if (!await exists(script)) missingScripts.push(script);
   if (missingScripts.length) issues.push(`${missingScripts.length} 个 Connector 脚本不存在`);
-  const binaries = platform === 'darwin'
-    ? ['/usr/bin/pmset', '/usr/bin/osascript', '/usr/bin/open', '/usr/bin/shortcuts', '/usr/sbin/screencapture', '/usr/bin/swift', '/usr/bin/say']
-    : [];
-  const systemBinaries = await Promise.all(binaries.map(async (binary) => ({
-    path: binary,
-    available: await exists(binary),
-  })));
-  const missingBinaries = systemBinaries.filter((binary) => !binary.available);
-  if (missingBinaries.length) issues.push(`缺少系统命令：${missingBinaries.map((item) => item.path).join(', ')}`);
-  const configured = providerConfigured(config);
+  const configured = Boolean(process.env[providerApiKeyName(config.provider)]?.trim());
   if (!configured) issues.push(`${config.provider} API Key 未配置`);
   const installedLaunchAgentFile = launchAgentFile();
   const launchAgentInstalled = await exists(installedLaunchAgentFile);
   const persistentProviderKey = await launchAgentProviderConfigured(config);
   if (launchAgentInstalled && !persistentProviderKey) {
-    issues.push(`launchd 持久环境文件缺少 ${providerKeyName(config)}`);
+    issues.push(`launchd 持久环境文件缺少 ${providerApiKeyName(config.provider)}`);
   }
-  let computerDiagnostics: Record<string, unknown> | undefined;
-  let computerReady = false;
-  if (config.computer) {
-    try {
-      const { CuaDriverClient } = await import('../extensions/computer/cua-driver-client.js');
-      const client = new CuaDriverClient(config.computer.driverCommand, config.computer.actionTimeoutMs);
-      computerDiagnostics = await client.diagnostics();
-      const permissions = object(computerDiagnostics.permissions);
-      computerReady = permissions.accessibility === true && permissions.screen_recording === true;
-      if (!computerReady) issues.push('Computer Use 缺少 CuaDriver Accessibility 或 Screen Recording 权限');
-    } catch (error) {
-      issues.push(`Computer Use 不可用：${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
   let daemonStatus: DaemonStatus | undefined;
   let runtimeConnectors: ConnectorCapability[] | undefined;
   let activity: MimiActivitySnapshot | undefined;
@@ -616,11 +431,15 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
       mimiRpc<MimiActivitySnapshot>(paths.socket, 'activity.get', { limit: 1 }, 1_000),
     ]);
     if (connectorResult.status === 'fulfilled') runtimeConnectors = connectorResult.value;
-    else issues.push(`无法读取 Connector 在线状态：${connectorResult.reason instanceof Error ? connectorResult.reason.message : String(connectorResult.reason)}`);
+    else issues.push(`无法读取 Connector 在线状态：${errorMessage(connectorResult.reason)}`);
     if (activityResult.status === 'fulfilled') activity = activityResult.value;
-    else issues.push(`无法读取 MimiAgent 活动状态：${activityResult.reason instanceof Error ? activityResult.reason.message : String(activityResult.reason)}`);
+    else issues.push(`无法读取 MimiAgent 活动状态：${errorMessage(activityResult.reason)}`);
   } else if (configured && connectorConfig) {
     issues.push('MimiAgent 后台服务未运行');
+  }
+  const computerStatus = daemonStatus?.computer;
+  if (config.computer && daemonStatus && computerStatus?.ready !== true) {
+    issues.push(`Computer Use 不可用：${computerStatus?.lastOperationalFailure ?? computerStatus?.lastFailure ?? 'Daemon 未报告 ready'}`);
   }
   const offlineConnectors = runtimeConnectors?.filter((connector) => connector.enabled && !connector.online) ?? [];
   const unavailableConnectors = runtimeConnectors?.filter((connector) => (
@@ -649,52 +468,34 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
     ).map((risk) => risk.message));
   }
   let storage: DiagnosticStorageSnapshot | undefined;
+  const capacityRisks = [
+    ['database', 'SQLite', '运行 mimi daemon activity 检查保留策略和积压，再安排数据库备份与维护'],
+    ['logs', 'Daemon 日志', '安全重启 MimiAgent 以轮转超限日志，并检查重复错误'],
+    ['memory', 'Memory', '检查 MemoryHub 页面、索引和备份增长'],
+  ] as const;
   try {
     storage = await inspectDiagnosticStorage(config);
-    if (storage.capacity.database !== 'ok') {
-      issues.push(`SQLite 容量达到 ${storage.capacity.database} 阈值`);
-    }
-    if (storage.capacity.logs !== 'ok') {
-      issues.push(`Daemon 日志容量达到 ${storage.capacity.logs} 阈值`);
-    }
-    if (storage.capacity.memory !== 'ok') {
-      issues.push(`Memory 容量达到 ${storage.capacity.memory} 阈值`);
+    for (const [key, label] of capacityRisks) {
+      if (storage.capacity[key] !== 'ok') issues.push(`${label} 容量达到 ${storage.capacity[key]} 阈值`);
     }
   } catch (error) {
-    issues.push(`无法读取本地容量指标：${error instanceof Error ? error.message : String(error)}`);
+    issues.push(`无法读取本地容量指标：${errorMessage(error)}`);
   }
   const nextActions: string[] = [];
   if (!connectorConfig) nextActions.push('运行 mimi 完成自动初始化');
-  if (!configured) nextActions.push(`在 ~/.mimi-agent/.env（或旧目录）配置 ${providerKeyName(config)}`);
+  if (!configured) nextActions.push(`在 ~/.mimi-agent/.env（或旧目录）配置 ${providerApiKeyName(config.provider)}`);
   if (launchAgentInstalled && !persistentProviderKey && configured) {
-    nextActions.push(`把 ${providerKeyName(config)} 写入 ${resolveEnvironmentFile()} 后重新运行 mimi`);
+    nextActions.push(`把 ${providerApiKeyName(config.provider)} 写入 ${resolveEnvironmentFile()} 后重新运行 mimi`);
   }
   if (missingScripts.length) nextActions.push('重新运行 npm install 或修复 Connector 脚本路径');
-  if (missingBinaries.length) nextActions.push('安装或恢复缺失的 macOS 系统命令');
-  if (daxiangConfigMissing) {
-    nextActions.push(`复制 daxiang-web.example.json 到 ${daxiangConfigFile}，准备已登录且非活动的大象专用标签`);
-  } else if (daxiangFingerprintsMissing) {
-    nextActions.push('对 personal-daxiang 执行 health_check probe，核对摘要后写回账号和页面指纹并 reload');
-  } else if (daxiangBindingsMissing > 0) {
-    nextActions.push(`为 personal-daxiang 的 ${daxiangBindingsMissing} 个 allowlist 目标补齐当前账号 owner binding 并 reload`);
-  }
-  if (daxiangManagedScriptDrift) {
-    nextActions.push(`把 personal-daxiang 脚本路径更新为当前构建 ${packagedDaxiangScript} 并 reload`);
-  }
   if (!daemonStatus && configured && connectorConfig) nextActions.push('运行 mimi，后台服务会自动启动');
   if (health) {
     for (const action of health.risks.map((risk) => risk.nextAction)) {
       if (!nextActions.includes(action)) nextActions.push(action);
     }
   }
-  if (storage?.capacity.database !== undefined && storage.capacity.database !== 'ok') {
-    nextActions.push('运行 mimi daemon activity 检查保留策略和积压，再安排数据库备份与维护');
-  }
-  if (storage?.capacity.logs !== undefined && storage.capacity.logs !== 'ok') {
-    nextActions.push('安全重启 MimiAgent 以轮转超限日志，并检查重复错误');
-  }
-  if (storage?.capacity.memory !== undefined && storage.capacity.memory !== 'ok') {
-    nextActions.push('检查 MemoryHub 页面、索引和备份增长');
+  for (const [key, , action] of capacityRisks) {
+    if (storage && storage.capacity[key] !== 'ok') nextActions.push(action);
   }
   return {
     ready: issues.length === 0,
@@ -717,7 +518,7 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
         },
       } : {}),
     },
-    systemBinaries,
+    systemBinaries: [] as Array<{ path: string; available: boolean }>,
     daemon: {
       running: Boolean(daemonStatus),
       ...(daemonStatus ? { status: daemonStatus } : {}),
@@ -748,14 +549,16 @@ export async function doctorMimi(config: AppConfig): Promise<MimiDoctorReport> {
     launchAgent: { installed: launchAgentInstalled, file: installedLaunchAgentFile },
     computer: {
       configured: Boolean(config.computer),
-      ...(config.computer ? { backend: config.computer.backend, ready: computerReady } : {}),
-      ...(computerDiagnostics ? { diagnostics: computerDiagnostics } : {}),
+      ...(config.computer ? { backend: config.computer.backend, ready: computerStatus?.ready === true } : {}),
+      ...(computerStatus ? { diagnostics: { ...computerStatus } as Record<string, unknown> } : {}),
     },
     ...(storage ? { storage } : {}),
     issues,
     nextActions,
   };
 }
+
+export type MimiDoctorReport = Awaited<ReturnType<typeof doctorMimi>>;
 
 export async function installMimiLaunchAgent(config: AppConfig): Promise<string> {
   if (process.platform !== 'darwin') throw new Error('自动登录启动当前仅支持 macOS launchd');
@@ -890,6 +693,18 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       onStreamEvent: (eventId, event) => liveEvents.publish(eventId, event),
     });
     const activeTaskSupervisor = taskSupervisor;
+    const cancelTask = (taskId: string, reason?: string) => {
+      const executor = store.getTask(taskId)?.executor;
+      return executor === 'isolated_worker' || executor === 'codex'
+        ? activeTaskSupervisor.cancel(taskId, reason)
+        : dispatcher!.cancel(taskId, reason);
+    };
+    const pauseTask = (taskId: string, reason?: string) => {
+      const executor = store.getTask(taskId)?.executor;
+      return executor === 'isolated_worker' || executor === 'codex'
+        ? activeTaskSupervisor.pause(taskId, reason)
+        : { state: 'not_pauseable' as const };
+    };
     const ingestOwnerPrompt = (event: EventEnvelope, prompt: string) => {
       if (!event.sessionKey) throw new Error('认证 Owner 命令缺少 Session，无法绑定临时敏感输入');
       const captured = ephemeralSecrets.capture({
@@ -929,18 +744,8 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const streamed = mimiRuntimeStreamEvent(event);
         if (streamed) liveEvents.publish(eventId, streamed);
       },
-      cancelEvent: (eventId, reason) => {
-        const task = store.getTask(eventId);
-        return task?.executor === 'isolated_worker' || task?.executor === 'codex'
-          ? activeTaskSupervisor.cancel(eventId, reason)
-          : dispatcher!.cancel(eventId, reason);
-      },
-      pauseEvent: (eventId, reason) => {
-        const task = store.getTask(eventId);
-        return task?.executor === 'isolated_worker' || task?.executor === 'codex'
-          ? activeTaskSupervisor.pause(eventId, reason)
-          : { state: 'not_pauseable' };
-      },
+      cancelEvent: cancelTask,
+      pauseEvent: pauseTask,
       takeEphemeralSecrets: (eventId, sessionId, references) =>
         ephemeralSecrets.take(eventId, sessionId, references),
       resolveWorkspace: async (event, sessionId) => {
@@ -1070,12 +875,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           return { taskId: accepted.task.id, inserted: accepted.inserted };
         },
         task: (taskId) => taskSummaryWithRuntime(store.getTask(taskId)),
-        cancel: (taskId, reason) => {
-          const task = store.getTask(taskId);
-          return task?.executor === 'isolated_worker' || task?.executor === 'codex'
-            ? activeTaskSupervisor.cancel(taskId, reason)
-            : activeDispatcher.cancel(taskId, reason);
-        },
+        cancel: cancelTask,
         events: (taskId, after) => {
           const page = liveEvents.page(taskId, after);
           const task = mimiStreamTaskState(store.getTask(taskId));
@@ -1173,7 +973,6 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           workspaceRoot: requestedWorkspaceRoot ?? snapshot.workspaceRoot,
           draft: true,
           permissionMode: config.permissionMode ?? 'trusted',
-          securityProfile: securityProfileSummary(config),
           contextUsed: 0,
           contextStatus: {
             value: 0,
@@ -1214,105 +1013,93 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         if (operation === 'sessions') return sanitizeSensitiveData(await host!.listSessionSummaries());
         const sessionId = chatSessionId(params);
         return sanitizeSensitiveData(await mutationGate.run(() => host!.mutate(sessionId, async (agent) => {
-            if (operation === 'runtime') return agent.runtimeInfo();
-            if (operation === 'models') return agent.availableModels();
-            if (operation === 'model.control') {
-              return agent.modelControl(object(params.value));
-            }
-            if (operation === 'model.set') {
-              await agent.switchModel(requiredString(params.value, 'value'));
-              return agent.runtimeInfo();
-            }
-            if (operation === 'modes') return agent.availableModes();
-            if (operation === 'mode.set') {
-              await agent.switchMode(requiredString(params.value, 'value'));
-              return agent.runtimeInfo();
-            }
-            if (operation === 'security.set') {
-              await agent.switchSecurityProfile(requiredString(params.value, 'value'));
-              return agent.runtimeInfo();
-            }
-            if (operation === 'output.set') {
+            const operations: Record<string, () => unknown | Promise<unknown>> = {
+              runtime: () => agent.runtimeInfo(),
+              models: () => agent.availableModels(),
+              'model.control': () => agent.modelControl(object(params.value)),
+              'model.set': async () => {
+                await agent.switchModel(requiredString(params.value, 'value'));
+                return agent.runtimeInfo();
+              },
+              modes: () => agent.availableModes(),
+              'mode.set': async () => {
+                await agent.switchMode(requiredString(params.value, 'value'));
+                return agent.runtimeInfo();
+              },
+              'output.set': async () => {
               const value = requiredString(params.value, 'value');
               if (value !== 'answer' && value !== 'thinking' && value !== 'tools' && value !== 'trace') {
                 throw new Error('value 必须是 answer、thinking、tools 或 trace');
               }
               await agent.setOutputLevel(value);
               return agent.runtimeInfo();
-            }
-            if (operation === 'skills') return agent.listSkills();
-            if (operation === 'skills.reload') return agent.reloadSkills();
-            if (operation === 'skills.set') {
-              const request = object(params.value);
-              const scope = request.scope === 'project' || request.scope === 'user'
-                ? request.scope
-                : undefined;
-              if (!scope || typeof request.enabled !== 'boolean') throw new Error('skills.set 参数无效');
-              await agent.setSkillEnabled(requiredString(request.name, 'name'), scope, request.enabled);
-              return { updated: true };
-            }
-            if (operation === 'tools') {
-              return agent.visibleToolNames(createMimiCommandHostTools(
-                store,
-                activeAttention,
-                activeConnectors,
-                sessionId,
-              ));
-            }
-            if (operation === 'mcp') return agent.mcpStatuses();
-            if (operation === 'mcp.reload') return agent.reloadMcp();
-            if (operation === 'context') return agent.contextInfo();
-            if (operation === 'compact') return agent.compactContext();
-            if (operation === 'instructions') return agent.guidanceInfo();
-            if (operation === 'memory.list') {
-              const scope = params.value === 'private' || params.value === 'workspace' ? params.value : 'all';
-              return agent.memoryList(scope);
-            }
-            if (operation === 'memory.search') {
-              const request = object(params.value);
-              const scope = request.scope === 'private' || request.scope === 'workspace' ? request.scope : 'all';
-              return agent.memorySearch(requiredString(request.query, 'query'), scope);
-            }
-            if (operation === 'memory.read') return agent.memoryRead(object(params.value) as never);
-            if (operation === 'memory.forget') return agent.memoryForget(object(params.value) as never);
-            if (operation === 'memory.ingest') return agent.memoryIngest(requiredString(params.value, 'value'), signal);
-            if (operation === 'memory.capture') {
-              const roundRef = typeof params.value === 'string' && params.value.trim() ? params.value.trim() : undefined;
-              return agent.memoryCaptureRound(roundRef);
-            }
-            if (operation === 'memory.lint') return agent.memoryLint();
-            if (operation === 'memory.refresh') return agent.memoryRefresh(limit(params.value, 20));
-            if (operation === 'memory.conflicts') return agent.memoryConflicts(limit(params.value, 20));
-            if (operation === 'memory.audit') return agent.memoryAudit(limit(params.value, 20));
-            if (operation === 'memory.maintain') {
-              const created = store.emitDueMemoryMaintenanceTasks(new Date(), 'owner');
-              return { created: created.map((task) => task.id), ...store.memoryObservationStatus('owner') };
-            }
-            if (operation === 'memory.reindex') return agent.memoryReindex();
-            if (operation === 'memory.status') return {
-              ...await agent.memoryStatus(),
-              observations: store.memoryObservationStatus('owner'),
+              },
+              skills: () => agent.listSkills(),
+              'skills.reload': () => agent.reloadSkills(),
+              'skills.set': async () => {
+                const request = object(params.value);
+                const scope = request.scope === 'project' || request.scope === 'user' ? request.scope : undefined;
+                if (!scope || typeof request.enabled !== 'boolean') throw new Error('skills.set 参数无效');
+                await agent.setSkillEnabled(requiredString(request.name, 'name'), scope, request.enabled);
+                return { updated: true };
+              },
+              tools: () => agent.visibleToolNames(createMimiCommandHostTools(
+                store, activeAttention, activeConnectors, sessionId,
+              )),
+              mcp: () => agent.mcpStatuses(),
+              'mcp.reload': () => agent.reloadMcp(),
+              context: () => agent.contextInfo(),
+              compact: () => agent.compactContext(),
+              instructions: () => agent.guidanceInfo(),
+              'memory.list': () => agent.memoryList(
+                params.value === 'private' || params.value === 'workspace' ? params.value : 'all',
+              ),
+              'memory.search': () => {
+                const request = object(params.value);
+                const scope = request.scope === 'private' || request.scope === 'workspace' ? request.scope : 'all';
+                return agent.memorySearch(requiredString(request.query, 'query'), scope);
+              },
+              'memory.read': () => agent.memoryRead(object(params.value) as never),
+              'memory.forget': () => agent.memoryForget(object(params.value) as never),
+              'memory.ingest': () => agent.memoryIngest(requiredString(params.value, 'value'), signal),
+              'memory.capture': () => agent.memoryCaptureRound(
+                typeof params.value === 'string' && params.value.trim() ? params.value.trim() : undefined,
+              ),
+              'memory.lint': () => agent.memoryLint(),
+              'memory.refresh': () => agent.memoryRefresh(limit(params.value, 20)),
+              'memory.conflicts': () => agent.memoryConflicts(limit(params.value, 20)),
+              'memory.audit': () => agent.memoryAudit(limit(params.value, 20)),
+              'memory.maintain': () => {
+                const created = store.memoryObservations.emitDue(new Date(), 'owner');
+                return { created: created.map((task) => task.id), ...store.memoryObservations.status('owner') };
+              },
+              'memory.reindex': () => agent.memoryReindex(),
+              'memory.status': async () => ({
+                ...await agent.memoryStatus(), observations: store.memoryObservations.status('owner'),
+              }),
+              plan: () => agent.currentPlan(),
+              team: () => agent.currentTeam(),
+              goal: () => agent.currentGoal(),
+              'goal.set': () => agent.setGoal(requiredString(params.value, 'value')),
+              resume: async () => ({ prompt: await agent.resumePrompt() }),
+              clear: async () => {
+                await agent.clearSession();
+                return { cleared: true, sessionId };
+              },
+              'undo.list': () => agent.listUndoableRuns(limit(params.value, 20)),
+              'undo.preview': () => agent.previewUndo(requiredString(params.value, 'value')),
+              'undo.apply': () => agent.undoRun(requiredString(params.value, 'value')),
             };
-            if (operation === 'plan') return agent.currentPlan();
-            if (operation === 'team') return agent.currentTeam();
-            if (operation === 'goal') return agent.currentGoal();
-            if (operation === 'goal.set') return agent.setGoal(requiredString(params.value, 'value'));
-            if (operation === 'resume') return { prompt: await agent.resumePrompt() };
-            if (operation === 'clear') {
-              await agent.clearSession();
-              return { cleared: true, sessionId };
-            }
-            if (operation === 'undo.list') return agent.listUndoableRuns(limit(params.value, 20));
-            if (operation === 'undo.preview') return agent.previewUndo(requiredString(params.value, 'value'));
-            if (operation === 'undo.apply') return agent.undoRun(requiredString(params.value, 'value'));
-            throw new Error(`未知 MimiAgent Chat 操作：${operation}`);
+            const execute = operations[operation];
+            if (!execute) throw new Error(`未知 MimiAgent Chat 操作：${operation}`);
+            return execute();
           }, signal)));
       }
       if (method === 'submit') {
         const params = object(rawParams) as SubmitParams;
         const now = new Date().toISOString();
         const source = params.source ?? 'local-cli';
-        const trust = eventTrust(params.trust);
+        const trust = eventTrustSchema.parse(params.trust ?? 'owner');
         const requestedWorkspaceRoot = source === 'local-cli' && trust === 'owner'
           ? optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot')
           : undefined;
@@ -1336,7 +1123,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const event: EventEnvelope = {
           id: params.eventId ? requiredString(params.eventId, 'eventId') : randomUUID(),
           externalId: params.externalId ?? randomUUID(), source,
-          kind: eventKind(params.kind), trust,
+          kind: eventKindSchema.parse(params.kind ?? 'command'), trust,
           payload,
           occurredAt: now, receivedAt: now, priority: Math.max(0, Math.min(100, params.priority ?? 100)),
           profileId: params.profileId ?? 'owner',
@@ -1349,23 +1136,36 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           ? ingestOwnerPrompt(event, prompt)
           : store.ingestEvent(event);
       }
-      if (method === 'task.cancel') {
-        const params = object(rawParams);
-        const reason = typeof params.reason === 'string' ? params.reason : undefined;
-        const id = requiredString(params.id, 'id');
-        const task = store.getTask(id);
-        return task?.executor === 'isolated_worker' || task?.executor === 'codex'
-          ? activeTaskSupervisor.cancel(id, reason)
-          : activeDispatcher.cancel(id, reason);
-      }
-      if (method === 'event.get') {
-        return sanitizeSensitiveData(store.getImmutableEvent(requiredString(object(rawParams).id, 'id')));
-      }
-      if (method === 'event.route') {
-        return sanitizeSensitiveData(store.getEventRouteReceipt(requiredString(object(rawParams).id, 'id')));
-      }
+      const params = rawParams === undefined ? {} : object(rawParams);
+      const requestedId = () => requiredString(params.id, 'id');
+      const simpleOperations: Record<string, () => unknown | Promise<unknown>> = {
+        'event.get': () => store.getImmutableEvent(requestedId()),
+        'event.route': () => store.getEventRouteReceipt(requestedId()),
+        'events.list': () => store.listEventSummaries(limit(params.limit)),
+        'tasks.list': () => store.listTasks(limit(params.limit)).map(taskSummaryWithRuntime),
+        'tasks.get': () => taskDetailsWithRuntime(store.getTask(requestedId())),
+        'task.retry': () => store.retryDeadLetterTask(requestedId()),
+        'run.get': () => store.runs.get(requestedId()),
+        'runs.list': () => store.runs.listSummaries(limit(params.limit)),
+        'outbox.get': () => store.outbox.get(requestedId()),
+        'outbox.list': () => store.outbox.listSummaries(limit(params.limit)),
+        'outbox.retry': () => ({
+          outbox: store.outbox.retryDeadLetter(requestedId()),
+          warning: '该投递采用 at-least-once 重试；若远端已接收但确认丢失，可能产生重复消息。',
+        }),
+        'outbox.archive': () => store.outbox.archiveDeadLetter(requestedId()),
+        'digest.list': () => store.listPendingDigest(limit(params.limit, 100)),
+        'attention.status': () => activeAttention.status(),
+        'attention.reload': () => mutationGate.run(() => activeAttention.reload()),
+        'attention.brief': () => activeAttention.forceBriefing(),
+        'connectors.list': () => activeConnectors.listCapabilities(),
+        'schedule.get': () => store.schedules.get(requestedId()),
+        'schedules.list': () => store.schedules.listSummaries(),
+        'schedules.remove': () => store.schedules.remove(requestedId()),
+      };
+      const simpleOperation = simpleOperations[method];
+      if (simpleOperation) return sanitizeSensitiveData(await simpleOperation());
       if (method === 'event.stream') {
-        const params = object(rawParams);
         const id = requiredString(params.id, 'id');
         const after = Number(params.after ?? 0);
         const page = liveEvents.page(id, Number.isSafeInteger(after) && after >= 0 ? after : 0);
@@ -1374,30 +1174,17 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           task: mimiStreamTaskState(store.getTask(id)),
         });
       }
-      if (method === 'events.list') return store.listEventSummaries(limit(object(rawParams).limit));
-      if (method === 'tasks.list') {
-        return store.listTasks(limit(object(rawParams).limit))
-          .map((task) => taskSummaryWithRuntime(task));
-      }
-      if (method === 'tasks.get') {
-        const task = store.getTask(requiredString(object(rawParams).id, 'id'));
-        if (!task) throw new Error('Task 不存在');
-        return taskDetailsWithRuntime(task);
-      }
       if (method === 'tasks.cancel') {
-        const params = object(rawParams);
         const id = requiredString(params.id, 'id');
         const reason = typeof params.reason === 'string' ? params.reason : undefined;
-        return activeTaskSupervisor.cancel(id, reason);
+        return cancelTask(id, reason);
       }
       if (method === 'tasks.pause') {
-        const params = object(rawParams);
         const id = requiredString(params.id, 'id');
         const reason = typeof params.reason === 'string' ? params.reason : undefined;
-        return activeTaskSupervisor.pause(id, reason);
+        return pauseTask(id, reason);
       }
       if (method === 'tasks.resume') {
-        const params = object(rawParams);
         const id = requiredString(params.id, 'id');
         const context = typeof params.context === 'string' ? params.context : undefined;
         const task = store.getTask(id);
@@ -1408,39 +1195,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         store.resumeTask(id, context);
         return { state: 'resumed' };
       }
-      if (method === 'task.retry') return store.retryDeadLetterTask(requiredString(object(rawParams).id, 'id'));
-      if (method === 'run.get') {
-        return sanitizeSensitiveData(store.getRun(requiredString(object(rawParams).id, 'id')));
-      }
-      if (method === 'runs.list') {
-        return sanitizeSensitiveData(store.listRunSummaries(limit(object(rawParams).limit)));
-      }
-      if (method === 'outbox.get') {
-        return sanitizeSensitiveData(store.getOutbox(requiredString(object(rawParams).id, 'id')));
-      }
-      if (method === 'outbox.list') {
-        return sanitizeSensitiveData(store.listOutboxSummaries(limit(object(rawParams).limit)));
-      }
-      if (method === 'outbox.retry') {
-        return sanitizeSensitiveData({
-          outbox: store.retryDeadLetterOutbox(requiredString(object(rawParams).id, 'id')),
-          warning: '该投递采用 at-least-once 重试；若远端已接收但确认丢失，可能产生重复消息。',
-        });
-      }
-      if (method === 'outbox.archive') {
-        return sanitizeSensitiveData(
-          store.archiveDeadLetterOutbox(requiredString(object(rawParams).id, 'id')),
-        );
-      }
-      if (method === 'digest.list') {
-        return sanitizeSensitiveData(store.listPendingDigest(limit(object(rawParams).limit, 100)));
-      }
-      if (method === 'attention.status') return activeAttention.status();
-      if (method === 'attention.reload') return mutationGate.run(() => activeAttention.reload());
-      if (method === 'attention.brief') return activeAttention.forceBriefing();
-      if (method === 'connectors.list') return activeConnectors.listCapabilities();
       if (method === 'connectors.setEnabled') {
-        const params = object(rawParams);
         return mutationGate.run(() => activeConnectors.setEnabled(
           requiredString(params.id, 'id'),
           params.enabled === true,
@@ -1458,21 +1213,17 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           };
         });
       }
-      if (method === 'schedule.get') {
-        return sanitizeSensitiveData(store.getSchedule(requiredString(object(rawParams).id, 'id')));
-      }
       if (method === 'schedules.page') {
-        const params = object(rawParams);
         const offset = params.offset === undefined ? 0 : Number(params.offset);
         if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('schedule offset 必须是非负安全整数');
         const expectedRevision = typeof params.revision === 'string' ? params.revision : undefined;
-        const revision = store.scheduleRevision();
+        const revision = store.schedules.revision();
         if (expectedRevision && expectedRevision !== revision) {
           throw new Error('计划任务在读取期间发生变化，请重试 mimi daemon schedule list');
         }
-        const total = store.scheduleCount();
-        const items = store.listScheduleSummaries(limit(params.limit, 200), offset);
-        if (store.scheduleRevision() !== revision) {
+        const total = store.schedules.count();
+        const items = store.schedules.listSummaries(limit(params.limit, 200), offset);
+        if (store.schedules.revision() !== revision) {
           throw new Error('计划任务在读取期间发生变化，请重试 mimi daemon schedule list');
         }
         const nextOffset = offset + items.length;
@@ -1483,14 +1234,12 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           total,
         } satisfies MimiSchedulePage);
       }
-      if (method === 'schedules.list') return sanitizeSensitiveData(store.listScheduleSummaries());
       if (method === 'schedules.add') {
-        const params = object(rawParams);
         const type = requiredString(params.type, 'type');
         if (type !== 'at' && type !== 'interval') throw new Error('type 必须是 at 或 interval');
         const nextRunAt = requiredString(params.nextRunAt, 'nextRunAt');
         if (!Number.isFinite(Date.parse(nextRunAt))) throw new Error('nextRunAt 不是有效时间');
-        return sanitizeSensitiveData(store.addSchedule({
+        return sanitizeSensitiveData(store.schedules.add({
           name: requiredString(params.name, 'name'), type, value: requiredString(params.value, 'value'),
           prompt: requiredString(params.prompt, 'prompt'),
           profileId: typeof params.profileId === 'string' ? params.profileId : 'owner',
@@ -1501,9 +1250,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           trust: params.trust === 'owner' ? 'owner' : 'system', nextRunAt: new Date(nextRunAt).toISOString(),
         }));
       }
-      if (method === 'schedules.remove') return store.removeSchedule(requiredString(object(rawParams).id, 'id'));
       if (method === 'shutdown') {
-        const params = rawParams === undefined ? {} : object(rawParams);
         for (const key of Object.keys(params)) {
           if (key !== 'force') throw new Error(`shutdown 不支持参数：${key}`);
         }
@@ -1550,7 +1297,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       lifecycleEpoch = await lifecycle.transition(lifecycleEpoch.epochId, 'failed', {
         reason: 'runtime_failure',
         exitCode: 1,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage(error),
       }).catch(() => lifecycleEpoch);
     }
     throw error;
@@ -1565,25 +1312,19 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       try {
         await operation();
       } catch (error) {
-        cleanupErrors.push(error instanceof Error ? error.message : String(error));
+        cleanupErrors.push(errorMessage(error));
       }
     };
-    const finalWebhook = webhook;
-    const finalRuntimeHttp = runtimeHttp;
-    const finalTaskSupervisor = taskSupervisor;
-    const finalDispatcher = dispatcher;
-    const finalConnectors = connectors;
-    const finalServer = server;
-    const finalHost = host;
-    const finalComputerLifecycle = computerLifecycle;
-    await cleanup(finalWebhook ? () => finalWebhook.close() : undefined);
-    await cleanup(finalRuntimeHttp ? () => finalRuntimeHttp.close() : undefined);
-    await cleanup(finalTaskSupervisor ? () => finalTaskSupervisor.stop() : undefined);
-    await cleanup(finalDispatcher ? () => finalDispatcher.stop() : undefined);
-    await cleanup(finalConnectors ? () => finalConnectors.stop() : undefined);
-    await cleanup(finalServer ? () => finalServer.close() : undefined);
-    await cleanup(finalHost ? () => finalHost.close() : undefined);
-    await cleanup(finalComputerLifecycle ? () => finalComputerLifecycle.stop() : undefined);
+    for (const operation of [
+      () => webhook?.close(),
+      () => runtimeHttp?.close(),
+      () => taskSupervisor?.stop(),
+      () => dispatcher?.stop(),
+      () => connectors?.stop(),
+      () => server?.close(),
+      () => host?.close(),
+      () => computerLifecycle?.stop(),
+    ]) await cleanup(operation);
     await cleanup(() => store.close());
     if (!runtimeFailure && cleanupErrors.length > 0) {
       process.exitCode = 1;

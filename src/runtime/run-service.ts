@@ -11,6 +11,7 @@ import type {
   MimiRunOptions,
 } from './mimi-agent.js';
 import { assertRunCanComplete, isRunInterrupted, isTerminalRunInterruption } from './run-outcome.js';
+import { projectRunStreamEvent } from './stream-projection.js';
 import {
   classifyProviderFault,
   ProviderCircuitBreaker,
@@ -99,38 +100,18 @@ function usageFrom(stream: RunStream | undefined): ContextUsageSnapshot | undefi
   return Object.values(usage).some((value) => typeof value === 'number' && value > 0) ? usage : undefined;
 }
 
-function answerDelta(event: RunStreamEvent): string {
-  return event.type === 'raw_model_stream_event'
-    && event.data.type === 'output_text_delta'
-    ? event.data.delta
-    : '';
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined;
-}
-
 function progressFrom(event: RunStreamEvent): Record<string, unknown> | undefined {
-  if (event.type === 'agent_updated_stream_event') {
-    return { kind: 'status', tone: 'agent', title: event.agent.name, next: 'Agent 工作中' };
-  }
-  if (event.type !== 'run_item_stream_event') return undefined;
-  const raw = record(record(event.item)?.rawItem);
-  if (event.name === 'tool_called') {
-    const name = typeof raw?.name === 'string' ? raw.name : 'unknown';
-    return {
-      kind: 'status',
-      tone: 'tool',
-      title: name,
-      detail: typeof raw?.arguments === 'string' ? raw.arguments.slice(0, 1_000) : raw?.arguments,
-      next: `正在执行 ${name}`,
-    };
-  }
-  if (event.name === 'tool_output') {
-    const name = typeof raw?.name === 'string' ? raw.name : 'tool';
-    return { kind: 'status', tone: 'success', title: name, next: '模型继续思考' };
-  }
-  return undefined;
+  const projection = projectRunStreamEvent(event);
+  if (projection?.kind !== 'status') return undefined;
+  return {
+    kind: projection.kind,
+    tone: projection.tone,
+    title: projection.title,
+    ...(event.type === 'run_item_stream_event' && event.name === 'tool_called'
+      ? { detail: projection.detail }
+      : {}),
+    next: projection.next,
+  };
 }
 
 async function observe<T>(callback: ((value: T) => void | Promise<void>) | undefined, value: T): Promise<void> {
@@ -172,12 +153,8 @@ export class AgentRunService {
   }
 
   providerHealthRoutes(): ProviderHealthSnapshot[] {
-    return [
-      this.providerReliability.health(this.lastProviderId),
-      ...(this.backupProvider
-        ? [this.providerReliability.health(this.backupProvider.id)]
-        : []),
-    ];
+    const routes = [this.lastProviderId, ...(this.backupProvider ? [this.backupProvider.id] : [])];
+    return routes.map((providerId) => this.providerReliability.health(providerId));
   }
 
   async execute(request: AgentRunRequest, observer: AgentRunObserver = {}): Promise<AgentRunResult> {
@@ -185,7 +162,6 @@ export class AgentRunService {
     let streamedAnswer = '';
     let interruptedAnswer = '';
     let selectedProvider = this.lastProviderId;
-    let streamAcquired = false;
     const stopRuntimeEvents = this.agent.onRuntimeEvent((event) => observe(
       observer.onRuntimeEvent,
       this.agent.redactActiveRunData?.(event) ?? event,
@@ -227,9 +203,10 @@ export class AgentRunService {
       );
       selectedProvider = acquired.provider;
       stream = acquired.value;
-      streamAcquired = true;
       for await (const event of stream) {
-        streamedAnswer += answerDelta(event);
+        const projection = projectRunStreamEvent(event);
+        const answerDelta = projection?.kind === 'answer' ? projection.text : '';
+        streamedAnswer += answerDelta;
         const safeEvent = this.agent.redactActiveRunData?.(event) ?? event;
         const hiddenCandidate = this.agent.completionGateRequired
           && event.type === 'raw_model_stream_event'
@@ -241,7 +218,7 @@ export class AgentRunService {
         const sensitiveModelStream = this.agent.activeRunHasEphemeralSensitiveAccess
           && event.type === 'raw_model_stream_event';
         if (!hiddenCandidate && !sensitiveModelStream) {
-          interruptedAnswer += answerDelta(event);
+          interruptedAnswer += answerDelta;
           await observe(observer.onStreamEvent, safeEvent);
         }
         const progress = progressFrom(safeEvent);
@@ -256,21 +233,18 @@ export class AgentRunService {
         : finalOutput === undefined ? streamedAnswer : JSON.stringify(finalOutput)).slice(0, 20_000);
       const answer = this.agent.redactActiveRunText?.(rawAnswer) ?? rawAnswer;
       const usage = usageFrom(stream);
-      const effects = await this.agent.completeRun(answer, usage);
-      const committedAnswer = this.agent.completedRunAnswer ?? answer;
+      const committed = await this.agent.completeRun(answer, usage);
       const result = {
-        answer: committedAnswer,
-        effects,
-        ...(this.agent.completedRunFinalization
-          ? { finalization: this.agent.completedRunFinalization }
-          : {}),
+        answer: committed.answer,
+        effects: committed.effects,
+        finalization: committed.finalization,
         usage,
         delivery: await request.options?.completionDelivery?.(),
       } satisfies AgentRunResult;
       await observe(observer.onComplete, result);
       return result;
     } catch (error) {
-      if (streamAcquired && classifyProviderFault(error).kind !== 'other') {
+      if (stream && classifyProviderFault(error).kind !== 'other') {
         this.providerReliability.failure(selectedProvider, error);
       }
       const safeError = this.agent.redactActiveRunError?.(error) ?? error;
@@ -284,11 +258,11 @@ export class AgentRunService {
           : terminalReason
             ? this.agent.redactActiveRunError?.(terminalReason) ?? terminalReason
             : safeError,
-        isRunInterrupted(error, request.signal),
+        Boolean(stream) || isRunInterrupted(error, request.signal),
         usageFrom(stream),
         interruptedAnswer,
       );
-      const failureFinalization = streamAcquired
+      const failureFinalization = stream
         ? await commitFailure
         : await commitFailure.catch(() => undefined);
       const terminalError = failureFinalization

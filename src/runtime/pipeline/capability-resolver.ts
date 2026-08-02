@@ -12,9 +12,18 @@ export interface CapabilityPolicy {
 
 export interface CapabilityResolverInput {
   scope: RunScope;
+  runtimeAccess: RuntimeAccess;
   policy?: CapabilityPolicy;
   requestedComputerAccess?: ComputerAccess;
   defaultComputerAccess?: ComputerAccess;
+}
+
+export interface RuntimeAccess {
+  workspaceWrite: boolean;
+  computer: boolean;
+  mcp: boolean;
+  ephemeralSensitiveModelAccess: boolean;
+  policyRevision: string;
 }
 
 export interface ResolvedCapabilities {
@@ -200,7 +209,7 @@ export class CapabilityResolver {
     const allowed = new Set(input.policy?.allowedCapabilities ?? []);
     const canReadLocal = !input.policy || allowed.has('read');
     const executableCompletion = input.scope.mode !== 'plan'
-      && input.scope.securityProfile !== 'safe';
+      && input.runtimeAccess.workspaceWrite;
     const completionToolsAllowed = executableCompletion
       && (!input.policy || allowed.has('state-read'))
       && (!input.policy?.allowedTools
@@ -212,7 +221,7 @@ export class CapabilityResolver {
       canReadState: !input.policy || allowed.has('state-read'),
       canReadSessionContext: input.policy?.allowSessionContext !== false,
       completionToolsAllowed,
-      computerAccess: input.scope.securityProfile === 'full-owner'
+      computerAccess: input.runtimeAccess.computer
         && (!input.scope.cause || input.scope.cause.trust === 'owner')
         ? input.requestedComputerAccess
           ?? input.policy?.computerAccess

@@ -1,6 +1,10 @@
 import type { AgentInputItem, RunStreamEvent } from '@openai/agents';
 import type { RunCheckpoint } from './core/session.js';
 import type { RuntimeEvent } from './runtime/hooks.js';
+import {
+  projectRunStreamEvent,
+  type RunStreamProjection,
+} from './runtime/stream-projection.js';
 
 type Writable = {
   write(chunk: string): unknown;
@@ -23,18 +27,7 @@ export function normalizeOutputLevel(value?: string): OutputLevel {
   return OUTPUT_LEVELS.some((level) => level.id === value) ? value as OutputLevel : 'tools';
 }
 
-export type DisplayEvent =
-  | { kind: 'answer'; text: string }
-  | { kind: 'reasoning'; text: string }
-  | {
-      kind: 'status';
-      tone: StatusTone;
-      title: string;
-      detail?: string;
-      fullDetail?: string;
-      next: string;
-      nextMotion?: RunMotion;
-    };
+export type DisplayEvent = RunStreamProjection;
 
 const ansi = {
   reset: '\x1b[0m',
@@ -191,97 +184,8 @@ function compact(value: unknown, limit = 160): string {
   return singleLine.length <= limit ? singleLine : `${singleLine.slice(0, Math.max(0, limit - 3))}...`;
 }
 
-function detailed(value: unknown): string {
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2) ?? '';
-  } catch {
-    return String(value);
-  }
-}
-
-function rawItem(event: RunStreamEvent): Record<string, unknown> | undefined {
-  if (event.type !== 'run_item_stream_event') return undefined;
-  return record(record(event.item)?.rawItem);
-}
-
 export function parseRunEvent(event: RunStreamEvent): DisplayEvent | undefined {
-  if (event.type === 'agent_updated_stream_event') {
-    return {
-      kind: 'status',
-      tone: 'agent',
-      title: event.agent.name,
-      next: 'Agent 工作中',
-    };
-  }
-
-  if (event.type === 'run_item_stream_event') {
-    const raw = rawItem(event);
-    if (event.name === 'tool_called') {
-      const name = typeof raw?.name === 'string' ? raw.name : 'unknown';
-      return {
-        kind: 'status',
-        tone: 'tool',
-        title: name,
-        detail: compact(raw?.arguments),
-        fullDetail: detailed(raw?.arguments),
-        next: `正在执行 ${name}`,
-        nextMotion: 'running',
-      };
-    }
-    if (event.name === 'tool_output') {
-      const item = record(event.item);
-      const name = typeof raw?.name === 'string' ? raw.name : 'tool';
-      if (name === 'run_team') {
-        return {
-          kind: 'status',
-          tone: 'success',
-          title: 'Ultra Team',
-          detail: '本轮并行任务已结束',
-          fullDetail: detailed(item?.output),
-          next: '模型继续思考',
-        };
-      }
-      return {
-        kind: 'status',
-        tone: 'success',
-        title: name,
-        detail: compact(item?.output, 120),
-        fullDetail: detailed(item?.output),
-        next: '模型继续思考',
-      };
-    }
-    if (event.name === 'reasoning_item_created') {
-      return {
-        kind: 'status',
-        tone: 'thinking',
-        title: '推理阶段完成',
-        next: '生成回答',
-      };
-    }
-    return undefined;
-  }
-
-  if (event.type !== 'raw_model_stream_event') return undefined;
-  if (event.data.type === 'output_text_delta') {
-    return { kind: 'answer', text: event.data.delta };
-  }
-  if (event.data.type !== 'model') return undefined;
-
-  const providerEvent = record(event.data.event);
-  const choices = Array.isArray(providerEvent?.choices) ? providerEvent.choices : undefined;
-  const choice = record(choices?.[0]);
-  const delta = record(choice?.delta);
-  if (typeof delta?.reasoning_content === 'string') {
-    return { kind: 'reasoning', text: delta.reasoning_content };
-  }
-  if (
-    providerEvent?.type === 'response.reasoning_summary_text.delta' &&
-    typeof providerEvent.delta === 'string'
-  ) {
-    return { kind: 'reasoning', text: providerEvent.delta };
-  }
-  return undefined;
+  return projectRunStreamEvent(event);
 }
 
 function inlineMarkdown(text: string, tty: boolean): string {

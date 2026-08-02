@@ -3,7 +3,9 @@ import type {
   EventRouteReceipt,
   ImmutableEvent,
   ImmutableEventInput,
+  MimiEventSummary,
 } from './types.js';
+import { managementLimit } from './sqlite-domain.js';
 
 type Row = Record<string, string | number | null | undefined>;
 
@@ -40,6 +42,26 @@ function eventFromRow(row: Row): ImmutableEvent {
     receivedAt: String(row.received_at),
     createdAt: String(row.created_at),
   };
+}
+
+export function listEventSummaries(database: DatabaseSync, requestedLimit = 50): MimiEventSummary[] {
+  return (database.prepare(`
+    SELECT id, external_id, source, type, trust, subject_type, subject_id,
+      profile_id, occurred_at, received_at, created_at
+    FROM events ORDER BY received_at DESC, rowid DESC LIMIT ?
+  `).all(managementLimit(requestedLimit)) as Row[]).map((row) => ({
+    id: String(row.id),
+    externalId: String(row.external_id).slice(0, 500),
+    source: String(row.source).slice(0, 200),
+    type: String(row.type),
+    trust: String(row.trust) as ImmutableEvent['trust'],
+    subjectType: optional(row.subject_type) as ImmutableEvent['subjectType'],
+    subjectId: optional(row.subject_id),
+    profileId: String(row.profile_id).slice(0, 100),
+    occurredAt: String(row.occurred_at),
+    receivedAt: String(row.received_at),
+    createdAt: String(row.created_at),
+  }));
 }
 
 function receiptFromRow(row: Row): EventRouteReceipt {
@@ -97,12 +119,6 @@ export class EventStore {
     const row = this.database.prepare('SELECT * FROM events WHERE source = ? AND external_id = ?')
       .get(source, externalId) as Row | undefined;
     return row ? eventFromRow(row) : undefined;
-  }
-
-  list(limit: number): ImmutableEvent[] {
-    return (this.database.prepare(`
-      SELECT * FROM events ORDER BY received_at DESC, rowid DESC LIMIT ?
-    `).all(limit) as Row[]).map(eventFromRow);
   }
 
   getReceipt(eventId: string): EventRouteReceipt | undefined {

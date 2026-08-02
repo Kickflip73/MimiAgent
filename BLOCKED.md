@@ -160,16 +160,15 @@
 - **个人 QQ 恢复历史记录（已被 2026-08-02 ARC-205 状态取代）**：`personal-qq`
   的正式 Computer Adapter 已实现并通过确定性测试；当前剩余 inbound observer、真实
   TCC/AX readiness 和稳定 owner 目标，保持 disabled，不得把实现完成写成实机可用。
-- **2026-08-02 ARC-303 总生产 LOC 门禁未满足（实现内阻塞）**：三个热点已从
-  `3424/2383/3018` 收敛到 `1507/1664/1602`，check/build/package 与相关聚焦门禁全绿，
-  但按 `e1dd9a0` 开工口径把所有新 `core/runtime/daemon` 模块计入后仍为
-  `9471` 行，对约 `9450` 基线净增 `21`，距离 10% 目标 `8505`
-  尚差 `966`。已依次尝试职责切分、删除双 Commit facade、固定单一 permissionMode、
-  共享 SQLite transaction/audit、删除重复 Host binding/Context 预计算、合并 RPC 与迁移路径；
-  不通过压缩格式、漏计新文件或删除受测产品能力伪造指标。ARC-303 保持未完成，
-  ARC-401 已完成不触碰真实库的独立副本验证，但 ARC-402 不得据此进入部署。
+- **2026-08-03 ARC-303 实现内阻塞已解除**：防漏计复核把新 `stream-projection.ts`
+  和 `core/xml.ts` 加回完整清单后曾真实失败为 `8583 > 8505`；继续删除平行 Host/Port
+  contract、组件镜像、直接 Plan/Team 构造与重复 schema/projection 后，20 个生产文件为
+  `8490/8505`，热点 `1174/1536/1475`。`npm run check`、最终 119 项相关回归和完整
+  887 项 coverage 测试均绿；本项不再阻塞
+  ARC-402。部署仍必须单独满足下条 clean build、Doctor、Connector/Computer readiness 门禁。
 - **2026-08-02 ARC-402/501～503 尚不可开始正式窗口**：只读 status/Doctor 已确认当前
   Daemon 虽然 idle，但仍是旧 build `0.12.0+54d3940e1185`，且 Cua Driver 缺少 Screen
-  Recording、`personal-daxiang` unavailable、dead letter=549、Digest=6410。ARC-402 的
-  ARC-303 前置门禁仍红，因此不得部署、重启、建立 T0，后续 24h/72h/7d 也不能从旧构建
-  或本次短时检查补算；外部/TCC 恢复后仍须从同一 clean build 的新 T0 重新累计。
+  Recording、`personal-daxiang` unavailable、dead letter=549、Digest=6410。ARC-303
+  已转绿，但这些运行前置仍未解除，因此不得部署、重启、建立 T0；后续 24h/72h/7d
+  不能从旧构建或本次短时检查补算，外部/TCC 恢复后仍须从同一 clean build 的新 T0
+  重新累计。

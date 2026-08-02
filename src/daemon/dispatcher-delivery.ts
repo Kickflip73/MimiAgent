@@ -36,7 +36,7 @@ export class OutboxDeliveryCoordinator {
 
   start(): Promise<void> | undefined {
     if (this.deliveries.size >= this.concurrency) return undefined;
-    const outgoing = this.store.claimOutbox(
+    const outgoing = this.store.outbox.claim(
       this.workerId,
       undefined,
       undefined,
@@ -65,7 +65,7 @@ export class OutboxDeliveryCoordinator {
     try {
       await this.notifier.deliver(outgoing);
     } catch (error) {
-      this.store.failOutbox(
+      this.store.outbox.fail(
         outgoing.id,
         this.workerId,
         error,
@@ -74,7 +74,7 @@ export class OutboxDeliveryCoordinator {
       return;
     }
     try {
-      this.store.completeOutbox(outgoing.id, this.workerId);
+      this.store.outbox.complete(outgoing.id, this.workerId);
     } catch (error) {
       // The external sink already confirmed success. Leaving the message in its
       // sending lease makes recovery dead-letter it instead of redelivering it.

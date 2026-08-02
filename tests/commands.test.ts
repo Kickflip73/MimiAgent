@@ -5,7 +5,6 @@ import path from 'node:path';
 import test from 'node:test';
 import type { MimiAgent } from '../src/agent.js';
 import { CommandHandler } from '../src/commands.js';
-import { SECURITY_PROFILES, type SecurityProfile } from '../src/config.js';
 import { AGENT_MODES } from '../src/runtime/instructions.js';
 import type { MemoryRef } from '../src/core/memory.js';
 import { runProviderRegistryCommand } from '../src/provider-config.js';
@@ -135,7 +134,6 @@ function fakeAgent(): MimiAgent {
       { id: 'ultra', label: 'Ultra Team', description: '大型任务' },
     ],
     switchMode: () => undefined,
-    switchSecurityProfile: () => undefined,
     toolNames: ['read_file', 'run_shell'],
     mcpServerNames: [],
     mcpStatuses: () => [],
@@ -455,12 +453,16 @@ test('lists models from every configured Provider and switches across Providers'
         id: 'deepseek',
         label: 'DeepSeek',
         model: 'deepseek-v4-pro',
+        transport: 'openai-chat-completions' as const,
+        configured: true,
         models: ['deepseek-v4-pro', 'deepseek-v4-flash'],
       },
       {
         id: 'openai-compatible',
         label: 'OpenAI Compatible',
         model: 'kimi-k3',
+        transport: 'openai-chat-completions' as const,
+        configured: true,
         models: ['kimi-k3'],
       },
     ],
@@ -534,12 +536,16 @@ test('keeps the selected Provider when duplicate model ids exist', async () => {
         id: 'deepseek',
         label: 'DeepSeek',
         model: 'deepseek-v4-pro',
+        transport: 'openai-chat-completions' as const,
+        configured: true,
         models: ['deepseek-v4-pro'],
       },
       {
         id: 'openai-compatible',
         label: 'OpenAI Compatible',
         model: 'deepseek-v4-pro',
+        transport: 'openai-chat-completions' as const,
+        configured: true,
         models: ['deepseek-v4-pro'],
       },
     ],
@@ -632,31 +638,15 @@ test('supports structured multi-Provider model slash commands without restarting
 test('allows runtime commands before the draft Session receives its first message', async () => {
   const switched: unknown[] = [];
   const modes: string[] = [];
-  const profiles: string[] = [];
   const output: string[] = [];
   const agent = fakeAgent();
-  const baseRuntimeInfo = agent.runtimeInfo.bind(agent);
-  let activeProfile: SecurityProfile = 'full-owner';
   Object.defineProperty(agent, 'sessionReady', { value: false });
-  agent.runtimeInfo = async () => ({
-    ...await baseRuntimeInfo(),
-    permissionMode: SECURITY_PROFILES[activeProfile].permissionMode,
-    securityProfile: {
-      ...SECURITY_PROFILES[activeProfile],
-      computerUse: false,
-      trustedWorkspaceMcp: false,
-    },
-  });
   const baseModelControl = agent.modelControl.bind(agent);
   agent.modelControl = async (request) => {
     if ((request as { action?: unknown }).action === 'use') switched.push(request);
     return baseModelControl(request);
   };
   agent.switchMode = async (mode) => { modes.push(mode); };
-  agent.switchSecurityProfile = async (profile) => {
-    profiles.push(profile);
-    activeProfile = profile as SecurityProfile;
-  };
   const handler = new CommandHandler(agent, async () => undefined, {
     write: (text) => output.push(text),
     selectModel: async () => ({
@@ -669,17 +659,17 @@ test('allows runtime commands before the draft Session receives its first messag
   assert.equal(await handler.execute('/status'), 'handled');
   assert.equal(await handler.execute('/model'), 'handled');
   assert.equal(await handler.execute('/mode ultra'), 'handled');
-  assert.equal(await handler.execute('/security workstation'), 'handled');
+  assert.equal(await handler.execute('/security'), 'handled');
+  await assert.rejects(handler.execute('/security workstation'), /启动配置冻结/);
   assert.deepEqual(switched, [{
     action: 'use',
     target: { providerId: 'deepseek', modelId: 'gpt-5-mini' },
   }]);
   assert.deepEqual(modes, ['ultra']);
-  assert.deepEqual(profiles, ['workstation']);
   assert.match(output.join('\n'), /模型\s+deepseek/);
   assert.match(output.join('\n'), /已切换模型：gpt-5-mini/);
   assert.match(output.join('\n'), /已切换模式：Ultra Team/);
-  assert.match(output.join('\n'), /Workstation/);
+  assert.match(output.join('\n'), /启动时冻结/);
 });
 
 test('selects a preset Agent mode', async () => {
@@ -695,44 +685,17 @@ test('selects a preset Agent mode', async () => {
   assert.deepEqual(switched, ['ultra']);
 });
 
-test('selects a runtime security profile with arrows or an explicit argument', async () => {
-  const selectedProfiles: string[][] = [];
-  let active: SecurityProfile = 'full-owner';
+test('reports the startup security profile and rejects runtime mutation', async () => {
   const agent = fakeAgent();
-  const runtimeInfo = agent.runtimeInfo.bind(agent);
-  agent.runtimeInfo = async () => ({
-    ...await runtimeInfo(),
-    permissionMode: SECURITY_PROFILES[active].permissionMode,
-    securityProfile: {
-      ...SECURITY_PROFILES[active],
-      computerUse: false,
-      trustedWorkspaceMcp: false,
-    },
-  });
-  agent.switchSecurityProfile = async (profile) => {
-    if (!(profile in SECURITY_PROFILES)) throw new Error(`未知安全档位：${profile}`);
-    active = profile as SecurityProfile;
-  };
   const output: string[] = [];
   const handler = new CommandHandler(agent, async () => undefined, {
     write: (text) => output.push(text),
-    selectSecurityProfile: async (profiles, current) => {
-      selectedProfiles.push(profiles.map((profile) => profile.id));
-      assert.equal(current, 'full-owner');
-      return 'workstation';
-    },
   });
 
   assert.equal(await handler.execute('/security'), 'handled');
-  assert.equal(active, 'workstation');
-  assert.deepEqual(selectedProfiles, [['safe', 'workstation', 'full-owner']]);
-  assert.match(output.join('\n'), /Workstation \(workstation\/workspace\).*重启后恢复启动配置/);
-  assert.match(output.join('\n'), /敏感值不会发送给模型 Provider/);
-
-  assert.equal(await handler.execute('/security full-owner'), 'handled');
-  assert.equal(active, 'full-owner');
-  assert.match(output.join('\n'), /Full Owner \(full-owner\/trusted\).*重启后恢复启动配置/);
-  await assert.rejects(handler.execute('/security unsafe'), /未知安全档位/);
+  assert.match(output.join('\n'), /Full Owner \(full-owner\/trusted\)/);
+  assert.match(output.join('\n'), /启动时冻结/);
+  await assert.rejects(handler.execute('/security safe'), /启动配置冻结/);
 });
 
 test('switches terminal output detail level', async () => {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -342,7 +342,7 @@ test('ingress records an immutable Event and routes one executable Task', async 
     assert.equal(accepted.task?.triggerEventId, accepted.event.id);
     assert.equal(accepted.task?.authorityEventId, accepted.event.id);
     assert.deepEqual(store.getEventRouteReceipt(accepted.event.id)?.taskIds, [accepted.task?.id]);
-    const lifecycle = store.listImmutableEvents().find((event) =>
+    const lifecycle = store.listEventSummaries().find((event) =>
       event.type === 'task.created' && event.subjectId === accepted.task?.id);
     assert.equal(store.getEventRouteReceipt(lifecycle!.id)?.decision, 'observe_only');
 
@@ -465,8 +465,8 @@ test('v11 cutover atomically preserves Task, Run and Outbox ownership without pa
     assert.equal(store.getImmutableEvent('legacy-task')?.type, 'task.migrated');
     assert.equal(store.getTask('legacy-task')?.status, 'completed');
     assert.equal(store.getTask('legacy-task')?.parentTaskId, 'legacy-root');
-    assert.equal(store.getRun('legacy-run')?.taskId, 'legacy-task');
-    assert.equal(store.getOutbox('legacy-outbox')?.taskId, 'legacy-task');
+    assert.equal(store.runs.get('legacy-run')?.taskId, 'legacy-task');
+    assert.equal(store.outbox.get('legacy-outbox')?.taskId, 'legacy-task');
     assert.equal(store.getEventRouteReceipt('legacy-task')?.decision, 'task_created');
     assert.equal(store.getEventRouteReceipt('migration-task-legacy-task')?.decision, 'observe_only');
     assert.equal(store.getTask('legacy-digest'), undefined);
@@ -511,7 +511,7 @@ test('v14 removes only artifact-free digested Tasks and repairs their route rece
     assert.equal(store.getImmutableEvent('migration-task-phantom-digest')?.type, 'task.digested');
     assert.equal(store.getTask('protected-digest')?.status, 'completed');
     assert.equal(store.getEventRouteReceipt('protected-digest')?.decision, 'task_created');
-    assert.equal(store.getOutbox('protected-delivery')?.status, 'sent');
+    assert.equal(store.outbox.get('protected-delivery')?.status, 'sent');
   } finally {
     store.close();
   }
@@ -793,8 +793,8 @@ test('repairs an empty half-migrated v12 database before accepting new Events', 
   try {
     assert.equal(store.getImmutableEvent('legacy-task')?.type, 'task.migrated');
     assert.equal(store.getTask('legacy-task')?.status, 'completed');
-    assert.equal(store.getRun('legacy-run')?.taskId, 'legacy-task');
-    assert.equal(store.getOutbox('legacy-outbox')?.taskId, 'legacy-task');
+    assert.equal(store.runs.get('legacy-run')?.taskId, 'legacy-task');
+    assert.equal(store.outbox.get('legacy-outbox')?.taskId, 'legacy-task');
   } finally {
     store.close();
   }
@@ -826,4 +826,19 @@ test('refuses to overwrite non-empty half-migrated v12 tables', async () => {
     () => new MimiStore(file),
     /半迁移表 events_v2 含 1 行，拒绝自动覆盖/,
   );
+});
+
+test('rejects a future database version without modifying the file', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-event-task-future-'));
+  const file = path.join(root, 'mimi.db');
+  const store = new MimiStore(file);
+  store.close();
+  const database = new DatabaseSync(file);
+  database.exec('PRAGMA journal_mode=DELETE; PRAGMA user_version=17;');
+  database.close();
+  const before = await readFile(file);
+
+  assert.throws(() => new MimiStore(file), /不支持的 MimiAgent 数据库版本：17/);
+  assert.deepEqual(await readFile(file), before);
+  assert.deepEqual(await readdir(root), ['mimi.db']);
 });

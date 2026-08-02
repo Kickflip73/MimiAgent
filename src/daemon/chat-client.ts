@@ -353,7 +353,7 @@ export class MimiChatClient {
   }
 
   async cancel(eventId: string, reason?: string): Promise<EventCancelResult> {
-    return await this.rpc<EventCancelResult>('task.cancel', { id: eventId, reason });
+    return await this.rpc<EventCancelResult>('tasks.cancel', { id: eventId, reason });
   }
 
   async listBackgroundTasks(limit = 20): Promise<BackgroundTaskSummary[]> {
@@ -476,11 +476,6 @@ export class RemoteCommandTarget implements CommandTarget {
 
   async switchMode(mode: string): Promise<void> {
     await this.client.invoke('mode.set', mode, this.sessionId);
-  }
-
-  async switchSecurityProfile(profile: string): Promise<void> {
-    await this.client.invoke('security.set', profile, this.sessionId);
-    this.materialized = true;
   }
 
   async switchSession(sessionId: string): Promise<void> {

@@ -46,8 +46,6 @@ function fullOwnerScope(eventId: string, sessionId = fixtureSession) {
     sessionId,
     profileId: 'owner',
     mode: 'general' as const,
-    permissionMode: 'trusted' as const,
-    securityProfile: 'full-owner' as const,
     ephemeralSensitiveModelAccess: true,
     cause: {
       eventId,
@@ -355,8 +353,6 @@ test('Safe, Workstation, external sources, and another Session cannot elevate a 
   assert.ok(safeLease);
   assert.equal(activateEphemeralOwnerInput(safeLease, {
     ...fullOwnerScope('safe'),
-    securityProfile: 'safe',
-    permissionMode: 'read-only',
     ephemeralSensitiveModelAccess: false,
   }), undefined);
 
@@ -365,8 +361,6 @@ test('Safe, Workstation, external sources, and another Session cannot elevate a 
   assert.ok(workstationLease);
   assert.equal(activateEphemeralOwnerInput(workstationLease, {
     ...fullOwnerScope('workstation'),
-    securityProfile: 'workstation',
-    permissionMode: 'workspace',
     ephemeralSensitiveModelAccess: false,
   }), undefined);
 

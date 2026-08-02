@@ -1,4 +1,5 @@
 import type { AgentInputItem } from '@openai/agents';
+import { z } from 'zod';
 import type { AgentPermissionMode, SecurityProfileSummary } from '../config.js';
 import type { CuaDriverLifecycleStatus } from '../extensions/computer/cua-driver-lifecycle.js';
 import type { DaemonLifecycleEpoch } from './lifecycle.js';
@@ -20,8 +21,10 @@ import type {
   ReadinessUnknownClassification,
 } from './operational-classification.js';
 
-export type EventTrust = 'owner' | 'trusted' | 'external' | 'public' | 'system';
-export type EventKind = 'command' | 'alert' | 'ambient' | 'schedule' | 'webhook';
+export const eventTrustSchema = z.enum(['owner', 'trusted', 'external', 'public', 'system']);
+export const eventKindSchema = z.enum(['command', 'alert', 'ambient', 'schedule', 'webhook']);
+export type EventTrust = z.infer<typeof eventTrustSchema>;
+export type EventKind = z.infer<typeof eventKindSchema>;
 export type TaskControlIntent = 'pause' | 'cancel';
 
 export interface EventActor {
@@ -232,18 +235,7 @@ export interface OutboxMessage {
 
 export type HostRunStatus = 'running' | 'completed' | 'failed' | 'interrupted';
 
-export interface HostRunRecord {
-  id: string;
-  taskId: string;
-  attemptNo: number;
-  workerId: string;
-  sessionKey: string;
-  status: HostRunStatus;
-  startedAt: string;
-  completedAt?: string;
-  answer?: unknown;
-  error?: string;
-}
+export type HostRunRecord = TaskAttemptRecord;
 
 export interface MimiEventSummary {
   id: string;
@@ -269,6 +261,8 @@ export interface MimiRunSummary {
   completedAt?: string;
   answerAvailable: boolean;
   error?: string;
+  source: string;
+  sourceCategory: RunSourceCategory;
 }
 
 export interface MimiOutboxSummary {
@@ -496,7 +490,6 @@ export interface MimiChatSnapshot {
   mode: string;
   outputLevel: 'answer' | 'thinking' | 'tools' | 'trace';
   permissionMode: AgentPermissionMode;
-  securityProfile: SecurityProfileSummary;
   contextUsed: number;
   contextWindow: number;
   contextStatus?: MimiContextStatus;

@@ -63,7 +63,7 @@ async function fixture(name: string, sink: NotificationSink) {
       payload: { text: 'done' },
     },
   );
-  const outgoing = store.listOutbox()[0]!;
+  const outgoing = store.outbox.get(store.outbox.listSummaries()[0]!.id)!;
   return { store, delivery, outgoing };
 }
 
@@ -77,7 +77,7 @@ test('dispatcher confirms successful Outbox delivery exactly once', async () => 
   try {
     assert.equal(await delivery.deliverOne(), true);
     assert.equal(calls, 1);
-    assert.equal(store.getOutbox(outgoing.id)?.status, 'sent');
+    assert.equal(store.outbox.get(outgoing.id)?.status, 'sent');
     assert.equal(await delivery.deliverOne(), false);
     assert.equal(calls, 1);
   } finally {
@@ -93,7 +93,7 @@ test('dispatcher retries only delivery failures known to be safe to replay', asy
   });
   try {
     assert.equal(await delivery.deliverOne(), true);
-    const failed = store.getOutbox(outgoing.id)!;
+    const failed = store.outbox.get(outgoing.id)!;
     assert.equal(failed.status, 'pending');
     assert.equal(failed.attempts, 1);
     assert.match(failed.error!, /temporary connector outage/);
@@ -115,11 +115,11 @@ test('dispatcher dead-letters uncertain and permanent delivery failures without 
     });
     try {
       assert.equal(await delivery.deliverOne(), true);
-      const failed = store.getOutbox(outgoing.id)!;
+      const failed = store.outbox.get(outgoing.id)!;
       assert.equal(failed.status, 'dead_letter');
       assert.equal(failed.attempts, 1);
       assert.match(failed.error!, new RegExp(error.message));
-      assert.equal(store.listOutbox().some((message) => (
+      assert.equal(store.outbox.listSummaries().some((message) => (
         message.channel === 'system' && message.status === 'pending'
       )), true);
     } finally {
@@ -135,20 +135,20 @@ test('dispatcher leaves a confirmed delivery fenced when local acknowledgement f
       calls += 1;
     },
   });
-  const originalComplete = store.completeOutbox.bind(store);
-  store.completeOutbox = () => {
+  const originalComplete = store.outbox.complete.bind(store.outbox);
+  store.outbox.complete = () => {
     throw new Error('database fsync failed');
   };
   try {
     assert.equal(await delivery.deliverOne(), true);
     assert.equal(calls, 1);
-    const fenced = store.getOutbox(outgoing.id)!;
+    const fenced = store.outbox.get(outgoing.id)!;
     assert.equal(fenced.status, 'sending');
     assert.ok(fenced.leaseUntil);
 
-    store.completeOutbox = originalComplete;
-    store.claimOutbox('recovery-worker', 60_000, new Date(Date.parse(fenced.leaseUntil!) + 1));
-    const recovered = store.getOutbox(outgoing.id)!;
+    store.outbox.complete = originalComplete;
+    store.outbox.claim('recovery-worker', 60_000, new Date(Date.parse(fenced.leaseUntil!) + 1));
+    const recovered = store.outbox.get(outgoing.id)!;
     assert.equal(recovered.status, 'dead_letter');
     assert.match(recovered.error!, /结果不确定/);
     assert.equal(calls, 1);

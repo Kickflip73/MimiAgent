@@ -1,8 +1,10 @@
 import { OpenAIChatCompletionsModel, type AgentInputItem } from '@openai/agents';
 import OpenAI from 'openai';
 import type { AppConfig } from '../config.js';
-import type { ProviderTransport } from '../core/model-routing.js';
+import { ContextManager } from '../core/context.js';
+import type { ProviderTransport, RunModelBinding } from '../core/model-routing.js';
 import type { AgentModel } from '../extensions/model-port.js';
+import type { ModelGateway } from './model-gateway.js';
 
 export type { AgentModel } from '../extensions/model-port.js';
 
@@ -16,6 +18,44 @@ export interface ModelProfile {
   contextWindow: number;
   outputReserve: number;
   supportsImageInput: boolean;
+}
+
+export function createModelContext(config: AppConfig, profile: ModelProfile): ContextManager {
+  return new ContextManager(
+    config.historyLimit,
+    profile.contextWindow,
+    0.55,
+    profile.outputReserve,
+  );
+}
+
+export function createModelRuntime(
+  config: AppConfig,
+  gateway: ModelGateway,
+  binding: RunModelBinding,
+): ModelRuntime {
+  const runtime = gateway.createAgentRuntime(binding.target, binding.reasoning);
+  const profile = resolveModelProfile(config, binding.target.modelId);
+  const contextWindow = binding.contextWindow ?? profile.contextWindow;
+  const outputReserve = binding.maxOutputTokens
+    ?? (binding.contextWindow === undefined
+      ? profile.outputReserve
+      : Math.min(profile.outputReserve, Math.max(256, Math.floor(contextWindow * 0.1))));
+  if (outputReserve >= contextWindow) {
+    throw new Error(
+      `模型请求预算非法：maxOutputTokens=${outputReserve} 必须小于 contextWindow=${contextWindow}`,
+    );
+  }
+  return {
+    model: runtime.model,
+    name: binding.target.modelId,
+    profile: {
+      ...profile,
+      contextWindow,
+      outputReserve,
+      supportsImageInput: runtime.registration.capabilities.imageInput,
+    },
+  };
 }
 
 export function normalizeModelInput(

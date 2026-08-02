@@ -1,126 +1,29 @@
 import type { Tool } from '@openai/agents';
 import {
-  SECURITY_PROFILES,
-  securityProfileSummary,
-  type AgentPermissionMode,
-  type AppConfig,
-  type SecurityProfile,
-} from '../config.js';
-import {
-  ContextManager,
-  type ContextManifest,
-  type ContextStats,
-} from '../core/context.js';
-import type { ProjectGuidanceLoader, SoulLoader } from '../core/guidance.js';
-import type { MemoryHub } from '../core/memory.js';
-import type { PreferenceStore } from '../core/preferences.js';
-import type { PlanStore } from '../core/plan.js';
-import {
   modelControlRequestSchema,
   modelTargetKey,
   type ModelTarget,
-  type ProviderTransport,
-  type RunModelBinding,
 } from '../core/model-routing.js';
-import type { FileSession, SessionPreferences } from '../core/session.js';
-import type { TeamTaskStore } from '../core/team.js';
-import type { MCPManager } from '../extensions/mcp.js';
-import type { SkillLoader } from '../extensions/skills.js';
-import type { ComputerManager } from '../extensions/computer/manager.js';
-import type { QqPersonalMessageComputerAdapter } from '../extensions/computer/qq-personal-message.js';
 import type { ComputerAccess, ComputerTargetSummary } from '../extensions/computer/types.js';
 import type { PersonalMessageAuthorization } from '../core/personal-message.js';
-import { configuredProviders } from '../provider-config.js';
 import { RUNTIME_OUTPUT_LEVELS, type RuntimeOutputLevel } from './control.js';
 import { AGENT_MODES, type AgentMode } from './instructions.js';
-import type { AgentModel, ModelProfile } from './model.js';
-import { ModelConfigStore, type ModelsConfig } from './model-config.js';
-import type { ModelGateway } from './model-gateway.js';
-import type { WorkUnitModelResolver } from './work-unit-model-resolver.js';
-import type { RunContextBuilder } from './run-context-builder.js';
+import { createModelContext } from './model.js';
+import { ModelConfigStore } from './model-config.js';
 import type { PersonalMessageScope } from './personal-message-hub.js';
 import type {
-  ActiveRun,
-  ContextUsageSnapshot,
+  MimiAgent,
   RunPolicy,
 } from './mimi-agent.js';
-import type { CapabilityResolver } from './pipeline/capability-resolver.js';
 import type { EffectiveCapabilitySnapshot } from './pipeline/capability-resolver.js';
 import { captureRunScope } from './pipeline/run-scope.js';
-import type { ToolSetBuilder } from './pipeline/tool-set-builder.js';
-
-export interface RuntimeControlHost {
-  readonly config: AppConfig;
-  readonly soul: SoulLoader;
-  readonly preferences: PreferenceStore;
-  readonly projectGuidance: ProjectGuidanceLoader;
-  readonly team: TeamTaskStore;
-  readonly plans: PlanStore;
-  readonly memory: MemoryHub;
-  readonly runContexts: RunContextBuilder;
-  readonly skills: SkillLoader;
-  readonly mcp: MCPManager;
-  readonly computer?: ComputerManager;
-  readonly qqPersonalMessages?: QqPersonalMessageComputerAdapter;
-  readonly capabilityResolver: CapabilityResolver;
-  readonly toolSetBuilder: ToolSetBuilder;
-  readonly runtimeRoot: string;
-  readonly legacyModels: boolean;
-  activeRun?: ActiveRun;
-  session: FileSession;
-  sessionId: string;
-  modelConfig: ModelsConfig;
-  modelGateway: ModelGateway;
-  modelResolver: WorkUnitModelResolver;
-  modelName: string;
-  modelProfile: ModelProfile;
-  context: ContextManager;
-  mode: AgentMode;
-  outputLevel: RuntimeOutputLevel;
-  permissionMode: AgentPermissionMode;
-  securityProfile: SecurityProfile;
-  defaultPermissionMode: AgentPermissionMode;
-  defaultSecurityProfile: SecurityProfile;
-  lastCapabilitySnapshot?: Readonly<EffectiveCapabilitySnapshot>;
-  lastContextTokens: number;
-  lastContextStats?: ContextStats;
-  lastContextManifest?: ContextManifest;
-  lastCompressionCount: number;
-  lastUsage?: ContextUsageSnapshot;
-  lastModelBinding?: RunModelBinding;
-  refreshModelConfiguration(): Promise<void>;
-  configuredModelProviders(): Array<{
-    id: string;
-    label: string;
-    model?: string;
-    models: string[];
-    transport?: ProviderTransport;
-    configured?: boolean;
-  }>;
-  providerForTarget(target: ModelTarget): {
-    id: string;
-    transport?: ProviderTransport;
-  };
-  legacySessionTarget(preferences: SessionPreferences): ModelTarget | undefined;
-  exactRoute(binding: RunModelBinding | undefined): {
-    provider: string;
-    transport?: ProviderTransport;
-  };
-  installModelConfiguration(next: ModelsConfig): void;
-  targetRuntime(target: ModelTarget): {
-    model: AgentModel;
-    name: string;
-    profile: ModelProfile;
-  };
-  createSession(sessionId: string): FileSession;
-  registeredTools(profile?: SecurityProfile, binding?: RunModelBinding): Tool[];
-}
 
 export class RuntimeControlCoordinator {
-  constructor(private readonly host: RuntimeControlHost) {}
+  constructor(private readonly host: MimiAgent) {}
 
   async runtimeInfo() {
     if (!this.host.activeRun) await this.host.refreshModelConfiguration();
+    const components = this.host.components;
     const [
       sessionSummary,
       soul,
@@ -130,21 +33,29 @@ export class RuntimeControlCoordinator {
       memoryStatus,
       sessionPreferences,
     ] = await Promise.all([
-      this.host.session.summary(), this.host.soul.load(), this.host.preferences.load(), this.host.projectGuidance.load(), this.host.team.list(),
-      this.host.memory.status(this.host.runContexts.forInspection()),
+      this.host.session.summary(), components.soul.load(), components.preferences.load(), components.projectGuidance.load(), components.state.team.store.list(),
+      components.memory.status(this.host.runContexts.forInspection()),
       this.host.session.getPreferences(),
     ]);
     const capabilitySnapshot = this.host.activeRun?.capabilitySnapshot ?? this.host.lastCapabilitySnapshot;
-    const binding = this.host.activeRun?.scope.modelBinding ?? this.host.modelResolver.resolve({
+    const binding = this.host.activeRun?.scope.modelBinding ?? components.modelResolver.resolve({
       scenario: 'conversation.default',
-      sessionTarget: sessionPreferences.modelTarget ?? this.host.legacySessionTarget(sessionPreferences),
-      routeVersion: this.host.modelConfig.routeVersion,
+      sessionTarget: sessionPreferences.modelTarget
+        ?? components.modelGateway.legacyAgentTarget(sessionPreferences.model, sessionPreferences.provider),
+      routeVersion: components.modelConfig.routeVersion,
     });
-    const provider = this.host.providerForTarget(binding.target);
+    const provider = components.modelGateway.provider(binding.target);
     return {
       provider: provider.id,
       transport: provider.transport,
-      configuredProviders: this.host.configuredModelProviders(),
+      configuredProviders: components.modelConfig.providers.map((configured) => ({
+        id: configured.id,
+        label: configured.label,
+        model: configured.models[0]?.target.modelId,
+        transport: configured.transport,
+        configured: Boolean(process.env[configured.apiKeyEnv]?.trim()),
+        models: configured.models.map((model) => model.target.modelId),
+      })),
       model: binding.target.modelId,
       modelTarget: binding.target,
       modelBinding: binding,
@@ -155,20 +66,16 @@ export class RuntimeControlCoordinator {
       runtimeRoot: this.host.runtimeRoot,
       outputLevel: this.host.outputLevel,
       maxTurns: binding.maxTurns ?? this.host.config.maxTurns,
-      permissionMode: this.host.permissionMode,
-      securityProfile: securityProfileSummary({
-        ...this.host.config,
-        securityProfile: this.host.securityProfile,
-        permissionMode: SECURITY_PROFILES[this.host.securityProfile].permissionMode,
-      }),
-      skillCount: capabilitySnapshot?.skills.length ?? this.host.skills.list().length,
+      permissionMode: this.host.runtimeSecurity.permissionMode,
+      securityProfile: this.host.runtimeSecurity,
+      skillCount: capabilitySnapshot?.skills.length ?? components.skills.list().length,
       memoryCount: memoryStatus.pages,
-      mcpServers: this.host.securityProfile === 'full-owner'
-        ? this.host.mcp.servers.map((server) => server.name)
+      mcpServers: this.host.runtimeAccess.mcp
+        ? components.mcp.servers.map((server) => server.name)
         : [],
-      mcpStatuses: this.host.securityProfile === 'full-owner' ? this.host.mcp.statuses() : [],
-      computer: this.host.securityProfile === 'full-owner'
-        ? this.host.computer?.status() ?? { configured: false, backend: undefined }
+      mcpStatuses: this.host.runtimeAccess.mcp ? components.mcp.statuses() : [],
+      computer: this.host.runtimeAccess.computer
+        ? components.computer?.status() ?? { configured: false, backend: undefined }
         : { configured: false, backend: undefined },
       capabilitySnapshot,
       guidanceFiles: [...soul.files, ...preferences.files, ...projectGuidance.files]
@@ -184,42 +91,36 @@ export class RuntimeControlCoordinator {
   }
 
   async runtimeStatus(projection: 'summary' | 'detail' = 'summary') {
+    const info = await this.runtimeInfo();
     if (projection === 'detail') {
       return {
         schemaVersion: 1 as const,
         projection,
-        ...await this.runtimeInfo(),
+        ...info,
       };
     }
-    const capabilitySnapshot = this.host.activeRun?.capabilitySnapshot ?? this.host.lastCapabilitySnapshot;
     return {
       schemaVersion: 1 as const,
       projection,
-      provider: this.host.config.provider,
-      configuredProviders: configuredProviders().map((provider) => ({
+      provider: info.provider,
+      configuredProviders: info.configuredProviders.map((provider) => ({
         id: provider.id,
         models: provider.models,
       })),
-      model: this.host.modelName,
-      mode: AGENT_MODES.find((item) => item.id === this.host.mode)!,
-      sessionId: this.host.sessionId,
-      workspaceRoot: this.host.config.workspaceRoot,
-      outputLevel: this.host.outputLevel,
-      permissionMode: this.host.permissionMode,
-      securityProfile: securityProfileSummary({
-        ...this.host.config,
-        securityProfile: this.host.securityProfile,
-        permissionMode: SECURITY_PROFILES[this.host.securityProfile].permissionMode,
-      }),
-      computer: this.host.securityProfile === 'full-owner'
-        ? this.host.computer?.status() ?? { configured: false, backend: undefined }
-        : { configured: false, backend: undefined },
-      capability: capabilitySnapshot ? {
-        runId: capabilitySnapshot.runId,
-        policyRevision: capabilitySnapshot.policyRevision,
-        toolSetDigest: capabilitySnapshot.toolSetDigest,
-        snapshotDigest: capabilitySnapshot.snapshotDigest,
-        tools: capabilitySnapshot.tools,
+      model: info.model,
+      mode: info.mode,
+      sessionId: info.sessionId,
+      workspaceRoot: info.workspaceRoot,
+      outputLevel: info.outputLevel,
+      permissionMode: info.permissionMode,
+      securityProfile: info.securityProfile,
+      computer: info.computer,
+      capability: info.capabilitySnapshot ? {
+        runId: info.capabilitySnapshot.runId,
+        policyRevision: info.capabilitySnapshot.policyRevision,
+        toolSetDigest: info.capabilitySnapshot.toolSetDigest,
+        snapshotDigest: info.capabilitySnapshot.snapshotDigest,
+        tools: info.capabilitySnapshot.tools,
       } : undefined,
     };
   }
@@ -229,7 +130,7 @@ export class RuntimeControlCoordinator {
   }
 
   computerStatus() {
-    return this.host.computer?.status();
+    return this.host.components.computer?.status();
   }
 
   async prepareQqPersonalMessageScope(
@@ -238,35 +139,9 @@ export class RuntimeControlCoordinator {
     computerApps: readonly string[] | undefined,
     signal?: AbortSignal,
   ): Promise<PersonalMessageScope | undefined> {
-    if (!this.host.qqPersonalMessages || authorization.channel !== 'qq') return undefined;
-    if (!computerAccess || !['background', 'foreground', 'admin'].includes(computerAccess)) {
-      return undefined;
-    }
-    if (!computerApps?.includes('com.tencent.qq')) return undefined;
-    const probe = await this.host.qqPersonalMessages.probe(authorization, signal).catch(() => undefined);
-    if (!probe) return undefined;
-    const adapter = this.host.qqPersonalMessages;
-    return {
-      eventId: authorization.eventId,
-      channel: authorization.channel,
-      accountFingerprint: authorization.accountFingerprint,
-      conversationId: authorization.conversationId,
-      actorId: authorization.actorId,
-      messageMode: authorization.mode,
-      approvedText: authorization.approvedText,
-      capability: probe.capability,
-      getContext: (limit, requestSignal) => adapter.getContext(
-        authorization,
-        limit,
-        requestSignal,
-      ),
-      send: ({ text, latestFingerprint }, requestSignal) => adapter.send(
-        authorization,
-        text,
-        latestFingerprint,
-        requestSignal,
-      ),
-    };
+    return this.host.qqPersonalMessages?.prepareScope(
+      authorization, computerAccess, computerApps, signal,
+    );
   }
 
   assertReadOnlyDaemonProbePolicy(hostTools: readonly Tool[]): void {
@@ -274,30 +149,14 @@ export class RuntimeControlCoordinator {
       allowedCapabilities: ['state-read'],
       allowedTools: ['inspect_mimi_capabilities'],
     };
-    const binding = this.host.activeRun?.scope.modelBinding ?? this.host.modelResolver.resolve({
-      scenario: 'conversation.default',
-      routeVersion: this.host.modelConfig.routeVersion,
-    });
-    const route = this.host.exactRoute(binding);
-    const scope = captureRunScope({
-      sessionId: this.host.sessionId,
-      workspaceRoot: this.host.config.workspaceRoot,
-      provider: route.provider,
-      transport: route.transport,
-      model: binding.target.modelId,
-      mode: 'general',
-      permissionMode: this.host.permissionMode,
-      securityProfile: this.host.securityProfile,
-      input: 'authenticated daemon read-only probe policy check',
-    });
+    const scope = this.probeScope('authenticated daemon read-only probe policy check');
     const capabilities = this.host.capabilityResolver.resolve({
       scope,
+      runtimeAccess: this.host.runtimeAccess,
       policy,
     });
     const tools = this.host.toolSetBuilder.scoped(
-      [...hostTools],
-      this.host.permissionMode,
-      this.host.securityProfile,
+      this.host.authorizeTools([...hostTools]),
       policy,
       false,
     );
@@ -314,45 +173,23 @@ export class RuntimeControlCoordinator {
     signal?: AbortSignal,
     expectedTarget?: Pick<ComputerTargetSummary, 'bundleId' | 'pid' | 'windowId'>,
   ) {
-    if (!this.host.computer) throw new Error('ComputerManager 未注册');
+    const computer = this.host.components.computer;
+    if (!computer) throw new Error('ComputerManager 未注册');
     const policy: RunPolicy = {
       allowedCapabilities: ['computer-read'],
       allowedTools: ['computer_observe'],
       computerAccess: 'observe',
     };
-    const binding = this.host.activeRun?.scope.modelBinding ?? this.host.modelResolver.resolve({
-      scenario: 'conversation.default',
-      routeVersion: this.host.modelConfig.routeVersion,
-    });
-    const route = this.host.exactRoute(binding);
-    const scope = captureRunScope({
-      sessionId: this.host.sessionId,
-      workspaceRoot: this.host.config.workspaceRoot,
-      provider: route.provider,
-      transport: route.transport,
-      model: binding.target.modelId,
-      mode: 'general',
-      permissionMode: 'trusted',
-      securityProfile: 'full-owner',
-      input: 'authenticated daemon read-only computer probe',
-      options: {
-        cause: {
-          eventId: `internal-computer-probe:${this.host.sessionId}`,
-          source: 'mimi-kernel',
-          trust: 'owner',
-        },
-      },
-    });
+    const scope = this.probeScope('authenticated daemon read-only computer probe', true);
     const capabilities = this.host.capabilityResolver.resolve({
       scope,
+      runtimeAccess: this.host.runtimeAccess,
       policy,
       requestedComputerAccess: 'observe',
       defaultComputerAccess: this.host.config.computer?.defaultAccess,
     });
     const tools = this.host.toolSetBuilder.scoped(
-      this.host.registeredTools('full-owner'),
-      'trusted',
-      'full-owner',
+      this.host.registeredTools(),
       policy,
       capabilities.computerAccess !== 'none',
     );
@@ -361,7 +198,7 @@ export class RuntimeControlCoordinator {
       || tools[0]?.name !== 'computer_observe') {
       throw new Error('正式 CapabilityResolver/Tool policy 未授权 computer_observe');
     }
-    return this.host.computer.observeStableBackgroundWindow({
+    return computer.observeStableBackgroundWindow({
       runId: scope.runId,
       access: capabilities.computerAccess,
       allowedApps,
@@ -372,9 +209,9 @@ export class RuntimeControlCoordinator {
 
   async guidanceInfo() {
     const [soul, preferences, project] = await Promise.all([
-      this.host.soul.load(),
-      this.host.preferences.load(),
-      this.host.projectGuidance.load(),
+      this.host.components.soul.load(),
+      this.host.components.preferences.load(),
+      this.host.components.projectGuidance.load(),
     ]);
     return {
       files: [...soul.files, ...preferences.files, ...project.files],
@@ -384,9 +221,10 @@ export class RuntimeControlCoordinator {
 
   async modelControl(rawRequest: unknown): Promise<unknown> {
     if (!this.host.activeRun) await this.host.refreshModelConfiguration();
+    const components = this.host.components;
     const request = modelControlRequestSchema.parse(rawRequest);
     if (request.action === 'list') {
-      return this.host.modelConfig.providers.flatMap((provider) =>
+      return components.modelConfig.providers.flatMap((provider) =>
         provider.models.map((registration) => ({
           ...registration,
           provider: {
@@ -398,10 +236,8 @@ export class RuntimeControlCoordinator {
         })));
     }
     if (request.action === 'inspect') {
-      const registration = this.host.modelGateway.inspect(request.target);
-      const provider = this.host.modelConfig.providers.find(
-        (item) => item.id === request.target.providerId,
-      )!;
+      const registration = components.modelGateway.inspect(request.target);
+      const provider = components.modelGateway.provider(request.target);
       return {
         ...registration,
         provider: {
@@ -416,13 +252,14 @@ export class RuntimeControlCoordinator {
       };
     }
     if (request.action === 'current') {
-      const preferences = await this.host.createSession(
+      const preferences = await components.state.sessions.open(
         this.host.activeRun?.sessionId ?? this.host.sessionId,
       ).getPreferences();
-      const next = this.host.modelResolver.resolve({
+      const next = components.modelResolver.resolve({
         scenario: 'conversation.default',
-        sessionTarget: preferences.modelTarget ?? this.host.legacySessionTarget(preferences),
-        routeVersion: this.host.modelConfig.routeVersion,
+        sessionTarget: preferences.modelTarget
+          ?? components.modelGateway.legacyAgentTarget(preferences.model, preferences.provider),
+        routeVersion: components.modelConfig.routeVersion,
       });
       return {
         sessionTarget: preferences.modelTarget,
@@ -431,14 +268,15 @@ export class RuntimeControlCoordinator {
       };
     }
     if (request.action === 'use') {
-      const registration = this.host.modelGateway.inspect(request.target);
+      const registration = components.modelGateway.inspect(request.target);
       if (registration.kind !== 'agent' || !registration.capabilities.toolCalling) {
         throw new Error(`Session 只能固定 Agent 模型：${modelTargetKey(request.target)}`);
       }
       const sessionId = this.host.activeRun?.sessionId ?? this.host.sessionId;
-      await this.host.createSession(sessionId).setPreferences({
+      await components.state.sessions.open(sessionId).setPreferences({
         modelTarget: { ...request.target },
-        model: request.target.modelId,
+        provider: undefined,
+        model: undefined,
       });
       return {
         target: request.target,
@@ -448,7 +286,7 @@ export class RuntimeControlCoordinator {
     }
     if (request.action === 'auto') {
       const sessionId = this.host.activeRun?.sessionId ?? this.host.sessionId;
-      await this.host.createSession(sessionId).setPreferences({
+      await components.state.sessions.open(sessionId).setPreferences({
         modelTarget: undefined,
         provider: undefined,
         model: undefined,
@@ -457,12 +295,12 @@ export class RuntimeControlCoordinator {
     }
     if (request.action === 'routes') {
       return {
-        routeVersion: this.host.modelConfig.routeVersion,
-        ...structuredClone(this.host.modelConfig.routing),
+        routeVersion: components.modelConfig.routeVersion,
+        ...structuredClone(components.modelConfig.routing),
       };
     }
     if (request.action === 'route') {
-      if (this.host.legacyModels || !this.host.config.modelsConfig) {
+      if (!this.host.config.modelsConfig) {
         throw new Error('legacy 环境没有 models.json，不能持久化场景路由');
       }
       const next = await new ModelConfigStore(this.host.config.modelsConfig).update((value) => {
@@ -491,61 +329,32 @@ export class RuntimeControlCoordinator {
     }
     if (request.action === 'doctor') {
       return request.target
-        ? this.host.modelGateway.health(request.target)
-        : Promise.all(this.host.modelGateway.list().map((registration) =>
-            this.host.modelGateway.health(registration.target)));
+        ? components.modelGateway.health(request.target)
+        : Promise.all(components.modelGateway.list().map((registration) =>
+            components.modelGateway.health(registration.target)));
     }
     throw new Error(`未知模型控制动作：${String((request as { action?: unknown }).action)}`);
   }
 
   availableModels(): string[] {
-    return [...new Set(this.host.modelConfig.providers.flatMap((provider) =>
+    return [...new Set(this.host.components.modelConfig.providers.flatMap((provider) =>
       provider.models.filter((model) => model.kind === 'agent')
         .map((model) => model.target.modelId)))];
   }
 
   async switchModel(modelName: string): Promise<void> {
-    if (!/^[a-zA-Z0-9._:/-]+$/.test(modelName)) throw new Error('模型名称格式无效');
-    const slash = modelName.indexOf('/');
-    const candidates = slash > 0
-      ? [{
-          providerId: modelName.slice(0, slash),
-          modelId: modelName.slice(slash + 1),
-        }]
-      : this.host.modelConfig.providers.flatMap((provider) =>
-          provider.models
-            .filter((model) => model.kind === 'agent' && model.target.modelId === modelName)
-            .map((model) => model.target));
-    if (candidates.length !== 1) {
-      throw new Error(candidates.length
-        ? `模型名称不唯一，请使用 providerId/modelId：${modelName}`
-        : `模型不可用：${modelName}。可用模型：${this.availableModels().join('、')}`);
-    }
-    await this.switchModelTarget(candidates[0]!);
+    await this.switchModelTarget(this.host.components.modelGateway.resolveAgentTarget(modelName));
   }
 
   async switchModelTarget(target: ModelTarget): Promise<void> {
     const runtime = this.host.targetRuntime(target);
-    this.host.modelName = runtime.name;
-    this.host.modelProfile = runtime.profile;
-    this.host.context = new ContextManager(
-      this.host.config.historyLimit,
-      runtime.profile.contextWindow,
-      0.55,
-      runtime.profile.outputReserve,
-    );
-    this.host.lastContextTokens = 0;
-    this.host.lastContextStats = undefined;
+    this.host.components.modelRuntime = runtime;
     this.host.lastContextManifest = undefined;
-    this.host.lastUsage = undefined;
     await this.host.session.setPreferences({
       modelTarget: { ...target },
-      model: this.host.modelName,
+      provider: undefined,
+      model: undefined,
     });
-  }
-
-  assertModelAvailable(modelName: string): void {
-    if (!this.availableModels().includes(modelName)) throw new Error(`模型不可用：${modelName}`);
   }
 
   availableModes() {
@@ -558,16 +367,6 @@ export class RuntimeControlCoordinator {
     await this.host.session.setPreferences({ mode: this.host.mode });
   }
 
-  async switchSecurityProfile(profile: string): Promise<void> {
-    if (!Object.hasOwn(SECURITY_PROFILES, profile)) throw new Error(`未知安全档位：${profile}`);
-    if (this.host.activeRun) throw new Error(`Session ${this.host.activeRun.sessionId} 仍有任务运行中，不能切换安全档位`);
-    const next = profile as SecurityProfile;
-    this.host.defaultSecurityProfile = next;
-    this.host.defaultPermissionMode = SECURITY_PROFILES[next].permissionMode;
-    this.host.securityProfile = next;
-    this.host.permissionMode = this.host.defaultPermissionMode;
-  }
-
   async setOutputLevel(level: RuntimeOutputLevel): Promise<void> {
     if (!RUNTIME_OUTPUT_LEVELS.includes(level)) throw new Error(`未知输出等级：${level}`);
     this.host.outputLevel = level;
@@ -577,23 +376,26 @@ export class RuntimeControlCoordinator {
   async contextInfo() {
     const [history, memories, plan, goal, team, archive, checkpoint] = await Promise.all([
       this.host.session.getItems(),
-      this.host.memory.list(this.host.runContexts.forInspection()),
-      this.host.plans.get(),
-      this.host.plans.getGoal(),
-      this.host.team.list(),
+      this.host.components.memory.list(this.host.runContexts.forInspection()),
+      this.host.components.state.goalsAndPlans.store.get(),
+      this.host.components.state.goalsAndPlans.store.getGoal(),
+      this.host.components.state.team.store.list(),
       this.host.session.getContextArchive(),
       this.host.session.getCheckpoint(),
     ]);
-    const effective = this.host.context.effectiveHistory(history, [], archive);
-    const stats = this.host.lastContextStats ?? this.host.context.stats(history, effective, archive);
+    const context = createModelContext(this.host.config, this.host.components.modelRuntime.profile);
+    const effective = context.effectiveHistory(history, [], archive);
+    const stats = context.stats(history, effective, archive);
     const manifest = this.host.lastContextManifest?.sessionId === this.host.sessionId
       ? this.host.lastContextManifest
       : undefined;
+    const requestBudget = context.requestBudget([]);
+    const inputBudget = manifest?.availableInputBudget ?? requestBudget.inputBudget;
     return {
       historyItems: history.length,
       historyLimit: this.host.config.historyLimit,
-      estimatedTokens: this.host.lastContextTokens || stats.effectiveTokens + stats.archiveTokens,
-      estimateScope: this.host.lastContextTokens ? 'last_request' as const : 'history_only' as const,
+      estimatedTokens: manifest?.estimatedInputTokens ?? stats.effectiveTokens + stats.archiveTokens,
+      estimateScope: manifest ? 'last_request' as const : 'history_only' as const,
       rawTokens: stats.rawTokens,
       effectiveTokens: manifest
         ? manifest.sections.find((section) => section.id === 'recent-history')?.estimatedTokens ?? stats.effectiveTokens
@@ -607,32 +409,50 @@ export class RuntimeControlCoordinator {
       estimator: manifest?.estimator ?? 'mimi-char-v1',
       requestId: manifest?.requestId,
       compactedAt: archive?.updatedAt,
-      contextWindow: this.host.modelProfile.contextWindow,
-      outputReserve: this.host.modelProfile.outputReserve,
-      inputBudget: manifest?.availableInputBudget
-        ?? this.host.context.requestBudget([]).inputBudget,
-      lastRequestInputTokens: this.host.lastUsage?.lastRequestInputTokens,
-      lastRequestOutputTokens: this.host.lastUsage?.lastRequestOutputTokens,
-      runInputTokens: this.host.lastUsage?.runInputTokens,
-      runOutputTokens: this.host.lastUsage?.runOutputTokens,
-      runTotalTokens: this.host.lastUsage?.runTotalTokens,
-      modelViewTokens: stats.effectiveTokens,
-      modelViewRatio: stats.effectiveTokens / Math.max(
-        1,
-        manifest?.availableInputBudget ?? this.host.context.requestBudget([]).inputBudget,
-      ),
+      contextWindow: this.host.components.modelRuntime.profile.contextWindow,
+      outputReserve: this.host.components.modelRuntime.profile.outputReserve,
+      inputBudget,
+      lastRequestInputTokens: manifest?.actual?.inputTokens,
+      lastRequestOutputTokens: manifest?.actual?.outputTokens,
+      runInputTokens: manifest?.actual?.runInputTokens,
+      runOutputTokens: manifest?.actual?.runOutputTokens,
+      runTotalTokens: manifest?.actual?.runTotalTokens,
+      modelViewTokens: manifest?.estimatedInputTokens ?? stats.effectiveTokens,
+      modelViewRatio: (manifest?.estimatedInputTokens ?? stats.effectiveTokens) / Math.max(1, inputBudget),
       staticCapabilityTokens: (manifest?.sections ?? [])
         .filter((section) => section.id === 'tool-schemas' || section.id === 'runtime-context')
         .reduce((total, section) => total + section.estimatedTokens, 0),
       protocolReserveTokens: manifest?.sections
         .find((section) => section.id === 'protocol-reserve')?.estimatedTokens
-        ?? this.host.context.requestBudget([]).protocolReserveTokens,
-      compressionCount: this.host.lastCompressionCount,
+        ?? requestBudget.protocolReserveTokens,
+      compressionCount: manifest?.compression.length ?? 0,
       memories: memories.length,
       planSteps: plan.length,
       goal: goal?.status,
       teamTasks: team.length,
       runStatus: checkpoint?.status,
     };
+  }
+
+  private probeScope(input: string, owner = false) {
+    const binding = this.host.activeRun?.scope.modelBinding ?? this.host.components.modelResolver.resolve({
+      scenario: 'conversation.default',
+      routeVersion: this.host.components.modelConfig.routeVersion,
+    });
+    const provider = this.host.components.modelGateway.provider(binding.target);
+    return captureRunScope({
+      sessionId: this.host.sessionId,
+      workspaceRoot: this.host.config.workspaceRoot,
+      provider: provider.id,
+      transport: provider.transport,
+      model: binding.target.modelId,
+      mode: 'general',
+      input,
+      ...(owner ? { options: { cause: {
+        eventId: `internal-computer-probe:${this.host.sessionId}`,
+        source: 'mimi-kernel',
+        trust: 'owner' as const,
+      } } } : {}),
+    });
   }
 }

@@ -21,11 +21,8 @@ import { ensureControlToken } from './ipc.js';
 import { pathExists, writeAtomicJson, writeExclusiveJson } from './json-file.js';
 import { MimiStore } from './store.js';
 
-const CONNECTOR_TEMPLATE_ROOTS = [
-  '/absolute/path/to/MimiAgent',
-  '/absolute/path/to/MimiAgent',
-] as const;
-const RETIRED_CONNECTOR_IDS = new Set([
+const CONNECTOR_TEMPLATE_ROOT = '/absolute/path/to/MimiAgent';
+const RETIRED_CONNECTORS = new Set([
   'daxiang',
   'daxiang-applescript',
   'http-action',
@@ -33,8 +30,6 @@ const RETIRED_CONNECTOR_IDS = new Set([
   'qq',
   'qq-applescript',
   'wechat-applescript',
-]);
-const RETIRED_CONNECTOR_SCRIPTS = new Set([
   'daxiang-applescript-connector.mjs',
   'daxiang-connector.mjs',
   'http-action-connector.mjs',
@@ -46,19 +41,6 @@ const RETIRED_CONNECTOR_SCRIPTS = new Set([
 const REQUIRED_CONNECTOR_ENV: Readonly<Record<string, readonly string[]>> = {
   'openclaw-weixin': ['MIMI_DAEMON_SOCKET'],
 };
-
-export interface MimiInitialization {
-  root: string;
-  connectors: {
-    file: string;
-    created: boolean;
-    updatedActions: number;
-    removedRetired: number;
-    total: number;
-    enabled: string[];
-  };
-  assistant: { file: string; created: boolean };
-}
 
 interface InitializeOptions {
   platform?: NodeJS.Platform;
@@ -80,17 +62,14 @@ function localConnectorConfig(
   template: ConnectorFileConfig,
   root: string,
   platform: NodeJS.Platform,
-): ConnectorFileConfig {
+) {
   return {
     backgroundDefaultsVersion: BACKGROUND_DEFAULTS_VERSION,
     connectors: Object.fromEntries(Object.entries(template.connectors).map(([id, connector]) => [id, {
       ...connector,
       enabled: defaultConnectorEnabled(id, platform),
       command: connector.command === 'node' ? process.execPath : connector.command,
-      args: connector.args.map((argument) => CONNECTOR_TEMPLATE_ROOTS.reduce(
-        (resolved, placeholder) => resolved.replaceAll(placeholder, root),
-        argument,
-      )),
+      args: connector.args.map((argument) => argument.replaceAll(CONNECTOR_TEMPLATE_ROOT, root)),
     }])),
   };
 }
@@ -147,19 +126,33 @@ function retiredConnector(
   connector: ConnectorFileConfig['connectors'][string],
 ): boolean {
   const script = connectorScriptPath(connector);
-  return RETIRED_CONNECTOR_IDS.has(id)
-    || Boolean(script && RETIRED_CONNECTOR_SCRIPTS.has(path.basename(script)));
+  return RETIRED_CONNECTORS.has(id)
+    || Boolean(script && RETIRED_CONNECTORS.has(path.basename(script)));
+}
+
+function synchronizedAction(
+  current: ConnectorFileConfig['connectors'][string]['actions'][string],
+  packaged: ConnectorFileConfig['connectors'][string]['actions'][string],
+) {
+  return {
+    ...current,
+    description: packaged.description,
+    ...(current.capability === undefined && packaged.capability !== undefined
+      ? { capability: packaged.capability }
+      : {}),
+    ...(current.effect === 'unknown' && packaged.effect !== 'unknown'
+      ? { effect: packaged.effect }
+      : {}),
+    modelVisible: packaged.modelVisible,
+    targetExample: packaged.targetExample,
+    payloadExampleJson: packaged.payloadExampleJson,
+  };
 }
 
 async function mergeTemplateActions(
   current: ConnectorFileConfig,
   template: ConnectorFileConfig,
-): Promise<{
-  config: ConnectorFileConfig;
-  updatedActions: number;
-  removedRetired: number;
-  changed: boolean;
-}> {
+) {
   let updatedActions = 0;
   let removedRetired = 0;
   let changed = false;
@@ -227,12 +220,9 @@ async function mergeTemplateActions(
       ? Object.entries(packaged.actions).filter(([name, packagedAction]) => {
         const currentAction = connector.actions[name];
         return currentAction !== undefined
-          && (currentAction.description !== packagedAction.description
-            || (currentAction.capability === undefined && packagedAction.capability !== undefined)
-            || (currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown')
-            || currentAction.modelVisible !== packagedAction.modelVisible
-            || currentAction.targetExample !== packagedAction.targetExample
-            || currentAction.payloadExampleJson !== packagedAction.payloadExampleJson);
+          && JSON.stringify(currentAction) !== JSON.stringify(
+            synchronizedAction(currentAction, packagedAction),
+          );
       })
       : [];
     const missingEnv = (REQUIRED_CONNECTOR_ENV[id] ?? []).filter((name) => (
@@ -245,28 +235,10 @@ async function mergeTemplateActions(
       && !metadataUpdates.length && !missingEnv.length && !missingClaimedComputerApps.length) continue;
     updatedActions += missing.length + metadataUpdates.length;
     changed = true;
-    const updatedMetadata = Object.fromEntries(metadataUpdates.map(([name, packagedAction]) => {
-      const currentAction = connector.actions[name]!;
-      return [name, {
-        ...currentAction,
-        description: packagedAction.description,
-        ...(currentAction.capability === undefined && packagedAction.capability !== undefined
-          ? { capability: packagedAction.capability }
-          : {}),
-        ...(currentAction.effect === 'unknown' && packagedAction.effect !== 'unknown'
-          ? { effect: packagedAction.effect }
-          : {}),
-        ...(currentAction.modelVisible !== packagedAction.modelVisible
-          ? { modelVisible: packagedAction.modelVisible }
-          : {}),
-        ...(currentAction.targetExample !== packagedAction.targetExample
-          ? { targetExample: packagedAction.targetExample }
-          : {}),
-        ...(currentAction.payloadExampleJson !== packagedAction.payloadExampleJson
-          ? { payloadExampleJson: packagedAction.payloadExampleJson }
-          : {}),
-      }];
-    }));
+    const updatedMetadata = Object.fromEntries(metadataUpdates.map(([name, packagedAction]) => [
+      name,
+      synchronizedAction(connector.actions[name]!, packagedAction),
+    ]));
     connectors[id] = {
       ...connector,
       ...(migrateNodeCommand ? { command: packaged.command } : {}),
@@ -287,7 +259,7 @@ async function mergeTemplateActions(
 export async function initializeMimi(
   config: AppConfig,
   options: InitializeOptions = {},
-): Promise<MimiInitialization> {
+) {
   const paths = mimiPaths(config);
   const root = path.resolve(options.runtimeRoot ?? runtimeRoot());
   const platform = options.platform ?? process.platform;
@@ -335,3 +307,5 @@ export async function initializeMimi(
     assistant: { file: paths.assistantConfig, created: !assistantExisted },
   };
 }
+
+export type MimiInitialization = Awaited<ReturnType<typeof initializeMimi>>;

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { sanitizeSensitiveData } from '../core/data-sanitizer.js';
 import type { EventStore } from './event-store.js';
@@ -11,6 +11,7 @@ import type {
 } from './types.js';
 import {
   errorSummary,
+  hashedStateKey,
   managementLimit,
   optionalText as optional,
   SqliteDomain,
@@ -38,10 +39,6 @@ function fromRow(row: Row): OutboxMessage {
   };
 }
 
-function ownerRouteKey(profileId: string): string {
-  return `owner-route:${createHash('sha256').update(profileId).digest('hex').slice(0, 24)}`;
-}
-
 function failurePayload(message: OutboxMessage, error: unknown): Record<string, unknown> {
   const summary = errorSummary(error);
   return {
@@ -53,6 +50,28 @@ function failurePayload(message: OutboxMessage, error: unknown): Record<string, 
     error: summary,
     text: `MimiAgent 未能确认结果是否已通过 ${message.channel.slice(0, 120)} 投递，task=${message.taskId.slice(0, 80)}，attempt=${message.attempts}。已进入 dead letter，不会自动重发。${summary} 请运行 mimi daemon outbox 核对后再决定重试或归档。`.slice(0, 1_000),
   };
+}
+
+export function listOutboxSummaries(
+  database: DatabaseSync,
+  requestedLimit = 50,
+  order: 'created' | 'updated' = 'created',
+): MimiOutboxSummary[] {
+  const orderBy = order === 'updated' ? 'updated_at' : 'created_at';
+  return (database.prepare(`
+    SELECT id, task_id, channel, target, status, attempts, not_before, updated_at, error
+    FROM outbox ORDER BY ${orderBy} DESC, rowid DESC LIMIT ?
+  `).all(managementLimit(requestedLimit)) as Row[]).map((row) => ({
+    id: String(row.id),
+    taskId: String(row.task_id),
+    channel: String(row.channel).slice(0, 200),
+    target: optional(row.target)?.slice(0, 500),
+    status: String(row.status) as OutboxStatus,
+    attempts: Number(row.attempts),
+    notBefore: String(row.not_before),
+    updatedAt: String(row.updated_at),
+    error: optional(row.error)?.slice(0, 500),
+  }));
 }
 
 export class OutboxStore extends SqliteDomain {
@@ -68,7 +87,7 @@ export class OutboxStore extends SqliteDomain {
     const task = this.tasks.get(message.taskId);
     const event = task ? this.events.get(task.authorityEventId) : undefined;
     if (!event) return false;
-    const key = ownerRouteKey(event.profileId);
+    const key = hashedStateKey('owner-route', event.profileId);
     const row = this.database.prepare('SELECT value FROM attention_state WHERE key = ?')
       .get(key) as Row | undefined;
     if (!row || typeof row.value !== 'string') return false;
@@ -79,6 +98,20 @@ export class OutboxStore extends SqliteDomain {
       return false;
     }
     return Number(this.database.prepare('DELETE FROM attention_state WHERE key = ?').run(key).changes) === 1;
+  }
+
+  private recordDeadLetter(
+    message: OutboxMessage,
+    error: unknown,
+    timestamp: string,
+    facts: Record<string, unknown> = {},
+  ): void {
+    const fallback = message.channel !== 'system';
+    const ownerRouteInvalidated = fallback ? this.clearOwnerRoute(message) : false;
+    if (fallback) this.insert(message.taskId, { channel: 'system' }, failurePayload(message, error), timestamp);
+    this.audit('outbox.dead_letter', message.id, {
+      attempts: message.attempts, fallback, ownerRouteInvalidated, ...facts,
+    }, timestamp);
   }
 
   private quarantine(id: string, error: unknown, timestamp: string): void {
@@ -136,16 +169,10 @@ export class OutboxStore extends SqliteDomain {
           WHERE id = ? AND status = 'sending' AND lease_until <= ?
         `).run(error.message, timestamp, message.id, timestamp);
         if (Number(updated.changes) !== 1) continue;
-        const fallback = message.channel !== 'system';
-        const ownerRouteInvalidated = fallback ? this.clearOwnerRoute(message) : false;
-        if (fallback) this.insert(message.taskId, { channel: 'system' }, failurePayload(message, error), timestamp);
-        this.audit('outbox.dead_letter', message.id, {
-          attempts: message.attempts,
-          fallback,
-          ownerRouteInvalidated,
+        this.recordDeadLetter(message, error, timestamp, {
           uncertain: true,
           reason: 'lease_expired',
-        }, timestamp);
+        });
       }
       const exclusions = excludedRoutes.slice(0, 16);
       const exclusionSql = exclusions.length
@@ -207,40 +234,13 @@ export class OutboxStore extends SqliteDomain {
         owner,
       );
       if (Number(updated.changes) !== 1) throw new Error(`Outbox ${id} 租约已失效`);
-      const ownerRouteInvalidated = terminal && message.channel !== 'system'
-        ? this.clearOwnerRoute(message)
-        : false;
-      if (terminal && message.channel !== 'system') {
-        this.insert(message.taskId, { channel: 'system' }, failurePayload(message, error), timestamp);
-      }
-      this.audit(terminal ? 'outbox.dead_letter' : 'outbox.retry', id, {
-        attempts: message.attempts,
-        fallback: terminal && message.channel !== 'system',
-        ownerRouteInvalidated,
-      }, timestamp);
+      if (terminal) this.recordDeadLetter(message, error, timestamp);
+      else this.audit('outbox.retry', id, { attempts: message.attempts }, timestamp);
     });
   }
 
-  list(limit = 50): OutboxMessage[] {
-    return (this.database.prepare('SELECT * FROM outbox ORDER BY created_at DESC LIMIT ?')
-      .all(limit) as Row[]).map(fromRow);
-  }
-
   listSummaries(requestedLimit = 50): MimiOutboxSummary[] {
-    return (this.database.prepare(`
-      SELECT id, task_id, channel, target, status, attempts, not_before, updated_at, error
-      FROM outbox ORDER BY created_at DESC, rowid DESC LIMIT ?
-    `).all(managementLimit(requestedLimit)) as Row[]).map((row) => ({
-      id: String(row.id),
-      taskId: String(row.task_id),
-      channel: String(row.channel).slice(0, 200),
-      target: optional(row.target)?.slice(0, 500),
-      status: String(row.status) as OutboxStatus,
-      attempts: Number(row.attempts),
-      notBefore: String(row.not_before),
-      updatedAt: String(row.updated_at),
-      error: optional(row.error)?.slice(0, 500),
-    }));
+    return listOutboxSummaries(this.database, requestedLimit);
   }
 
   retryDeadLetter(id: string, at = new Date()): OutboxMessage {

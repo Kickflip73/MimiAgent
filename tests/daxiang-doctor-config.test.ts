@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { countMissingDaxiangOwnerBindings } from '../src/daemon/service.js';
+import { countMissingDaxiangOwnerBindings } from '../examples/connectors/personal-message/daxiang-web.mjs';
 
 const fingerprint = `sha256:${'a'.repeat(64)}`;
 

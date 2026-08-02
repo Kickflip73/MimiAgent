@@ -1,40 +1,31 @@
 import { z } from 'zod';
-import type { ComputerManager } from '../../extensions/computer/manager.js';
-import type { ExecutionLedger, ExecutionCallRecord } from '../../core/execution-ledger.js';
-import type { MemoryHub } from '../../core/memory.js';
-import type { PlanStore } from '../../core/plan.js';
+import type { ExecutionCallRecord } from '../../core/execution-ledger.js';
 import {
   classifyRunOutcome,
   constrainRunAnswer,
+  contextUsageSnapshotSchema,
   createRunFinalization,
   runEvidenceRefs,
   runFinalizationRecordSchema,
   type RunFinalizationRecord,
   type RunOutcome,
 } from '../../core/run-finalization.js';
-import { runAnswerDigest, type RunCommitJournal } from '../../core/run-commit-journal.js';
-import type { FileSession } from '../../core/session.js';
-import type { TeamTaskStore } from '../../core/team.js';
-import type { TraceStore } from '../../core/trace.js';
+import { runAnswerDigest } from '../../core/run-commit-journal.js';
 import {
   runtimeActionSchema,
   type RuntimeAction,
-  type RuntimeEffect,
 } from '../control.js';
-import { incompleteCompletionAnswer, type CompletionCoordinator } from '../completion-coordinator.js';
+import { incompleteCompletionAnswer } from '../completion-coordinator.js';
 import {
   containsActiveEphemeralValue,
   redactActiveEphemeralText,
   type ActiveEphemeralOwnerInput,
 } from '../ephemeral-owner-input.js';
-import type { HookBus } from '../hooks.js';
 import type {
   ActiveRun,
-  CompletedExecutionReceipt,
   ContextUsageSnapshot,
+  MimiAgent,
 } from '../mimi-agent.js';
-import type { RunContextBuilder } from '../run-context-builder.js';
-import type { RuntimeActionCoordinator } from '../runtime-action-coordinator.js';
 import {
   isTerminalRunInterruption,
   RunInterruptedError,
@@ -42,13 +33,8 @@ import {
 } from '../run-outcome.js';
 import { mergeRunCalls } from './run-fact-collector.js';
 
-export interface RunCommitUsage {
-  lastRequestInputTokens?: number;
-  lastRequestOutputTokens?: number;
-  runInputTokens?: number;
-  runOutputTokens?: number;
-  runTotalTokens?: number;
-}
+export type RunCommitUsage = Pick<ContextUsageSnapshot,
+  'lastRequestInputTokens' | 'lastRequestOutputTokens' | 'runInputTokens' | 'runOutputTokens' | 'runTotalTokens'>;
 
 export interface RunCommitInput {
   answer: string;
@@ -64,14 +50,6 @@ export interface RunCommitDecisionInput {
   nextAction?: string;
 }
 
-export interface RunCommitDecision {
-  answer: string;
-  outcome: RunOutcome;
-  reason?: string;
-  nextAction?: string;
-  evidenceRefs: string[];
-}
-
 function outputRecord(call: ExecutionCallRecord | undefined): Record<string, unknown> | undefined {
   if (!call) return undefined;
   return call.output !== null && typeof call.output === 'object' && !Array.isArray(call.output)
@@ -79,44 +57,40 @@ function outputRecord(call: ExecutionCallRecord | undefined): Record<string, unk
     : undefined;
 }
 
-function defaultReason(outcome: RunOutcome, calls: readonly ExecutionCallRecord[]): string | undefined {
-  if (outcome === 'completed') return undefined;
-  if (outcome === 'blocked') {
-    const blocker = calls.find((call) => call.toolName === 'request_background_task_input');
-    const reason = outputRecord(blocker)?.reason;
-    return typeof reason === 'string' && reason.trim()
-      ? reason
-      : '缺少继续执行所需的 owner 输入或外部状态';
-  }
-  if (outcome === 'uncertain') return '至少一个已派发动作没有可确认的业务结果，Host 已禁止自动重放';
-  if (outcome === 'interrupted') return 'SDK Run 被取消、抢占或在正常结束前中断';
-  if (outcome === 'failed') return '结构化执行事实只包含未解决的确定性失败';
-  return '已形成有价值进展，但仍有失败、未验证交互或未满足的验收条件';
+const OUTCOME_DEFAULTS: Record<Exclude<RunOutcome, 'completed' | 'blocked'>, {
+  reason: string;
+  nextAction: string;
+}> = {
+  uncertain: { reason: '至少一个已派发动作没有可确认的业务结果，Host 已禁止自动重放', nextAction: '先读取同一业务对象核对结果；不得重放或换路' },
+  interrupted: { reason: 'SDK Run 被取消、抢占或在正常结束前中断', nextAction: '从最后持久检查点继续，不重复已确认副作用' },
+  failed: { reason: '结构化执行事实只包含未解决的确定性失败', nextAction: '修正结构化 validation/policy/state/unsupported 失败后重新发起' },
+  partial: { reason: '已形成有价值进展，但仍有失败、未验证交互或未满足的验收条件', nextAction: '继续未完成部分并为业务结果补充结构化回读或回执' },
+};
+
+function outcomeDefaults(
+  outcome: RunOutcome,
+  calls: readonly ExecutionCallRecord[],
+): Partial<{ reason: string; nextAction: string }> {
+  if (outcome === 'completed') return {};
+  if (outcome !== 'blocked') return OUTCOME_DEFAULTS[outcome];
+  const blocker = outputRecord(calls.find((call) => call.toolName === 'request_background_task_input'));
+  return {
+    reason: typeof blocker?.reason === 'string' && blocker.reason.trim()
+      ? blocker.reason : '缺少继续执行所需的 owner 输入或外部状态',
+    nextAction: typeof blocker?.question === 'string' && blocker.question.trim()
+      ? blocker.question : '补充缺失输入后从当前检查点继续',
+  };
 }
 
-function defaultNextAction(outcome: RunOutcome, calls: readonly ExecutionCallRecord[]): string | undefined {
-  if (outcome === 'completed') return undefined;
-  if (outcome === 'blocked') {
-    const blocker = calls.find((call) => call.toolName === 'request_background_task_input');
-    const question = outputRecord(blocker)?.question;
-    return typeof question === 'string' && question.trim()
-      ? question
-      : '补充缺失输入后从当前检查点继续';
-  }
-  if (outcome === 'uncertain') return '先读取同一业务对象核对结果；不得重放或换路';
-  if (outcome === 'interrupted') return '从最后持久检查点继续，不重复已确认副作用';
-  if (outcome === 'failed') return '修正结构化 validation/policy/state/unsupported 失败后重新发起';
-  return '继续未完成部分并为业务结果补充结构化回读或回执';
-}
-
-export function decideRunCommit(input: RunCommitDecisionInput): RunCommitDecision {
+export function decideRunCommit(input: RunCommitDecisionInput) {
   const outcome = classifyRunOutcome({
     sdk: input.sdk ?? 'completed',
     calls: input.calls,
     completionDecision: input.completionDecision,
   });
-  const reason = input.reason ?? defaultReason(outcome, input.calls);
-  const nextAction = input.nextAction ?? defaultNextAction(outcome, input.calls);
+  const defaults = outcomeDefaults(outcome, input.calls);
+  const reason = input.reason ?? defaults.reason;
+  const nextAction = input.nextAction ?? defaults.nextAction;
   const evidenceRefs = runEvidenceRefs(input.calls);
   return {
     answer: constrainRunAnswer({
@@ -140,53 +114,12 @@ export interface RunFailureInput {
   interruptedAnswer?: string;
 }
 
-export interface RunCommitCoordinatorPort {
-  readonly plans: PlanStore;
-  readonly team: TeamTaskStore;
-  readonly completion: CompletionCoordinator;
-  readonly ledger: ExecutionLedger;
-  readonly runCommits: RunCommitJournal;
-  readonly traces: TraceStore;
-  readonly runtimeActions: RuntimeActionCoordinator;
-  readonly memory: MemoryHub;
-  readonly runContexts: RunContextBuilder;
-  readonly computer?: ComputerManager;
-  readonly hooks: HookBus;
-  activeRun?: ActiveRun;
-  lastUsage?: ContextUsageSnapshot;
-  lastCommittedAnswer?: string;
-  lastFinalization?: RunFinalizationRecord;
-  validUsage(usage: ContextUsageSnapshot | undefined, binding?: ActiveRun['scope']['modelBinding']): ContextUsageSnapshot | undefined;
-  applyManifestActual(usage?: ContextUsageSnapshot): void;
-  createSession(sessionId: string): FileSession;
-}
-
-const contextUsageSchema = z.object({
-  lastRequestInputTokens: z.number().finite().nonnegative().optional(),
-  lastRequestOutputTokens: z.number().finite().nonnegative().optional(),
-  runInputTokens: z.number().finite().nonnegative().optional(),
-  runOutputTokens: z.number().finite().nonnegative().optional(),
-  runTotalTokens: z.number().finite().nonnegative().optional(),
-  providerId: z.string().min(1).max(100).optional(),
-  modelId: z.string().min(1).max(200).optional(),
-  scenario: z.string().min(1).max(100).optional(),
-  selectionReason: z.enum([
-    'explicit-work-unit',
-    'team-override',
-    'session-preference',
-    'scenario-route',
-    'global-default',
-    'safe-fallback',
-  ]).optional(),
-  cost: z.literal('unknown').optional(),
-}).strict();
-
 const completedExecutionReceiptSchema = z.object({
   runId: z.string().min(1).max(200),
   answer: z.string(),
   // Optional only when decoding receipts written before finalization manifests.
   finalization: runFinalizationRecordSchema.optional(),
-  usage: contextUsageSchema.optional(),
+  usage: contextUsageSnapshotSchema.optional(),
   actions: z.array(runtimeActionSchema).max(20).default([]),
   delivery: z.object({
     suppressed: z.literal(true),
@@ -195,9 +128,9 @@ const completedExecutionReceiptSchema = z.object({
 }).strict();
 
 export class RunCommitCoordinator {
-  constructor(private readonly port: RunCommitCoordinatorPort) {}
+  constructor(private readonly port: MimiAgent) {}
 
-  async complete(input: RunCommitInput): Promise<RuntimeEffect[]> {
+  async complete(input: RunCommitInput) {
     const run = this.port.activeRun;
     if (!run) throw new Error('没有正在运行的任务可完成');
     const safeAnswer = redactActiveEphemeralText(input.answer, run.ephemeralSensitiveAccess);
@@ -205,8 +138,6 @@ export class RunCommitCoordinator {
     if (run.completionRequired) {
       const evaluated = await this.evaluate(
         run,
-        run.plans ?? this.port.plans,
-        run.team ?? this.port.team,
       );
       gate = evaluated.gate;
       await run.session.updateRunCompletion({
@@ -216,13 +147,13 @@ export class RunCommitCoordinator {
       }, run.runId);
     }
     const evidenceRunId = run.options?.executionKey ?? run.runId;
-    const initialExecutionCalls = mergeRunCalls(
+    const executionCalls = mergeRunCalls(
       run.facts.calls(run.sessionId, evidenceRunId),
-      await this.port.ledger.listCalls(run.sessionId, evidenceRunId),
+      await this.port.components.state.executionLedger.store.listCalls(run.sessionId, evidenceRunId),
     );
     const decision = decideRunCommit({
       draft: gate && gate.decision !== 'pass' ? incompleteCompletionAnswer(gate) : safeAnswer,
-      calls: initialExecutionCalls,
+      calls: executionCalls,
       ...(gate ? { completionDecision: gate.decision } : {}),
       ...(gate && gate.decision !== 'pass' ? { reason: gate.reason } : {}),
     });
@@ -232,6 +163,7 @@ export class RunCommitCoordinator {
     const executionKey = run.options?.executionKey;
     let completed;
     let actions: RuntimeAction[] = [];
+    let finalization: RunFinalizationRecord | undefined;
     try {
       actions = await this.port.runtimeActions.actionsForCompletedRun({
         pendingActions: run.pendingActions,
@@ -239,11 +171,7 @@ export class RunCommitCoordinator {
         executionKey,
         retainExecutionLedger: run.options?.retainExecutionLedger === true,
       });
-      const executionCalls = mergeRunCalls(
-        run.facts.calls(run.sessionId, executionKey ?? run.runId),
-        await this.port.ledger.listCalls(run.sessionId, executionKey ?? run.runId),
-      );
-      const finalization = createRunFinalization({
+      finalization = createRunFinalization({
         runId: run.runId,
         answer: committedAnswer,
         outcome: decision.outcome,
@@ -253,7 +181,7 @@ export class RunCommitCoordinator {
         ...(gate ? { completionDecision: gate.decision } : {}),
         calls: executionCalls,
       });
-      await this.port.runCommits.prepare({
+      await this.port.components.state.runCommits.prepare({
         sessionId: run.sessionId,
         runId: run.runId,
         ...(executionKey ? { executionKey } : {}),
@@ -273,33 +201,37 @@ export class RunCommitCoordinator {
           delivery: await run.options.completionDelivery?.(executionCalls),
         };
         const persisted = completedExecutionReceiptSchema.parse(
-          await this.port.ledger.commitReceipt<unknown>(run.sessionId, executionKey, receipt),
+          await this.port.components.state.executionLedger.store.commitReceipt<unknown>(
+            run.sessionId, executionKey, receipt,
+          ),
         );
         if (JSON.stringify(persisted) !== JSON.stringify(receipt)) {
           throw new Error(`Execution ${executionKey} 已存在不同的完成回执，拒绝覆盖`);
         }
       }
-      await this.port.runCommits.advance(run.sessionId, run.runId, 'receipt_committed');
-      await this.port.traces.record(run.sessionId, 'run_finalization', finalization);
+      await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'receipt_committed');
+      await this.port.components.state.traces.record(run.sessionId, 'run_finalization', finalization);
       completed = await run.session.completeRun(committedAnswer, run.runId, finalization);
       if (completed?.runId !== run.runId || completed.status !== 'completed') {
         throw new Error(`Run ${run.runId} 已失效，拒绝用旧结果完成当前 Session`);
       }
-      await this.port.runCommits.advance(run.sessionId, run.runId, 'session_committed');
+      await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'session_committed');
       if (gate?.decision === 'pass' && run.goalCreatedAt) {
-        await this.port.plans.completeGoalFromGate(gate.reason, run.goalCreatedAt);
+        await this.port.components.state.goalsAndPlans.store.completeGoalFromGate(
+          gate.reason, run.goalCreatedAt,
+        );
       }
-      await this.port.runCommits.advance(run.sessionId, run.runId, 'goal_committed');
+      await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'goal_committed');
       const cause = run.options?.cause;
       if (cause?.source !== 'mimi:memory-maintenance' && cause?.source !== 'attention:briefing') {
-        await this.port.memory.recordEpisode({
+        await this.port.components.memory.recordEpisode({
           sessionId: run.sessionId,
           runId: run.runId,
           input: run.input,
           answer: committedAnswer,
           occurredAt: completed.updatedAt,
         }, this.port.runContexts.forRun(run, cause)).catch(async (error) => {
-          await this.port.traces.record(run.sessionId, 'memory_episode_error', {
+          await this.port.components.state.traces.record(run.sessionId, 'memory_episode_error', {
             error: error instanceof Error ? error.message.slice(0, 1_000) : String(error).slice(0, 1_000),
           });
         });
@@ -310,14 +242,13 @@ export class RunCommitCoordinator {
       if (!this.port.activeRun) this.port.activeRun = run;
       throw error;
     }
-    this.port.lastUsage = validUsage;
+    if (!finalization) throw new Error(`Run ${run.runId} 未生成最终提交事实`);
     this.port.applyManifestActual(validUsage);
-    this.port.lastCommittedAnswer = committedAnswer;
-    this.port.lastFinalization = (await this.port.runCommits.get(run.sessionId, run.runId))?.finalization;
-    await this.port.computer?.endRun(run.runId);
+    await this.port.components.computer?.endRun(run.runId);
     await this.port.hooks.emit({ type: 'run_end', sessionId: run.sessionId, answer: committedAnswer });
     if (!run.options?.retainExecutionLedger) {
-      await this.port.ledger.clearRun(run.sessionId, executionKey ?? run.runId).catch(() => undefined);
+      await this.port.components.state.executionLedger.store
+        .clearRun(run.sessionId, executionKey ?? run.runId).catch(() => undefined);
     }
     run.releaseOwner();
     const effects = await this.port.runtimeActions.apply(
@@ -325,11 +256,11 @@ export class RunCommitCoordinator {
       run.sessionId,
       run.options?.retainExecutionLedger ? executionKey : undefined,
     );
-    await this.port.runCommits.advance(run.sessionId, run.runId, 'effects_applied');
+    await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'effects_applied');
     if (!run.options?.retainExecutionLedger) {
-      await this.port.runCommits.advance(run.sessionId, run.runId, 'finalized');
+      await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'finalized');
     }
-    return effects;
+    return { answer: committedAnswer, effects, finalization };
   }
 
   async fail(input: RunFailureInput): Promise<RunFinalizationRecord | undefined> {
@@ -343,12 +274,12 @@ export class RunCommitCoordinator {
     const executionRunId = run.options?.executionKey ?? run.runId;
     const calls = mergeRunCalls(
       run.facts.calls(run.sessionId, executionRunId),
-      await this.port.ledger.listCalls(run.sessionId, executionRunId),
+      await this.port.components.state.executionLedger.store.listCalls(run.sessionId, executionRunId),
     );
     const decision = decideRunCommit({
       draft: safeInterruptedAnswer ?? '',
       calls,
-      sdk: 'interrupted',
+      sdk: input.interrupted ? 'interrupted' : 'failed',
       reason: errorMessage,
     });
     const finalization = createRunFinalization({
@@ -360,7 +291,7 @@ export class RunCommitCoordinator {
       evidenceRefs: decision.evidenceRefs,
       calls,
     });
-    await this.port.runCommits.prepare({
+    await this.port.components.state.runCommits.prepare({
       sessionId: run.sessionId,
       runId: run.runId,
       ...(run.options?.executionKey ? { executionKey: run.options.executionKey } : {}),
@@ -369,12 +300,11 @@ export class RunCommitCoordinator {
       runtimeActions: [],
       finalization,
     });
-    await this.port.traces.record(run.sessionId, 'run_finalization', finalization);
+    await this.port.components.state.traces.record(run.sessionId, 'run_finalization', finalization);
     this.port.activeRun = undefined;
-    await this.port.computer?.endRun(run.runId).catch(() => undefined);
+    await this.port.components.computer?.endRun(run.runId).catch(() => undefined);
     run.releaseOwner();
-    this.port.lastUsage = this.port.validUsage(input.usage, run.scope.modelBinding);
-    this.port.applyManifestActual(this.port.lastUsage);
+    this.port.applyManifestActual(this.port.validUsage(input.usage, run.scope.modelBinding));
     if (run.options?.retainExecutionLedger) {
       await run.session.rollbackRunItems(run.runId, safeInterruptedAnswer).catch(() => undefined);
     }
@@ -388,9 +318,7 @@ export class RunCommitCoordinator {
         finalization,
       );
     }
-    await this.port.runCommits.advance(run.sessionId, run.runId, 'session_committed');
-    this.port.lastCommittedAnswer = decision.answer;
-    this.port.lastFinalization = finalization;
+    await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'session_committed');
     await this.port.hooks.emit({
       type: 'run_error',
       sessionId: run.sessionId,
@@ -398,15 +326,13 @@ export class RunCommitCoordinator {
       interrupted: decision.outcome === 'interrupted',
     });
     if (!run.options?.retainExecutionLedger) {
-      await this.port.runCommits.advance(run.sessionId, run.runId, 'finalized');
+      await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'finalized');
     }
     return finalization;
   }
 
   evaluate(
     run: ActiveRun,
-    plans: PlanStore,
-    team: TeamTaskStore,
   ) {
     return this.port.completion.evaluate({
       sessionId: run.sessionId,
@@ -419,8 +345,8 @@ export class RunCommitCoordinator {
       goalOwned: Boolean(run.goalCreatedAt),
       planOwned: Boolean(run.planOwned),
       teamOwned: Boolean(run.teamOwned),
-      plans,
-      team,
+      plans: this.port.components.state.goalsAndPlans.store,
+      team: this.port.components.state.team.store,
     });
   }
 
@@ -440,25 +366,26 @@ export class RunCommitCoordinator {
   }
 
   async finalizeExecutionLedger(sessionId: string, executionKey: string): Promise<void> {
-    await this.port.runCommits.acknowledgeTask(sessionId, executionKey);
-    await this.port.ledger.clearRun(sessionId, executionKey);
-    await this.port.runCommits.finalizeExecution(sessionId, executionKey);
+    await this.port.components.state.runCommits.acknowledgeTask(sessionId, executionKey);
+    await this.port.components.state.executionLedger.store.clearRun(sessionId, executionKey);
+    await this.port.components.state.runCommits.finalizeExecution(sessionId, executionKey);
   }
 
   async reopenExecutionLedger(sessionId: string, executionKey: string): Promise<void> {
-    await this.port.ledger.clearReceipt(sessionId, executionKey);
-    await this.port.runCommits.finalizeExecution(sessionId, executionKey);
+    await this.port.components.state.executionLedger.store.clearReceipt(sessionId, executionKey);
+    await this.port.components.state.runCommits.finalizeExecution(sessionId, executionKey);
   }
 
   async completedExecution(
     sessionId: string,
     executionKey: string,
-  ): Promise<CompletedExecutionReceipt | undefined> {
-    const stored = await this.port.ledger.getReceipt<unknown>(sessionId, executionKey);
+  ) {
+    const stored = await this.port.components.state.executionLedger.store
+      .getReceipt<unknown>(sessionId, executionKey);
     if (!stored) return undefined;
     const legacyReceipt = completedExecutionReceiptSchema.parse(stored);
-    const journal = await this.port.runCommits.findByExecutionKey(sessionId, executionKey);
-    const receipt: CompletedExecutionReceipt = {
+    const journal = await this.port.components.state.runCommits.findByExecutionKey(sessionId, executionKey);
+    const receipt = {
       ...legacyReceipt,
       actions: legacyReceipt.actions ?? [],
       finalization: legacyReceipt.finalization
@@ -466,7 +393,7 @@ export class RunCommitCoordinator {
         ?? createRunFinalization({
           runId: legacyReceipt.runId,
           answer: legacyReceipt.answer,
-          calls: await this.port.ledger.listCalls(sessionId, executionKey),
+          calls: await this.port.components.state.executionLedger.store.listCalls(sessionId, executionKey),
         }),
     };
     if (journal && journal.answerDigest !== runAnswerDigest(receipt.answer)) {
@@ -476,14 +403,16 @@ export class RunCommitCoordinator {
       && JSON.stringify(journal.finalization) !== JSON.stringify(receipt.finalization)) {
       throw new Error(`Execution ${executionKey} 的工具事实与提交日志不一致`);
     }
-    await this.port.createSession(sessionId).reconcileCompletedRun(
+    await this.port.components.state.sessions.open(sessionId).reconcileCompletedRun(
       receipt.answer,
       receipt.runId,
       receipt.finalization,
     );
-    if (journal) await this.port.runCommits.advance(sessionId, receipt.runId, 'session_committed');
+    if (journal) {
+      await this.port.components.state.runCommits.advance(sessionId, receipt.runId, 'session_committed');
+    }
     const effects = await this.port.runtimeActions.apply(receipt.actions ?? [], sessionId, executionKey);
-    if (journal) await this.port.runCommits.advance(sessionId, receipt.runId, 'effects_applied');
+    if (journal) await this.port.components.state.runCommits.advance(sessionId, receipt.runId, 'effects_applied');
     return { ...receipt, effects };
   }
 }

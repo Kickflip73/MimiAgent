@@ -1,10 +1,8 @@
 import type { AgentInputItem, Tool } from '@openai/agents';
-import type { AgentPermissionMode, SecurityProfile } from '../../config.js';
 import type { AgentMode } from '../instructions.js';
 import {
   toolsForMode,
   toolsForRunPolicy,
-  toolsForSecurity,
   type RunToolPolicy,
 } from '../tool-policy.js';
 
@@ -118,15 +116,10 @@ export class ToolSetBuilder {
 
   scoped(
     tools: Tool[],
-    permissionMode: AgentPermissionMode,
-    securityProfile: SecurityProfile,
     policy: RunToolPolicy | undefined,
     computerEnabled: boolean,
   ): Tool[] {
-    return toolsForRunPolicy(
-      toolsForSecurity(securityProfile, tools),
-      policy,
-    ).filter((tool) => computerEnabled
+    return toolsForRunPolicy(tools, policy).filter((tool) => computerEnabled
       || (tool.name !== 'computer_observe' && tool.name !== 'computer_act'));
   }
 
@@ -135,21 +128,13 @@ export class ToolSetBuilder {
     baseTools: Tool[],
     teamTools: Tool[],
     subAgentTools: Tool[],
-    permissionMode: AgentPermissionMode,
-    securityProfile: SecurityProfile,
     policy?: RunToolPolicy,
   ): Tool[] {
     const modeTools = toolsForRunPolicy(
-      toolsForSecurity(
-        securityProfile,
-        toolsForMode(mode, baseTools, teamTools),
-      ),
+      toolsForMode(mode, baseTools, teamTools),
       policy,
     );
-    const delegated = toolsForRunPolicy(
-      toolsForSecurity(securityProfile, subAgentTools),
-      policy,
-    );
+    const delegated = toolsForRunPolicy(subAgentTools, policy);
     return [...modeTools, ...delegated];
   }
 }

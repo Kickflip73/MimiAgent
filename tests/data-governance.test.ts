@@ -49,7 +49,7 @@ test('historical dry-run reports only categories and fingerprints, then verified
       workspaceAccess: 'write',
       priority: 50,
     });
-    store.addSchedule({
+    store.schedules.add({
       name: 'legacy fixture',
       type: 'at',
       value: 'once',

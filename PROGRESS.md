@@ -620,3 +620,46 @@
    `ready=false`，Cua Driver 0.16.0 的 Accessibility=true、Screen Recording=false，
    `personal-daxiang` unavailable，另有 dead letter=549、Digest=6410。未把旧构建 idle
    冒充新构建 readiness，也未越过 ARC-303 红线执行安装、重启或建立 T0。
+
+## 2026-08-03 ARC-303 第四段：启动能力边界与重复运行态
+
+1. 先在 `run-pipeline` 加反向断言，证明 `permissionMode` 仍被复制进每轮 RunScope，红测
+   为 20/21、`true !== false`；现已改为启动时一次生成固定 `RuntimeAccess`，Capability、
+   ToolSet、MCP、Computer、Team worker 与临时敏感输入只消费实际能力，不再携带或动态
+   切换 Safe/Workstation/Full Owner profile。
+2. 删除 Session/Chat 的重复 Security profile、首轮重复 Context view、`lastContextStats`、
+   `lastContextTokens`、`lastContextUsage` 和累计 compression 状态；最近请求只以
+   `ContextManifest` 为权威，持久历史仍独立计算 raw/archive 统计。Task 安全点控制与租约
+   恢复共用一个事务终态函数，Codex checkpoint 复用同一租约校验。
+3. 相关回归依次为 Runtime 123/123、Chat/Commands 161/161、Context 117/117、Task 16/16，
+   `npm run check` 全绿；排除唯一架构红线的全量 coverage 实跑 885/885，skip/todo=0，
+   总覆盖 line=88.11%、branch=78.11%、function=84.52%。
+4. 显式生产面从 `9471` 降至 `9317`，热点 `mimi-agent/service/store = 1466/1660/1567`，
+   三个单文件预算均绿；总量仍为 `9317 > 8505`、尚差 812，故 ARC-303 与依赖它的
+   ARC-402 继续保持红线，未部署、未建立 T0。
+5. 操作审计：曾对只读零命中搜索执行一次 `rg ... || true`；没有运行测试、构建或写操作，
+   也没有掩盖非零验收结果，但违反 Goal 的命令形态约束，已如实记录且后续未再使用。
+
+## 2026-08-03 ARC-303 第五段：唯一组件端口与完整 LOC 退出
+
+1. `RuntimeComponents` 现同时是 Soul/Preferences/Memory/Skills/MCP/Computer、模型 registry
+   与 state ports 的唯一 owner；删除 `MimiAgent` 对 Plan/Team/Ledger/Trace/Session/Model 的
+   getter 和可变镜像。RunPipeline、RunCommitCoordinator、控制面直接读取同一组件端口，
+   并删除两套平行 Host/Port interface 与三个 `as unknown` 强转。
+2. 强转移除后，聚焦回归真实暴露旧 Pipeline 仍读取已删除 `host.ledger`；现已统一改读
+   `components.state.executionLedger.store`。已取得 SDK stream 后的 Provider 断线也由
+   RunService 明确传为 interrupted，Error/Session/Journal/Trace 继续引用同一 Finalization。
+3. `projectRunStreamEvent` 成为 Terminal、Daemon live event 和 RunService 的唯一流事件投影；
+   Event kind/trust 由共享 Zod schema 解析，Provider credential 环境变量名复用同一函数；
+   Activity/Outbox/Run 读取投影和 SQLite table owner 不再由组合根复制。
+4. 防漏计审计先得到表面绿 `8497/8505`，随后发现新 `stream-projection.ts` 82 行和
+   `core/xml.ts` 4 行未在清单中；立即把两者加入门禁并保留红证据 `8583 > 8505`。
+   继续删除真实重复契约后，最终又把 Run/Session 的 Plan/Team 构造收回 state port；20 个
+   完整生产文件为 `8490/8505`，热点 `mimi-agent/service/store = 1174/1536/1475`，
+   ARC-303 两项预算均绿。
+5. 完整 coverage 实跑 887/887、fail/skip/todo=0，line/branch/function=
+   `88.20%/78.27%/84.53%`；最终 state-port 补丁相关 119/119，随后最终代码的
+   `npm test` 再次 887/887。`npm run check`、构建、package 与架构反向门禁全绿；
+   `check:repo` 前三项通过，最后一项仅被明确范围外的
+   `agent-reach`、`guizang-social-card-skill` 未分类资产阻断；未修改它们。ARC-303 已满足
+   实现退出条件，但没有据此越过 Doctor/readiness 门禁部署或建立 T0。

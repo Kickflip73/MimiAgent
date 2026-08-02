@@ -296,7 +296,9 @@ export function legacyModelConfigurationForAppConfig(
       id: providerId,
       label: config.provider,
       transport,
-      ...(config.providerBaseUrl ? { baseUrl: config.providerBaseUrl } : {}),
+      ...(config.providerBaseUrl || config.provider === 'deepseek'
+        ? { baseUrl: config.providerBaseUrl ?? 'https://api.deepseek.com' }
+        : {}),
       apiKeyEnv,
       models: modelIds.map((registeredModelId) => ({
         target: { providerId, modelId: registeredModelId },

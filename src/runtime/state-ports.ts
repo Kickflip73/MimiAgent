@@ -13,6 +13,7 @@ export interface SessionStatePort {
 
 export interface GoalPlanStatePort {
   store: PlanStore;
+  open(sessionId: string): PlanStore;
 }
 
 export interface TeamStatePort {
@@ -40,6 +41,7 @@ export function createFileRuntimeStatePorts(
   config: Pick<AppConfig, 'dataRoot'>,
   sessionId: string,
 ): RuntimeStatePorts {
+  const plansFile = path.join(config.dataRoot, 'plans.json');
   return {
     sessions: {
       open: (id, isolated = false) => new FileSession(
@@ -47,7 +49,10 @@ export function createFileRuntimeStatePorts(
         id,
       ),
     },
-    goalsAndPlans: { store: new PlanStore(path.join(config.dataRoot, 'plans.json'), sessionId) },
+    goalsAndPlans: {
+      store: new PlanStore(plansFile, sessionId),
+      open: (id) => new PlanStore(plansFile, id),
+    },
     team: { store: new TeamTaskStore(path.join(config.dataRoot, 'teams.json'), sessionId) },
     executionLedger: {
       store: new ExecutionLedger(path.join(config.dataRoot, 'execution-ledger.json')),

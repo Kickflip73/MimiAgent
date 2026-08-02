@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { runFailureRecord } from '../core/run-failure.js';
 import {
   aggregateDeadLetters,
@@ -8,6 +7,9 @@ import {
   buildDailyResourceTrends,
   type DailyUsageSample,
 } from './resource-slo.js';
+import { listEventSummaries } from './event-store.js';
+import { listOutboxSummaries } from './outbox-store.js';
+import { listRunSummaries } from './run-store.js';
 import {
   aggregateRunSourceUsage,
   classifyRunSource,
@@ -19,11 +21,11 @@ import {
 import {
   optionalText as optional,
   parseOptionalJson,
+  hashedStateKey,
   SqliteDomain,
   type SqliteRow as Row,
 } from './sqlite-domain.js';
 import type {
-  HostRunRecord,
   ImmutableEvent,
   MimiActivitySnapshot,
   OutboxStatus,
@@ -41,10 +43,6 @@ const AUTONOMOUS_BUDGET_REASONS = new Set<AutonomousBudgetReason>([
   'source_token_hourly_budget',
   'token_usage_unavailable',
 ]);
-
-function autonomousBudgetKey(source: string): string {
-  return `autonomous-budget:${createHash('sha256').update(source).digest('hex').slice(0, 24)}`;
-}
 
 function parseAutonomousBudgetExhaustion(value: unknown): AutonomousBudgetExhaustion | undefined {
   if (typeof value !== 'string') return undefined;
@@ -67,6 +65,22 @@ function parseAutonomousBudgetExhaustion(value: unknown): AutonomousBudgetExhaus
   }
 }
 
+function runUsageFact(row: Row): RunUsageFact {
+  const tokens = (key: 'input_tokens' | 'output_tokens') => (
+    typeof row[key] === 'number' && Number.isFinite(row[key]) && row[key] >= 0
+      ? row[key] as number : undefined
+  );
+  const inputTokens = tokens('input_tokens');
+  const outputTokens = tokens('output_tokens');
+  return {
+    taskType: String(row.type) as TaskType,
+    source: String(row.source ?? ''),
+    trust: String(row.trust) as ImmutableEvent['trust'],
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+  };
+}
+
 export class ActivityStore extends SqliteDomain {
 
   private runUsageFactsSince(since: Date): RunUsageFact[] {
@@ -81,19 +95,7 @@ export class ActivityStore extends SqliteDomain {
       LEFT JOIN events trigger_event ON trigger_event.id = tasks.trigger_event_id
       JOIN events authority_event ON authority_event.id = tasks.authority_event_id
       WHERE runs.started_at >= ?
-    `).all(since.toISOString()) as Row[]).map((row) => {
-      const inputTokens = typeof row.input_tokens === 'number' && Number.isFinite(row.input_tokens)
-        && row.input_tokens >= 0 ? row.input_tokens : undefined;
-      const outputTokens = typeof row.output_tokens === 'number' && Number.isFinite(row.output_tokens)
-        && row.output_tokens >= 0 ? row.output_tokens : undefined;
-      return {
-        taskType: String(row.type) as TaskType,
-        source: String(row.source ?? ''),
-        trust: String(row.trust) as ImmutableEvent['trust'],
-        ...(inputTokens !== undefined ? { inputTokens } : {}),
-        ...(outputTokens !== undefined ? { outputTokens } : {}),
-      };
-    });
+    `).all(since.toISOString()) as Row[]).map(runUsageFact);
   }
 
   countRunsSince(since: Date, source?: string): number {
@@ -131,12 +133,7 @@ export class ActivityStore extends SqliteDomain {
       JOIN events authority_event ON authority_event.id = tasks.authority_event_id
       WHERE tasks.status IN ('queued', 'running')
     `).all() as Row[];
-    const reservedRuns = taskRows.filter((row) => {
-      const fact = {
-        taskType: String(row.type) as TaskType,
-        source: String(row.source ?? ''),
-        trust: String(row.trust) as ImmutableEvent['trust'],
-      };
+    const reservedRuns = taskRows.map(runUsageFact).filter((fact) => {
       return (source === undefined || fact.source === source)
         && isAutonomousRunCategory(classifyRunSource(fact));
     }).length;
@@ -164,10 +161,8 @@ export class ActivityStore extends SqliteDomain {
       throw new Error('自治预算来源或恢复时间无效');
     }
     return this.transaction(() => {
-      const key = autonomousBudgetKey(source);
-      const row = this.database.prepare('SELECT value FROM attention_state WHERE key = ?')
-        .get(key) as Row | undefined;
-      const existing = parseAutonomousBudgetExhaustion(row?.value);
+      const key = hashedStateKey('autonomous-budget', source);
+      const existing = parseAutonomousBudgetExhaustion(this.attentionState(key));
       const timestamp = at.toISOString();
       const next: AutonomousBudgetExhaustion = {
         source,
@@ -182,10 +177,7 @@ export class ActivityStore extends SqliteDomain {
         }
         return false;
       }
-      this.database.prepare(`
-        INSERT INTO attention_state (key, value, updated_at) VALUES (?, ?, ?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-      `).run(key, JSON.stringify(next), timestamp);
+      this.upsertAttentionState(key, JSON.stringify(next), timestamp);
       this.audit('attention.budget_exhausted', key, { source, reasonCode, retryAt: next.retryAt }, timestamp);
       return true;
     });
@@ -193,10 +185,8 @@ export class ActivityStore extends SqliteDomain {
 
   clearAutonomousBudgetExhaustion(source: string, at = new Date()): boolean {
     return this.transaction(() => {
-      const key = autonomousBudgetKey(source);
-      const row = this.database.prepare('SELECT value FROM attention_state WHERE key = ?')
-        .get(key) as Row | undefined;
-      const existing = parseAutonomousBudgetExhaustion(row?.value);
+      const key = hashedStateKey('autonomous-budget', source);
+      const existing = parseAutonomousBudgetExhaustion(this.attentionState(key));
       if (!existing) return false;
       const timestamp = at.toISOString();
       this.database.prepare('DELETE FROM attention_state WHERE key = ?').run(key);
@@ -267,18 +257,7 @@ export class ActivityStore extends SqliteDomain {
     const pendingDigest = Number((this.database.prepare(`
       SELECT COUNT(*) AS count FROM digest_items WHERE digested_at IS NULL
     `).get() as Row).count);
-    const recentEvents = (this.database.prepare(`
-      SELECT id, source, type, subject_type, subject_id, occurred_at, received_at
-      FROM events ORDER BY received_at DESC, rowid DESC LIMIT ?
-    `).all(limit) as Row[]).map((row) => ({
-      id: String(row.id),
-      source: String(row.source),
-      type: String(row.type),
-      subjectType: optional(row.subject_type) as ImmutableEvent['subjectType'],
-      subjectId: optional(row.subject_id),
-      occurredAt: String(row.occurred_at),
-      receivedAt: String(row.received_at),
-    }));
+    const recentEvents = listEventSummaries(this.database, limit);
     const recentTasks = (this.database.prepare(`
       SELECT task.id, task.type, task.status, task.trigger_event_id,
         event.source, event.type AS event_type,
@@ -301,43 +280,8 @@ export class ActivityStore extends SqliteDomain {
         ...(failure ? { failure } : {}),
       };
     });
-    const recentRuns = (this.database.prepare(`
-      SELECT runs.id, runs.task_id, runs.status, runs.started_at, runs.completed_at, runs.error,
-        tasks.type, COALESCE(trigger_event.source, authority_event.source) AS source,
-        COALESCE(trigger_event.trust, authority_event.trust) AS trust
-      FROM runs JOIN tasks ON tasks.id = runs.task_id
-      LEFT JOIN events trigger_event ON trigger_event.id = tasks.trigger_event_id
-      JOIN events authority_event ON authority_event.id = tasks.authority_event_id
-      ORDER BY COALESCE(runs.completed_at, runs.started_at) DESC, runs.rowid DESC LIMIT ?
-    `).all(limit) as Row[]).map((row) => {
-      const source = String(row.source ?? '');
-      return {
-        id: String(row.id),
-        taskId: String(row.task_id),
-        status: String(row.status) as HostRunRecord['status'],
-        startedAt: String(row.started_at),
-        completedAt: optional(row.completed_at),
-        error: optional(row.error)?.slice(0, 500),
-        source,
-        sourceCategory: classifyRunSource({
-          taskType: String(row.type) as TaskType,
-          source,
-          trust: String(row.trust) as ImmutableEvent['trust'],
-        }),
-      };
-    });
-    const recentDeliveries = (this.database.prepare(`
-      SELECT id, task_id, channel, status, attempts, updated_at, error
-      FROM outbox ORDER BY updated_at DESC, rowid DESC LIMIT ?
-    `).all(limit) as Row[]).map((row) => ({
-      id: String(row.id),
-      taskId: String(row.task_id),
-      channel: String(row.channel),
-      status: String(row.status) as OutboxStatus,
-      attempts: Number(row.attempts),
-      updatedAt: String(row.updated_at),
-      error: optional(row.error)?.slice(0, 500),
-    }));
+    const recentRuns = listRunSummaries(this.database, limit, 'updated');
+    const recentDeliveries = listOutboxSummaries(this.database, limit, 'updated');
     const recentTransitions = (this.database.prepare(`
       SELECT sequence, event_type, entity_id, created_at
       FROM audit_events ORDER BY sequence DESC LIMIT ?
