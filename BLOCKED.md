@@ -1,5 +1,24 @@
 # Blocked
 
+- **2026-08-02 ARC-203/204 当前 Computer/Screen 实机门槛（外部 TCC）**：已升级并
+  适配官方 Cua Driver `0.16.0`；Accessibility=true，但升级后的 macOS Screen
+  Recording 授权为 false，`health_report` 因此为 degraded。当前源码的一次 Calculator
+  正式 Manager 运行曾 1/1 成功（38.443s，observation 6310 bytes，session/frontmost/
+  cursor leak=0），但随后 Calculator/TextEdit/Finder 重复运行均在 0 AXWindow 时以
+  `observation_unusable: ax_window_unresolved` fail closed；孤立成功不作为 readiness。
+  Driver 的授权等待命令也已明确超时，没有 UI 写或前台降级。需 owner 在 macOS
+  “隐私与安全性 → 屏幕录制”中重新启用 CuaDriver 后，复跑正式 Computer/Screen
+  矩阵；旧 `0.14.1` 恢复副本保留在
+  `/tmp/mimi-cua-upgrade.zwltHZ/CuaDriver-0.14.1.app`，新版本完成持续验证前不删除。
+
+- **2026-08-02 ARC-205 三个人消息真实闭环（外部目标/接入状态）**：大象缺少 owner
+  选定的稳定会话与授权 revision；QQ 已实现正式
+  `PersonalMessageHub → ComputerManager/CUA` 单次发送闭环，但当前 Cua TCC/AX 不可用，
+  且尚无正式 inbound observer 将真实 QQ 消息投递为 Hub Event；微信的隔离 App 副本
+  存在，但本地 bridge 返回 `bridge_unavailable`，机器也没有可提供稳定 snapshot/
+  message id 的 `wx`/`wx-cli` Adapter。三条通道均未发送、未猜目标、未保存或输出私聊
+  文本；Phase 3 以 `implemented_blocked` 退出并继续无依赖的 ARC-301～303。
+
 - **2026-08-02 ARC-000 repository asset 门禁（范围外用户资产）**：`npm run check:repo`
   的 hygiene、release consistency、dependency direction 三段通过；asset-boundary 只因
   继承的未跟踪 `skills/agent-reach` 与 `skills/guizang-social-card-skill` 未分类而失败。
@@ -12,7 +31,7 @@
   browser stale、Screen/Shortcuts readiness unknown、Computer operational readiness unknown。
   ARC-101～402 必须先在备份副本和 clean build 收口这些问题，当前结果不得计入最终 soak。
 
-- **2026-07-31 Computer 标准 AX 实机门槛（已解除）**：初次实测时已安装并验证
+- **2026-07-31 Computer 标准 AX 实机门槛（历史旧构建记录，已被 2026-08-02 状态取代）**：初次实测时已安装并验证
   Cua Driver `0.14.1`，health RPC、Accessibility 和 Screen Recording 权限位均为
   true，但 Calculator 与 TextEdit 的精确 `get_window_state` 都返回
   `ax_window_unresolved`、0 个 AXWindow/可操作元素；请求窗口截图同时返回
@@ -138,4 +157,6 @@
 - **凭证轮换需 owner/外部系统（M-1）**：2026-07-28 发现一枚 Multica access token 曾进入 Task objective、Schedule 和 Memory observation；原值不在本文件或诊断输出中。已扩展统一净化器，验证备份后净化 50 个数据库值，复扫 0 命中，原始记录仅保留在权限受限的已验证恢复备份。该凭证必须在 Multica 控制面吊销并重发；MimiAgent 不得代替 owner 点击授权或猜测新值。
 - **M1 大象真实目标绑定需 owner/外部状态**：当前没有 owner 选定的精确会话、授权 revision，也没有唯一且非活动的已登录大象网页会话可用于 stable sid 绑定。允许完成 deterministic fixture、bounded read、Draft 和 fail-closed 代码；不得写入猜测目标、不得启用真实发送、不得伪造 72h soak。
 - **macOS Life 恢复需 Calendar/Reminders TCC**：`macos-life` 属于 M4，当前保持 disabled 且配置完整。只有 owner 授权后，按 `docs/CONNECTORS.md` 的只读 probe 和恢复门禁重新启用；不得代点系统授权。
-- **个人 QQ 恢复需真实 Adapter**：`personal-qq` 属于 M1，当前仅有未实现配置槽位，保持 disabled 且配置完整。实现并通过账号、稳定会话、bounded coverage、后台安全和 uncertain 测试前不得启用。
+- **个人 QQ 恢复历史记录（已被 2026-08-02 ARC-205 状态取代）**：`personal-qq`
+  的正式 Computer Adapter 已实现并通过确定性测试；当前剩余 inbound observer、真实
+  TCC/AX readiness 和稳定 owner 目标，保持 disabled，不得把实现完成写成实机可用。

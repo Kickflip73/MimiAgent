@@ -533,3 +533,25 @@
   修复前 0/1，错误为“缺少一次性授权”；修复后 Computer+Ledger 聚焦 55/55。
 - 最终 `npm run ci` 通过：641/641，line 85.60%、branch 76.52%、
   function 83.01%，build 与 package smoke 均通过。
+
+## 2026-08-02 ARC-202～205 Phase 3 实测
+
+1. ARC-202 Browser 确认复用唯一 Host-owned Browser Manager：确定性回归 13/13；
+   当前构建正式 macOS E2E 1/1（7657ms，最大 payload 892 bytes，session leak=0）。
+2. ARC-203 先以 8 次瞬态 AX 缺失复现旧 5-attempt settle 红测，再以 20-attempt
+   settle、首轮 40 elements、最多 12 screenshots 修复；提交 `59ae6b4`。Cua Driver
+   `0.16.0` 的一次 Calculator 正式运行 1/1，但升级后的 Screen Recording=false，
+   重复 Calculator/TextEdit/Finder 均 0 AXWindow fail closed，故为
+   `implemented_blocked`，不以孤立成功冒充 readiness。
+3. ARC-204 Shortcuts catalog 改为稳定 `{id,name}`，执行只接受最新签发 id；提交
+   `1c38f3d`，配置/退役/Shortcuts 回归 9/9。installed Daemon 的正式只读 probe
+   receipt=`ce7e541b-ea1d-47b7-8d13-5b7643a4d776`，ready/fresh/targetVerified/
+   actionResult=true、itemCount=0；Screen 仍受同一 TCC 阻塞，未执行写动作。
+4. ARC-205 QQ 正式 `PersonalMessageHub → ComputerManager/CUA` 路径先因模块不存在
+   0/1 红、后 QQ 5/5 绿；与 Hub/Connector/Run pipeline/Computer 合并回归 87/87，
+   `npm run check && npm run build` 通过，提交 `faaf848`。真实 Manager read 因当前
+   AX/TCC fail closed，未 action；没有 Shell、AppleScript 或前台按键降级。
+5. 大象仍缺稳定 owner target；微信 bridge=`bridge_unavailable` 且无稳定 snapshot/
+   message-id Adapter；QQ 仍缺 inbound observer。三条通道均未发送、未猜目标、未把
+   私聊内容写入证据。最终全量 `npm test` 为 876/876，fail/skip/todo=0；Phase 3 以
+   `implemented_blocked` 退出，继续 ARC-301～303。
