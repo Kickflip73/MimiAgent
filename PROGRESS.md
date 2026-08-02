@@ -17,7 +17,7 @@
 - ARC-103 失败终态收敛：所有 Task failure 边界现在持久化稳定 `failure.code + RunFailureDisposition`；确定性失败直接 `failed`，transient 仅在重试耗尽后 `dead_letter`，uncertain 直接 `dead_letter`，自然语言 error 不再参与重试或运维分类。Task/activity 同步暴露结构化事实，历史 v16 记录只标记 `historical.* / legacy_failure`，不猜测旧文案根因。
 - ARC-103 迁移保护：v15→v16 主迁移与已经提前升级的 v16 库都支持幂等回填；已有 v16 只在缺事实时先建 `task-failure-facts-v16-*` 备份，再事务写入并做 integrity/FK 校验与 audit。回滚注入证明完整性失败时 Task result 与 audit 都不提交；第二次打开不重复迁移或备份。
 - ARC-103 真实 v16 副本演练：从当前 `~/.mimi-agent/daemon/mimi.db` 在线只读备份到 `/tmp/mimi-v16-failure-dryrun.GxsJHt`；548 条 historical dead letter 数量不变，结构化事实 `0→548`，activity 只报告 `legacy_failure=548` 且 unclassified=0。迁移后 schema=16、integrity=ok、FK=0、audit backfilled=548；自动备份复读为 548 条且结构化事实仍为 0；真实库复查仍为 0，未被演练修改。
-- ARC-103 回归：`npm run check`、结构化 outcome/分类/v16 迁移与回滚聚焦 26/26、dispatcher/supervisor/worker 聚焦 13/13、`git diff --check` 均通过；完整 `npm test` 为 859/859，fail/skip/todo=0。clean-source CI 待当前 checkpoint 提交后执行。
+- ARC-103 回归：`npm run check`、结构化 outcome/分类/v16 迁移与回滚聚焦 26/26、dispatcher/supervisor/worker 聚焦 13/13、`git diff --check` 均通过；完整 `npm test` 为 859/859，fail/skip/todo=0。提交 `caec5c4` 的干净 worktree 原样 `npm run ci` 通过：repo/release/dependency/asset、typecheck、859/859 coverage tests、build、package smoke 全绿，coverage `87.56/77.58/84.24`；临时 worktree 已删除。
 
 ## 2026-07-31 Browser / Computer 原生可靠性 Goal
 - 目标：主 Agent 直接、严格、可验证地使用 Browser 与 Computer，不再因两层能力发现、宽松 schema 或巨型观察结果陷入循环。
