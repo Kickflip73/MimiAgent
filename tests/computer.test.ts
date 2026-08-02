@@ -538,6 +538,62 @@ test('model-facing Computer tools keep observation and authorization handles ins
   assert.ok(Array.isArray((acted.state as Record<string, unknown>).elements));
 });
 
+test('model-facing Computer tools return a retryable recovery for an empty launch target', async () => {
+  const { backend, manager, authority } = await fixture();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-invalid-launch-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const act = createComputerTools(manager, () => authority).find((item) => item.name === 'computer_act')!;
+  const [wrapped] = withExecutionLedger([act], ledger, () => ({
+    sessionId: 'owner',
+    runId: authority.runId,
+    guardedActionContext: {
+      ownerAuthenticated: true,
+      exactTarget: true,
+      lowRisk: true,
+      reversible: false,
+    },
+  }));
+  assert.ok(wrapped && 'invoke' in wrapped);
+
+  const result = await wrapped.invoke(new RunContext({}), JSON.stringify({
+    action: {
+      type: 'launch_app',
+      bundleId: null,
+      urls: null,
+      newInstance: null,
+      elementIndex: null,
+    },
+  }), { toolCall: { callId: 'invalid-launch' } } as never) as Record<string, unknown>;
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'missing_launch_target');
+  assert.equal(result.retryable, true);
+  assert.equal(result.next, 'computer_observe');
+  assert.match(String(result.message), /apps\[\]\.bundleId/);
+  assert.equal(backend.actions.length, 0);
+});
+
+test('app-centric observation distinguishes an installed stopped app from an unknown app', async () => {
+  const { backend, manager, authority } = await fixture();
+  backend.targets = [];
+  backend.listApps = async ({ query }) => query === 'Editor'
+    ? [{ bundleId: target.bundleId, name: target.appName, running: false }]
+    : [];
+
+  const stopped = await manager.observeApp(authority, 'Editor', false) as Record<string, unknown>;
+  assert.equal(stopped.reason, 'app_not_running');
+  assert.deepEqual(stopped.apps, [{
+    bundleId: target.bundleId,
+    name: target.appName,
+    running: false,
+  }]);
+
+  const unknown = await manager.observeApp(authority, 'Missing', false) as Record<string, unknown>;
+  assert.equal(unknown.reason, 'app_not_found');
+  assert.equal(unknown.next, 'computer_observe');
+  assert.deepEqual(unknown.apps, []);
+});
+
 test('launch_app binds the new app window and returns its fresh state', async () => {
   const { backend, manager, authority } = await fixture();
   const previous = { ...target, title: 'README.md' };

@@ -6,7 +6,7 @@ import {
   TOOL_LEDGER_ARGUMENTS,
 } from '../../core/tool-metadata.js';
 import { ComputerManager, type ComputerRunAuthority } from './manager.js';
-import { computerActionSchema } from './types.js';
+import { computerActionSchema, type ComputerAction } from './types.js';
 
 type StructuredOutput = ToolOutputText | ToolOutputImage;
 
@@ -21,7 +21,9 @@ const modelComputerActionSchema = z.object({
   type: z.enum([
     'launch_app', 'click', 'double_click', 'type_text', 'set_value', 'keypress', 'scroll', 'drag', 'wait',
   ]),
-  bundleId: modelOptional(z.string().min(1).max(500)),
+  bundleId: modelOptional(z.string().min(1).max(500).describe(
+    'launch_app 必填；只使用 computer_observe 返回的 apps[].bundleId，不猜应用名',
+  )),
   urls: modelOptional(z.array(z.string().max(4_000)).max(20)),
   newInstance: modelOptional(z.boolean()),
   elementIndex: modelOptional(z.number().int().nonnegative()),
@@ -48,6 +50,46 @@ function withoutNulls(value: unknown): unknown {
   return Object.fromEntries(Object.entries(value as Record<string, unknown>)
     .filter(([, item]) => item !== null && item !== undefined)
     .map(([key, item]) => [key, withoutNulls(item)]));
+}
+
+interface InvalidModelActionResult {
+  ok: false;
+  reason: 'missing_launch_target' | 'invalid_action';
+  retryable: true;
+  message: string;
+  next?: 'computer_observe';
+}
+
+function parseModelAction(value: unknown):
+  | { success: true; action: ComputerAction }
+  | { success: false; result: InvalidModelActionResult } {
+  const cleaned = withoutNulls(value);
+  const modelAction = cleaned && typeof cleaned === 'object' && !Array.isArray(cleaned)
+    ? cleaned as Record<string, unknown>
+    : {};
+  if (modelAction.type === 'launch_app' && typeof modelAction.bundleId !== 'string') {
+    return {
+      success: false,
+      result: {
+        ok: false,
+        reason: 'missing_launch_target',
+        retryable: true,
+        next: 'computer_observe',
+        message: 'launch_app 需要 computer_observe 返回的 apps[].bundleId；apps 为空时省略 app 重新列出应用',
+      },
+    };
+  }
+  const parsed = computerActionSchema.safeParse(modelAction);
+  if (parsed.success) return { success: true, action: parsed.data };
+  return {
+    success: false,
+    result: {
+      ok: false,
+      reason: 'invalid_action',
+      retryable: true,
+      message: parsed.error.issues[0]?.message ?? 'Computer 动作参数无效',
+    },
+  };
 }
 
 function withoutObservationHandle(result: unknown): unknown {
@@ -124,11 +166,12 @@ export function createComputerTools(
   });
   const act = tool({
     name: 'computer_act',
-    description: '执行一个原子电脑动作。Host 自动绑定最新窗口；launch_app 会绑定本轮新建的应用窗口。动作后直接返回 fresh state，使用 state 继续；只有返回 next=computer_observe 时才再观察。',
+    description: '执行一个原子电脑动作。Host 自动绑定最新窗口；launch_app 必须传 computer_observe 返回的精确 apps[].bundleId，并会绑定本轮新建的应用窗口。动作后直接返回 fresh state，使用 state 继续；只有返回 next=computer_observe 时才再观察。',
     parameters: actToolParameters,
     execute: async (input, _context, details) => {
-      const modelAction = withoutNulls((input as Record<string, unknown>).action) as Record<string, unknown>;
-      const action = computerActionSchema.parse(modelAction);
+      const parsedAction = parseModelAction((input as Record<string, unknown>).action);
+      if (!parsedAction.success) return parsedAction.result;
+      const action = parsedAction.action;
       const runAuthority = authority();
       const result = await manager.act(
         runAuthority,
@@ -181,16 +224,27 @@ export function createComputerTools(
         boundedLocal?: boolean;
       };
       targetEvidenceRef?: string;
-      outcome: (result: unknown) => 'confirmed' | 'failed_safe' | 'uncertain';
+      effect?: 'read' | 'write' | 'unknown';
+      outcome?: (result: unknown) => 'confirmed' | 'failed_safe' | 'uncertain';
     };
   };
   act[TOOL_LEDGER_ARGUMENTS] = computerLedgerArguments;
   act[TOOL_ACTION_INTENT] = (rawInput) => {
     const input = JSON.parse(rawInput) as Record<string, unknown>;
+    const parsedAction = parseModelAction(input.action);
+    if (!parsedAction.success) {
+      return {
+        actionFamily: 'computer.invalid',
+        targetRef: 'invalid',
+        payload: computerLedgerArguments(rawInput),
+        selectedRoute: 'computer-manager',
+        effect: 'read',
+      };
+    }
     const runAuthority = authority();
     const parsed = manager.bindLatestAction(
       runAuthority,
-      computerActionSchema.parse(withoutNulls(input.action)),
+      parsedAction.action,
     );
     const action = parsed.action as unknown as Record<string, unknown>;
     const observationId = 'observationId' in parsed ? parsed.observationId : undefined;

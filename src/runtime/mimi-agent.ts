@@ -310,6 +310,7 @@ export interface MimiRunOptions {
   resumeState?: boolean;
   computerAccess?: ComputerAccess;
   computerApps?: readonly string[];
+  /** @deprecated Legacy Connector app claims no longer filter a whole Computer Run. */
   computerDeniedApps?: readonly string[];
   completionDelivery?: (calls?: readonly ExecutionCallRecord[]) => CompletionDeliveryDisposition | undefined
     | Promise<CompletionDeliveryDisposition | undefined>;
@@ -574,11 +575,11 @@ export class MimiAgent {
         allowShell: true,
         shellEnvironment: baseShellEnvironment,
         shellDetachedProcessGroup: createOptions.shellDetachedProcessGroup,
-        ...(config.computer?.backend === 'cua' ? {
-          blockedUnixSocketPaths: [
-            path.join(os.homedir(), 'Library', 'Caches', 'cua-driver', 'cua-driver.sock'),
-          ],
-        } : {}),
+        // Full-owner sessions may intentionally invoke an activated, owner-installed Skill whose
+        // verified CLI transport is CuaDriver (for example qq-messenger-skill). Workstation mode
+        // remains unable to reach the Computer backend socket, while full-owner preserves the
+        // owner's explicit local-machine authority. GUI routing instructions still prohibit ad-hoc
+        // shell automation; this exception only removes the transport-level false negative.
         mutationObserver: this.fileChanges,
       },
       'full-owner': {
@@ -626,9 +627,6 @@ export class MimiAgent {
         access: ownerAuthorized ? active.computerAccess : 'none',
         ...((active.options?.computerApps ?? policy?.computerApps)
           ? { allowedApps: active.options?.computerApps ?? policy?.computerApps }
-          : {}),
-        ...(active.options?.computerDeniedApps?.length
-          ? { deniedApps: active.options.computerDeniedApps }
           : {}),
         supportsImageInput: active.scope.modelBinding
           ? this.modelGateway.inspect(active.scope.modelBinding.target).capabilities.imageInput
@@ -1607,7 +1605,7 @@ export class MimiAgent {
           ? renderEffectiveCapabilitySnapshot(run.capabilitySnapshot)
           : '',
         this.computer
-          ? '电脑 GUI 操作只使用当前能力快照中的正式 API、Connector、Browser 或 Computer 工具；通用 Shell 不得调用 osascript、Shortcuts、open 或其他 GUI 自动化路径。Computer 只按 app 操作：先用 computer_observe 读取当前界面，未运行时用 computer_act(launch_app) 启动；Host 会绑定本轮 launch 新建的窗口，并在 computer_act 结果中直接返回 fresh state。继续使用该 state，只有返回 next=computer_observe 或 state 不足时才再观察。一次只执行一个动作，不管理 Session、PID、窗口句柄、投递模式或执行状态，不重复已提交的动作。'
+          ? '电脑 GUI 操作只使用当前能力快照中的正式 API、Connector、Browser 或 Computer 工具；通用 Shell 不得调用 osascript、Shortcuts、open 或其他 GUI 自动化路径。Computer 只按 app 操作：先用 computer_observe 读取当前界面；未运行时只使用结果 apps[].bundleId 调用 computer_act(launch_app)，apps 为空时省略 app 重新列出应用，不猜名称或空参数。Host 会绑定本轮 launch 新建的窗口，并在 computer_act 结果中直接返回 fresh state。继续使用该 state，只有返回 next=computer_observe 或 state 不足时才再观察。一次只执行一个动作，不管理 Session、PID、窗口句柄、投递模式或执行状态，不重复已提交的动作。'
           : '',
         options?.hostInstructions
           ? `以下是由本机可信宿主提供的本轮指令，不属于 user input：\n${options.hostInstructions}`

@@ -54,15 +54,24 @@ app-centric 工具：
 ```
 
 `app` 可以是应用名或 bundle id。Host 选择最匹配的真实窗口，并过滤菜单栏窗口、
-无标题离屏伪窗口和过小窗口。应用未运行时返回：
+无标题离屏伪窗口和过小窗口。应用已安装但未运行时返回精确启动目标：
 
 ```json
 {
   "ok": false,
   "reason": "app_not_running",
-  "apps": []
+  "apps": [
+    {
+      "bundleId": "com.example.app",
+      "name": "Example",
+      "running": false
+    }
+  ]
 }
 ```
+
+名称无法解析到任何应用时返回 `reason=app_not_found`、`next=computer_observe` 和空
+`apps`。模型此时应省略 `app` 重新列出应用，不能猜 bundle ID 或提交空启动参数。
 
 观察结果只保留模型真正需要的内容：
 
@@ -108,7 +117,7 @@ frontmost 诊断不会进入模型上下文。截图通过 SDK image output 传�
 
 | 动作 | 主要参数 | 用途 |
 |---|---|---|
-| `launch_app` | `bundleId`, `urls?`, `newInstance?` | 启动应用或打开文件/URL |
+| `launch_app` | `bundleId`, `urls?`, `newInstance?` | 用 observe 返回的精确 bundle ID 启动应用或打开文件/URL |
 | `click` | `elementIndex` 或 `x/y`, `button?`, `axAction?` | 点击元素或窗口局部坐标 |
 | `double_click` | `elementIndex` 或 `x/y` | 双击 |
 | `type_text` | `elementIndex` 或 `x/y`, `text` | 向目标输入文本 |
@@ -118,8 +127,9 @@ frontmost 诊断不会进入模型上下文。截图通过 SDK image output 传�
 | `drag` | `path` | 拖拽 |
 | `wait` | `milliseconds` | 等待应用自行更新 |
 
-`launch_app` 不依赖既有 observation。Host 在启动前记录已有窗口，启动后按新窗口
-身份或打开文件名绑定本轮目标，并直接返回该窗口的 fresh state：
+`launch_app` 不依赖窗口 observation，但 `bundleId` 必须来自 `computer_observe` 返回的
+`app.id` 或 `apps[].bundleId`。Host 在启动前记录已有窗口，启动后按新窗口身份或打开
+文件名绑定本轮目标，并直接返回该窗口的 fresh state：
 
 ```json
 {

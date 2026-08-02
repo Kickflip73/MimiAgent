@@ -1,11 +1,11 @@
 import { z } from 'zod';
 import type { AppConfig } from '../config.js';
-import { restrictedShellEnvironment } from '../runtime/shell-environment.js';
+import { filterShellEnvironment } from '../runtime/shell-environment.js';
 import { modelTargetSchema, runModelBindingSchema } from '../core/model-routing.js';
 import { modelsConfigSchema } from '../runtime/model-config.js';
 
 export function restrictedTaskShellEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return restrictedShellEnvironment(source);
+  return filterShellEnvironment(source);
 }
 
 const openAiProviderCredentialSchema = z.object({

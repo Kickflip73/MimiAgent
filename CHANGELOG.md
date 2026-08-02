@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- keep Bun-backed user CLIs available to launchd-hosted Shell runs, stop legacy
+  Connector app claims from hiding applications from native Computer Use, and
+  return retryable app discovery guidance instead of aborting on an empty
+  `launch_app` target
 - expose read-only Session listing/current-history tools on the initial model surface,
   make runtime capability queries use bounded multi-keyword matching with zero-result
   suggestions, and add chronological owner Session-round recall so empty semantic

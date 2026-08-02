@@ -213,6 +213,7 @@ test('dispatcher fails before completion when Browser cleanup is uncertain and n
   } as unknown as MimiAgent;
   const host = new MimiHost(agent, {
     execute: async (request) => {
+      assert.equal('computerDeniedApps' in (request.options ?? {}), false);
       const open = request.options?.hostTools?.find((tool) => tool.name === 'browser_open');
       assert.ok(open && 'invoke' in open);
       await open.invoke(new RunContext({}), JSON.stringify({ url: 'https://example.com' }));

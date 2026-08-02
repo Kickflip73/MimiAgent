@@ -301,8 +301,14 @@ export class ComputerManager {
       const apps = await this.listApps(authority, app, signal);
       return {
         ok: false,
-        reason: apps.some((candidate) => candidate.running) ? 'window_not_found' : 'app_not_running',
+        reason: apps.length === 0
+          ? 'app_not_found'
+          : apps.some((candidate) => candidate.running) ? 'window_not_found' : 'app_not_running',
         apps,
+        ...(apps.length === 0 ? {
+          next: 'computer_observe',
+          message: '没有发现匹配应用；省略 app 列出可用应用后，使用精确 apps[].bundleId 继续',
+        } : {}),
       };
     }
     return this.observeTarget(authority, target, includeScreenshot, signal);

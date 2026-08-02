@@ -27,6 +27,7 @@ import {
 import { createRuntimeControlTools, type RuntimeAction } from '../src/runtime/control.js';
 import { PRE_MIMI_DATA_DIRECTORY } from '../src/core/mimi-legacy.js';
 import { sessionIdSchema } from '../src/core/session-id.js';
+import { restrictedShellEnvironment } from '../src/runtime/shell-environment.js';
 
 test('uses one Session ID contract across public entry points', () => {
   assert.equal(sessionIdSchema.parse('Archive_2026'), 'Archive_2026');
@@ -252,6 +253,21 @@ test('Shell uses an explicitly isolated environment when provided', async () => 
   });
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout, 'yes:');
+});
+
+test('restricted Shell PATH keeps user CLI runtimes available under launchd', () => {
+  const environment = restrictedShellEnvironment({
+    PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+    HOME: '/Users/mimi-fixture',
+    OPENAI_API_KEY: 'must-not-leak',
+  }, '/opt/mimi-node/bin/node');
+
+  assert.deepEqual(environment.PATH?.split(path.delimiter).slice(0, 3), [
+    '/opt/mimi-node/bin',
+    '/Users/mimi-fixture/.local/bin',
+    '/Users/mimi-fixture/.bun/bin',
+  ]);
+  assert.equal(environment.OPENAI_API_KEY, undefined);
 });
 
 test('Shell resolves current Run secrets lazily and redacts accidental output', async () => {
