@@ -24,7 +24,7 @@ import {
 import type { EphemeralOwnerInputLease } from '../runtime/ephemeral-owner-input.js';
 import type { MemoryMaintenanceRuntime } from './memory-maintenance-tools.js';
 import { MimiStore } from './store.js';
-import { eventFailureAttemptLimit } from './dispatcher-retry-policy.js';
+import { classifyRunFailureRecord } from './dispatcher-retry-policy.js';
 import type { BackgroundTaskBlockRequest, BackgroundTaskPauseResult } from './task-tools.js';
 import type {
   DaemonWorkerStatus,
@@ -315,7 +315,20 @@ export class MimiDispatcher {
     const authority = this.store.getImmutableEvent(task.authorityEventId);
     const event = this.store.getImmutableEvent(task.triggerEventId ?? task.authorityEventId);
     if (!event || !authority) {
-      this.store.failTask(task.id, this.workerId, new Error(`Task authority Event 不存在：${task.authorityEventId}`), undefined, new Date(), false);
+      this.store.failTask(
+        task.id,
+        this.workerId,
+        new Error(`Task authority Event 不存在：${task.authorityEventId}`),
+        {
+          code: 'task.authority_missing',
+          disposition: {
+            phase: 'pre_dispatch',
+            kind: 'state_conflict',
+            retryable: false,
+            dispatchStarted: false,
+          },
+        },
+      );
       return Promise.resolve();
     }
     const active: ActiveExecution = {
@@ -718,10 +731,16 @@ export class MimiDispatcher {
           task.id,
           this.workerId,
           error,
+          {
+            code: 'browser.cleanup_uncertain',
+            disposition: {
+              phase: 'dispatch',
+              kind: 'uncertain',
+              retryable: false,
+              dispatchStarted: true,
+            },
+          },
           attemptId,
-          new Date(),
-          false,
-          'dead_letter',
         );
       } else if (active.blockRequested) {
         if (execution) {
@@ -765,7 +784,13 @@ export class MimiDispatcher {
           this.store.preemptTask(task.id, this.workerId, reason, attemptId);
         }
       } else if (error instanceof CompletionGateError) {
-        this.store.failTask(task.id, this.workerId, error, attemptId, new Date(), false);
+        this.store.failTask(
+          task.id,
+          this.workerId,
+          error,
+          classifyRunFailureRecord(error),
+          attemptId,
+        );
       } else if (this.stopRequested && active.runController?.signal.aborted) {
         this.store.requeueTask(task.id, this.workerId, 'MimiAgent Dispatcher 正在停止，任务已安全重排队', attemptId);
       } else {
@@ -773,15 +798,15 @@ export class MimiDispatcher {
         const taskError = ephemeralSecretReferences(task.objective).length
           ? new EphemeralSensitiveRunFailedError(error, ephemeralSensitiveValues)
           : error;
-        const attemptLimit = eventFailureAttemptLimit(taskError, task.attemptCount, configuredMaxAttempts);
+        const failure = classifyRunFailureRecord(taskError);
         this.store.failTask(
           task.id,
           this.workerId,
           taskError,
+          failure,
           attemptId,
           new Date(),
-          task.attemptCount < attemptLimit,
-          'dead_letter',
+          configuredMaxAttempts,
         );
       }
     } finally {

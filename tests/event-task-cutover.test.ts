@@ -12,7 +12,11 @@ import {
 import {
   prepareLegacyEventSchemaForV12,
 } from '../src/daemon/persistence/schema/migrations/v3-v11-legacy-event-preparation.js';
-import { upgradeTaskExecutorOwnershipV16 } from '../src/daemon/persistence/schema/migrations/v16-task-executor-ownership.js';
+import {
+  needsTaskFailureFactsRepairV16,
+  repairTaskFailureFactsV16,
+  upgradeTaskExecutorOwnershipV16,
+} from '../src/daemon/persistence/schema/migrations/v16-task-executor-ownership.js';
 import { MimiStore } from '../src/daemon/store.js';
 import { validTaskRoute } from '../src/daemon/task-routing.js';
 
@@ -574,8 +578,10 @@ test('v16 migrates only the known queued Briefing route and records unresolved c
     UPDATE tasks SET type = 'briefing', executor = 'session_actor', workspace_access = 'write'
       WHERE id = 'legacy-briefing';
     UPDATE tasks SET type = 'briefing', executor = 'codex', workspace_access = 'write'
+      , status = 'dead_letter', error = 'legacy error text', result_json = NULL
       WHERE id = 'unresolved-briefing';
-    UPDATE tasks SET type = 'retired_worker_kind'
+    UPDATE tasks SET type = 'retired_worker_kind', status = 'failed',
+      error = 'different legacy explanation', result_json = NULL
       WHERE id = 'unknown-historical-type';
     PRAGMA user_version = 15;
   `);
@@ -588,6 +594,20 @@ test('v16 migrates only the known queued Briefing route and records unresolved c
     assert.equal(migrated.getTask('unresolved-briefing')?.executor, 'codex');
     assert.equal(migrated.getTask('unresolved-briefing')?.workspaceAccess, 'write');
     assert.equal(migrated.getTask('unknown-historical-type')?.type, 'retired_worker_kind');
+    assert.deepEqual(migrated.getTask('unresolved-briefing')?.failure, {
+      code: 'historical.briefing.codex.retained_dead_letter',
+      disposition: {
+        phase: 'runtime', kind: 'unclassified', retryable: false, dispatchStarted: false,
+      },
+    });
+    assert.equal(
+      migrated.getTask('unknown-historical-type')?.failure?.code,
+      'historical.retired_worker_kind.isolated_worker.retained_failed',
+    );
+    assert.equal(migrated.activitySnapshot(20).failureClassification.unclassifiedDeadLetters, 0);
+    assert.deepEqual(migrated.activitySnapshot(20).failureClassification.deadLetters, [{
+      category: 'legacy_failure', disposition: 'investigate', count: 1,
+    }]);
     assert.equal(migrated.pendingDigestCount(), 2);
     assert.equal(
       migrated.listEventSummaries(200)
@@ -614,10 +634,17 @@ test('v16 migrates only the known queued Briefing route and records unresolved c
     SELECT data_json FROM audit_events WHERE event_type = 'migration.task_executor_v16'
   `).get() as { data_json: string };
   const auditData = JSON.parse(audit.data_json) as {
-    after: { unresolvedHistoricalCombinations: number; collapsedHealthDigestItems: number };
+    after: {
+      unresolvedHistoricalCombinations: number;
+      collapsedHealthDigestItems: number;
+      historicalTerminalTasks: number;
+      backfilledFailureRecords: number;
+    };
   };
   assert.equal(auditData.after.unresolvedHistoricalCombinations, 2);
   assert.equal(auditData.after.collapsedHealthDigestItems, 1);
+  assert.equal(auditData.after.historicalTerminalTasks, 2);
+  assert.equal(auditData.after.backfilledFailureRecords, 2);
   verified.close();
   const backups = await readdir(path.join(root, 'backups'), { recursive: true });
   assert.equal(backups.some((entry) => entry.includes('task-executor-v16-')), true);
@@ -664,6 +691,95 @@ test('v16 executor migration rolls back every projection when integrity fails', 
     database.prepare("SELECT 1 FROM audit_events WHERE event_type='migration.task_executor_v16'").get(),
     undefined,
   );
+  database.close();
+});
+
+test('existing v16 databases backfill failure facts once with backup and audit', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-event-task-v16-failure-facts-'));
+  const file = path.join(root, 'mimi.db');
+  const store = new MimiStore(file);
+  try {
+    const authority = store.appendEvent({
+      id: 'v16-failure-authority', externalId: 'v16-failure-authority', source: 'fixture',
+      type: 'alert.received', trust: 'system', payload: {}, profileId: 'owner',
+      occurredAt: '2026-08-02T00:00:00.000Z', receivedAt: '2026-08-02T00:00:00.000Z',
+    }).event;
+    store.enqueueTask({
+      id: 'v16-legacy-dead', type: 'background', idempotencyKey: 'v16-legacy-dead',
+      authorityEventId: authority.id, profileId: 'owner', objective: {},
+      executor: 'isolated_worker', workspaceAccess: 'read', priority: 50,
+    });
+  } finally {
+    store.close();
+  }
+  const legacy = new DatabaseSync(file);
+  legacy.exec(`
+    UPDATE tasks SET status='dead_letter', error='historical explanation', result_json=NULL
+      WHERE id='v16-legacy-dead';
+  `);
+  assert.equal(needsTaskFailureFactsRepairV16(legacy), true);
+  legacy.close();
+
+  const repaired = new MimiStore(file);
+  try {
+    assert.equal(
+      repaired.getTask('v16-legacy-dead')?.failure?.code,
+      'historical.background.isolated_worker.retained_dead_letter',
+    );
+    assert.equal(repaired.activitySnapshot(10).failureClassification.unclassifiedDeadLetters, 0);
+  } finally {
+    repaired.close();
+  }
+  const verified = new DatabaseSync(file, { readOnly: true });
+  assert.equal(needsTaskFailureFactsRepairV16(verified), false);
+  assert.equal(Number((verified.prepare(`
+    SELECT COUNT(*) AS count FROM audit_events
+    WHERE event_type='migration.task_failure_facts_v16'
+  `).get() as { count: number }).count), 1);
+  verified.close();
+  const firstBackups = await readdir(path.join(root, 'backups'));
+  assert.equal(firstBackups.filter((entry) => entry.startsWith('task-failure-facts-v16-')).length, 1);
+
+  new MimiStore(file).close();
+  const secondBackups = await readdir(path.join(root, 'backups'));
+  assert.equal(secondBackups.filter((entry) => entry.startsWith('task-failure-facts-v16-')).length, 1);
+});
+
+test('v16 failure facts repair rolls back when integrity fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-event-task-v16-failure-rollback-'));
+  const file = path.join(root, 'mimi.db');
+  const store = new MimiStore(file);
+  try {
+    const authority = store.appendEvent({
+      id: 'failure-rollback-authority', externalId: 'failure-rollback-authority', source: 'fixture',
+      type: 'alert.received', trust: 'system', payload: {}, profileId: 'owner',
+      occurredAt: '2026-08-02T00:00:00.000Z', receivedAt: '2026-08-02T00:00:00.000Z',
+    }).event;
+    store.enqueueTask({
+      id: 'failure-rollback-task', type: 'background', idempotencyKey: 'failure-rollback-task',
+      authorityEventId: authority.id, profileId: 'owner', objective: {},
+      executor: 'isolated_worker', workspaceAccess: 'read', priority: 50,
+    });
+  } finally {
+    store.close();
+  }
+  const database = new DatabaseSync(file);
+  database.exec(`
+    PRAGMA foreign_keys=OFF;
+    UPDATE tasks SET status='dead_letter', result_json=NULL, authority_event_id='missing-event'
+      WHERE id='failure-rollback-task';
+  `);
+  assert.throws(() => repairTaskFailureFactsV16(database), /完整性检查失败/);
+  const task = database.prepare(`
+    SELECT result_json FROM tasks WHERE id='failure-rollback-task'
+  `).get() as { result_json: string | null };
+  assert.equal(
+    task.result_json,
+    null,
+  );
+  assert.equal(database.prepare(`
+    SELECT 1 FROM audit_events WHERE event_type='migration.task_failure_facts_v16'
+  `).get(), undefined);
   database.close();
 });
 

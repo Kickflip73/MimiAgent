@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- persist a structured failure code and `RunFailureDisposition` at every daemon
+  Task failure boundary, reserve `failed` for deterministic errors and
+  `dead_letter` for exhausted transient or uncertain outcomes, classify activity
+  without parsing natural-language errors, and transactionally backfill existing
+  v16 terminal Tasks after creating a recoverable database backup
 - make `Task.executor` the only daemon claim key, validate task route combinations
   at enqueue, migrate queued Briefings to isolated read workers in schema v16,
   collapse duplicate historical Connector-health Digest projections without

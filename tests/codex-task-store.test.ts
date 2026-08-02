@@ -149,9 +149,14 @@ test('a new task attempt clears the previous attempt error', async () => {
       taskId,
       'worker-1',
       new Error('previous SIGKILL'),
+      {
+        code: 'worker.sigkill',
+        disposition: {
+          phase: 'runtime', kind: 'transient', retryable: true, dispatchStarted: false,
+        },
+      },
       attempt.id,
       new Date(now.getTime() + 2_000),
-      true,
     );
     assert.match(store.getTask(taskId)?.error ?? '', /SIGKILL/);
 

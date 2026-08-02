@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   aggregateDeadLetters,
-  classifyDeadLetterError,
+  classifyDeadLetterFailure,
   classifyDigestAges,
   classifyReadinessUnknown,
   operationalClassification,
@@ -27,29 +27,49 @@ function connector(
 
 test('dead letters aggregate into observable dispositions without copying errors', () => {
   const classified = aggregateDeadLetters([
-    { error: '429 rate limited', count: 2 },
-    { error: 'provider quota exceeded', count: 3 },
-    { error: 'connection ended after dispatch: uncertain', count: 1 },
-    { error: 'unknown fixture', count: 4 },
-    { error: '工具输出超过执行账本限制', count: 2 },
-    { error: 'Task worker 被运行时回收', count: 3 },
+    { failure: { code: 'provider.http_429', disposition: {
+      phase: 'provider', kind: 'transient', retryable: true, dispatchStarted: false,
+    } }, count: 2 },
+    { failure: { code: 'provider.quota', disposition: {
+      phase: 'provider', kind: 'validation', retryable: false, dispatchStarted: false,
+    } }, count: 3 },
+    { failure: { code: 'connector.delivery_uncertain', disposition: {
+      phase: 'dispatch', kind: 'uncertain', retryable: false, dispatchStarted: true,
+    } }, count: 1 },
+    { count: 4 },
+    { failure: { code: 'ledger.contract_violation', disposition: {
+      phase: 'runtime', kind: 'validation', retryable: false, dispatchStarted: false,
+    } }, count: 2 },
+    { failure: { code: 'worker.reclaimed', disposition: {
+      phase: 'runtime', kind: 'transient', retryable: true, dispatchStarted: false,
+    } }, count: 3 },
   ]);
   assert.deepEqual(classified, [
     { category: 'provider', disposition: 'retry_after_fix', count: 5 },
     { category: 'unknown', disposition: 'investigate', count: 4 },
-    { category: 'cancelled_or_superseded', disposition: 'archive_safe', count: 3 },
+    { category: 'worker_runtime', disposition: 'retry_after_fix', count: 3 },
     { category: 'configuration', disposition: 'retry_after_fix', count: 2 },
     { category: 'uncertain_side_effect', disposition: 'manual_verify', count: 1 },
   ]);
   assert.doesNotMatch(JSON.stringify(classified), /quota|dispatch|fixture/);
 });
 
-test('unexpected Task worker exits remain classified without inventing external readiness', () => {
-  assert.deepEqual(classifyDeadLetterError('Task worker 意外退出（code=1, signal=none）'), {
+test('structured Task facts classify failures without reading natural-language errors', () => {
+  assert.deepEqual(classifyDeadLetterFailure({
+    code: 'worker.unexpected_exit',
+    disposition: {
+      phase: 'runtime', kind: 'transient', retryable: true, dispatchStarted: false,
+    },
+  }), {
     category: 'worker_runtime',
     disposition: 'retry_after_fix',
   });
-  assert.deepEqual(classifyDeadLetterError('execution ledger is corrupt'), {
+  assert.deepEqual(classifyDeadLetterFailure({
+    code: 'ledger.corrupt',
+    disposition: {
+      phase: 'runtime', kind: 'validation', retryable: false, dispatchStarted: false,
+    },
+  }), {
     category: 'configuration',
     disposition: 'retry_after_fix',
   });
@@ -85,7 +105,7 @@ test('Digest age and readiness unknown distinguish startup grace from overdue fi
 
 test('operational classification reports remaining unknown dead letters explicitly', () => {
   const snapshot = operationalClassification({
-    deadLetters: [{ error: 'unmapped failure', count: 7 }],
+    deadLetters: [{ count: 7 }],
     digestOccurredAt: [],
     connectors: [connector('stale', {
       inbound: 'unknown',

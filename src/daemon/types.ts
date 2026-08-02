@@ -6,6 +6,7 @@ import type { DaemonHealthSnapshot } from './health-model.js';
 import type { MemoryHit, SourceRef } from '../core/memory.js';
 import type { PlanStep } from '../core/plan.js';
 import type { RunCheckpoint } from '../core/session.js';
+import type { RunFailureRecord } from '../core/run-failure.js';
 import type { MimiContextStatus } from '../core/context.js';
 import type { DailyResourceTrend } from './resource-slo.js';
 import type {
@@ -126,6 +127,7 @@ export interface TaskRecord extends TaskInput {
   controlIntent?: TaskControlIntent;
   controlReason?: string;
   result?: unknown;
+  failure?: RunFailureRecord;
   error?: string;
   createdAt: string;
   updatedAt: string;
@@ -408,6 +410,7 @@ export interface MimiActivityTask {
   attemptCount: number;
   updatedAt: string;
   error?: string;
+  failure?: RunFailureRecord;
 }
 
 export interface MimiActivityRun {

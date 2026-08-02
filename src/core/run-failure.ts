@@ -22,6 +22,11 @@ export interface RunFailureDisposition {
   dispatchStarted: boolean;
 }
 
+export interface RunFailureRecord {
+  code: string;
+  disposition: RunFailureDisposition;
+}
+
 export class RunFailureError extends Error {
   readonly name = 'RunFailureError';
 
@@ -54,4 +59,14 @@ export function runFailureDisposition(error: unknown): RunFailureDisposition | u
     retryable: value.retryable,
     dispatchStarted: value.dispatchStarted,
   };
+}
+
+export function runFailureRecord(value: unknown): RunFailureRecord | undefined {
+  const disposition = runFailureDisposition(value);
+  if (!disposition || !value || typeof value !== 'object') return undefined;
+  const code = value instanceof RunFailureError
+    ? value.code
+    : (value as { code?: unknown }).code;
+  if (typeof code !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,159}$/.test(code)) return undefined;
+  return { code, disposition };
 }

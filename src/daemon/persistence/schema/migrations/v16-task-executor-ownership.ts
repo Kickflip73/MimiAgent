@@ -4,6 +4,104 @@ import type { DatabaseSync } from 'node:sqlite';
 type Row = Record<string, string | number | null | undefined>;
 type HistoricalTaskRoute = { type: string; executor: string; workspaceAccess: string };
 
+function failureCodePart(value: unknown): string {
+  return String(value ?? 'unknown').toLowerCase().replace(/[^a-z0-9_-]+/g, '_').slice(0, 40)
+    || 'unknown';
+}
+
+function hasStructuredFailure(result: unknown): boolean {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return false;
+  const failure = (result as Record<string, unknown>).failure;
+  if (!failure || typeof failure !== 'object' || Array.isArray(failure)) return false;
+  const value = failure as Record<string, unknown>;
+  const disposition = value.disposition;
+  if (!disposition || typeof disposition !== 'object' || Array.isArray(disposition)) return false;
+  const facts = disposition as Record<string, unknown>;
+  return typeof value.code === 'string'
+    && /^[a-z0-9][a-z0-9._-]{0,159}$/.test(value.code)
+    && ['pre_dispatch', 'dispatch', 'provider', 'runtime'].includes(String(facts.phase))
+    && [
+      'validation', 'policy_denied', 'state_conflict', 'unsupported', 'transient',
+      'failed_safe', 'uncertain', 'terminal', 'unclassified',
+    ].includes(String(facts.kind))
+    && typeof facts.retryable === 'boolean'
+    && typeof facts.dispatchStarted === 'boolean';
+}
+
+function parsedResult(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'string') return {};
+  const parsed = JSON.parse(value) as unknown;
+  if (parsed === null) return {};
+  return typeof parsed === 'object' && !Array.isArray(parsed)
+    ? parsed as Record<string, unknown>
+    : { historicalResult: parsed };
+}
+
+function historicalTerminalRows(database: DatabaseSync): Row[] {
+  return database.prepare(`
+    SELECT id, type, executor, status, result_json FROM tasks
+    WHERE status IN ('failed', 'dead_letter') ORDER BY id
+  `).all() as Row[];
+}
+
+function backfillHistoricalFailureRecords(
+  database: DatabaseSync,
+  timestamp: string,
+): { historicalTerminalTasks: number; backfilledFailureRecords: number } {
+  const rows = historicalTerminalRows(database);
+  const updateFailure = database.prepare(`
+    UPDATE tasks SET result_json = ?, updated_at = ? WHERE id = ?
+  `);
+  let backfilledFailureRecords = 0;
+  for (const row of rows) {
+    const result = parsedResult(row.result_json);
+    if (hasStructuredFailure(result)) continue;
+    const status = String(row.status);
+    result.failure = {
+      code: `historical.${failureCodePart(row.type)}.${failureCodePart(row.executor)}.retained_${status}`,
+      disposition: {
+        phase: 'runtime',
+        kind: 'unclassified',
+        retryable: false,
+        dispatchStarted: false,
+      },
+    };
+    backfilledFailureRecords += Number(updateFailure.run(
+      JSON.stringify(result), timestamp, String(row.id),
+    ).changes);
+  }
+  return { historicalTerminalTasks: rows.length, backfilledFailureRecords };
+}
+
+export function needsTaskFailureFactsRepairV16(database: DatabaseSync): boolean {
+  return historicalTerminalRows(database).some((row) => !hasStructuredFailure(parsedResult(row.result_json)));
+}
+
+export function repairTaskFailureFactsV16(database: DatabaseSync): void {
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const timestamp = new Date().toISOString();
+    const counts = backfillHistoricalFailureRecords(database, timestamp);
+    const integrity = database.prepare('PRAGMA integrity_check').get() as Row | undefined;
+    const foreignKeys = database.prepare('PRAGMA foreign_key_check').all() as Row[];
+    if (integrity?.integrity_check !== 'ok' || foreignKeys.length > 0) {
+      throw new Error('v16 Task failure facts 修复完整性检查失败');
+    }
+    database.prepare(`
+      INSERT INTO audit_events (id, event_type, entity_id, data_json, created_at)
+      VALUES (?, 'migration.task_failure_facts_v16', 'schema:v16', ?, ?)
+    `).run(randomUUID(), JSON.stringify({
+      ...counts,
+      integrity: 'ok',
+      foreignKeyViolations: 0,
+    }), timestamp);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 function healthDigestGroup(payloadJson: unknown): string | undefined {
   if (typeof payloadJson !== 'string') return undefined;
   try {
@@ -74,6 +172,7 @@ export function upgradeTaskExecutorOwnershipV16(
       }
       collapsedHealthDigestItems += Number(finishDigest.run(timestamp, String(row.id)).changes);
     }
+    const failureFacts = backfillHistoricalFailureRecords(database, timestamp);
     database.exec(`
       CREATE INDEX IF NOT EXISTS tasks_executor_ready_idx
         ON tasks(executor, status, not_before, priority DESC, created_at ASC);
@@ -105,6 +204,7 @@ export function upgradeTaskExecutorOwnershipV16(
         pendingHealthDigestItems: pendingHealth.length - collapsedHealthDigestItems,
         collapsedHealthDigestItems,
         unclassifiedHealthDigestItems,
+        ...failureFacts,
       },
       integrity: 'ok',
       foreignKeyViolations: 0,

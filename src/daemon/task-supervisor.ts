@@ -28,6 +28,7 @@ import type { PendingMimiStreamEvent } from './live-events.js';
 import { MimiStore } from './store.js';
 import type { EventCancelResult } from './dispatcher.js';
 import type { BackgroundTaskPauseResult } from './task-tools.js';
+import { classifyRunFailureRecord } from './dispatcher-retry-policy.js';
 import {
   restrictedTaskShellEnvironment,
   taskProviderEnvironmentName,
@@ -668,15 +669,24 @@ export class TaskProcessSupervisor {
     if (!task || TERMINAL.has(task.status) || task.status === 'paused' || task.status === 'blocked') return;
     const reason = record.failureReason
       ?? (record.terminating ? 'Task worker 被运行时回收' : `Task worker 意外退出（code=${code ?? 'null'}, signal=${signal ?? 'none'}）`);
+    const failure = {
+      code: record.terminating ? 'worker.reclaimed' : 'worker.unexpected_exit',
+      disposition: {
+        phase: 'runtime' as const,
+        kind: 'transient' as const,
+        retryable: true,
+        dispatchStarted: false,
+      },
+    };
     try {
       if (task.status === 'queued') {
         const bootstrapOwner = `task-supervisor-${process.pid}-${randomBytes(6).toString('hex')}`;
         const claimed = this.store.claimTaskById(record.taskId, bootstrapOwner);
-        if (claimed) this.store.failTask(record.taskId, bootstrapOwner, new Error(reason));
+        if (claimed) this.store.failTask(record.taskId, bootstrapOwner, new Error(reason), failure);
         return;
       }
       if (task.status === 'running' && record.workerId && task.leaseOwner === record.workerId) {
-        this.store.failTask(record.taskId, record.workerId, new Error(reason));
+        this.store.failTask(record.taskId, record.workerId, new Error(reason), failure);
       }
     } catch (error) {
       process.stderr.write(`[MimiAgent] cannot persist task worker exit ${record.taskId}: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -687,7 +697,7 @@ export class TaskProcessSupervisor {
     const owner = `task-supervisor-${process.pid}-${randomBytes(6).toString('hex')}`;
     try {
       const claimed = this.store.claimTaskById(taskId, owner);
-      if (claimed) this.store.failTask(taskId, owner, error);
+      if (claimed) this.store.failTask(taskId, owner, error, classifyRunFailureRecord(error));
     } catch (failure) {
       process.stderr.write(`[MimiAgent] cannot persist task worker launch failure ${taskId}: ${failure instanceof Error ? failure.message : String(failure)}\n`);
     }

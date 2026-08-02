@@ -4,6 +4,7 @@ import {
   sanitizeSensitiveData,
   sanitizeSensitiveText,
 } from '../core/data-sanitizer.js';
+import { runFailureRecord, type RunFailureRecord } from '../core/run-failure.js';
 import type {
   TaskAttemptRecord,
   TaskInput,
@@ -29,6 +30,10 @@ function optional(value: string | number | null | undefined): string | undefined
 }
 
 function taskFromRow(row: Row): TaskRecord {
+  const result = parseJson(row.result_json);
+  const failure = result && typeof result === 'object' && !Array.isArray(result)
+    ? runFailureRecord((result as Record<string, unknown>).failure)
+    : undefined;
   return {
     id: String(row.id),
     type: String(row.type) as TaskRecord['type'],
@@ -50,7 +55,8 @@ function taskFromRow(row: Row): TaskRecord {
     leaseUntil: optional(row.lease_until),
     controlIntent: optional(row.control_intent) as TaskRecord['controlIntent'],
     controlReason: optional(row.control_reason),
-    result: parseJson(row.result_json),
+    result,
+    failure,
     error: optional(row.error),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -233,13 +239,20 @@ export class TaskStore {
     return Number(updated.changes) === 1;
   }
 
-  requeueFailure(id: string, owner: string, error: string, notBefore: string, timestamp: string): boolean {
+  requeueFailure(
+    id: string,
+    owner: string,
+    error: string,
+    failure: RunFailureRecord,
+    notBefore: string,
+    timestamp: string,
+  ): boolean {
     const updated = this.database.prepare(`
-      UPDATE tasks SET status = 'queued', error = ?, not_before = ?, lease_owner = NULL,
+      UPDATE tasks SET status = 'queued', result_json = ?, error = ?, not_before = ?, lease_owner = NULL,
         lease_until = NULL, updated_at = ?
       WHERE id = ? AND status = 'running' AND lease_owner = ? AND control_intent IS NULL
         AND lease_until > ?
-    `).run(sanitizeSensitiveText(error) ?? '', notBefore, timestamp, id, owner, timestamp);
+    `).run(json({ failure }), sanitizeSensitiveText(error) ?? '', notBefore, timestamp, id, owner, timestamp);
     return Number(updated.changes) === 1;
   }
 
@@ -248,16 +261,18 @@ export class TaskStore {
     owner: string,
     terminal: boolean,
     error: string,
+    failure: RunFailureRecord,
     notBefore: string,
     timestamp: string,
   ): boolean {
     const updated = this.database.prepare(`
-      UPDATE tasks SET status = ?, error = ?, not_before = ?, lease_owner = NULL,
+      UPDATE tasks SET status = ?, result_json = ?, error = ?, not_before = ?, lease_owner = NULL,
         lease_until = NULL, updated_at = ?
       WHERE id = ? AND status = 'running' AND lease_owner = ? AND control_intent IS NULL
         AND lease_until <= ?
     `).run(
       terminal ? 'dead_letter' : 'queued',
+      json({ failure }),
       sanitizeSensitiveText(error) ?? '',
       notBefore,
       timestamp,

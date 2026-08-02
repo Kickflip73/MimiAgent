@@ -25,6 +25,7 @@ import {
   taskProviderEnvironmentName,
 } from './worker-protocol.js';
 import { CodexCliTaskExecutor } from './codex-task-executor.js';
+import { classifyRunFailureRecord } from './dispatcher-retry-policy.js';
 
 let dispatcher: MimiDispatcher | undefined;
 let initialized = false;
@@ -178,6 +179,7 @@ async function run(raw: unknown): Promise<void> {
             init.taskId,
             bootstrapOwner,
             new Error(`Task worker 初始化失败：${safeError(error)}`),
+            classifyRunFailureRecord(error),
           );
         }
       }
@@ -333,10 +335,16 @@ async function runCodexTask(
         init.taskId,
         workerId,
         new Error('Codex runner 被停止'),
+        {
+          code: 'codex.stopped',
+          disposition: {
+            phase: 'runtime',
+            kind: 'terminal',
+            retryable: false,
+            dispatchStarted: false,
+          },
+        },
         attempt.id,
-        new Date(),
-        false,
-        'failed',
       );
     } else {
       try {
@@ -344,7 +352,13 @@ async function runCodexTask(
       } catch {
         // The terminal write below remains authoritative if this diagnostic races the lease.
       }
-      store.failTask(init.taskId, workerId, error, attempt.id, new Date(), false, 'failed');
+      store.failTask(
+        init.taskId,
+        workerId,
+        error,
+        classifyRunFailureRecord(error),
+        attempt.id,
+      );
     }
   } finally {
     clearInterval(lease);

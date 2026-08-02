@@ -7,6 +7,7 @@ import {
   sanitizeSensitiveText,
 } from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
+import { runFailureRecord, type RunFailureRecord } from '../core/run-failure.js';
 import { EventStore } from './event-store.js';
 import { EventRouter } from './event-router.js';
 import { sanitizedMemoryEvidenceSnapshot } from './memory-evidence.js';
@@ -23,6 +24,8 @@ import {
 } from './persistence/schema/migrations/v15-memory-evidence-snapshot.js';
 import {
   hasTaskExecutorOwnershipV16,
+  needsTaskFailureFactsRepairV16,
+  repairTaskFailureFactsV16,
   upgradeTaskExecutorOwnershipV16,
 } from './persistence/schema/migrations/v16-task-executor-ownership.js';
 import { prepareLegacyEventSchemaForV12 } from './persistence/schema/migrations/v3-v11-legacy-event-preparation.js';
@@ -969,7 +972,22 @@ export class MimiStore {
         || !task.leaseUntil || task.leaseUntil <= timestamp || task.controlIntent) {
         throw new Error(`Task ${taskId} 租约已失效`);
       }
-      if (!this.taskStore.requeueFailure(taskId, owner, errorSummary(reason, 4_000), timestamp, timestamp)) {
+      if (!this.taskStore.requeueFailure(
+        taskId,
+        owner,
+        errorSummary(reason, 4_000),
+        {
+          code: 'task.requeued',
+          disposition: {
+            phase: 'runtime',
+            kind: 'transient',
+            retryable: true,
+            dispatchStarted: false,
+          },
+        },
+        timestamp,
+        timestamp,
+      )) {
         throw new Error(`Task ${taskId} 租约已失效`);
       }
       if (!this.taskStore.finishAttempt(
@@ -1009,12 +1027,14 @@ export class MimiStore {
     taskId: string,
     owner: string,
     error: unknown,
+    failure: RunFailureRecord,
     attemptId?: string,
     at = new Date(),
-    retryable = true,
-    terminalStatus: Extract<TaskStatus, 'failed' | 'dead_letter'> = 'failed',
+    retryLimit?: number,
   ): TaskRecord {
     return this.transaction(() => {
+      const structuredFailure = runFailureRecord(failure);
+      if (!structuredFailure) throw new Error('Task failure 缺少有效的结构化 disposition');
       const task = this.taskStore.get(taskId);
       if (!task || task.status !== 'running' || task.leaseOwner !== owner
         || !task.leaseUntil || task.leaseUntil <= at.toISOString()) {
@@ -1022,10 +1042,19 @@ export class MimiStore {
       }
       const timestamp = at.toISOString();
       const summary = errorSummary(error, 4_000);
-      const terminal = !retryable || task.attemptCount >= task.maxAttempts;
+      const uncertain = structuredFailure.disposition.kind === 'uncertain';
+      const effectiveAttemptLimit = Math.max(
+        1,
+        Math.min(task.maxAttempts, retryLimit ?? task.maxAttempts),
+      );
+      const terminal = uncertain
+        || !structuredFailure.disposition.retryable
+        || task.attemptCount >= effectiveAttemptLimit;
       if (terminal) {
-        const status = retryable ? 'dead_letter' : terminalStatus;
-        if (!this.taskStore.updateTerminal(taskId, owner, status, undefined, summary, timestamp)) {
+        const status = uncertain || structuredFailure.disposition.retryable ? 'dead_letter' : 'failed';
+        if (!this.taskStore.updateTerminal(
+          taskId, owner, status, { failure: structuredFailure }, summary, timestamp,
+        )) {
           throw new Error(`Task ${taskId} 租约已失效`);
         }
       } else {
@@ -1034,6 +1063,7 @@ export class MimiStore {
           taskId,
           owner,
           summary,
+          structuredFailure,
           new Date(at.getTime() + delay).toISOString(),
           timestamp,
         )) throw new Error(`Task ${taskId} 租约已失效`);
@@ -1054,11 +1084,18 @@ export class MimiStore {
         ? (updated.status === 'failed' ? 'task.failed' : 'task.dead_letter')
         : 'task.retry_scheduled', timestamp, {
         error: summary,
+        failure: structuredFailure,
         attemptNo: task.attemptCount,
         notBefore: updated.notBefore,
       });
       if (terminal && updated.status === 'dead_letter') {
-        this.recordTaskMemoryObservation(updated, 'dead_letter', { error: summary }, attemptId, timestamp);
+        this.recordTaskMemoryObservation(
+          updated,
+          'dead_letter',
+          { error: summary, failure: structuredFailure },
+          attemptId,
+          timestamp,
+        );
       }
       if (terminal) {
         const trigger = task.triggerEventId ? this.eventStore.get(task.triggerEventId) : undefined;
@@ -1068,6 +1105,7 @@ export class MimiStore {
           this.insertOutbox(task.id, route, {
             type: updated.status === 'dead_letter' ? 'task_dead_letter' : 'task_failed',
             taskId: task.id,
+            failureCode: structuredFailure.code,
             text: `MimiAgent 任务失败（${task.id}）：${summary}`.slice(0, 4_000),
           }, timestamp);
         }
@@ -2024,22 +2062,27 @@ export class MimiStore {
     const recentTasks = (this.database.prepare(`
       SELECT task.id, task.type, task.status, task.trigger_event_id,
         event.source, event.type AS event_type,
-        task.priority, task.attempt_count, task.updated_at, task.error
+        task.priority, task.attempt_count, task.updated_at, task.error, task.result_json
       FROM tasks task
       LEFT JOIN events event ON event.id = task.trigger_event_id
       ORDER BY task.updated_at DESC, task.rowid DESC LIMIT ?
-    `).all(limit) as Row[]).map((row) => ({
-      id: String(row.id),
-      type: String(row.type) as TaskRecord['type'],
-      status: String(row.status) as TaskRecord['status'],
-      triggerEventId: optional(row.trigger_event_id),
-      source: optional(row.source),
-      eventType: optional(row.event_type),
-      priority: Number(row.priority),
-      attemptCount: Number(row.attempt_count),
-      updatedAt: String(row.updated_at),
-      error: optional(row.error)?.slice(0, 500),
-    }));
+    `).all(limit) as Row[]).map((row) => {
+      const result = parseOptionalJson<{ failure?: unknown }>(row.result_json);
+      const failure = runFailureRecord(result?.failure);
+      return {
+        id: String(row.id),
+        type: String(row.type) as TaskRecord['type'],
+        status: String(row.status) as TaskRecord['status'],
+        triggerEventId: optional(row.trigger_event_id),
+        source: optional(row.source),
+        eventType: optional(row.event_type),
+        priority: Number(row.priority),
+        attemptCount: Number(row.attempt_count),
+        updatedAt: String(row.updated_at),
+        error: optional(row.error)?.slice(0, 500),
+        ...(failure ? { failure } : {}),
+      };
+    });
     const recentRuns = (this.database.prepare(`
       SELECT id, task_id, status, started_at, completed_at, error
       FROM runs ORDER BY COALESCE(completed_at, started_at) DESC, rowid DESC LIMIT ?
@@ -2094,10 +2137,12 @@ export class MimiStore {
       diskBytes: null,
     }));
     const deadLetters = aggregateDeadLetters((this.database.prepare(`
-      SELECT error, COUNT(*) AS count FROM tasks
-      WHERE status = 'dead_letter' GROUP BY error
+      SELECT result_json, COUNT(*) AS count FROM tasks
+      WHERE status = 'dead_letter' GROUP BY result_json
     `).all() as Row[]).map((row) => ({
-      error: optional(row.error),
+      failure: runFailureRecord(
+        parseOptionalJson<{ failure?: unknown }>(row.result_json)?.failure,
+      ),
       count: Number(row.count),
     })));
     const digest = classifyDigestAges((this.database.prepare(`
@@ -2433,12 +2478,19 @@ export class MimiStore {
         continue;
       }
       const summary = 'Task lease expired';
+      const failure: RunFailureRecord = {
+        code: 'task.lease_expired',
+        disposition: {
+          phase: 'runtime', kind: 'transient', retryable: true, dispatchStarted: false,
+        },
+      };
       const terminal = task.attemptCount >= task.maxAttempts;
       if (!this.taskStore.recoverExpired(
         task.id,
         task.leaseOwner,
         terminal,
         summary,
+        failure,
         timestamp,
         timestamp,
       )) continue;
@@ -2451,7 +2503,7 @@ export class MimiStore {
         updated,
         terminal ? 'task.dead_letter' : 'task.retry_scheduled',
         timestamp,
-        { error: summary, attemptNo: task.attemptCount, notBefore: updated.notBefore },
+        { error: summary, failure, attemptNo: task.attemptCount, notBefore: updated.notBefore },
       );
     }
   }
@@ -2553,6 +2605,9 @@ export class MimiStore {
         throw new Error('MimiAgent 数据库标记为 v16，但缺少最终 Event/Task、Memory 或 executor schema');
       }
       ensureMemoryLintSchemaV13(this.database);
+      if (needsTaskFailureFactsRepairV16(this.database)) {
+        repairTaskFailureFactsV16(this.database);
+      }
       return;
     }
     if (version === 15) {
@@ -2622,13 +2677,16 @@ export class MimiStore {
 
   private backupBeforeTaskExecutorV16(): void {
     const version = Number((this.database.prepare('PRAGMA user_version').get() as Row).user_version);
-    if (version !== 15 || !hasFinalEventTaskV12Schema(this.database)) return;
+    if (!hasFinalEventTaskV12Schema(this.database)) return;
+    const repairExistingV16 = version === 16 && hasTaskExecutorOwnershipV16(this.database)
+      && needsTaskFailureFactsRepairV16(this.database);
+    if (version !== 15 && !repairExistingV16) return;
     this.database.exec('PRAGMA wal_checkpoint(FULL);');
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupRoot = path.join(
       path.dirname(this.file),
       'backups',
-      `task-executor-v16-${stamp}-${randomUUID().slice(0, 8)}`,
+      `${repairExistingV16 ? 'task-failure-facts-v16' : 'task-executor-v16'}-${stamp}-${randomUUID().slice(0, 8)}`,
     );
     mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
     chmodSync(backupRoot, 0o700);

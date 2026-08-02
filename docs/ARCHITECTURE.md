@@ -424,12 +424,18 @@ Task worker 的外部事务权限由仍存在的 conversation root 确定，而�
 每个后台任务使用 `mimi-task-<uuid>` Session，并记录来源 Session、父/根 Event 与 delegation depth，用于授权重算、历史迁移和引用保护。Task lane 不再创建持久子 Task；需要拆分时，write Task 在当前进程内使用有界 Ultra Team，read Task 只使用只读 SubAgent，从而避免无界进程树。任务生命周期继续使用 Event 状态机：
 
 ```text
-queued → running → completed / dead_letter
+queued → running → completed / failed / dead_letter / cancelled
    ├────────────→ paused  ── resume ──→ queued
-   └─ needs input → blocked ─ resume + context → queued
+   └─ needs input/dependency/external state → blocked ─ resume + context → queued
 ```
 
 Task Lead 只有确实缺少无法自行取得的必要信息时才调用 `request_background_task_input`；Store 原子写入 `blocked` 与通知 Outbox，worker 随后退出而不占用进程槽。`/tasks [limit]` 列出近期状态，`/task <id>` 查看目标、结果和错误，`/task pause <id>` 在安全边界暂停，`/task resume <id> [context]` 复用原 Task Session 继续，`/task cancel <id> [reason]` 取消 queued/running/paused/blocked 任务。任务权威状态来自 SQLite Event，不依赖发起 CLI 是否仍然在线。
+
+失败边界持久化稳定 `failure.code` 与 `RunFailureDisposition`；自然语言 `error` 只用于说明，
+不参与重试或运维分类。确定性验证、配置、状态和实现错误进入 `failed`；明确 transient
+只在耗尽重试后进入 `dead_letter`，已经开始副作用且结果 uncertain 的失败直接进入
+`dead_letter` 等待人工核对。`cancelled` 只表示 Owner 或系统显式终止。v16 历史终态保留
+原错误与 Event，并以 `historical.*` 事实回填为 `legacy_failure`，不会根据旧错误文案猜测根因。
 
 ## Agent Skills
 
@@ -682,8 +688,9 @@ Daemon activity 复用 SQLite Task/Run 数据，按日聚合 Run 与 Token。费
 CPU/内存/磁盘尚无持久样本时同样返回 `null` 和 host sampling=`not_sampled`；实时 Host
 摘要不冒充跨重启趋势。只对已知/已采样指标产生预算告警；Provider health、资源趋势、
 dead letter/Digest/readiness 分类进入
-status、Doctor 和脱敏 diagnostic bundle。历史 dead letter 保留原记录，只增加
-`retry_after_fix/archive_safe/external_blocked/manual_verify/investigate` 处置投影。
+status、Doctor 和脱敏 diagnostic bundle。dead letter 分类只读取持久化的结构化 failure
+事实，不解析自然语言 error；历史记录保留原事实并标为 `legacy_failure/investigate`，新记录
+使用 `retry_after_fix/archive_safe/external_blocked/manual_verify/investigate` 处置投影。
 
 ### M1 Jarvis Eval
 

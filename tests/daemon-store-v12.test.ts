@@ -239,9 +239,14 @@ test('retry, preemption, terminal failure, and dead-letter recovery are explicit
       retry.id,
       'worker-3',
       new Error('provider rejected request'),
+      {
+        code: 'provider.rejected',
+        disposition: {
+          phase: 'provider', kind: 'validation', retryable: false, dispatchStarted: false,
+        },
+      },
       thirdAttempt.id,
       new Date(base.getTime() + 7_000),
-      false,
     );
     assert.equal(failed.status, 'failed');
     assert.equal(store.getTaskAttempt(thirdAttempt.id)?.status, 'failed');
@@ -259,6 +264,12 @@ test('retry, preemption, terminal failure, and dead-letter recovery are explicit
       dead.id,
       'worker-dead',
       'permanent failure',
+      {
+        code: 'provider.exhausted',
+        disposition: {
+          phase: 'provider', kind: 'transient', retryable: true, dispatchStarted: false,
+        },
+      },
       deadAttempt.id,
       new Date(base.getTime() + 10_000),
     ).status, 'dead_letter');

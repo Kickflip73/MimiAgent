@@ -1,4 +1,5 @@
 import type { ConnectorCapability } from './connectors.js';
+import type { RunFailureRecord } from '../core/run-failure.js';
 
 export type DeadLetterCategory =
   | 'provider'
@@ -9,6 +10,7 @@ export type DeadLetterCategory =
   | 'external_unavailable'
   | 'uncertain_side_effect'
   | 'cancelled_or_superseded'
+  | 'legacy_failure'
   | 'unknown';
 
 export interface DeadLetterClassification {
@@ -35,45 +37,47 @@ export interface OperationalClassificationSnapshot {
   unclassifiedDeadLetters: number;
 }
 
-export function classifyDeadLetterError(error: string | undefined): Omit<DeadLetterClassification, 'count'> {
-  const normalized = (error ?? '').toLowerCase();
-  if (/uncertain|结果不确定|ack|确认失败|after dispatch/u.test(normalized)) {
+export function classifyDeadLetterFailure(
+  failure: RunFailureRecord | undefined,
+): Omit<DeadLetterClassification, 'count'> {
+  if (!failure) return { category: 'unknown', disposition: 'investigate' };
+  if (failure.code.startsWith('historical.')) {
+    return { category: 'legacy_failure', disposition: 'investigate' };
+  }
+  if (failure.disposition.kind === 'uncertain') {
     return { category: 'uncertain_side_effect', disposition: 'manual_verify' };
   }
-  if (/429|rate.?limit|quota|balance|billing|余额|额度|provider/u.test(normalized)) {
+  if (failure.disposition.phase === 'provider') {
     return { category: 'provider', disposition: 'retry_after_fix' };
   }
-  if (/permission|unauthori[sz]ed|forbidden|access denied|权限|授权/u.test(normalized)) {
+  if (failure.disposition.kind === 'policy_denied') {
     return { category: 'authorization', disposition: 'external_blocked' };
   }
-  if (/config|schema|invalid environment|配置|格式无效/u.test(normalized)) {
-    return { category: 'configuration', disposition: 'retry_after_fix' };
-  }
-  if (/工具输出超过.*账本|执行账本.*限制|账本输出无效|invalid ledger output|contract violation|ledger.*corrupt|corrupt.*ledger/u.test(normalized)) {
-    return { category: 'configuration', disposition: 'retry_after_fix' };
-  }
-  if (/not found|enoent|module|binary|dependency|缺少|不存在/u.test(normalized)) {
+  if (failure.code.startsWith('dependency.')) {
     return { category: 'dependency', disposition: 'retry_after_fix' };
   }
-  if (/task worker.*(?:unexpected|exit|退出)|worker.*(?:code=|signal=)/u.test(normalized)) {
+  if (failure.code.startsWith('worker.') || failure.code.startsWith('task.lease')) {
     return { category: 'worker_runtime', disposition: 'retry_after_fix' };
   }
-  if (/offline|unavailable|timeout|timed out|econn|enotfound|离线|不可用|超时/u.test(normalized)) {
+  if (failure.code.startsWith('connector.')) {
     return { category: 'external_unavailable', disposition: 'external_blocked' };
   }
-  if (/cancel|supersed|取代|取消|task worker 被运行时回收|worker (?:was )?reclaimed/u.test(normalized)) {
+  if (failure.code.startsWith('cancelled.') || failure.code.startsWith('superseded.')) {
     return { category: 'cancelled_or_superseded', disposition: 'archive_safe' };
   }
-  return { category: 'unknown', disposition: 'investigate' };
+  if (failure.disposition.kind === 'transient') {
+    return { category: 'external_unavailable', disposition: 'retry_after_fix' };
+  }
+  return { category: 'configuration', disposition: 'retry_after_fix' };
 }
 
 export function aggregateDeadLetters(
-  rows: readonly { error?: string; count: number }[],
+  rows: readonly { failure?: RunFailureRecord; count: number }[],
 ): DeadLetterClassification[] {
   const totals = new Map<string, DeadLetterClassification>();
   for (const row of rows) {
     if (!Number.isSafeInteger(row.count) || row.count < 0) throw new Error('dead letter count 无效');
-    const classified = classifyDeadLetterError(row.error);
+    const classified = classifyDeadLetterFailure(row.failure);
     const key = `${classified.category}:${classified.disposition}`;
     const current = totals.get(key) ?? { ...classified, count: 0 };
     current.count += row.count;
@@ -123,7 +127,7 @@ export function classifyReadinessUnknown(
 }
 
 export function operationalClassification(input: {
-  deadLetters: readonly { error?: string; count: number }[];
+  deadLetters: readonly { failure?: RunFailureRecord; count: number }[];
   digestOccurredAt: readonly string[];
   connectors: readonly ConnectorCapability[];
   daemonStartedAt: string;
