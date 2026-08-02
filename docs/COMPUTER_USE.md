@@ -239,7 +239,7 @@ Driver Session。Goal、Plan 和 Checkpoint 仍是唯一的长任务状态。
 
 Full Owner 会从 `~/.local/bin` 和 `PATH` 自动发现 `cua-driver`。显式配置的 Driver 路径必须
 是绝对路径、普通文件且可执行。当前适配器测试覆盖 `0.8.x`（patch >= 3）、`0.9.0`、
-`0.12.3` 和 `0.14.1`。
+`0.12.3`、`0.14.1` 和 `0.16.0`。
 
 ## 健康与诊断
 

@@ -514,9 +514,10 @@ export class CuaDriverClient implements ComputerBackend {
         || (minor === 9 && patch === 0)
         || (minor === 12 && patch === 3)
         || (minor === 14 && patch === 1)
+        || (minor === 16 && patch === 0)
       );
       if (!compatible) {
-        throw new Error(`Cua Driver ${match[0]} 不在已测试兼容范围：0.8.x patch>=3、0.9.0、0.12.3、0.14.1`);
+        throw new Error(`Cua Driver ${match[0]} 不在已测试兼容范围：0.8.x patch>=3、0.9.0、0.12.3、0.14.1、0.16.0`);
       }
       return match[0];
     })();

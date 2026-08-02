@@ -654,7 +654,7 @@ test('app-centric observation settles a newly launched AX window without replayi
   let observations = 0;
   backend.observe = async () => {
     observations += 1;
-    return observations === 1
+    return observations <= 8
       ? {
           target,
           frontmost: false,
@@ -667,7 +667,7 @@ test('app-centric observation settles a newly launched AX window without replayi
 
   const result = await manager.observeApp(authority, target.bundleId, false) as Record<string, unknown>;
   assert.equal(result.actionable, true);
-  assert.equal(observations, 2);
+  assert.equal(observations, 9);
   assert.equal(backend.actions.length, 0);
 });
 
@@ -691,7 +691,7 @@ test('app-centric observation falls back once to screenshot evidence after bound
   const result = await manager.observeApp(authority, target.bundleId, false) as Record<string, unknown>;
   assert.ok(result.screenshot);
   assert.equal(result.actionable, true);
-  assert.equal(observations, 6);
+  assert.equal(observations, 21);
   assert.equal(backend.actions.length, 0);
 });
 
@@ -1074,6 +1074,18 @@ printf '{"content":[],"structuredContent":{"ready":true}}\\n'
   const client = new CuaDriverClient(fixture, 2_000);
 
   assert.equal((await client.health()).version, '0.14.1');
+});
+
+test('Cua CLI adapter accepts the tested 0.16.0 driver version', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-current-'));
+  const fixture = path.join(root, 'cua-driver');
+  await writeFile(fixture, `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'cua-driver 0.16.0\\n'; exit 0; fi
+printf '{"content":[],"structuredContent":{"ready":true}}\\n'
+`, { mode: 0o700 });
+  const client = new CuaDriverClient(fixture, 2_000);
+
+  assert.equal((await client.health()).version, '0.16.0');
 });
 
 test('Cua target discovery does not mark every window of the active app frontmost', async () => {

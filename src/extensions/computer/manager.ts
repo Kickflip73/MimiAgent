@@ -23,6 +23,8 @@ const ACCESS_LEVEL: Record<ComputerAccess, number> = {
 const OBSERVATION_TTL_MS = 30_000;
 const MAX_MODEL_OBSERVATION_BYTES = 16 * 1024;
 const MAX_SEMANTIC_TEXT_CHARS = 8_000;
+const DEFAULT_MODEL_ELEMENTS = 40;
+const AX_WINDOW_SETTLE_ATTEMPTS = 20;
 
 export interface ComputerRunAuthority {
   runId: string;
@@ -321,12 +323,12 @@ export class ComputerManager {
     signal?: AbortSignal,
   ) {
     let lastResult: Awaited<ReturnType<ComputerManager['observe']>> | undefined;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    for (let attempt = 0; attempt < AX_WINDOW_SETTLE_ATTEMPTS; attempt += 1) {
       const result = await this.observe(authority, {
         scope: 'window',
         target,
         includeScreenshot,
-        maxElements: 160,
+        maxElements: DEFAULT_MODEL_ELEMENTS,
         maxDepth: 12,
       }, signal);
       const blockedReason = result && typeof result === 'object' && 'blockedReason' in result
@@ -341,7 +343,7 @@ export class ComputerManager {
       scope: 'window',
       target,
       includeScreenshot: true,
-      maxElements: 160,
+      maxElements: DEFAULT_MODEL_ELEMENTS,
       maxDepth: 12,
     }, signal);
   }

@@ -487,7 +487,7 @@ const config: ComputerConfig = {
   driverCommand,
   actionTimeoutMs: integerEnvironment('MIMI_COMPUTER_ACTION_TIMEOUT_MS', 30_000, 1_000, 300_000),
   maxActionsPerRun: 50,
-  maxScreenshotsPerRun: 4,
+  maxScreenshotsPerRun: 12,
   pauseWhenTargetFrontmost: true,
   defaultAccess: 'background',
   foregroundLeaseSeconds: 30,

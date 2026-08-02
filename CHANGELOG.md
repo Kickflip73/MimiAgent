@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- accept the live-certified Cua Driver 0.16.0 boundary while retaining the
+  previously tested exact versions
 - unify each Run behind one immutable Host capability registry and one bounded
   discovery gateway, keep Browser, Computer, and personal routes direct, resolve
   the exact SDK tool surface once, and invalidate Connector discovery only when

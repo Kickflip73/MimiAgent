@@ -365,7 +365,7 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_SECURITY_PROFILE` | `full-owner` | 本机认证 Owner 的运行权限：默认直接使用当前 OS 用户权限；仅在需要整体收紧时设置 `safe` 或 `workstation` |
 | `MIMI_PERMISSION_MODE` | 由 Security 派生 | 仅用于读取旧配置；不再参与授权，冲突时以 `MIMI_SECURITY_PROFILE` 为准 |
 | `MIMI_COMPUTER_BACKEND` | 自动发现 | Full Owner 在 `~/.local/bin` 或 `PATH` 发现兼容 `cua-driver` 时自动注册 `computer_observe` / `computer_act`；设为 `off` 可关闭，第一阶段仅 macOS |
-| `MIMI_CUA_DRIVER_COMMAND` | 未设置 | 可选的 Cua Driver 可执行文件绝对路径覆盖；未设置时自动发现，当前适配器允许并测试 `0.8.x`（patch ≥3）、`0.9.0`、`0.12.3`、`0.14.1` |
+| `MIMI_CUA_DRIVER_COMMAND` | 未设置 | 可选的 Cua Driver 可执行文件绝对路径覆盖；未设置时自动发现，当前适配器允许并测试 `0.8.x`（patch ≥3）、`0.9.0`、`0.12.3`、`0.14.1`、`0.16.0` |
 | `MIMI_COMPUTER_DEFAULT_ACCESS` | `foreground` | 本机 Full Owner Run 的最大档位；Host 仍后台优先，只在目标已置前或后台明确未执行时用前台投递。可改为 `none/observe/background/foreground/admin`；Daemon 事件仍需 source policy 显式授权 |
 | `MIMI_COMPUTER_MAX_ACTIONS_PER_RUN` | `50` | 单个 Run 的 GUI 写动作预算 |
 | `MIMI_COMPUTER_MAX_SCREENSHOTS_PER_RUN` | `12` | 单个 Run 的窗口/桌面/局部截图预算 |
