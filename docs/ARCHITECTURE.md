@@ -537,11 +537,20 @@ ToolSetBuilder → AgentRequestFactory → RunCommitCoordinator` 分阶段组装
 Manifest 因而可以独立测试。Session、Goal/Plan、Team、ExecutionLedger、Trace
 和 Run Commit Journal 通过 state ports 装配，组合根不再逐项拼接持久化路径。
 
+每个普通 Run 只由 Host 生成一份规范 `RunFinalization`：`outcome` 取
+`completed / partial / blocked / interrupted / failed / uncertain`，并绑定答案摘要、
+Tool Execution Manifest、Completion decision、原因、下一步和证据引用。判定只消费
+SDK 终态、模型可见 Tool facts、Execution Ledger 与显式 Gate，不解析模型自然语言；
+非 completed 结果由 Host 约束最终答案，不能被包装为整体完成。Plan 只保留为 UI
+进度，Goal/Completion Contract 才是强完成语义。
+
 完成提交写入 `run-commit-journal.json`，只保存 session/run/execution 标识、答案
-SHA-256、Completion decision、RuntimeAction 和当前 phase，不保存答案正文。
-Execution receipt 是恢复正文权威；receipt 一旦成功不会因后续提交失败而删除。
-Daemon 在 Task/Outbox 事务成功后确认 finalize。当前仍保留 FileSession 和 JSON
-stores，SQLite 收敛门槛及禁止双写决策见
+SHA-256、Completion decision、RuntimeAction、规范 Finalization 和当前 phase，不保存
+答案正文。Session、Task、Trace、Journal 与 Outbox 传播同一份 Finalization；旧记录
+读取时补齐兼容默认值。Execution receipt 是恢复正文权威；receipt 一旦成功不会因
+后续提交失败而删除。恢复按同一 execution key 的最新 attempt 收敛，不重放已经发出
+且结果不确定的 Tool。Daemon 在 Task/Outbox 事务成功后确认 finalize。当前仍保留
+FileSession 和 JSON stores，SQLite 收敛门槛及禁止双写决策见
 [STATE_STORAGE_DECISION.md](STATE_STORAGE_DECISION.md)。
 
 主 Agent 的认证本机 Owner 只由三档 Security 授权：`safe` 只读并移除 Shell、Computer Use、受信 MCP 和外部事务；`workstation` 允许工作区写入、结构化沙箱 Shell 和本机网络读取，但不允许 Connector 外部事务、Computer Use、受信 MCP 或通用网络写入；`full-owner` 使用当前 OS 用户的完整已配置能力且不叠加逐动作审批。旧 `read-only/workspace/trusted` 只做配置读取兼容，冲突时由 Security 覆盖。Plan 仍把最终工具面降为只读；Mode、来源和 Run scope 只能缩小 Security，不能扩大。

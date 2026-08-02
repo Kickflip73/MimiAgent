@@ -8,7 +8,11 @@ import { MimiDispatcher } from '../src/daemon/dispatcher.js';
 import { AttentionEngine } from '../src/daemon/attention.js';
 import type { ConnectorManager } from '../src/daemon/connectors.js';
 import { MimiStore } from '../src/daemon/store.js';
-import { createRunFinalization } from '../src/core/run-finalization.js';
+import {
+  attachRunFinalization,
+  createRunFinalization,
+} from '../src/core/run-finalization.js';
+import { RunFailureError } from '../src/core/run-failure.js';
 import { MimiHost } from '../src/runtime/mimi-host.js';
 import type { MimiAgent } from '../src/runtime/mimi-agent.js';
 
@@ -110,13 +114,14 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
     },
     reopenExecutionLedger: async () => undefined,
   } as unknown as MimiAgent;
+  const answer = 'provider switch scheduled';
+  const finalization = createRunFinalization({ runId: 'run-provider', answer, calls: [] });
   const host = new MimiHost(agent, {
     execute: async () => {
-      const answer = 'provider switch scheduled';
       return {
         answer,
         effects: [{ type: 'provider_change_requested', provider: 'openai-compatible' }],
-        finalization: createRunFinalization({ runId: 'run-provider', answer, calls: [] }),
+        finalization,
       };
     },
   });
@@ -136,6 +141,7 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
       priority: 100,
       profileId: 'owner',
       sessionKey: 'owner',
+      replyRoute: { channel: 'system' },
     });
     assert.ok(routed.task);
 
@@ -149,15 +155,86 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
     releaseFinalization();
     assert.equal(await processing, true);
     assert.equal(store.getTask(routed.task.id)?.status, 'completed');
-    assert.equal(
-      (store.getTask(routed.task.id)?.result as { finalization?: { runId?: string } })
-        .finalization?.runId,
-      'run-provider',
+    const taskFinalization = (store.getTask(routed.task.id)?.result as {
+      finalization?: unknown;
+    }).finalization;
+    assert.deepEqual(taskFinalization, finalization);
+    assert.deepEqual(
+      (store.listOutbox()[0]?.payload as { finalization?: unknown }).finalization,
+      finalization,
     );
     assert.equal(dispatcher.status().activeEventCount, 0);
     assert.equal(dispatcher.status().activeToolCount, 0);
   } finally {
     releaseFinalization();
+    store.close();
+  }
+});
+
+test('dispatcher persists the Host failure Finalization on the terminal Task', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-failure-finalization-'));
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  const answer = 'Host 终态：outcome=failed';
+  const finalization = createRunFinalization({
+    runId: 'run-failed',
+    answer,
+    outcome: 'failed',
+    reason: 'unsupported request',
+    nextAction: 'change the request',
+    calls: [],
+  });
+  const agent = {
+    currentSessionId: 'owner',
+    currentCapabilitySnapshot: () => undefined,
+    completedExecution: async () => undefined,
+    finalizeExecutionLedger: async () => undefined,
+    reopenExecutionLedger: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, {
+    execute: async () => {
+      throw attachRunFinalization(new RunFailureError(
+        'fixture.unsupported',
+        'unsupported request',
+        {
+          phase: 'pre_dispatch',
+          kind: 'unsupported',
+          retryable: false,
+          dispatchStarted: false,
+        },
+      ), finalization);
+    },
+  });
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, host, attention);
+  try {
+    const timestamp = new Date().toISOString();
+    const routed = store.ingestEvent({
+      id: 'failed-finalization-event',
+      externalId: 'failed-finalization-event',
+      source: 'local-cli',
+      kind: 'command',
+      trust: 'owner',
+      payload: { prompt: 'unsupported' },
+      occurredAt: timestamp,
+      receivedAt: timestamp,
+      priority: 100,
+      profileId: 'owner',
+      sessionKey: 'owner',
+    });
+    assert.ok(routed.task);
+
+    assert.equal(await dispatcher.processTaskById(routed.task.id), true);
+    const terminal = store.getTask(routed.task.id);
+    assert.equal(terminal?.status, 'failed');
+    assert.deepEqual(
+      (terminal?.result as { finalization?: unknown }).finalization,
+      finalization,
+    );
+    assert.deepEqual(
+      (store.listRuns(1)[0]?.answer as { finalization?: unknown }).finalization,
+      finalization,
+    );
+  } finally {
     store.close();
   }
 });

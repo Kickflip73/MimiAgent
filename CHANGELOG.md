@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- make the Host the single authority for ordinary Run finalization, derive
+  `completed`, `partial`, `blocked`, `interrupted`, `failed`, or `uncertain`
+  from structured SDK, Tool, Ledger, and Gate facts, constrain non-completed
+  final answers, and persist the same evidence-bound Finalization through
+  Session, Task, Trace, Journal, and Outbox recovery boundaries
 - bind Shortcuts execution to structured stable IDs issued by the latest live
   Connector catalog instead of accepting guessed shortcut names
 - route event-bound personal QQ context and single sends through
@@ -72,9 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and rejecting Mimi Provider targets for the independent Codex executor
 - recognize raw `Command+Enter` modifier sequences before Node readline can
   split or discard them, preserving ordinary `Enter` FIFO behavior
-- reject successful completion of an ordinary Run that still owns active Plan
-  steps, return actionable `update_plan` validation errors, and remove the
-  persistent TUI Plan panel once every step is complete
+- keep Plan as a user-interface progress surface rather than an ordinary Run
+  completion gate, return actionable `update_plan` validation errors, and
+  remove the persistent TUI Plan panel once every step is complete
 - keep `/sessions` selection and TUI history snapshots responsive while the
   selected Session is running, without bypassing serialization for mutations
 - remove the accidental default 32-call and 500K cumulative-input run caps;

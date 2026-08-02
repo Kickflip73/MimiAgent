@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  classifyRunOutcome,
+  constrainRunAnswer,
   createRunFinalization,
   executionCompletionDecision,
   toolExecutionManifest,
@@ -99,4 +101,97 @@ test('ordinary run completion is not downgraded by a recovered failed-safe Conne
     status: 'succeeded',
     output: { outcome: 'confirmed' },
   }]), undefined);
+});
+
+test('ordinary Run outcomes follow structured Host facts instead of model wording', () => {
+  const call = (
+    toolName: string,
+    status: 'started' | 'succeeded' | 'failed' | 'uncertain',
+    output?: unknown,
+  ) => ({
+    sessionId: 'owner',
+    runId: 'run-matrix',
+    toolName,
+    callId: `${toolName}-${status}`,
+    argumentsJson: '{}',
+    status,
+    ...(output === undefined ? {} : { output }),
+  });
+  const cases = [
+    ['no-tool read answer', [], 'completed'],
+    ['successful read', [call('read_file', 'succeeded', { content: 'bounded' })], 'completed'],
+    ['verified file mutation', [call('write_file', 'succeeded', {
+      path: 'result.txt', bytes: 6, diagnostics: { ok: true },
+    })], 'completed'],
+    ['Browser interaction only', [call('browser_act', 'succeeded', {
+      verified: true,
+      completionScope: 'interaction',
+      businessOutcome: 'unverified',
+      mimiActionIntent: { ref: 'action-intent:browser', outcome: 'confirmed' },
+    })], 'partial'],
+    ['confirmed external action', [call('connector_action', 'succeeded', {
+      outcome: 'confirmed',
+      operationId: 'operation-1',
+      occurredAt: '2026-08-02T00:00:00.000Z',
+      mimiExecutionReceipt: { ref: 'execution:confirmed', outcome: 'succeeded' },
+    })], 'completed'],
+    ['partial tool failure', [
+      call('read_file', 'succeeded', { content: 'bounded' }),
+      call('run_shell', 'failed'),
+    ], 'partial'],
+    ['blocked dependency', [call('request_background_task_input', 'succeeded', {
+      accepted: true,
+      question: '请选择精确目标',
+    })], 'blocked'],
+    ['deterministic pre-dispatch failure', [call('connector_action', 'failed', {
+      mimiStatus: 'tool_input_rejected',
+      code: 'target_required',
+      retryable: true,
+    })], 'failed'],
+    ['uncertain dispatch', [call('connector_action', 'uncertain')], 'uncertain'],
+  ] as const;
+
+  for (const [name, calls, expected] of cases) {
+    assert.equal(classifyRunOutcome({ sdk: 'completed', calls }), expected, name);
+  }
+  assert.equal(classifyRunOutcome({ sdk: 'interrupted', calls: [] }), 'interrupted');
+});
+
+test('Host final answer constrains non-completed model claims and binds one final digest', () => {
+  const calls = [{
+    sessionId: 'owner',
+    runId: 'run-partial',
+    toolName: 'browser_act',
+    callId: 'browser-click',
+    argumentsJson: '{}',
+    status: 'succeeded' as const,
+    output: {
+      completionScope: 'interaction',
+      businessOutcome: 'unverified',
+      mimiActionIntent: { ref: 'action-intent:browser-click', outcome: 'confirmed' },
+    },
+  }];
+  const answer = constrainRunAnswer({
+    draft: '全部业务已经完成。',
+    outcome: 'partial',
+    reason: '只有页面交互证据，业务结果尚未回读确认',
+    nextAction: '读取同一业务对象并核对结果',
+    evidenceRefs: ['action-intent:browser-click'],
+  });
+  const record = createRunFinalization({
+    runId: 'run-partial',
+    answer,
+    outcome: 'partial',
+    reason: '只有页面交互证据，业务结果尚未回读确认',
+    nextAction: '读取同一业务对象并核对结果',
+    evidenceRefs: ['action-intent:browser-click'],
+    calls,
+  });
+
+  assert.equal(record.outcome, 'partial');
+  assert.deepEqual(record.evidenceRefs, ['action-intent:browser-click']);
+  assert.match(answer, /outcome=partial/);
+  assert.match(answer, /不构成整体完成声明/);
+  assert.doesNotMatch(answer.split('\n')[0]!, /全部业务已经完成/);
+  assert.match(record.answerDigest, /^[a-f0-9]{64}$/u);
 });

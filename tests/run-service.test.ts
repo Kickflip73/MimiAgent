@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { MimiAgent } from '../src/runtime/mimi-agent.js';
+import {
+  createRunFinalization,
+  runFinalizationFromError,
+} from '../src/core/run-finalization.js';
 import { isTerminalRunInterruption, TerminalRunInterruptedError } from '../src/runtime/run-outcome.js';
 import {
   AgentRunService,
@@ -248,6 +252,41 @@ test('shared run service records one failed terminal outcome', async () => {
   } as unknown as MimiAgent;
   await assert.rejects(new AgentRunService(agent).execute({ input: 'work' }), /provider unavailable/);
   assert.equal(failed, failure);
+});
+
+test('shared run service carries the one failure Finalization without replacing the typed error', async () => {
+  const failure = Object.assign(new Error('provider stream disconnected'), { code: 'ECONNRESET' });
+  const finalization = createRunFinalization({
+    runId: 'run-disconnected',
+    answer: 'Host 终态：outcome=interrupted',
+    outcome: 'interrupted',
+    reason: failure.message,
+    nextAction: '从检查点继续',
+    calls: [],
+  });
+  const stream = {
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: undefined,
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() { throw failure; },
+  };
+  const agent = {
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => stream,
+    failRun: async () => finalization,
+  } as unknown as MimiAgent;
+
+  await assert.rejects(
+    new AgentRunService(agent).execute({ input: 'work' }),
+    (error: Error) => {
+      assert.equal(error, failure);
+      assert.deepEqual(runFinalizationFromError(error), finalization);
+      return true;
+    },
+  );
 });
 
 test('shared run service opens Provider circuit on 429 and blocks retry storms', async () => {

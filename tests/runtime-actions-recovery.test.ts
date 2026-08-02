@@ -6,10 +6,12 @@ import test from 'node:test';
 import { RunContext, tool, type AgentInputItem } from '@openai/agents';
 import { z } from 'zod';
 import { ExecutionLedger, type ExecutionCall } from '../src/core/execution-ledger.js';
+import { runFinalizationFromError } from '../src/core/run-finalization.js';
 import type { RunCommitJournal } from '../src/core/run-commit-journal.js';
 import { FileSession } from '../src/core/session.js';
 import { MimiHost, type HostedRunExecutor } from '../src/runtime/mimi-host.js';
 import { MimiAgent } from '../src/runtime/mimi-agent.js';
+import { AgentRunService } from '../src/runtime/run-service.js';
 
 interface RuntimeCall {
   name: string;
@@ -400,6 +402,51 @@ test('recovers a pre-manifest completion receipt without replaying work', async 
     assert.equal(recovered?.answer, 'legacy answer');
     assert.equal(recovered?.finalization.runId, 'legacy-run');
     assert.deepEqual(recovered?.finalization.toolManifest, []);
+  } finally {
+    await agent.close();
+  }
+});
+
+test('Provider disconnect writes one interrupted Finalization to error, Session, Journal, and Trace', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-runtime-disconnect-finalization-'));
+  const agent = await createAgent(root, 'owner');
+  const failure = Object.assign(new Error('stream disconnected'), { code: 'ECONNRESET' });
+  (agent as unknown as AgentInternals).runner.run = async () => ({
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: undefined,
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() { throw failure; },
+  });
+  let finalization;
+  try {
+    await assert.rejects(new AgentRunService(agent).execute({
+      input: 'continue durable work',
+      options: {
+        executionKey: 'event:disconnect',
+        retainExecutionLedger: true,
+        requireCompletionGate: false,
+      },
+    }), (error: Error) => {
+      finalization = runFinalizationFromError(error);
+      assert.equal(finalization?.outcome, 'interrupted');
+      return true;
+    });
+    assert.ok(finalization);
+    const session = new FileSession(path.join(root, '.mimi-agent', 'sessions'), 'owner');
+    assert.deepEqual((await session.getCheckpoint())?.finalization, finalization);
+    assert.deepEqual(
+      (await (agent as unknown as AgentInternals).runCommits
+        .findByExecutionKey('owner', 'event:disconnect'))?.finalization,
+      finalization,
+    );
+    const trace = (await readFile(
+      path.join(root, '.mimi-agent', 'traces', 'owner.jsonl'),
+      'utf8',
+    )).trim().split('\n').map((line) => JSON.parse(line) as { type: string; data: unknown });
+    assert.deepEqual(trace.find((item) => item.type === 'run_finalization')?.data, finalization);
   } finally {
     await agent.close();
   }
