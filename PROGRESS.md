@@ -1,5 +1,16 @@
 # Progress
 
+## 2026-08-01 M1 架构收敛 Goal
+- 目标：按 `docs/plans/20260731-MimiAgent-M1架构收敛重构计划.md` 完成 ARC-000→503；正确性与副作用安全优先，不以代码完成冒充 M1 GO。
+- 顺序：先冻结真实基线和现有脏改动，再按 executor/attention、capability/direct surfaces、pipeline/finalization、migration/deploy、live matrix/soak 的依赖链推进。
+- 开工基线：HEAD `531850d`；热点文件 `3319/2376/2610` 行；`npm run check` 通过；非嵌套全量 `851/850`，fail=1、skip/todo=0。
+- 唯一红测：`daemon-attention-v12` 的 owner route 夹具在 2026-07-24 写入、2026-08-01 隐式读取，越过 7 天有效期；需显式贯通模拟时钟并保留过期回退语义。
+- 脏改动归属：PROGRESS 已记录的 Browser/Computer/Context 改动纳入 M1；`skills/agent-reach`、`skills/guizang-social-card-skill` 和无关资产只读保留。
+- 最大风险：真实 `~/.mimi-agent` 迁移与 uncertain side effect 不得重放；个人渠道缺精确 owner target 时必须 NO-GO；最终 24h/72h/7d 日历窗口不可补算。
+- ARC-000 红→绿：显式贯通 owner route/Briefing/Routine 的模拟时钟，并新增 7 天 + 1ms 回退断言；`npm run check` 与 `daemon-attention-v12` 6/6 全绿。
+- 2026-08-02 真实运行基线：build `0.12.0+54d3940e1185`、Doctor ready=false；Task queued/dead-letter=`15/522`（37 未分类），Digest=5935，24h Runs=303，enabled/ready Connector=`8/4`。
+- 真实数据已备份到 `/tmp/mimi-m1-arc000-20260802T1000Z` 并复验 `databaseIntegrity=ok`；schema=1、2542 files、116542139 bytes，未修改原 Task/Digest。
+
 ## 2026-07-31 Browser / Computer 原生可靠性 Goal
 - 目标：主 Agent 直接、严格、可验证地使用 Browser 与 Computer，不再因两层能力发现、宽松 schema 或巨型观察结果陷入循环。
 - 顺序：先修模型契约/权限/观察预算，再做 Host-owned Browser session 与 verify 闭环，最后补真实 E2E/soak 和文档。

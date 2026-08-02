@@ -282,7 +282,12 @@ test('owner routes, routine occurrences, and digest briefings remain idempotent'
       trust: 'external',
       replyRoute: { channel: 'connector:messages', target: 'attacker' },
     }), baseTime), false);
-    assert.deepEqual(attention.replyRouteFor(), { channel: 'connector:messages', target: 'owner-chat' });
+    assert.deepEqual(attention.replyRouteFor(undefined, baseTime), {
+      channel: 'connector:messages', target: 'owner-chat',
+    });
+    assert.deepEqual(attention.replyRouteFor(undefined, new Date(baseTime.getTime() + 7 * 24 * 60 * 60_000 + 1)), {
+      channel: 'system',
+    });
     assert.equal(attention.replyRouteFor({
       source: 'local-cli', profileId: 'owner', replyRoute: undefined,
     }), undefined);

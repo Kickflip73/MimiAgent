@@ -1,5 +1,17 @@
 # Blocked
 
+- **2026-08-02 ARC-000 repository asset 门禁（范围外用户资产）**：`npm run check:repo`
+  的 hygiene、release consistency、dependency direction 三段通过；asset-boundary 只因
+  继承的未跟踪 `skills/agent-reach` 与 `skills/guizang-social-card-skill` 未分类而失败。
+  本 Goal 按白名单只读保留这两个目录，不修改资产分类或用删除/skip 隐藏；其余 ARC 和
+  隔离后的 clean-source CI 可继续，最终当前工作树的 `check:repo` 仍需这两项另行归属。
+
+- **2026-08-02 M1 真实运行前置（当前基线，尚未进入 T0）**：installed build
+  `0.12.0+54d3940e1185` Doctor ready=false；522 dead letter（37 未分类）、5935 Digest、
+  15 queued、24h 303 Runs；8 个 enabled Connector 仅 4 个 ready，personal-daxiang offline、
+  browser stale、Screen/Shortcuts readiness unknown、Computer operational readiness unknown。
+  ARC-101～402 必须先在备份副本和 clean build 收口这些问题，当前结果不得计入最终 soak。
+
 - **2026-07-31 Computer 标准 AX 实机门槛（已解除）**：初次实测时已安装并验证
   Cua Driver `0.14.1`，health RPC、Accessibility 和 Screen Recording 权限位均为
   true，但 Calculator 与 TextEdit 的精确 `get_window_state` 都返回

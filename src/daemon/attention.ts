@@ -581,11 +581,18 @@ export class AttentionEngine {
   }
 
   replyRouteFor(): ReplyRoute;
-  replyRouteFor(event: Pick<ImmutableEvent, 'replyRoute' | 'source' | 'profileId'>): ReplyRoute | undefined;
-  replyRouteFor(event?: Pick<ImmutableEvent, 'replyRoute' | 'source' | 'profileId'>): ReplyRoute | undefined {
+  replyRouteFor(event: undefined, at: Date): ReplyRoute;
+  replyRouteFor(
+    event: Pick<ImmutableEvent, 'replyRoute' | 'source' | 'profileId'>,
+    at?: Date,
+  ): ReplyRoute | undefined;
+  replyRouteFor(
+    event?: Pick<ImmutableEvent, 'replyRoute' | 'source' | 'profileId'>,
+    at = new Date(),
+  ): ReplyRoute | undefined {
     if (event?.replyRoute) return { ...event.replyRoute };
     if (event?.source === 'local-cli' || event?.source.startsWith('webhook:')) return undefined;
-    return this.store.recentOwnerReplyRoute(event?.profileId ?? 'owner', RECENT_OWNER_ROUTE_MS)
+    return this.store.recentOwnerReplyRoute(event?.profileId ?? 'owner', RECENT_OWNER_ROUTE_MS, at)
       ?? { ...this.config.owner.replyRoute };
   }
 
@@ -774,7 +781,7 @@ export class AttentionEngine {
       if (this.routineCheckpoints.has(checkpoint)) continue;
       const revision = routineRevision(routine);
       const sessionKey = routine.sessionKey ?? derivedSessionId('routine', routine.id);
-      const replyRoute = this.overrideReplyRoute(routine.replyChannel, routine.replyTarget);
+      const replyRoute = this.overrideReplyRoute(routine.replyChannel, routine.replyTarget, now);
       const authority = this.store.ensureConversationAuthority({
         id: randomUUID(),
         externalId: `routine-authority:${routine.id}:${scheduledLocal}:${revision}`,
@@ -892,6 +899,7 @@ export class AttentionEngine {
         replyRoute: this.overrideReplyRoute(
           this.config.briefings.replyChannel,
           this.config.briefings.replyTarget,
+          now,
         ),
       };
     }, this.config.briefings.maxItems, (candidates) => {
@@ -913,8 +921,8 @@ export class AttentionEngine {
     return start === end || (start < end ? current >= start && current < end : current >= start || current < end);
   }
 
-  private overrideReplyRoute(channel?: string, target?: string): ReplyRoute {
-    const base = this.replyRouteFor();
+  private overrideReplyRoute(channel?: string, target?: string, at = new Date()): ReplyRoute {
+    const base = this.replyRouteFor(undefined, at);
     const resolvedTarget = target ?? (channel === undefined ? base.target : undefined);
     return {
       channel: channel ?? base.channel,
@@ -997,7 +1005,7 @@ export class AttentionEngine {
     const scheduled = /^(\d{4}-\d{2}-\d{2}) ([01]\d|2[0-3]):[0-5]\d$/.exec(payload.scheduledLocal);
     if (!scheduled) return false;
     const sessionKey = routine.sessionKey ?? derivedSessionId('routine', routine.id);
-    const replyRoute = this.overrideReplyRoute(routine.replyChannel, routine.replyTarget);
+    const replyRoute = this.overrideReplyRoute(routine.replyChannel, routine.replyTarget, new Date(event.occurredAt));
     const authorityPayload = authority.payload && typeof authority.payload === 'object' && !Array.isArray(authority.payload)
       ? authority.payload as Record<string, unknown>
       : undefined;
