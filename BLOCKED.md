@@ -172,3 +172,12 @@
   已转绿，但这些运行前置仍未解除，因此不得部署、重启、建立 T0；后续 24h/72h/7d
   不能从旧构建或本次短时检查补算，外部/TCC 恢复后仍须从同一 clean build 的新 T0
   重新累计。
+- **2026-08-03 ARC-402 代码/包门禁已完成，运行门禁仍未解除**：提交 `eea545d` 已从真正
+  clean worktree 通过 `npm run ci`，安装包冻结 identity 为
+  `0.12.0+geea545d8d6ae38f24b2763970e23dbffbdc05efe.clean.163b8e2cbade`；dirty/unknown
+  build 已无法执行正式 live/soak canary 或与其他 build 聚合。真实 Doctor 仍报告运行旧
+  build `0.12.0+54d3940e1185`、Computer unavailable（Screen Recording=false）、
+  `personal-daxiang` offline、`macos-screen` readiness unknown、dead letter=549（37 未分类）、
+  Digest=6649。没有 owner TCC 与稳定消息目标时不得为追求 ready 而关闭能力、猜目标、清空
+  积压或部署；外部条件恢复后仍需先安全备份/切换，再以同一 clean installed=running build
+  建立全新 T0，完成 24h/72h/7d，旧窗口不补算。

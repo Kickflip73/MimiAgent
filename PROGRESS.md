@@ -668,3 +668,43 @@
    Repository hygiene、release consistency、dependency direction、asset boundary 全绿，
    coverage 887/887、fail/skip/todo=0，line/branch/function=`88.21%/78.27%/84.55%`，
    build 与 package smoke 继续全绿。主工作树两个范围外 Skill 没有进入冻结提交或 CI 样本。
+
+## 2026-08-03 ARC-402：可追溯 clean build 与 T0 防作弊门禁
+
+1. 对照计划 5.2 发现旧 `MIMI_BUILD_VERSION` 只有 package version 与运行文件摘要，无法区分
+   commit/dirty。先加入缺失导出的红测，实际为 0/1、ESM 报
+   `does not provide an export named 'MIMI_BUILD_IDENTITY'`；实现后 build identity 同时包含完整
+   40 位 commit、显式 clean/dirty 和 12 位运行代码摘要，mtime 变化不改变 identity，代码内容
+   改变会改变摘要。
+2. `npm run build` 现生成严格的 `dist/build-identity.json`；无 Git metadata 失败关闭为
+   `unknown + dirty`，stale/损坏 manifest 不借用宿主 Git。安装包 smoke 验证 manifest 被打包、
+   schema/package/commit/dirty 与导出的结构化 identity 逐项一致。主工作树实测正确生成
+   `bee23c9…/dirty`，没有把未提交代码冒充 clean。
+3. Doctor 新增 installed、running、aligned 与可选 workspace HEAD/dirty，只读报告漂移且不重启、
+   不修改工作树。真实旧 Daemon 实测 installed=`0.12.0+gbee23c9…dirty.5626583ff91a`、
+   running=`0.12.0+54d3940e1185`、aligned=false、workspace dirty=true；漂移进入 issues。
+4. 正式 live/soak 又先以缺失 `isTraceableCleanBuildIdentity` 保留 0/1 红证据；现会在调用执行器
+   前拒绝 dirty、unknown、working-tree identity，canary 只接受 Doctor 中
+   installed=running 的 clean identity，`--build` 不得与运行值不同，跨 build 的证据禁止聚合。
+   相关 M1 回归 12/12，Build/Doctor 聚焦回归 6/6，全量 `npm test` 891/891，
+   fail/skip/todo=0。
+5. 实现已独立提交为 `eea545d`（13 files，379 additions/20 deletions）。首次 clean-CI 调度因
+   忘记切入临时 worktree，实际在主工作树运行，前三项绿、范围外两个 Skill 阻断 asset；修正
+   cwd 后全套测试虽绿，但进一步检查发现共享 `node_modules` symlink 被 Git 视为 untracked，
+   manifest 诚实标为 dirty，因此该次结果未作为冻结证据。
+6. 临时 worktree 移除 symlink 后按 lockfile 执行 `npm ci`，Git porcelain 为空；随后真正 clean
+   的 `npm run ci` 全绿：四项 repository checks 通过，coverage 891/891、fail/skip/todo=0、
+   line/branch/function=`88.24%/78.27%/84.58%`，build/package smoke 通过。最终 manifest 为
+   commit `eea545d8d6ae38f24b2763970e23dbffbdc05efe`、dirty=false，包内运行 identity 为
+   `0.12.0+geea545d8d6ae38f24b2763970e23dbffbdc05efe.clean.163b8e2cbade`；CI 后 Git 仍为空，
+   临时 worktree 已删除。
+7. 真实 Doctor 仍为 NO-GO：Computer unavailable（Screen Recording 未授权）、
+   `personal-daxiang` offline、`macos-screen` readiness unknown、dead letter=549（37 未分类）、
+   Digest=6649。故未安装、未重启、未迁移真实库、未建立 T0，也未运行会被新 clean-build
+   门禁拒绝的正式 canary；ARC-402 代码/包门禁完成，运行退出条件继续受外部 readiness 阻塞。
+8. 操作审计：本段有一次只读 `git check-ignore ... || :`，虽未掩盖验收结果，也未写状态，
+   但与 Goal 禁止吞错的原则不符；已停止使用并如实记录。后续失败命令均保留原 exit/output。
+9. `npm ci` 额外提示后执行只读 `npm audit --omit=dev --json`：0 high/critical、2 moderate，
+   均来自间接 `@modelcontextprotocol/sdk -> @hono/node-server<2.0.5` 的 Windows `serve-static`
+   encoded-backslash advisory；当前验收为 Darwin 且 MimiAgent 未开放该 static route，不阻断本轮，
+   但按“不得为本 ARC 改依赖/lockfile”边界未自动升级，留作单独依赖治理。
