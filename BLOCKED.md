@@ -160,3 +160,11 @@
 - **个人 QQ 恢复历史记录（已被 2026-08-02 ARC-205 状态取代）**：`personal-qq`
   的正式 Computer Adapter 已实现并通过确定性测试；当前剩余 inbound observer、真实
   TCC/AX readiness 和稳定 owner 目标，保持 disabled，不得把实现完成写成实机可用。
+- **2026-08-02 ARC-303 总生产 LOC 门禁未满足（实现内阻塞）**：三个热点已从
+  `3424/2383/3018` 收敛到 `1627/1795/1900`，完整 check/test/build 全绿，
+  但按 `e1dd9a0` 开工口径把所有新 `core/runtime/daemon` 模块计入后为
+  `10128` 行，对约 `9450` 基线仍净增 `678`，距离 10% 目标 `8505`
+  尚差 `1623`。已依次尝试职责切分、删除双 Commit facade、共享 SQLite
+  transaction/audit、删除重复 Host binding、合并 side-effect/snapshot 数据流；
+  不通过压缩格式、漏计新文件或删除受测产品能力伪造指标。ARC-303 保持未完成，
+  ARC-401/402 不得据此进入部署。
