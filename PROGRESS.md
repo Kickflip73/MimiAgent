@@ -13,6 +13,7 @@
 - ARC-000 clean-source CI：在提交 `d15645f` 的临时干净 worktree 原样运行 `npm run ci` exit 0；851/851、fail/skip/todo=0、coverage `87.41/77.46/84.06`，repo/check/build/package 全绿；临时 worktree 已删除。
 - ARC-101/102 红测先行：executor 单一领取、非法 route、Briefing 修复和 v16 精确迁移首轮 37 项中 7 项按预期失败；实现后聚焦 44/44、`npm run check`、`npm test`、`npm run build` 全绿。调度已删除 `claimTaskTypes`，enqueue 统一拒绝非法 `type/executor/workspaceAccess`；v16 只修复 queued `briefing + session_actor + write`，未知历史 type/组合保留并计入 audit，fresh DB 直接创建 v16。
 - ARC-102 真实备份演练：只在 `/tmp/mimi-v16-dryrun.PzWXYa` 副本执行 v15→v16；15 个 queued Briefing 全部原地转为 `isolated_worker + read`，未解释 Task 组合=0；5719 个 pending health Digest 按 Connector/状态保留 13 个、结束重复投影 5706 个，总 pending Digest `5935→229`。迁移后 integrity=ok、FK=0；自动迁移备份复读仍为 v15、15 个旧 Briefing、5935/5719 个 pending/health Digest，证明可回滚；真实 `~/.mimi-agent` 未修改。
+- ARC-102 clean-source CI：提交 `816c8ab` 的干净 worktree 原样 `npm run ci` 通过；856/856、fail/skip/todo=0，coverage `87.53/77.47/84.15`，repo/check/build/package 全绿。首轮门禁发现并修正 migration→daemon 反向依赖及 4 个旧非法测试 route；唯一 route map 由 Store 以纯函数注入 migration，没有复制 allowlist。
 
 ## 2026-07-31 Browser / Computer 原生可靠性 Goal
 - 目标：主 Agent 直接、严格、可验证地使用 Browser 与 Computer，不再因两层能力发现、宽松 schema 或巨型观察结果陷入循环。
