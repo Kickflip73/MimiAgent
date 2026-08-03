@@ -197,6 +197,16 @@ function inputText(input: ComputerElement): string {
   return rawText(input);
 }
 
+function compositorSurfaceOf(candidate: ComputerTargetSummary, selected: ComputerTargetSummary): boolean {
+  if (candidate.pid !== selected.pid || normalized(candidate.title) !== normalized(selected.title)) return false;
+  const left = Math.max(candidate.bounds.x, selected.bounds.x);
+  const top = Math.max(candidate.bounds.y, selected.bounds.y);
+  const right = Math.min(candidate.bounds.x + candidate.bounds.width, selected.bounds.x + selected.bounds.width);
+  const bottom = Math.min(candidate.bounds.y + candidate.bounds.height, selected.bounds.y + selected.bounds.height);
+  return Math.max(0, right - left) * Math.max(0, bottom - top)
+    >= candidate.bounds.width * candidate.bounds.height * 0.9;
+}
+
 export class QqPersonalMessageComputerAdapter {
   constructor(
     private readonly manager: ComputerManager,
@@ -372,30 +382,34 @@ export class QqPersonalMessageComputerAdapter {
   ): Promise<ParsedQqObservation> {
     const targets = (await this.manager.listHostTargets(authority, QQ_BUNDLE_ID, signal))
       .filter((candidate) => candidate.bounds.width >= 600 && candidate.bounds.height >= 450);
-    if (targets.length !== 1) {
-      throw new Error(`qq_target_ambiguous：需要唯一 QQ 窗口，当前为 ${targets.length}`);
+    const matches: Array<{ target: ComputerTargetSummary; parsed: ParsedQqObservation }> = [];
+    let failure: unknown;
+    for (const target of targets) {
+      if (target.frontmost !== false) throw new Error('target_in_use：QQ 位于前台或焦点状态未知');
+      try {
+        const observation = await this.manager.observeHostTarget(authority, target, signal);
+        if (observation.frontmost !== false) throw new Error('target_in_use：观察期间 QQ 位于前台或焦点状态未知');
+        const input = inputElement(observation.elements);
+        assertAccount(observation, input, authorization.accountFingerprint);
+        const title = activeConversationTitle(observation, input);
+        if (qqVisibleConversationId(title) !== authorization.conversationId) {
+          throw new Error('qq_conversation_mismatch：当前 QQ 会话与事件绑定不一致');
+        }
+        const messages = contextMessages(observation, input, limit);
+        matches.push({ target, parsed: { observation, input, messages, latestFingerprint: latestFingerprint(messages) } });
+      } catch (error) {
+        failure ??= error;
+      }
     }
-    const target = targets[0]!;
-    if (target.frontmost !== false) {
-      throw new Error('target_in_use：QQ 位于前台或焦点状态未知');
+    if (matches.length !== 1) throw matches.length
+      ? new Error(`qq_target_ambiguous：匹配到 ${matches.length} 个 QQ 会话窗口`)
+      : failure ?? new Error('qq_target_unavailable：没有可验证的 QQ 会话窗口');
+    const selected = matches[0]!;
+    if (targets.some((target) => target.windowId !== selected.target.windowId
+      && !compositorSurfaceOf(target, selected.target))) {
+      throw new Error('qq_target_ambiguous：存在独立 QQ 窗口，拒绝猜测目标');
     }
-    const observation = await this.manager.observeHostTarget(authority, target, signal);
-    if (observation.frontmost !== false) {
-      throw new Error('target_in_use：观察期间 QQ 位于前台或焦点状态未知');
-    }
-    const input = inputElement(observation.elements);
-    assertAccount(observation, input, authorization.accountFingerprint);
-    const title = activeConversationTitle(observation, input);
-    if (qqVisibleConversationId(title) !== authorization.conversationId) {
-      throw new Error('qq_conversation_mismatch：当前 QQ 会话与事件绑定不一致');
-    }
-    const messages = contextMessages(observation, input, limit);
-    return {
-      observation,
-      input,
-      messages,
-      latestFingerprint: latestFingerprint(messages),
-    };
+    return selected.parsed;
   }
 
   private authority(operation: string): ComputerRunAuthority {

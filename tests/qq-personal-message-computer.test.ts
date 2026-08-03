@@ -42,6 +42,8 @@ class FakeQqBackend implements ComputerBackend {
   sent = false;
   sendNoop = false;
   frontmost = false;
+  compositeSurfaces = false;
+  independentSurface = false;
 
   async health() { return { ready: true }; }
   async startSession(): Promise<BackendSession> { return { id: 'fake-qq-session' }; }
@@ -49,9 +51,28 @@ class FakeQqBackend implements ComputerBackend {
     return [{ bundleId: target.bundleId, name: target.appName, running: true }];
   }
   async listTargets(): Promise<ComputerTargetSummary[]> {
-    return [{ ...target, frontmost: this.frontmost }];
+    const primary = { ...target, frontmost: this.frontmost };
+    return this.compositeSurfaces ? [
+      primary,
+      {
+        ...primary,
+        windowId: 8,
+        bounds: { x: 50, y: 40, width: 900, height: 700 },
+      },
+      {
+        ...primary,
+        windowId: 9,
+        bounds: this.independentSurface
+          ? { x: 1_500, y: 80, width: 800, height: 620 }
+          : { x: 100, y: 80, width: 800, height: 620 },
+      },
+    ] : [primary];
   }
-  async observe(_session: BackendSession, _request: BackendObserveRequest): Promise<BackendObservation> {
+  async observe(_session: BackendSession, request: BackendObserveRequest): Promise<BackendObservation> {
+    const windowId = request.input.scope === 'window' ? request.input.target.windowId : undefined;
+    if (windowId !== target.windowId) {
+      throw new Error(`ax_window_unresolved: ${windowId ?? 'none'}`);
+    }
     this.observations += 1;
     const elements: ComputerElement[] = [
       {
@@ -189,6 +210,26 @@ test('QQ personal message route reads a bounded stable context without UI action
   assert.equal(context.coverage, 'bounded');
   assert.deepEqual(context.messages.map((message) => message.direction), ['incoming', 'outgoing']);
   assert.equal(context.truncated, true);
+  assert.equal(backend.actions.length, 0);
+});
+
+test('QQ personal message route selects one semantic window from contained compositor surfaces', async () => {
+  const { adapter, authorization, backend } = await fixture();
+  backend.compositeSurfaces = true;
+
+  const context = await adapter.getContext(authorization, 20);
+
+  assert.equal(context.conversationId, authorization.conversationId);
+  assert.equal(context.messages.length, 2);
+  assert.equal(backend.actions.length, 0);
+});
+
+test('QQ personal message route rejects an independent unresolved window', async () => {
+  const { adapter, authorization, backend } = await fixture();
+  backend.compositeSurfaces = true;
+  backend.independentSurface = true;
+
+  await assert.rejects(() => adapter.getContext(authorization, 20), /ambiguous|独立/iu);
   assert.equal(backend.actions.length, 0);
 });
 
