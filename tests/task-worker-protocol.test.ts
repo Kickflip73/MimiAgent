@@ -3,11 +3,46 @@ import test from 'node:test';
 import type { AppConfig } from '../src/config.js';
 import {
   taskProviderEnvironmentName,
+  retainTaskEmbeddingCredential,
+  retainTaskProviderCredential,
   taskWorkerConfig,
   taskWorkerInitSchema,
   withTaskProviderCredential,
   withTaskEmbeddingCredential,
 } from '../src/daemon/worker-protocol.js';
+
+test('Task worker retains lazy runtime credentials until the worker explicitly releases them', async () => {
+  const environment: NodeJS.ProcessEnv = {
+    RIGHT_ONLY_KEY: 'previous-provider-key',
+    MIMI_EMBEDDING_API_KEY: 'previous-embedding-key',
+  };
+  const releaseProvider = retainTaskProviderCredential({
+    providerId: 'right',
+    apiKeyEnv: 'RIGHT_ONLY_KEY',
+    target: { providerId: 'right', modelId: 'right-model' },
+    apiKey: 'current-provider-key',
+  }, environment);
+  const releaseEmbedding = retainTaskEmbeddingCredential({
+    apiKey: 'current-embedding-key',
+    baseURL: 'https://embedding.example/v1',
+    model: 'embedding-model',
+  }, environment);
+
+  await Promise.resolve();
+  assert.equal(environment.RIGHT_ONLY_KEY, 'current-provider-key');
+  assert.equal(environment.MIMI_EMBEDDING_API_KEY, 'current-embedding-key');
+  assert.equal(environment.MIMI_EMBEDDING_BASE_URL, 'https://embedding.example/v1');
+  assert.equal(environment.EMBEDDING_MODEL, 'embedding-model');
+
+  releaseEmbedding();
+  releaseProvider();
+  releaseEmbedding();
+  releaseProvider();
+  assert.deepEqual(environment, {
+    RIGHT_ONLY_KEY: 'previous-provider-key',
+    MIMI_EMBEDDING_API_KEY: 'previous-embedding-key',
+  });
+});
 
 test('Task worker configuration excludes Computer Use capability', () => {
   const config = {

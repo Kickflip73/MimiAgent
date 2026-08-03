@@ -85,15 +85,28 @@ export async function withTaskProviderCredential<T>(
   operation: () => Promise<T>,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<T> {
-  const resolvedName = taskProviderEnvironmentName(credential);
-  const previous = environment[resolvedName];
-  environment[resolvedName] = credential.apiKey;
+  const release = retainTaskProviderCredential(credential, environment);
   try {
     return await operation();
   } finally {
+    release();
+  }
+}
+
+export function retainTaskProviderCredential(
+  credential: TaskProviderCredential,
+  environment: NodeJS.ProcessEnv = process.env,
+): () => void {
+  const resolvedName = taskProviderEnvironmentName(credential);
+  const previous = environment[resolvedName];
+  environment[resolvedName] = credential.apiKey;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
     if (previous === undefined) delete environment[resolvedName];
     else environment[resolvedName] = previous;
-  }
+  };
 }
 
 export async function withTaskEmbeddingCredential<T>(
@@ -101,6 +114,18 @@ export async function withTaskEmbeddingCredential<T>(
   operation: () => Promise<T>,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<T> {
+  const release = retainTaskEmbeddingCredential(credential, environment);
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+export function retainTaskEmbeddingCredential(
+  credential: TaskEmbeddingCredential,
+  environment: NodeJS.ProcessEnv = process.env,
+): () => void {
   const entries = [
     ['MIMI_EMBEDDING_API_KEY', credential.apiKey],
     ['MIMI_EMBEDDING_BASE_URL', credential.baseURL],
@@ -112,15 +137,16 @@ export async function withTaskEmbeddingCredential<T>(
     if (value === undefined) delete environment[name];
     else environment[name] = value;
   }
-  try {
-    return await operation();
-  } finally {
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
     for (const [name] of entries) {
       const value = previous.get(name);
       if (value === undefined) delete environment[name];
       else environment[name] = value;
     }
-  }
+  };
 }
 
 const appConfigSchema = z.object({

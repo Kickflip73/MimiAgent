@@ -16,9 +16,10 @@ import { MimiStore } from './store.js';
 import {
   taskWorkerControlSchema,
   taskWorkerInitSchema,
+  retainTaskEmbeddingCredential,
+  retainTaskProviderCredential,
   restrictedTaskShellEnvironment,
   withTaskProviderCredential,
-  withTaskEmbeddingCredential,
   type TaskWorkerControl,
   type TaskWorkerInit,
   type TaskWorkerOutput,
@@ -63,6 +64,8 @@ async function run(raw: unknown): Promise<void> {
   initialized = true;
   const store = new MimiStore(init.database);
   let host: MimiHost | undefined;
+  let releaseProviderCredential: (() => void) | undefined;
+  let releaseEmbeddingCredential: (() => void) | undefined;
   const heartbeat = setInterval(() => {
     void send({ type: 'heartbeat', taskId: init.taskId, at: new Date().toISOString() });
   }, 10_000);
@@ -77,6 +80,11 @@ async function run(raw: unknown): Promise<void> {
       return;
     }
     if (!init.providerCredential) throw new Error('Mimi Task worker 缺少 provider credential');
+    // Model and embedding clients are lazy, so their Host-only credentials must outlive Agent creation.
+    releaseProviderCredential = retainTaskProviderCredential(init.providerCredential);
+    if (init.embeddingCredential) {
+      releaseEmbeddingCredential = retainTaskEmbeddingCredential(init.embeddingCredential);
+    }
     const attention = await AttentionEngine.load(init.assistantConfig, store);
     let agent;
     const mcpEnvironment: Record<string, string> = init.enableMcp ? {
@@ -84,24 +92,17 @@ async function run(raw: unknown): Promise<void> {
       [taskProviderEnvironmentName(init.providerCredential)]: init.providerCredential.apiKey,
     } : {};
     try {
-      agent = await withTaskProviderCredential(init.providerCredential, async () => {
-        const create = async () => {
-          configureAgentRuntime(init.config);
-          return MimiAgent.create(init.config, task.sessionKey, {
-            protectRuntimePathsFromShell: true,
-            shellEnvironment: restrictedTaskShellEnvironment(process.env),
-            shellDetachedProcessGroup: false,
-            restrictReadsToWorkspace: init.workspaceAccess === 'read',
-            mcpEnvironment,
-            enableMcp: init.enableMcp,
-            releaseMcpEnvironmentAfterConnect: true,
-            modelConfiguration: init.modelConfiguration,
-            modelBinding: init.modelBinding,
-          });
-        };
-        return init.embeddingCredential
-          ? withTaskEmbeddingCredential(init.embeddingCredential, create)
-          : create();
+      configureAgentRuntime(init.config);
+      agent = await MimiAgent.create(init.config, task.sessionKey, {
+        protectRuntimePathsFromShell: true,
+        shellEnvironment: restrictedTaskShellEnvironment(process.env),
+        shellDetachedProcessGroup: false,
+        restrictReadsToWorkspace: init.workspaceAccess === 'read',
+        mcpEnvironment,
+        enableMcp: init.enableMcp,
+        releaseMcpEnvironmentAfterConnect: true,
+        modelConfiguration: init.modelConfiguration,
+        modelBinding: init.modelBinding,
       });
     } finally {
       if (init.providerCredential) init.providerCredential.apiKey = '';
@@ -199,6 +200,8 @@ async function run(raw: unknown): Promise<void> {
     for (const name of Object.keys(init.mcpEnvironment)) init.mcpEnvironment[name] = '';
     clearInterval(heartbeat);
     await host?.close().catch(() => undefined);
+    releaseEmbeddingCredential?.();
+    releaseProviderCredential?.();
     store.close();
     process.removeAllListeners('message');
     if (process.connected) process.disconnect?.();
