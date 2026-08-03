@@ -139,6 +139,60 @@ test('read-only Computer probe observes one allowlisted background window and ve
   assert.equal(backend.ends, 1);
 });
 
+test('read-only Computer probe skips an AX-unresolvable background surface', async () => {
+  const { backend, manager } = await fixture();
+  const fallbackTarget: ComputerTargetSummary = {
+    ...target,
+    bundleId: 'com.example.preview',
+    pid: 43,
+    windowId: 8,
+    appName: 'Preview',
+    title: 'Document Preview',
+  };
+  backend.targets = [target, fallbackTarget];
+  backend.observe = async (_session, request) => {
+    if (request.input.scope !== 'window') return { data: [] };
+    return request.input.target.windowId === target.windowId
+      ? {
+          target,
+          frontmost: false,
+          dimensions: { width: 800, height: 600 },
+          elements: [],
+          data: { degraded: true, degradedReason: 'ax_window_unresolved' },
+        }
+      : {
+          target: fallbackTarget,
+          frontmost: false,
+          dimensions: { width: 800, height: 600 },
+          elements: [{ index: 1, role: 'AXStaticText', label: 'Preview' }],
+        };
+  };
+
+  const receipt = await manager.observeStableBackgroundWindow({
+    runId: 'probe-fallback',
+    access: 'observe',
+    allowedApps: [target.bundleId, fallbackTarget.bundleId],
+    supportsImageInput: false,
+  });
+
+  assert.deepEqual(receipt.target, {
+    bundleId: fallbackTarget.bundleId,
+    pid: fallbackTarget.pid,
+    windowId: fallbackTarget.windowId,
+  });
+  assert.equal(manager.status().operationalReadiness, 'ready');
+  assert.equal(backend.actions.length, 0);
+  assert.equal(backend.ends, 1);
+
+  await assert.rejects(() => manager.observeStableBackgroundWindow({
+    runId: 'probe-exact-unresolved',
+    access: 'observe',
+    allowedApps: [target.bundleId, fallbackTarget.bundleId],
+    supportsImageInput: false,
+  }, undefined, target), /computer_unavailable.*ax_window_unresolved/);
+  assert.equal(backend.ends, 2);
+});
+
 test('read-only Computer probe rejects frontmost, control-plane, denied and drifting targets', async () => {
   const frontmost = await fixture();
   frontmost.backend.targets = [{ ...target, frontmost: true }];

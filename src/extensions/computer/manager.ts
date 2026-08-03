@@ -501,7 +501,7 @@ export class ComputerManager {
     }
     try {
       const targets = await this.backend.listTargets({ limit: 50 }, signal);
-      const target = targets.find((candidate) => (
+      const candidates = targets.filter((candidate) => (
         authority.allowedApps!.includes(candidate.bundleId)
         && candidate.frontmost === false
         && (!expectedTarget
@@ -509,7 +509,7 @@ export class ComputerManager {
             && candidate.pid === expectedTarget.pid
             && candidate.windowId === expectedTarget.windowId))
       ));
-      if (!target) {
+      if (candidates.length === 0) {
         const focusUnknown = targets.some((candidate) => (
           authority.allowedApps!.includes(candidate.bundleId)
           && candidate.frontmost !== false
@@ -518,45 +518,53 @@ export class ComputerManager {
           ? 'target_in_use：allowlist 目标 frontmost 或焦点状态未知，拒绝后台观察'
           : 'target_not_found：没有可验证的 allowlist 后台窗口');
       }
-      const observation = await this.observe(authority, {
-        scope: 'window',
-        target: {
-          bundleId: target.bundleId,
-          pid: target.pid,
-          windowId: target.windowId,
-        },
-        includeScreenshot: false,
-        maxElements: 100,
-        maxDepth: 8,
-      }, signal);
-      if ((observation as { actionable?: boolean }).actionable !== true) {
-        const reason = (observation as { blockedReason?: string }).blockedReason
-          ?? 'window observation is not actionable';
-        throw new Error(`computer_unavailable: ${reason}`);
+      let lastUnusableReason: string | undefined;
+      for (const target of candidates) {
+        const observation = await this.observe(authority, {
+          scope: 'window',
+          target: {
+            bundleId: target.bundleId,
+            pid: target.pid,
+            windowId: target.windowId,
+          },
+          includeScreenshot: false,
+          maxElements: 100,
+          maxDepth: 8,
+        }, signal);
+        if ((observation as { actionable?: boolean }).actionable !== true) {
+          const reason = (observation as { blockedReason?: string }).blockedReason
+            ?? 'window observation is not actionable';
+          if (!expectedTarget && reason.includes('ax_window_unresolved')) {
+            lastUnusableReason = reason;
+            continue;
+          }
+          throw new Error(`computer_unavailable: ${reason}`);
+        }
+        const after = await this.backend.listTargets({ query: target.bundleId, limit: 50 }, signal);
+        const verified = after.find((candidate) => (
+          candidate.bundleId === target.bundleId
+          && candidate.pid === target.pid
+          && candidate.windowId === target.windowId
+        ));
+        if (!verified || verified.frontmost !== false) {
+          throw new Error('target drift：Computer read probe 后目标窗口漂移、进入前台或焦点状态未知');
+        }
+        return {
+          boundary: 'computer_manager',
+          effect: 'read',
+          registered: true,
+          ready: true,
+          fresh: true,
+          targetVerified: true,
+          actionResult: true,
+          target: {
+            bundleId: target.bundleId,
+            pid: target.pid,
+            windowId: target.windowId,
+          },
+        };
       }
-      const after = await this.backend.listTargets({ query: target.bundleId, limit: 50 }, signal);
-      const verified = after.find((candidate) => (
-        candidate.bundleId === target.bundleId
-        && candidate.pid === target.pid
-        && candidate.windowId === target.windowId
-      ));
-      if (!verified || verified.frontmost !== false) {
-        throw new Error('target drift：Computer read probe 后目标窗口漂移、进入前台或焦点状态未知');
-      }
-      return {
-        boundary: 'computer_manager',
-        effect: 'read',
-        registered: true,
-        ready: true,
-        fresh: true,
-        targetVerified: true,
-        actionResult: true,
-        target: {
-          bundleId: target.bundleId,
-          pid: target.pid,
-          windowId: target.windowId,
-        },
-      };
+      throw new Error(`computer_unavailable: ${lastUnusableReason ?? 'window observation is not actionable'}`);
     } finally {
       await this.endRun(authority.runId);
     }
