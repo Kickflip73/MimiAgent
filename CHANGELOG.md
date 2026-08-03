@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- reject direct execution of macOS application-bundle binaries at the Shell
+  sandbox boundary so browser-backed CLIs cannot launch Chrome without GUI
+  services and produce misleading AppKit crash dialogs
 - promote delegated tasks that require `shell.execute` into the supervised
   exclusive worker lane even when the caller describes the workspace as read-only,
   and allow read-only Terminal observation while continuing to block Computer input

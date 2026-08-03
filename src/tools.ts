@@ -140,8 +140,15 @@ function sandboxProfile(
   protectedPaths: string[],
   blockedUnixSocketPaths: string[],
   blockedLocalTcpPorts: number[],
+  homeDirectory: string | undefined,
 ): string {
   const quote = (value: string) => `"${path.resolve(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  const applicationRoots = [
+    '/Applications',
+    '/System/Applications',
+    '/System/Library/CoreServices',
+    ...(homeDirectory ? [path.join(homeDirectory, 'Applications')] : []),
+  ];
   return [
     '(version 1)',
     '(allow default)',
@@ -150,6 +157,11 @@ function sandboxProfile(
     // classify command text or enumerate scripting languages.
     '(deny appleevent-send)',
     '(deny lsopen)',
+    // A CLI can otherwise bypass LaunchServices and exec a GUI bundle binary
+    // directly. The process then inherits this non-GUI sandbox and AppKit
+    // aborts while registering with WindowServer/LaunchServices, producing a
+    // misleading application crash dialog. Reject GUI bundles before exec.
+    ...applicationRoots.map((root) => `(deny process-exec (subpath ${quote(root)}))`),
     ...blockedUnixSocketPaths.map((socketPath) =>
       `(deny network-outbound (remote unix-socket (path-literal ${quote(socketPath)})))`),
     ...blockedLocalTcpPorts.map((port) =>
@@ -1279,6 +1291,7 @@ export async function runShellCommand(
           canonicalProtectedPaths,
           canonicalBlockedUnixSocketPaths,
           validatedBlockedLocalTcpPorts,
+          environment.HOME,
         ),
         '/bin/zsh',
         '-o',

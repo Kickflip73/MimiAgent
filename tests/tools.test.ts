@@ -334,6 +334,32 @@ test('Darwin Shell sandbox blocks direct and interpreter-mediated system automat
   assert.equal(indirect.executionBoundary?.kind, 'darwin-sandbox');
 });
 
+test('Darwin Shell sandbox rejects GUI application executables before launch', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-gui-exec-'));
+  if (process.platform !== 'darwin') return;
+
+  const candidates = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/System/Applications/Calculator.app/Contents/MacOS/Calculator',
+  ];
+  let executable: string | undefined;
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      executable = candidate;
+      break;
+    } catch {
+      // Try the next standard GUI application location.
+    }
+  }
+  assert.ok(executable, 'expected a standard macOS GUI application fixture');
+
+  const result = await runShellCommand(root, `${JSON.stringify(executable)} --version`, 10);
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.stderr, /operation not permitted|sandbox|deny/iu);
+  assert.equal(result.executionBoundary?.kind, 'darwin-sandbox');
+});
+
 test('Shell propagates a failed pipeline stage instead of reporting empty success', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-pipefail-'));
   const result = await runShellCommand(root, 'false | true', 5);
