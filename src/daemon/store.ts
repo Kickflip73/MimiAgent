@@ -25,8 +25,8 @@ import {
 } from './persistence/schema/migrations/v15-memory-evidence-snapshot.js';
 import {
   hasTaskExecutorOwnershipV16,
-  needsTaskFailureFactsRepairV16,
-  repairTaskFailureFactsV16,
+  pendingTaskExecutorOwnershipV16Repairs,
+  repairExistingTaskExecutorOwnershipV16,
   upgradeTaskExecutorOwnershipV16,
 } from './persistence/schema/migrations/v16-task-executor-ownership.js';
 import { prepareLegacyEventSchemaForV12 } from './persistence/schema/migrations/v3-v11-legacy-event-preparation.js';
@@ -1393,14 +1393,14 @@ export class MimiStore extends ActivityStore {
     if (version < 14) repairDigestedTaskRoutesV14(this.database);
     if (version < 15) upgradeMemoryEvidenceSnapshotV15(this.database, sanitizedMemoryEvidenceSnapshot);
     if (version < 16) upgradeTaskExecutorOwnershipV16(this.database, validTaskRoute);
-    else if (needsTaskFailureFactsRepairV16(this.database)) repairTaskFailureFactsV16(this.database);
+    else repairExistingTaskExecutorOwnershipV16(this.database);
   }
 
   private backupBeforeMigrations(): void {
     const version = Number((this.database.prepare('PRAGMA user_version').get() as Row).user_version);
     const finalEventSchema = hasFinalEventTaskV12Schema(this.database);
-    const repairExistingV16 = version === 16 && hasTaskExecutorOwnershipV16(this.database)
-      && needsTaskFailureFactsRepairV16(this.database);
+    const existingV16Repairs = version === 16 && hasTaskExecutorOwnershipV16(this.database)
+      ? pendingTaskExecutorOwnershipV16Repairs(this.database) : [];
     const memoryHubCurrent = version === 13 && this.database.prepare(`
       SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_lint_state'
     `).get();
@@ -1409,7 +1409,7 @@ export class MimiStore extends ActivityStore {
       ...(version === 13 && finalEventSchema ? ['task-route-v14'] : []),
       ...(version === 14 && finalEventSchema ? ['memory-evidence-v15'] : []),
       ...(version === 15 && finalEventSchema ? ['task-executor-v16'] : []),
-      ...(repairExistingV16 && finalEventSchema ? ['task-failure-facts-v16'] : []),
+      ...(finalEventSchema ? existingV16Repairs : []),
     ];
     for (const label of labels) this.backupDatabase(label);
   }

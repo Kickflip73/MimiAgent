@@ -118,6 +118,142 @@ function healthDigestGroup(payloadJson: unknown): string | undefined {
   }
 }
 
+export type HistoricalHealthDigestCompactionV16 = {
+  pendingHealthDigestItems: number;
+  retainedHealthGroups: number;
+  collapsibleHealthDigestItems: number;
+  unclassifiedHealthDigestItems: number;
+};
+
+function pendingHealthDigestRows(database: DatabaseSync): Row[] {
+  return database.prepare(`
+    SELECT digest_items.id, events.payload_json
+    FROM digest_items JOIN events ON events.id = digest_items.event_id
+    WHERE digest_items.digested_at IS NULL AND events.source = 'system:connector-health'
+    ORDER BY digest_items.occurred_at DESC, digest_items.id DESC
+  `).all() as Row[];
+}
+
+function classifyHistoricalHealthDigestCompactionV16(database: DatabaseSync): {
+  report: HistoricalHealthDigestCompactionV16;
+  collapsibleIds: string[];
+} {
+  const rows = pendingHealthDigestRows(database);
+  const retainedGroups = new Set<string>();
+  const collapsibleIds: string[] = [];
+  let unclassifiedHealthDigestItems = 0;
+  for (const row of rows) {
+    const group = healthDigestGroup(row.payload_json);
+    if (!group) {
+      unclassifiedHealthDigestItems += 1;
+      continue;
+    }
+    if (!retainedGroups.has(group)) {
+      retainedGroups.add(group);
+      continue;
+    }
+    collapsibleIds.push(String(row.id));
+  }
+  return {
+    report: {
+      pendingHealthDigestItems: rows.length,
+      retainedHealthGroups: retainedGroups.size,
+      collapsibleHealthDigestItems: collapsibleIds.length,
+      unclassifiedHealthDigestItems,
+    },
+    collapsibleIds,
+  };
+}
+
+function hasHistoricalHealthDigestCompactionV16(database: DatabaseSync): boolean {
+  return Boolean(database.prepare(`
+    SELECT 1 FROM audit_events
+    WHERE event_type='migration.health_digest_compaction_v16' AND entity_id='schema:v16'
+    LIMIT 1
+  `).get());
+}
+
+export function analyzeHistoricalHealthDigestCompactionV16(
+  database: DatabaseSync,
+): HistoricalHealthDigestCompactionV16 {
+  return classifyHistoricalHealthDigestCompactionV16(database).report;
+}
+
+export function needsHistoricalHealthDigestCompactionV16(database: DatabaseSync): boolean {
+  return !hasHistoricalHealthDigestCompactionV16(database)
+    && analyzeHistoricalHealthDigestCompactionV16(database).collapsibleHealthDigestItems > 0;
+}
+
+export function repairHistoricalHealthDigestCompactionV16(database: DatabaseSync): void {
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    if (hasHistoricalHealthDigestCompactionV16(database)) {
+      database.exec('COMMIT');
+      return;
+    }
+    const before = classifyHistoricalHealthDigestCompactionV16(database);
+    if (before.collapsibleIds.length === 0) {
+      database.exec('COMMIT');
+      return;
+    }
+    const timestamp = new Date().toISOString();
+    const finishDigest = database.prepare(`
+      UPDATE digest_items SET digested_at = ? WHERE id = ? AND digested_at IS NULL
+    `);
+    let collapsedHealthDigestItems = 0;
+    for (const id of before.collapsibleIds) {
+      collapsedHealthDigestItems += Number(finishDigest.run(timestamp, id).changes);
+    }
+    if (collapsedHealthDigestItems !== before.collapsibleIds.length) {
+      throw new Error('v16 历史连接器健康 Digest 压缩计数不一致');
+    }
+    const after = analyzeHistoricalHealthDigestCompactionV16(database);
+    const integrity = database.prepare('PRAGMA integrity_check').get() as Row | undefined;
+    const foreignKeys = database.prepare('PRAGMA foreign_key_check').all() as Row[];
+    if (integrity?.integrity_check !== 'ok' || foreignKeys.length > 0) {
+      throw new Error('v16 历史连接器健康 Digest 压缩完整性检查失败');
+    }
+    database.prepare(`
+      INSERT INTO audit_events (id, event_type, entity_id, data_json, created_at)
+      VALUES (?, 'migration.health_digest_compaction_v16', 'schema:v16', ?, ?)
+    `).run(randomUUID(), JSON.stringify({
+      before: before.report,
+      after: {
+        pendingHealthDigestItems: after.pendingHealthDigestItems,
+        collapsedHealthDigestItems,
+      },
+      integrity: 'ok',
+      foreignKeyViolations: 0,
+    }), timestamp);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export type ExistingTaskExecutorOwnershipV16Repair =
+  | 'task-failure-facts-v16'
+  | 'health-digest-compaction-v16';
+
+export function pendingTaskExecutorOwnershipV16Repairs(
+  database: DatabaseSync,
+): ExistingTaskExecutorOwnershipV16Repair[] {
+  return [
+    ...(needsTaskFailureFactsRepairV16(database) ? ['task-failure-facts-v16' as const] : []),
+    ...(needsHistoricalHealthDigestCompactionV16(database)
+      ? ['health-digest-compaction-v16' as const]
+      : []),
+  ];
+}
+
+export function repairExistingTaskExecutorOwnershipV16(database: DatabaseSync): void {
+  if (needsTaskFailureFactsRepairV16(database)) repairTaskFailureFactsV16(database);
+  if (needsHistoricalHealthDigestCompactionV16(database)) {
+    repairHistoricalHealthDigestCompactionV16(database);
+  }
+}
+
 export function hasTaskExecutorOwnershipV16(database: DatabaseSync): boolean {
   return Boolean(database.prepare(`
     SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'tasks_executor_ready_idx'

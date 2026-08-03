@@ -13,7 +13,10 @@ import {
   prepareLegacyEventSchemaForV12,
 } from '../src/daemon/persistence/schema/migrations/v3-v11-legacy-event-preparation.js';
 import {
+  analyzeHistoricalHealthDigestCompactionV16,
+  needsHistoricalHealthDigestCompactionV16,
   needsTaskFailureFactsRepairV16,
+  repairHistoricalHealthDigestCompactionV16,
   repairTaskFailureFactsV16,
   upgradeTaskExecutorOwnershipV16,
 } from '../src/daemon/persistence/schema/migrations/v16-task-executor-ownership.js';
@@ -779,6 +782,152 @@ test('v16 failure facts repair rolls back when integrity fails', async () => {
   );
   assert.equal(database.prepare(`
     SELECT 1 FROM audit_events WHERE event_type='migration.task_failure_facts_v16'
+  `).get(), undefined);
+  database.close();
+});
+
+test('existing v16 databases compact historical health Digests once with backup and audit', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-event-task-v16-health-digest-'));
+  const file = path.join(root, 'mimi.db');
+  const store = new MimiStore(file);
+  const at = '2026-08-03T00:00:00.000Z';
+  try {
+    store.setIngressRoutePolicy(() => ({ decision: 'digest', reasonCode: 'health_fixture' }));
+    const fixtures = [
+      { connectorId: 'fixture', status: 'offline' },
+      { connectorId: 'fixture', status: 'unavailable' },
+      { connectorId: 'fixture', status: 'offline' },
+      { connectorId: 'fixture', status: 'recovered' },
+      { connectorId: 'fixture', status: 'recovered' },
+      { connectorId: 'other', status: 'stale' },
+      { connectorId: 'fixture', status: 'healthy' },
+    ];
+    for (const [index, connectorHealth] of fixtures.entries()) {
+      const timestamp = new Date(Date.parse(at) + index * 1_000).toISOString();
+      store.ingestEvent({
+        id: `historical-health-${index}`,
+        externalId: `historical-health-${index}`,
+        source: 'system:connector-health',
+        kind: 'ambient',
+        trust: 'system',
+        payload: { connectorHealth },
+        occurredAt: timestamp,
+        receivedAt: timestamp,
+        priority: 10,
+        profileId: 'owner',
+      });
+    }
+    assert.equal(store.pendingDigestCount(), 7);
+  } finally {
+    store.close();
+  }
+
+  const dryRun = new DatabaseSync(file, { readOnly: true });
+  assert.deepEqual(analyzeHistoricalHealthDigestCompactionV16(dryRun), {
+    pendingHealthDigestItems: 7,
+    retainedHealthGroups: 3,
+    collapsibleHealthDigestItems: 3,
+    unclassifiedHealthDigestItems: 1,
+  });
+  assert.equal(needsHistoricalHealthDigestCompactionV16(dryRun), true);
+  dryRun.close();
+
+  const repaired = new MimiStore(file);
+  try {
+    assert.equal(repaired.pendingDigestCount(), 4);
+    assert.equal(
+      repaired.listEventSummaries(100)
+        .filter((event) => event.source === 'system:connector-health').length,
+      7,
+    );
+  } finally {
+    repaired.close();
+  }
+
+  const verified = new DatabaseSync(file, { readOnly: true });
+  assert.equal(needsHistoricalHealthDigestCompactionV16(verified), false);
+  assert.deepEqual(
+    (verified.prepare(`
+      SELECT events.id FROM digest_items JOIN events ON events.id=digest_items.event_id
+      WHERE digest_items.digested_at IS NULL AND events.source='system:connector-health'
+      ORDER BY events.id
+    `).all() as Array<{ id: string }>).map((row) => row.id),
+    ['historical-health-2', 'historical-health-4', 'historical-health-5', 'historical-health-6'],
+  );
+  assert.equal(Number((verified.prepare(`
+    SELECT COUNT(*) AS count FROM audit_events
+    WHERE event_type='migration.health_digest_compaction_v16'
+  `).get() as { count: number }).count), 1);
+  const audit = verified.prepare(`
+    SELECT data_json FROM audit_events
+    WHERE event_type='migration.health_digest_compaction_v16'
+  `).get() as { data_json: string };
+  assert.deepEqual(JSON.parse(audit.data_json), {
+    before: {
+      pendingHealthDigestItems: 7,
+      retainedHealthGroups: 3,
+      collapsibleHealthDigestItems: 3,
+      unclassifiedHealthDigestItems: 1,
+    },
+    after: {
+      pendingHealthDigestItems: 4,
+      collapsedHealthDigestItems: 3,
+    },
+    integrity: 'ok',
+    foreignKeyViolations: 0,
+  });
+  verified.close();
+
+  const firstBackups = await readdir(path.join(root, 'backups'));
+  assert.equal(firstBackups.filter((entry) => entry.startsWith('health-digest-compaction-v16-')).length, 1);
+  new MimiStore(file).close();
+  const secondBackups = await readdir(path.join(root, 'backups'));
+  assert.equal(secondBackups.filter((entry) => entry.startsWith('health-digest-compaction-v16-')).length, 1);
+});
+
+test('v16 historical health Digest compaction rolls back when integrity fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-event-task-v16-health-rollback-'));
+  const file = path.join(root, 'mimi.db');
+  const store = new MimiStore(file);
+  try {
+    store.setIngressRoutePolicy(() => ({ decision: 'digest', reasonCode: 'health_fixture' }));
+    for (const index of [0, 1]) {
+      const timestamp = `2026-08-03T00:00:0${index}.000Z`;
+      store.ingestEvent({
+        id: `rollback-health-${index}`,
+        externalId: `rollback-health-${index}`,
+        source: 'system:connector-health',
+        kind: 'ambient',
+        trust: 'system',
+        payload: { connectorHealth: { connectorId: 'fixture', status: 'offline' } },
+        occurredAt: timestamp,
+        receivedAt: timestamp,
+        priority: 10,
+        profileId: 'owner',
+      });
+    }
+  } finally {
+    store.close();
+  }
+
+  const database = new DatabaseSync(file);
+  database.exec(`
+    PRAGMA foreign_keys=OFF;
+    INSERT INTO event_route_receipts (
+      event_id, router_version, decision, task_ids_json, reason_code, routed_at
+    ) VALUES ('missing-event', 'fixture', 'observe_only', '[]', 'fixture',
+      '2026-08-03T00:00:00.000Z');
+  `);
+  assert.equal(needsHistoricalHealthDigestCompactionV16(database), true);
+  assert.throws(
+    () => repairHistoricalHealthDigestCompactionV16(database),
+    /完整性检查失败/,
+  );
+  assert.equal(Number((database.prepare(`
+    SELECT COUNT(*) AS count FROM digest_items WHERE digested_at IS NOT NULL
+  `).get() as { count: number }).count), 0);
+  assert.equal(database.prepare(`
+    SELECT 1 FROM audit_events WHERE event_type='migration.health_digest_compaction_v16'
   `).get(), undefined);
   database.close();
 });
