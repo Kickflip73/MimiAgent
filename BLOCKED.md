@@ -270,3 +270,11 @@
   重跑 `wx init --force`，不需要再授予 Codex 文件或命令权限。独立的产品能力缺口是该 CLI 没有
   send 命令，只有读/检索/导出面；在找到并验证合法个人账号发送后端、稳定目标和业务回读前，
   不得把只读 route、OpenClaw/Bot 通道或模拟 action 计为个人微信完成。
+- **2026-08-03 锁屏 blocker 已解除，个人微信密钥/发送 blocker 仍成立**：Owner 解锁后
+  Computer、Screen、Shortcuts 正式 live probe 全部成功，Doctor 为 Computer ready、Connector
+  `8/8/8` 且无 stale/unknown；因此不再把 CUA 或 TCC 计为 blocker。登录状态下
+  `wx init --force` 虽取得 task port 并扫描 18 个加密库，仍得到 0 个候选/匹配/保存密钥，
+  `sessions` 继续无法解密；上游要求的管理员扫描需要 owner 在系统认证界面或自己的终端完成，
+  Codex 不索取、不记录也不绕过密码。即使此后读取转绿，`wx-cli@0.3.0` 仍无 send 命令，必须
+  另有合法、可验证的个人账号发送与业务回读 route 才能解除 ARC-205。证据：
+  `evals/m1/deployments/20260803T142212+0800-unlock-probes-wechat.json`。

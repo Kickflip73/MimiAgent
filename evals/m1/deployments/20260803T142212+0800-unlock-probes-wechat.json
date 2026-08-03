@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-03T06:22:12.080Z",
+  "kind": "unlock-live-probes-and-wechat-preflight",
+  "workspaceHead": "b0cee7e2833d7f493905a3af6c6d6b2b9ba2b3af",
+  "runtimeBuild": {
+    "installed": "0.12.0+ge9d06bd8cb75e52b5c6755520c0c38f1ef25f9f4.clean.7364ab4782d6",
+    "running": "0.12.0+ge9d06bd8cb75e52b5c6755520c0c38f1ef25f9f4.clean.7364ab4782d6",
+    "aligned": true
+  },
+  "preProbeBoundary": {
+    "daemonPid": 98228,
+    "queuedTasks": 0,
+    "runningTasks": 0,
+    "activeEvents": 0,
+    "activeTools": 0,
+    "activeHostMutations": 0,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "ioConsoleLocked": false
+  },
+  "liveReadProbes": [
+    {
+      "name": "computer-window",
+      "receiptId": "1ed39ce1-e2f2-4362-a231-dbd25c3cd60d",
+      "status": "success"
+    },
+    {
+      "name": "screen-window",
+      "receiptId": "3bba7242-4480-411c-8fe7-e40ad7be7017",
+      "status": "success"
+    },
+    {
+      "name": "shortcuts-catalog",
+      "receiptId": "e0827321-63a2-4fa6-8efc-8ba6035413f9",
+      "status": "success"
+    }
+  ],
+  "postProbeDoctor": {
+    "ready": false,
+    "computerOperationalReadiness": "ready",
+    "connectors": {
+      "enabled": 8,
+      "online": 8,
+      "ready": 8,
+      "offline": 0,
+      "unavailable": 0,
+      "stale": 0,
+      "unknown": 0
+    },
+    "queuedTasks": 0,
+    "runningTasks": 0,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "pendingDigest": 4,
+    "remainingRiskCodes": [
+      "autonomous_budget_exhausted",
+      "task_dead_letters"
+    ]
+  },
+  "wechatReadPreflight": {
+    "clientProcessRunning": true,
+    "wxCliVersion": "0.3.0",
+    "forceInitExitCode": 0,
+    "taskPortAcquired": true,
+    "encryptedDatabaseCount": 18,
+    "candidateKeyCount": 0,
+    "matchedKeyCount": 0,
+    "storedKeyCount": 0,
+    "sessionsExitCode": 1,
+    "sessionsResult": "session_db_decryption_failed",
+    "redactedSchemaFrozen": false,
+    "nonInteractiveSudoAvailable": false,
+    "sendCommandAvailable": false
+  },
+  "decision": "NO_GO",
+  "decisionReason": "The macOS live-read surface is now fully ready, but personal WeChat still has neither a readable local session database nor a real send and confirmed-readback route. Daily autonomous budget windows and retained manual-verification history also remain visible.",
+  "antiCheat": {
+    "messageContentCaptured": false,
+    "accountIdentifiersCaptured": false,
+    "databaseKeysCaptured": false,
+    "simulatedSendCounted": false,
+    "historicalWindowsBackfilled": false
+  }
+}

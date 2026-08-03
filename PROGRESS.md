@@ -933,3 +933,20 @@
 3. 已启用当前 Codex task 的小时级 heartbeat `MimiAgent M1 长任务续跑`：每轮先只读复核 build、
    idle boundary、锁屏、微信进程和解密状态；解锁后自动重跑 Computer/Screen，微信可读后冻结
    脱敏 schema；没有真实发送后端时继续 fail-closed，不重复部署、不清历史、不重放不确定副作用。
+
+## 2026-08-03 解锁后 Computer/Screen 转绿与微信密钥复验
+
+1. Owner 正常解锁后，系统状态精确变为 `IOConsoleLocked=No`；同一 clean build、同一 daemon
+   PID=98228 在 queued/running/active Tool/Host mutation/Outbox pending/sending 全为 0 时执行正式
+   只读探针。Computer receipt `1ed39ce1…`、Screen `3bba7242…`、Shortcuts `e0827321…` 全部成功；
+   Doctor 已为 Computer operational ready，Connector enabled/online/ready=`8/8/8`，offline/
+   unavailable/stale/unknown 全为 0。锁屏与 CUA readiness 不再是当前 blocker。
+2. 登录状态下重新执行 `wx init --force`：取得 task port、发现 18 个加密数据库，但进程内存扫描
+   仍为 candidate=0、matched=0、stored key=0；`wx sessions --limit 1 --json` 继续精确失败为
+   `session.db` 无法解密。因此没有可冻结的会话 schema，也没有读取任何消息内容、账号标识或
+   数据库密钥。上游 macOS 文档要求的 `sudo wx init` 不能通过非交互 sudo 执行，未索取或绕过
+   owner 密码。
+3. 当前 Doctor 仅余自治预算与 retained manual-verify 历史两类风险；probe 产生 4 条正常 Digest
+   投影，远低于 `<50` 常态门槛，未为追求 0 而清理。个人微信仍缺 readable session 与真实
+   send/readback，故 T0/100/24h/72h/7d 不起算。不可覆盖证据：
+   `evals/m1/deployments/20260803T142212+0800-unlock-probes-wechat.json`。
