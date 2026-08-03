@@ -35,6 +35,15 @@ async function fixture(name: string) {
   return { root, store, configFile, attention };
 }
 
+test('new attention configs default to 1000 autonomous runs per day', async () => {
+  const { store, attention } = await fixture('mimi-attention-default-budget-v12');
+  try {
+    assert.equal(attention.getSettings().budgets.maxRunsPerDay, 1_000);
+  } finally {
+    store.close();
+  }
+});
+
 test('separate AttentionEngine instances serialize config mutations without losing updates', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-attention-lock-'));
   const configFile = path.join(root, 'assistant.json');

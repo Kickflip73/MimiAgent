@@ -127,7 +127,7 @@ const attentionConfigBaseSchema = z.object({
   }).strict().optional(),
   budgets: z.object({
     maxRunsPerHour: z.number().int().min(1).max(1_000).default(20),
-    maxRunsPerDay: z.number().int().min(1).max(10_000).default(100),
+    maxRunsPerDay: z.number().int().min(1).max(10_000).default(1_000),
     maxRunsPerSourcePerHour: z.number().int().min(1).max(1_000).default(10),
     maxTokensPerHour: z.number().int().min(1).max(100_000_000).default(400_000),
     maxTokensPerDay: z.number().int().min(1).max(1_000_000_000).default(2_000_000),
@@ -241,7 +241,7 @@ function defaultConfig(): AttentionConfig {
     quietHours: { enabled: true, start: '23:00', end: '07:30', urgentPriority: 95 },
     budgets: {
       maxRunsPerHour: 20,
-      maxRunsPerDay: 100,
+      maxRunsPerDay: 1_000,
       maxRunsPerSourcePerHour: 10,
       maxTokensPerHour: 400_000,
       maxTokensPerDay: 2_000_000,

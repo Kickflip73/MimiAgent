@@ -69,7 +69,7 @@ owner 也可先调用 `get_mimi_settings` 读取完整快照，再用 `update_mi
   },
   "budgets": {
     "maxRunsPerHour": 20,
-    "maxRunsPerDay": 100,
+    "maxRunsPerDay": 1000,
     "maxRunsPerSourcePerHour": 10,
     "maxTokensPerHour": 400000,
     "maxTokensPerDay": 2000000,
