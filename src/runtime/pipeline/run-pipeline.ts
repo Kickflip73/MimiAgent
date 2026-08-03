@@ -753,7 +753,7 @@ export async function executeRunPipeline(
       skillCatalog: canReadLocal && skillsDisclosed ? host.components.skills.catalog({
         canReadLocal,
         availableTools: run.availableToolNames,
-      }, { includeLocations: true }) : '',
+      }, { includeLocations: false }) : '',
       activeSkills,
       memories,
       plan: activePlan,

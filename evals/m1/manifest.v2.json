@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
   "evidenceKind": "fixture",
-  "datasetRevision": "m1-fixtures-2026-07-28.1",
-  "policyRevision": "m1-policy-c4e3e4a.1",
-  "toolSnapshotRevision": "m1-tools-c4e3e4a.1",
+  "datasetRevision": "m1-fixtures-2026-08-03.2",
+  "policyRevision": "m1-fast-closeout-v4",
+  "toolSnapshotRevision": "m1-tools-a53d4f7.1",
   "scenarios": [
     {"id":"computer.observe.targets-bounded","app":"Computer","channel":"cua","actionFamily":"observe.targets","executionPath":"computer","risk":"read","boundaryRef":"tests/computer.test.ts#requires-a-fresh-observation","expectedOutcome":"success","tags":["fixture","bounded"]},
     {"id":"computer.observe.window-allowlisted","app":"Computer","channel":"cua","actionFamily":"observe.window","executionPath":"computer","risk":"read","boundaryRef":"tests/computer.test.ts#application-allowlist","expectedOutcome":"success","tags":["fixture","allowlist"]},
@@ -31,10 +31,10 @@
     {"id":"browser.page.read-untrusted","app":"Browser","channel":"browser","actionFamily":"page.read","executionPath":"connector","risk":"read","boundaryRef":"tests/browser-connector.test.ts#untrusted","expectedOutcome":"success","tags":["fixture","provenance"]},
     {"id":"browser.navigate.invalid-scheme","app":"Browser","channel":"browser","actionFamily":"navigation.write","executionPath":"connector","risk":"low_write","boundaryRef":"tests/browser-connector.test.ts#http-only","expectedOutcome":"blocked","tags":["fixture","validation"]},
     {"id":"browser.write.host-managed-intent","app":"Browser","channel":"browser","actionFamily":"navigation.write","executionPath":"connector","risk":"low_write","boundaryRef":"tests/browser-connector.test.ts#without-observation-gates","expectedOutcome":"success","tags":["fixture","host-managed"]},
-    {"id":"browser.execute.javascript-removed","app":"Browser","channel":"browser","actionFamily":"page.execute","executionPath":"connector","risk":"low_write","boundaryRef":"mimi.connectors.example.json#browser-actions","expectedOutcome":"blocked","tags":["fixture","bounds"]},
-    {"id":"browser.action.timeout","app":"Browser","channel":"browser","actionFamily":"readiness","executionPath":"connector","risk":"low_write","boundaryRef":"examples/connectors/browser-connector.mjs#runOpenCli","expectedOutcome":"failed","tags":["fixture","kill-switch"]},
+    {"id":"browser.execute.javascript-uncertain-no-replay","app":"Browser","channel":"browser","actionFamily":"page.execute","executionPath":"connector","risk":"low_write","boundaryRef":"tests/connector-action-boundary.test.ts#uncertain-no-replay","expectedOutcome":"uncertain","tags":["fixture","no-replay"]},
+    {"id":"browser.action.driver-unavailable","app":"Browser","channel":"browser","actionFamily":"readiness","executionPath":"connector","risk":"low_write","boundaryRef":"tests/browser-connector.test.ts#opencli-status-unavailable","expectedOutcome":"failed","tags":["fixture","kill-switch"]},
     {"id":"browser.action.doctor-unavailable","app":"Browser","channel":"browser","actionFamily":"readiness","executionPath":"connector","risk":"read","boundaryRef":"tests/browser-connector.test.ts#doctor-unavailable","expectedOutcome":"failed","tags":["fixture","dependency"]},
-    {"id":"browser.action.output-overflow","app":"Browser","channel":"browser","actionFamily":"readiness","executionPath":"connector","risk":"read","boundaryRef":"examples/connectors/browser-connector.mjs#maxOutputBytes","expectedOutcome":"failed","tags":["fixture","bounds"]},
+    {"id":"browser.action.extension-disconnected","app":"Browser","channel":"browser","actionFamily":"readiness","executionPath":"connector","risk":"read","boundaryRef":"tests/browser-connector.test.ts#extension-disconnected","expectedOutcome":"failed","tags":["fixture","dependency"]},
     {"id":"screen.read.temporary-cleanup","app":"Screen","channel":"macos-screen","actionFamily":"screen.read","executionPath":"connector","risk":"read","boundaryRef":"tests/macos-screen-connector.test.ts#temporary-cleanup","expectedOutcome":"success","tags":["fixture","cleanup"]},
     {"id":"screen.read.rect-bounds","app":"Screen","channel":"macos-screen","actionFamily":"screen.read","executionPath":"connector","risk":"read","boundaryRef":"tests/macos-screen-connector.test.ts#rect-target","expectedOutcome":"success","tags":["fixture","bounds"]},
     {"id":"screen.capture.argv-only","app":"Screen","channel":"macos-screen","actionFamily":"screen.capture","executionPath":"connector","risk":"read","boundaryRef":"tests/macos-screen-connector.test.ts#argv-only","expectedOutcome":"success","tags":["fixture","injection"]},
@@ -64,6 +64,10 @@
     {"id":"daxiang.send.observed-not-confirmed","app":"Daxiang","channel":"personal-daxiang","actionFamily":"send.receipt","executionPath":"personal-message","risk":"high_write","boundaryRef":"tests/daxiang-web-personal-connector.test.ts#observed","expectedOutcome":"failed","tags":["fixture","receipt"]},
     {"id":"daxiang.send.timeout-uncertain","app":"Daxiang","channel":"personal-daxiang","actionFamily":"send.receipt","executionPath":"personal-message","risk":"high_write","boundaryRef":"tests/daxiang-web-personal-connector.test.ts#post-click-timeout","expectedOutcome":"uncertain","tags":["fixture","no-retry"]},
     {"id":"daxiang.send.no-provider-fallback","app":"Daxiang","channel":"personal-daxiang","actionFamily":"send.guard","executionPath":"personal-message","risk":"high_write","boundaryRef":"tests/personal-message-policy.test.ts#provider-contract","expectedOutcome":"success","tags":["fixture","provider-contract"]},
-    {"id":"daxiang.send.no-gui-fallback","app":"Daxiang","channel":"personal-daxiang","actionFamily":"send.guard","executionPath":"personal-message","risk":"high_write","boundaryRef":"tests/personal-message-policy.test.ts#no-fallback","expectedOutcome":"success","tags":["fixture","route-owner"]}
+    {"id":"daxiang.send.no-gui-fallback","app":"Daxiang","channel":"personal-daxiang","actionFamily":"send.guard","executionPath":"personal-message","risk":"high_write","boundaryRef":"tests/personal-message-policy.test.ts#no-fallback","expectedOutcome":"success","tags":["fixture","route-owner"]},
+    {"id":"qq.experimental.default-disabled","app":"QQ","channel":"personal-qq","actionFamily":"readiness","executionPath":"computer","risk":"read","boundaryRef":"tests/personal-message-config.test.ts#qq-default-disabled","expectedOutcome":"blocked","tags":["fixture","experimental"]},
+    {"id":"qq.experimental.composite-fail-closed","app":"QQ","channel":"personal-qq","actionFamily":"target.binding","executionPath":"computer","risk":"read","boundaryRef":"tests/qq-personal-message-computer.test.ts#independent-unresolved-window","expectedOutcome":"blocked","tags":["fixture","fail-closed"]},
+    {"id":"qq.experimental.uncertain-no-replay","app":"QQ","channel":"personal-qq","actionFamily":"send.receipt","executionPath":"computer","risk":"high_write","boundaryRef":"tests/qq-personal-message-computer.test.ts#unconfirmed-send","expectedOutcome":"uncertain","tags":["fixture","no-replay"]},
+    {"id":"wechat.retired.catalog-removed","app":"WeChatRetired","channel":"retired-wechat","actionFamily":"retirement","executionPath":"connector","risk":"read","boundaryRef":"tests/daemon-connector-retirement.test.ts#wechat-retired","expectedOutcome":"success","tags":["fixture","retired"]}
   ]
 }

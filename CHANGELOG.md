@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exclusive worker lane even when the caller describes the workspace as read-only,
   and allow read-only Terminal observation while continuing to block Computer input
   injection into control-plane applications
+- degrade unsupported app screenshot requests to AX semantic observations instead
+  of discarding usable Computer state, and keep private runtime paths protected by
+  routing model Skill activation through `use_skill` without disclosing `SKILL.md`
+  filesystem locations
 - retire every WeChat capability after an owner account-safety incident: remove
   personal and OpenClaw Connector catalog entries, bridge scripts, probes, Host
   channel schemas, and package examples; atomically delete legacy registrations

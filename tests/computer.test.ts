@@ -473,6 +473,33 @@ test('enforces image capability and application allowlist', async () => {
   );
 });
 
+test('app-centric observation degrades an unsupported screenshot request to AX state', async () => {
+  const { backend, manager, authority } = await fixture({ supportsImageInput: false });
+  let observedRequest: BackendObserveRequest | undefined;
+  backend.observe = async (_session, request) => {
+    observedRequest = request;
+    return backend.observation;
+  };
+  const result = await manager.observeApp(authority, target.bundleId, true) as Record<string, unknown>;
+
+  assert.equal(result.actionable, true);
+  assert.ok(Array.isArray(result.elements));
+  assert.equal(result.screenshot, undefined);
+  assert.deepEqual(result.screenshotStatus, {
+    requested: true,
+    included: false,
+    reason: 'vision_unavailable',
+    message: '当前模型未声明图像输入能力，已返回 AX 语义观察',
+  });
+  assert.equal(observedRequest?.input.scope, 'window');
+  assert.equal(
+    observedRequest?.input.scope === 'window'
+      ? observedRequest.input.includeScreenshot
+      : undefined,
+    false,
+  );
+});
+
 test('allows Terminal observation while protecting control-plane input and Connector-owned apps', async () => {
   const { backend, manager, authority } = await fixture({ deniedApps: ['com.google.Chrome'] });
   const setTarget = (bundleId: string) => {

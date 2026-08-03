@@ -77,7 +77,7 @@ function fixtureEvidence() {
 function liveEvidence(overrides: Partial<{
   kind: 'live_action';
   boundary: 'connector_manager' | 'computer_manager';
-  effect: 'read';
+  effect: 'read' | 'write';
   registered: boolean;
   ready: boolean;
   fresh: boolean;
@@ -245,6 +245,8 @@ test('live action requires a registered fresh formal boundary and an action resu
   await assert.rejects(() => completedRun(source, liveEvidence({ registered: false })), /registered/);
   const run = await completedRun(source, liveEvidence());
   assert.equal(reportM1Eval(run).totals.qualifyingLiveActions, 1);
+  const writeRun = await completedRun(source, liveEvidence({ effect: 'write' }));
+  assert.equal(reportM1Eval(writeRun).totals.qualifyingLiveActions, 1);
 });
 
 test('live and soak evidence reject dirty, unknown, or untraceable builds before execution', async () => {
@@ -332,9 +334,18 @@ test('versioned repository M1 manifest contains at least 50 fixture boundary sce
   assert.ok(parsed.scenarios.length >= 50);
   assert.equal(new Set(parsed.scenarios.map((scenario) => scenario.id)).size, parsed.scenarios.length);
   assert.ok(new Set(parsed.scenarios.map((scenario) => scenario.boundaryRef)).size >= 50);
+  assert.ok(parsed.scenarios.every((scenario) => (
+    /^tests\/[a-z0-9._/-]+\.test\.ts#[a-z0-9._-]+$/.test(scenario.boundaryRef)
+  )));
   assert.deepEqual(new Set(parsed.scenarios.map((scenario) => scenario.app)), new Set([
-    'Computer', 'Browser', 'Screen', 'Shortcuts', 'Daxiang',
+    'Computer', 'Browser', 'Screen', 'Shortcuts', 'Daxiang', 'QQ', 'WeChatRetired',
   ]));
+  assert.ok(parsed.scenarios.some((scenario) => (
+    scenario.app === 'QQ' && scenario.tags.includes('experimental')
+  )));
+  assert.ok(parsed.scenarios.some((scenario) => (
+    scenario.app === 'WeChatRetired' && scenario.tags.includes('retired')
+  )));
   assert.ok(parsed.scenarios.some((scenario) => scenario.expectedOutcome === 'uncertain'));
   assert.ok(parsed.scenarios.some((scenario) => scenario.tags.includes('kill-switch')));
 });

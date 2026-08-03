@@ -11,6 +11,7 @@ export const readOnlyProbeProfileSchema = z.enum([
   'shortcuts-catalog',
   'computer-window',
   'screen-window',
+  'daxiang-health',
 ]);
 export type ReadOnlyProbeProfile = z.infer<typeof readOnlyProbeProfileSchema>;
 
@@ -148,6 +149,23 @@ export async function executeReadOnlyProbe(
       evidence: connectorEvidence(receipt),
       classification: 'readonly-probe-ok',
       metadata: shortcutsMetadata(receipt.result),
+    };
+  }
+  if (request.profile === 'daxiang-health') {
+    const receipt = await dependencies.connectors.executeReadProbe({
+      connector: 'personal-daxiang',
+      action: 'health_check',
+      capability: 'personal-message.health.read',
+      target: 'health',
+      payload: {},
+    });
+    return {
+      receiptId: randomUUID(),
+      observedAt: new Date().toISOString(),
+      profile: request.profile,
+      evidence: connectorEvidence(receipt),
+      classification: 'readonly-probe-ok',
+      metadata: {},
     };
   }
   const before = await dependencies.computerWindow(undefined, signal);

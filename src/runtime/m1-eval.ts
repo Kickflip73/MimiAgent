@@ -70,7 +70,7 @@ const readinessEvidenceSchema = z.object({
 const liveActionEvidenceSchema = z.object({
   kind: z.literal('live_action'),
   boundary: z.enum(['connector_manager', 'computer_manager']),
-  effect: z.literal('read'),
+  effect: z.enum(['read', 'write']),
   registered: z.boolean(),
   ready: z.boolean(),
   fresh: z.boolean(),

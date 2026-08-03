@@ -312,3 +312,20 @@
   无新增权限 blocker；其余 4 个历史预算窗口、549 条 `manual_verify`、live matrix/soak 与外部
   Provider 凭证轮换仍独立阻塞 GO。证据：
   `evals/m1/deployments/20260803T162656+0800-cua-rfc.json`。
+- **2026-08-03 最新 Mimi 源码提交/推送/强制部署均已完成，部署本身不再阻塞**：`bef1355`、
+  `a53d4f7` 已提交，origin...HEAD=`0/0`；detached clean CI/package 全绿，正式备份验证后已执行
+  `mimi daemon restart --force`。installed=running clean build `a53d4f7…ade23887a02f`，PID=68489，
+  Daemon idle、Provider closed、Shortcuts probe 成功。部署后唯一新增的实时边界是控制台当前
+  `IOConsoleLocked=true`，Computer/Screen 对 TextEdit compositor surface 返回
+  `ax_window_unresolved` 并正确 fail-closed；解锁后才重跑只读 probe，不重复部署。其余历史预算、
+  549 条 manual_verify、QQ 上游 RFC、live matrix/soak 与 Provider 凭证轮换继续独立阻塞 M1 GO。
+  证据：`evals/m1/deployments/20260803T164435+0800-forced-host-lifecycle.json`。
+- **2026-08-03 QQ 与固定日历窗口已由 Owner 从 M1 开工门槛移除**：QQ 仍默认关闭、
+  fail-closed 并继续跟进 `trycua/cua#2807/#2808`，不得宣称 completed 或启用；微信永久退休
+  不变。24h/72h/7d/30d 改为 M2 发布质量信号，M1 改用同一 clean build 五族 30 次短矩阵与
+  有界恢复演练。该裁决解除 QQ/日历等待，但不豁免 clean CI、正式 live receipt、Doctor 的
+  active blocker、错目标/重复副作用或 Provider 凭证轮换。
+- **2026-08-03 当前本地收口尚未成为最终 build**：M1 eval manifest 漂移已由红→绿修复，
+  第二次完整测试 899/899；但本轮代码仍未提交/部署，30 次 installed Host 矩阵仍未执行。
+  当前 Event 活跃时 read-only probe 与部署门禁会正确拒绝，须在提交/clean CI 后等待 Daemon
+  idle 再备份切换；这不是权限问题，也不授权 force 重放 uncertain 外部动作。

@@ -92,7 +92,23 @@ const profiles = {
     executionPath: 'connector-manager',
     boundary: 'connector_manager',
   },
+  'daxiang.health': {
+    profile: 'daxiang-health',
+    app: 'Daxiang',
+    channel: 'personal-daxiang',
+    actionFamily: 'health.read',
+    executionPath: 'connector-manager',
+    boundary: 'connector_manager',
+  },
 } as const;
+
+const profileCounts: ReadonlyArray<readonly [keyof typeof profiles, number]> = [
+  ['browser.tabs', 8],
+  ['computer.window', 8],
+  ['screen.window', 4],
+  ['shortcuts.catalog', 4],
+  ['daxiang.health', 6],
+];
 
 async function probe(scenario: M1EvalScenario): Promise<ProbeResult> {
   const key = scenario.id.split('.').slice(0, 2).join('.') as keyof typeof profiles;
@@ -167,10 +183,9 @@ async function probe(scenario: M1EvalScenario): Promise<ProbeResult> {
 
 async function main(): Promise<void> {
   const output = path.resolve(argument('--output', `artifacts/m1-eval/canary-${Date.now()}.json`));
-  const entries = Object.entries(profiles) as Array<[keyof typeof profiles, (typeof profiles)[keyof typeof profiles]]>;
-  const scenarios = Array.from({ length: 20 }, (_, index) => {
-    const [key, selected] = entries[index % entries.length]!;
-    return {
+  const scenarios = profileCounts.flatMap(([key, count]) => {
+    const selected = profiles[key];
+    return Array.from({ length: count }, (_, index) => ({
       id: `${key}.${String(index + 1).padStart(2, '0')}`,
       app: selected.app,
       channel: selected.channel,
@@ -180,14 +195,14 @@ async function main(): Promise<void> {
       boundaryRef: `probe.read/${selected.profile}`,
       expectedOutcome: 'success' as const,
       tags: ['canary', 'readonly', 'formal-path'],
-    };
+    }));
   });
   const manifest = m1EvalManifestSchema.parse({
     schemaVersion: 2,
     evidenceKind: 'live_action',
-    datasetRevision: 'm1-canary-2026-07-28.2',
-    policyRevision: 'm1-read-probe-v1',
-    toolSnapshotRevision: 'daemon-probe-read-v1',
+    datasetRevision: 'm1-closeout-2026-08-03.1',
+    policyRevision: 'm1-fast-closeout-v4',
+    toolSnapshotRevision: 'daemon-probe-read-v2',
     scenarios,
   });
   const doctor = await commandJson('mimi', ['daemon', 'doctor']);

@@ -57,6 +57,7 @@ test('fixed connector probe profiles return only bounded metadata and formal rec
   const dependencies = { connectors: manager(requests), computerWindow };
   const browser = await executeReadOnlyProbe({ profile: 'browser-tabs' }, dependencies);
   const shortcuts = await executeReadOnlyProbe({ profile: 'shortcuts-catalog' }, dependencies);
+  const daxiang = await executeReadOnlyProbe({ profile: 'daxiang-health' }, dependencies);
   assert.deepEqual(requests, [
     {
       connector: 'browser',
@@ -72,6 +73,13 @@ test('fixed connector probe profiles return only bounded metadata and formal rec
       target: 'all',
       payload: { limit: 5 },
     },
+    {
+      connector: 'personal-daxiang',
+      action: 'health_check',
+      capability: 'personal-message.health.read',
+      target: 'health',
+      payload: {},
+    },
   ]);
   assert.deepEqual(browser.metadata, {
     itemCount: 2,
@@ -80,7 +88,8 @@ test('fixed connector probe profiles return only bounded metadata and formal rec
     truncated: true,
   });
   assert.deepEqual(shortcuts.metadata, { itemCount: 1, truncated: false });
-  assert.doesNotMatch(JSON.stringify([browser, shortcuts]), /private|Shortcut|https:/);
+  assert.deepEqual(daxiang.metadata, {});
+  assert.doesNotMatch(JSON.stringify([browser, shortcuts, daxiang]), /private|Shortcut|https:/);
 });
 
 test('screen probe binds a safe background window before and after a temporary read', async () => {

@@ -309,7 +309,25 @@ export class ComputerManager {
         } : {}),
       };
     }
-    return this.observeTarget(authority, target, includeScreenshot, signal);
+    const screenshotSupported = authority.supportsImageInput !== false;
+    const result = await this.observeTarget(
+      authority,
+      target,
+      includeScreenshot && screenshotSupported,
+      signal,
+    );
+    if (!includeScreenshot || screenshotSupported || !result || typeof result !== 'object') {
+      return result;
+    }
+    return {
+      ...result,
+      screenshotStatus: {
+        requested: true,
+        included: false,
+        reason: 'vision_unavailable',
+        message: '当前模型未声明图像输入能力，已返回 AX 语义观察',
+      },
+    };
   }
 
   async listHostTargets(

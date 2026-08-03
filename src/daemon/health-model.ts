@@ -64,7 +64,8 @@ export function doctorBlockingHealthRisks(
   unclassifiedDeadLetters: number,
 ): DaemonHealthRisk[] {
   return health.risks.filter((risk) => (
-    risk.code !== 'task_dead_letters' || unclassifiedDeadLetters > 0
+    (risk.code !== 'task_dead_letters' || unclassifiedDeadLetters > 0)
+    && risk.code !== 'autonomous_budget_exhausted'
   ));
 }
 

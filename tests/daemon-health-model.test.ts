@@ -150,6 +150,18 @@ test('Doctor keeps retained classified dead letters visible without treating the
   );
 });
 
+test('Doctor keeps safely throttled autonomous budgets visible without blocking owner work', () => {
+  const health = buildDaemonHealth({
+    tasks: taskCounts(),
+    outbox: outboxCounts(),
+    autonomousBudgetExhaustions: 4,
+  });
+
+  assert.equal(health.state, 'degraded');
+  assert.deepEqual(health.risks.map((risk) => risk.code), ['autonomous_budget_exhausted']);
+  assert.deepEqual(doctorBlockingHealthRisks(health, 0), []);
+});
+
 test('Task worker runtime dependency failure is an unhealthy fail-closed risk', () => {
   const health = buildDaemonHealth({
     tasks: taskCounts(),

@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-03T16:44:35+08:00",
+  "source": {
+    "branch": "codex/mimiagent-integrated",
+    "head": "a53d4f7dc6b3057b5a2522669054969e18b3e0d8",
+    "commits": [
+      "bef1355",
+      "a53d4f7"
+    ],
+    "remote": "origin",
+    "remoteDivergence": {
+      "behind": 0,
+      "ahead": 0
+    }
+  },
+  "verification": {
+    "focusedCoreAndRouting": "77/77",
+    "focusedComputer": "51/51",
+    "typecheck": "pass",
+    "detachedCleanCi": "pass",
+    "packageSmoke": "pass",
+    "coverage": {
+      "lines": 88.38,
+      "branches": 78.51,
+      "functions": 84.79
+    },
+    "dirtyWorkspaceCi": {
+      "status": "pre_test_asset_boundary_failure",
+      "excludedUntrackedSkills": [
+        "agent-reach",
+        "guizang-social-card-skill"
+      ]
+    }
+  },
+  "package": {
+    "sha256": "3f0895bee31ef5185fbce782aef01ff74fc8e96d211ae68f01d7624e5471d247",
+    "buildIdentity": {
+      "commitSha": "a53d4f7dc6b3057b5a2522669054969e18b3e0d8",
+      "dirty": false
+    }
+  },
+  "backup": {
+    "path": "/Users/liuyuran/.mimi-agent/backups/m1-host-lifecycle-20260803T164045",
+    "manifestEntries": 2780,
+    "manifestSha256": "bbcf3041f3d4d0d1e58d7e5d268c415098a95408cc7032b8e8573d78a1b50d9c",
+    "sqliteIntegrity": "ok"
+  },
+  "deployment": {
+    "command": "mimi daemon restart --force",
+    "pid": 68489,
+    "buildVersion": "0.12.0+ga53d4f7dc6b3057b5a2522669054969e18b3e0d8.clean.ade23887a02f",
+    "installedRunningAligned": true,
+    "idle": {
+      "activeEvents": 0,
+      "activeTools": 0,
+      "activeTasks": 0,
+      "activeHostMutations": 0,
+      "outboxPending": 0,
+      "outboxSending": 0
+    },
+    "providerCircuit": "closed",
+    "maxRunsPerDay": 1000
+  },
+  "liveVerification": {
+    "shortcutsCatalog": "readonly-probe-ok",
+    "computerWindow": "blocked_console_locked_ax_window_unresolved",
+    "screenWindow": "blocked_console_locked_ax_window_unresolved",
+    "ioConsoleLocked": true,
+    "retryDisposition": "unlock_then_readonly_probe_only"
+  },
+  "wechatRetirement": {
+    "connectorConfigMatches": 0,
+    "wxCliPresent": false,
+    "signedClonePresent": false,
+    "retiredProcesses": 0,
+    "officialClientAccessed": false
+  },
+  "disposition": "DEPLOYED_M1_STILL_NO_GO"
+}

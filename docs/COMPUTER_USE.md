@@ -53,6 +53,10 @@ app-centric 工具：
 }
 ```
 
+如果当前模型未声明图像输入能力，Host 不会让整个观察失败，而是自动忽略截图并返回
+可用的 AX 语义状态，同时用 `screenshotStatus.reason=vision_unavailable` 标明降级。
+`region` 等必须消费图像的底层观察仍会拒绝执行。
+
 `app` 可以是应用名或 bundle id。Host 选择最匹配的真实窗口，并过滤菜单栏窗口、
 无标题离屏伪窗口和过小窗口。应用已安装但未运行时返回精确启动目标：
 

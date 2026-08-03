@@ -455,7 +455,8 @@ test('owner natural-language runs retain direct tools and unified deferred Skill
     assert.ok((captured.tools?.length ?? 0) < 30);
     assert.ok(estimateTokens(captured.toolSchemas) <= 4_000);
     assert.match(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
-    assert.match(captured.instructions ?? '', /location: .*hidden-skill\/SKILL\.md/);
+    assert.match(captured.instructions ?? '', /精确 name="use_skill"/);
+    assert.doesNotMatch(captured.instructions ?? '', /source:|location:|hidden-skill\/SKILL\.md/);
     await agent.completeRun('FOCUSED_OWNER_ANSWER');
     const recalled = await agent.memorySearch('FOCUSED_OWNER_ANSWER', 'private');
     assert.equal(recalled[0]?.documentType, 'episode');

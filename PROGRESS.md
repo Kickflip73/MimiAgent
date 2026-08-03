@@ -1045,3 +1045,49 @@
    也没有把提案冒充可用能力。QQ 正式闭环继续 fail-closed；下一步由 #2807/#2808 维护者评审
    决定 API shape、read-only 首发和跨平台 capability 语义。证据：
    `evals/m1/deployments/20260803T162656+0800-cua-rfc.json`。
+
+## 2026-08-03 普通 Host CUA 生命周期修复、推送与强制部署
+
+1. `bef1355` 让所有普通 Mimi Host 在创建 RuntimeComponents 时启动并持有共享 Cua Driver
+   lifecycle，同时把 Skill catalog 的正式 `inspect_capabilities`→`invoke_capability` 调用合同和
+   “禁止模型用 Shell/nohup 自行启动 Driver”写入运行时指令；新增普通 Host lifecycle 回归。
+   `a53d4f7` 提交此前 QQ/budget/CUA RFC 审计证据。范围外 `AGENTS.md`、旧蓝图、wiki log、
+   两份计划副本和两个未分类 Skill 继续原样保留。
+2. 聚焦 core/route 77/77、Computer 51/51、`npm run check` 通过；本工作树 `npm run ci` 仅因两个
+   明确排除的未跟踪 Skill 未登记 asset manifest 而在测试前失败。随后从 `a53d4f7` detached clean
+   worktree 执行 `npm ci && npm run ci` 全绿，coverage line/branch/function=
+   `88.38%/78.51%/84.79%`，clean build 与 package smoke 通过。
+3. 分支 `codex/mimiagent-integrated` 已推送 `531850d..a53d4f7`，复核 origin...HEAD=`0/0`。
+   clean tarball SHA-256=`3f0895bee31ef5185fbce782aef01ff74fc8e96d211ae68f01d7624e5471d247`；
+   build identity commit=`a53d4f7dc6b3057b5a2522669054969e18b3e0d8`、dirty=false。
+4. 部署前正式备份 `/Users/liuyuran/.mimi-agent/backups/m1-host-lifecycle-20260803T164045`
+   已通过 backup verify，2,780 个 manifest entry、manifest SHA-256=
+   `bbcf3041f3d4d0d1e58d7e5d268c415098a95408cc7032b8e8573d78a1b50d9c`、SQLite integrity=ok。
+   安装同一 tarball 后在 Event/Task/Tool/Host mutation/Outbox 全部空闲时执行
+   `mimi daemon restart --force`；新 PID=68489，installed=running=
+   `0.12.0+ga53d4f7dc6b3057b5a2522669054969e18b3e0d8.clean.ade23887a02f`。
+5. 部署后 Provider closed、日 Run 上限 1000、远端对齐、Daemon idle；Shortcuts 正式只读 probe
+   成功。当前控制台 `IOConsoleLocked=true`，Computer/Screen 对 TextEdit 合成面按
+   `ax_window_unresolved` fail-closed，故只记录外部锁屏边界，不重复部署或放宽验证。微信退休门禁
+   继续成立：Connector match=0、wx-cli=0、签名副本=0、退休进程=0，未接触官方客户端。证据：
+   `evals/m1/deployments/20260803T164435+0800-forced-host-lifecycle.json`。
+
+## 2026-08-03 Owner 快速收口裁决与 M1 eval v4
+
+1. Owner 接受“QQ 不再阻塞 M1、忽略固定时间验证”的快速收口建议。唯一计划升级为 v4：QQ
+   保留默认关闭、fail-closed 的实验 CUA route并继续跟进上游 RFC；微信永久退休不变；M1 正式
+   分母改为 Browser/Computer/Screen/Shortcuts/Daxiang 五族 30 次短 live matrix（8/8/4/4/6），
+   24h/72h/7d/30d 移为 M2 发布质量信号，不能用 fixture/readiness 冒充 live action。
+2. `npm run eval:m1` 先真实复现 `browser.execute.javascript-removed has invalid boundaryRef`；根因是
+   manifest 有 3 个 config/example 引用不符合 runner 的 `tests/*.test.ts` 边界，且数据集没有 QQ
+   默认关闭和微信退役负向场景。v4 manifest 修复后 64 个 fixture 全部执行完成，requested/
+   eligible/executed=`64/42/42`，没有 runner failure；新增回归要求所有 boundaryRef 可执行。
+3. 新增正式 `daxiang-health` 只读 probe，并把 installed closeout canary 固定为 30 个正式样本；
+   receipt 只保留 Manager 边界和计数，不持久化账号、目标或正文。live evidence schema 同时允许
+   `read|write`，后续写样本仍必须由正式业务回执生成，不能由只读 canary 补数。
+4. safely throttled 的 pre-T0 自治预算窗口与已分类 legacy dead letter 继续显示在 health/audit，
+   但不再阻断 owner 工作或 Doctor；unclassified、Connector、Computer、Provider、错目标和
+   uncertain no-replay 门禁不变，绝不清空、重放或提前释放历史状态。
+5. 当前工作树 `npm run check` 通过；聚焦 149/149；首次全量 897/898 仅 CUA lifecycle 500ms
+   同步断言在整机负载下红，精确复跑绿；第二次完整 `npm test` 稳定 899/899、skip/todo=0。
+   本轮尚未提交、部署或执行 live matrix，必须继续 clean CI/package、备份、空闲切换后取证。

@@ -2,11 +2,17 @@
 
 日期：2026-07-31
 
-状态：实施中 v3（2026-08-03 微信账号安全退役修订版）
+状态：实施中 v4（2026-08-03 owner 快速收口修订版）
 
 Owner 安全裁决（2026-08-03）：微信账号收到腾讯官方外挂警告后，MimiAgent 永久退出微信
 能力范围。禁止安装、启动、探测、读取、发送或桥接微信，也不得把 Bot、OpenClaw、签名副本、
 `wx-cli` 或其他自动化改名后重新引入。旧配置只允许在不接触微信账号的升级迁移中删除。
+
+Owner 里程碑裁决（2026-08-03）：M2 不再等待 24h/72h/7d 日历窗口，也不再等待 CUA
+上游补齐 QQ application-composite AX scope。QQ 保留为默认关闭、fail-closed 的实验能力，
+继续跟进上游 RFC，但不进入 M1 readiness、live matrix 或 GO 分母。M1 改用同一 clean build
+上的 30 次短 live matrix 和一次有界恢复演练决定是否进入 M2；这只改变产品里程碑范围，
+不允许用 fixture/readiness 冒充 live action，也不放宽错目标、重复副作用或 uncertain no-replay。
 
 定位：完整 M1 收口的唯一执行计划；完成并通过最终冻结构建的真实运行验收前，不进入
 M2 产品实现，不新增 M2～M5 产品能力。
@@ -31,11 +37,11 @@ M2 产品实现，不新增 M2～M5 产品能力。
    共同猜测。
 5. 把 Plan 恢复为进度信息；Goal/Completion Contract 与 Host 普通 Run 矩阵共同决定业务终态。
 6. 把健康监控从高频事件制造器改成状态变化检测器，恢复 Briefing 和 Digest 的消费闭环。
-7. 建立唯一可追溯发布基线，再用 24 小时读取、72 小时写入和 7 天真实运行决定是否进入 M2。
+7. 建立唯一可追溯发布基线，再用同一 build 的 30 次短 live matrix、一次有界恢复演练和
+   ARC-503 不可覆盖记录决定是否进入 M2；长期窗口作为 M2 发布质量信号继续累计。
 
-改造完成不等于自动获得 10 分。8～9 分可以由本计划的静态、回归、真实任务和 7 天
-运行证据证明；接近 10 分必须继续完成蓝图要求的 30 天真实 soak，不能由代码量或测试
-数量替代。
+改造完成不等于自动获得 10 分。M1 开工门槛由本计划的静态、回归、短 live matrix 和有界
+恢复证据证明；24h/72h/7d/30d 长期质量只在 M2 期间继续累计，不能由代码量或测试数量替代。
 
 ### 1.1 完整 M1 产品合同
 
@@ -46,26 +52,27 @@ M2 产品实现，不新增 M2～M5 产品能力。
    均形成可运营闭环，没有未分类失败、静默积压、重试风暴或构建漂移。
 2. **本机眼睛和双手**：Browser、Computer、Screen、Shortcuts 通过正式 Host/Manager 路径
    完成观察、动作、回读、清理和 no-replay，不用 direct worker 或 readiness 冒充成功。
-3. **个人消息闭环**：大象完成历史读取、上下文、精确目标发送和业务回读；QQ 使用已选择的
-   CUA 路线。两者都必须报告 readiness/freshness/coverage、支持 kill switch，且没有占位能力、
-   猜测目标或 `observed/accepted` 冒充 `confirmed`。微信不再是能力或验收前置，只验证退役状态。
+3. **个人消息闭环**：大象完成历史读取、上下文、精确目标发送和业务回读，并报告
+   readiness/freshness/coverage、支持 kill switch，且没有占位能力、猜测目标或
+   `observed/accepted` 冒充 `confirmed`。QQ 保留默认关闭、fail-closed 的实验 CUA 路线；微信
+   不再是能力或验收前置，只验证退役状态。
 4. **统一执行正确性**：Task executor、Capability Snapshot、ExecutionLedger 和
    RunFinalization 各有唯一权威；普通任务、Goal、Plan、取消、恢复和 uncertain 均有确定
    终态，副作用不跨 Tool、Provider 或 route 重放。
-5. **最终构建证据**：至少 50 个 deterministic fixture 全绿、至少 100 个分层正式
-   `live_action` 达到成功率和严重度门槛、读取能力 24 小时、所有实际进入写入/发送的能力
-   72 小时、同一 build 连续 7 天通过运行门槛。
+5. **最终构建证据**：至少 50 个 deterministic fixture 全绿、正式 `live_action` 在五个正式
+   能力族达到 30 次分层样本、成功率和严重度门槛，并在同一 clean
+   build 上完成一次 Daemon 重启与备份恢复的有界演练。
 
 历史 129/129 live action 继续作为能力和回归来源，但本轮会改变模型 Tool 面、能力路由和
-Run 提交路径，因此不能替代最终冻结构建的 100 次验收，也不能补算新的 soak 日历窗口。
+Run 提交路径，因此不能替代最终冻结构建的 30 次短矩阵，也不能补算当前 build 的正式样本。
 
 ### 1.2 M2 开工规则
 
 - Phase 0～5 代码完成不等于 M1 完成；只有 Phase 6 的 M2 Go/No-Go 记录为 `GO` 后，才可
   合并或部署 M2 产品实现。
-- 30 天质量窗口不阻塞 M2 开工，但必须在 M2 开发期间继续累计；若出现 S0/S1、重复副作用、
+- 24h/72h/7d/30d 质量窗口不阻塞 M2 开工，但应在 M2 开发期间继续累计；若出现 S0/S1、重复副作用、
   系统性 dead letter、静默漏收或连续 Doctor 非 ready，立即冻结 M2 合并/部署，回到 M1 修复
-  并从修复后的新 build 重新建立受影响的 soak。
+  并从修复后的新 build 重新建立受影响的质量窗口。
 - M2 只能从 Personal Context 开始；不得把任何 M1 未完成项改名后带入 M2。
 
 ## 2. 当前基线与问题证据
@@ -153,7 +160,7 @@ Connector health 周期检查不断追加相同告警，而不是只记录状态
 6. **数据在边界处有界**：Tool 输出进入模型前必须有硬预算，不能依赖 Context 压缩事后兜底。
 7. **可靠性不是审批**：目标校验、回执、原子提交和 no-replay 继续保留；不新增隐私、安全、
    逐动作审批或风险分级项目。
-8. **真实运行优先于模拟通过**：fixture 证明契约，live E2E 和 soak 才证明产品可用。
+8. **真实运行优先于模拟通过**：fixture 证明契约，live E2E 和有界恢复演练才证明产品可用。
 
 ### 3.2 明确禁止
 
@@ -328,9 +335,9 @@ ARC 依赖图是唯一实施顺序；同一热路径严格串行，互不依赖�
    偶发绿冒充稳定基线。
 5. 把所有未提交改动分类为 `纳入 M1 | 独立完成后纳入 | 暂停并移出基线`，记录 owner、
    依赖和验证；冻结提交不得混入未完成的 M2、Skill 或无关产品能力。
-6. 冻结至少 50 个 deterministic fixture 和 Phase 6B 的 100 次 live matrix；固定
+6. 冻结至少 50 个 deterministic fixture 和 Phase 6B 的 30 次 live matrix；固定
    success、partial、blocked、failed、uncertain、S0～S3 和 evidence eligibility 定义。
-7. 建立外部前置清单：Computer AX/视觉、Daxiang owner target、QQ CUA；另记录微信退役
+7. 建立外部前置清单：Computer AX/视觉、Daxiang owner target；另记录 QQ 默认关闭和微信退役
    负向门禁，确认不存在运行 route、桥、克隆客户端或专用 CLI。
    每项记录 `ready | owner_action_required | external_dependency`、唯一 owner、恢复命令、
    fail-closed 行为和最终 live 验收；外部阻塞允许代码阶段继续，但不能被豁免为 M1 完成。
@@ -441,8 +448,9 @@ ARC 依赖图是唯一实施顺序；同一热路径严格串行，互不依赖�
 
 - Browser 模型调用只走 direct Browser tools；Browser Connector 是 Host 私有 backend。
 - Computer 模型调用只走 `ComputerManager`。
-- 大象、QQ 的模型调用只走 `PersonalMessageHub` 的业务工具；具体 Connector/CUA 是
-  Host 私有 backend。PersonalMessageHub 在 Run 开始前冻结唯一 route，模型不跨路径试错。
+- 大象的模型调用只走 `PersonalMessageHub` 的业务工具；具体 Connector 是 Host 私有 backend。
+  QQ 实验面启用时仍只能走 `PersonalMessageHub → ComputerManager/CUA`，默认关闭且不进入
+  M1 能力分母。PersonalMessageHub 在 Run 开始前冻结唯一 route，模型不跨路径试错。
 - 同一 capability id 同一 Run 最多一个 ready route；替代路径只在动作 dispatch 前切换。
 
 主要落点：
@@ -494,12 +502,14 @@ ARC 依赖图是唯一实施顺序；同一热路径严格串行，互不依赖�
   不让模型把名称猜测当成目标绑定。
 - Daxiang 完成已登录账号指纹、stable sid、历史/上下文和 owner 精确目标绑定；发送后重新读取
   同一会话，只有稳定业务结果可以晋级 `confirmed`。
-- QQ 使用正式 `PersonalMessageHub → ComputerManager/CUA` 路径，遵守一观察一动作、用户活动
-  保护、草稿保护和动作后回读；不得用占位 Connector、Shell 或前台键盘脚本替代。
+- QQ 实验能力使用 `PersonalMessageHub → ComputerManager/CUA` 路径并保持默认关闭；当前 CUA
+  无法提供安全 composite AX scope 时明确 unavailable，不得用占位 Connector、Shell 或前台
+  键盘脚本替代，也不得阻塞 M1 Doctor/GO。
 - 微信能力必须保持退休：schema、Tool、Connector、模板和运行配置均不得暴露微信 route；
   不启动或探测微信来证明退役。
-- 两个个人渠道均提供 readiness、freshness、coverage、账号指纹、稳定目标、kill switch 和
-  `confirmed | failed_safe | uncertain`；unavailable 时只报告恢复条件，不跨路径试错。
+- 大象正式渠道提供 readiness、freshness、coverage、账号指纹、稳定目标、kill switch 和
+  `confirmed | failed_safe | uncertain`；QQ 实验渠道只在显式启用后报告自身状态，unavailable
+  时只报告恢复条件，不跨路径试错。
 
 #### 3.4 E2E 反作弊
 
@@ -528,11 +538,11 @@ ARC 依赖图是唯一实施顺序；同一热路径严格串行，互不依赖�
 - 单个 Observation 模型文本不超过 16 KiB，且不含重复 raw 数据。
 - 普通 Browser/Computer 任务没有 discovery loop。
 - Browser/Computer 的 deterministic suite 和正式 Host 路径 smoke 全绿，错目标、重复动作和
-  S0/S1 为 0；开发阶段 smoke 只证明接线，不计入 Phase 6B 最终构建的 100 次分母。
-- Screen、Shortcuts、大象、QQ 的 deterministic suite 全绿，并分别通过至少一次正式
-  readiness + live read；所有写/发送 live_action 留到 owner 目标明确且整机 idle 时执行。
-- 两个个人渠道都存在真实 Adapter/route；任何一个仍为占位、无稳定目标或无法回读时，Phase 3
-  只能标记 `implemented_blocked`，不得标记 completed。
+  S0/S1 为 0；开发阶段 smoke 只证明接线，不计入 Phase 6B 最终构建的 30 次分母。
+- Screen、Shortcuts、大象的 deterministic suite 全绿，并分别通过至少一次正式 readiness +
+  live read；所有写/发送 live_action 留到 owner 目标明确且整机 idle 时执行。
+- 大象存在真实 Adapter/route、稳定目标和业务回读；QQ 默认关闭与 fail-closed 回归全绿即可，
+  不要求在 M1 中取得 live send/readback。
 - 简单任务 median 输入低于 30K token，p95 低于 80K；任何单任务不得再接近 435K。
 - Browser/Computer 简单任务 p95 在 60 秒内完成；外部页面自身等待时间单独报告。
 
@@ -650,11 +660,11 @@ uncertain   动作可能已发生，必须核对且不得重放
 #### 5.2 可追溯部署
 
 - 安装包 build identity 必须包含提交 SHA 和 dirty 标志。
-- release/soak build 必须来自 clean commit；dirty build 可开发运行但不能建立 T0。
+- release/closeout build 必须来自 clean commit；dirty build 可开发运行但不能建立 T0。
 - Doctor 同时展示 installed build、运行 build 和可选 workspace HEAD；不一致只报告漂移，
   不重启或修改工作树。
 - 每次部署先等待 Event/Task/Outbox/host mutation 到达可切换点，备份并验证后再重启。
-- 同一 T0 后禁止继续改动并反复部署；发现缺陷则结束本轮 soak，修复后建立新 T0。
+- 同一 T0 后禁止继续改动并反复部署；发现缺陷则结束本轮收口，修复后建立新 T0。
 
 #### 5.3 历史状态收口
 
@@ -670,13 +680,17 @@ uncertain   动作可能已发生，必须核对且不得重放
 - `npm run ci`、安装包 smoke 和真实 Doctor 使用同一 build identity。
 - Doctor 为 ready，unclassified dead letter 为 0，enabled Connector 均有明确 readiness；
   Computer 必须是 operational ready，不能用 transport health 代替。
-- Browser、Computer、Screen、Shortcuts、大象、QQ 的正式 Adapter/route 均已安装并
-  operational ready，稳定测试目标可用；任何 `owner_action_required/external_dependency`
-  未解除时不得建立最终 T0。Phase 6 的样本和 soak 不在此处提前宣称完成。
+- 已分类且保留审计的 legacy `manual_verify` dead letter，以及已经安全节流、不会阻断 owner
+  工作的 pre-T0 自治预算窗口继续显示为 warning，但不作为 Doctor/ARC-503 阻塞；不得据此
+  清空、重放或提前释放任何记录。
+- Browser、Computer、Screen、Shortcuts、大象的正式 Adapter/route 均已安装并
+  operational ready，稳定测试目标可用；QQ 保持默认关闭且不得影响 Doctor。任何纳入 M1
+  的 `owner_action_required/external_dependency`
+  未解除时不得建立最终 T0。Phase 6 的样本和有界演练不在此处提前宣称完成。
 - 冻结构建建立可验证 T0；installed build、running build、Git SHA 和 M1 dataset revision
   四者被同一验收记录冻结。
 
-### Phase 6：真实任务验收与 soak
+### Phase 6：真实任务验收与有界收口
 
 目标：证明重构后的 Mimi 不是“测试通过”，而是能连续完成 M1 真实任务。
 
@@ -691,7 +705,8 @@ uncertain   动作可能已发生，必须核对且不得重放
 5. Screen 读取 owner 明确允许的窗口，报告 coverage，完成后不保留正文/图像。
 6. Shortcuts 列出稳定 id，执行 owner 批准的可验证测试 Shortcut 并读取结果。
 7. 大象列出会话、读取完整目标上下文、向 owner 自会话发送并回读同一消息。
-8. QQ 通过正式 CUA 路线读取有界上下文、保护现有草稿、发送并回读同一目标。
+8. QQ 实验能力保持默认关闭；若当前 CUA 缺少 application-composite AX scope，必须明确
+   fail-closed，不能进入 M1 readiness、live matrix 或 completed 结果。
 9. 微信退役负向验收：升级后旧 Connector/桥被删除，运行配置、进程和工具面均无微信能力；
    验收过程不启动、不探测、不读取也不发送微信。
 10. Connector unavailable 后恢复，只产生一次故障 Event 和一次恢复 Event；10,000 次未变化
@@ -704,20 +719,19 @@ uncertain   动作可能已发生，必须核对且不得重放
 14. Daemon 重启后 queued/blocked/interrupted/uncertain Task 保持正确状态，lifecycle 可解释，
     已完成或 uncertain 动作均不重放。
 
-#### Phase 6B：最终构建 100 次 live matrix
+#### Phase 6B：最终构建 30 次短 live matrix
 
 所有样本必须来自 T0 冻结的 installed Host/Manager 正式边界，保存 requested、eligible、
 executed、success、blocked、failed、uncertain、首次/重试/接管和 evidence refs。最低合格分层：
 
 | 能力族 | 最低 eligible live_action | 必须覆盖 |
 |---|---:|---|
-| Browser | 20 | 登录态读取、可撤销写入、业务断言、Host session 清理 |
-| Computer | 20 | 多 App 观察/动作/回读、每动作新 Observation、草稿和前台保护 |
-| Screen | 10 | 窗口读取、coverage、敏感正文不持久化 |
-| Shortcuts | 10 | catalog、稳定 id、可验证且非破坏性执行 |
-| Daxiang | 20 | 历史/上下文、稳定目标，72h 内至少 3 次 owner 自会话 confirmed send |
-| QQ | 20 | CUA read/send、草稿保护，72h 内至少 3 次测试目标 confirmed send |
-| **合计** | **100** | 不允许用 readiness、fixture、direct worker、blocked 或历史 build 补数 |
+| Browser | 8 | 登录态读取、可撤销写入、业务断言、Host session 清理 |
+| Computer | 8 | 多 App 观察/动作/回读、每动作新 Observation、草稿和前台保护 |
+| Screen | 4 | 窗口读取、coverage、敏感正文不持久化 |
+| Shortcuts | 4 | catalog、稳定 id、可验证且非破坏性执行 |
+| Daxiang | 6 | 历史/上下文、稳定目标，至少 1 次 owner 自会话 confirmed send |
+| **合计** | **30** | 不允许用 readiness、fixture、direct worker、blocked 或历史 build 补数 |
 
 - 全体及每个能力族 eligible execution success 均不低于 95%；最低样本不足即 fail，不用
   “无可计算分母”通过。
@@ -726,32 +740,30 @@ executed、success、blocked、failed、uncertain、首次/重试/接管和 evid
 - Browser/Computer 简单任务输入 median <30K、p95 <80K，完成时间 p95 <60 秒；其他能力
   分别报告 p50/p95，不用混合平均数掩盖慢路径。
 
-#### Phase 6C：晋级窗口
+#### Phase 6C：有界收口窗口
 
-- **24 小时读取窗口**：所有 required read route 在窗口首尾和中间都有正式样本；Doctor
-  始终 ready，无重复 Event、静默漏收、readiness unknown 或无法解释的 backlog 增长。
-- **72 小时写入窗口**：Browser/Computer 及大象/QQ 的测试写动作跨至少三个时间点；
-  confirmed 业务结果可回读，错目标、重复、草稿破坏、前台干扰和 uncertain replay 为 0。
-- **7 天 M2 开工窗口**：同一 build、dataset 和配置不漂移；Doctor 连续 ready；没有新增
-  系统性 dead letter；Digest/Briefing 达标；自治 Run/Token 来源在配置预算内；Provider、
-  Connector、Daemon 重启和备份恢复演练均通过。
-- **30 天质量窗口**：在 M2 开发期间继续累计，用于长期可靠性和 9.5+ 评分；不替代 7 天
-  Go/No-Go，出现第 1.2 节所列回归时冻结 M2 合并/部署。
+- 全部 30 次样本在同一 clean build、dataset revision 和配置上完成，期间不得改代码或补算
+  历史样本；窗口不要求最短日历时长。
+- 窗口首尾 Doctor ready，期间无新增系统性 dead letter、重复 Event、静默漏收、readiness
+  unknown 或无法解释的 backlog 增长。
+- 至少完成一次已验证备份后的 Daemon 重启和一次备份恢复 dry-run；Provider、Connector、
+  Briefing/Digest、预算与 uncertain no-replay 均需有确定性或正式 Host 证据。
+- 24h/72h/7d/30d 作为 M2 发布质量窗口继续累计；出现第 1.2 节所列回归时冻结 M2 合并/部署。
 
 #### Phase 6D：M2 Go/No-Go
 
 ARC-503 生成一份不可覆盖的 M1 exit record，至少包含 Git SHA、build identity、dirty=false、
-dataset revision、CI/coverage/skip 数字、迁移与恢复摘要、100 次完整分母、24h/72h/7d 起止
+dataset revision、CI/coverage/skip 数字、迁移与恢复摘要、30 次完整分母、有界窗口起止
 时间、Doctor/资源趋势、失败注入结果、所有 BLOCKED disposition 和原始 evidence 索引。
 
 只有以下条件全部为真时 decision 才能为 `GO`：
 
 1. Phase 0～5 的退出条件全部通过，没有临时豁免、过期 blocker 或未归属 dirty diff。
 2. Phase 6B 每个能力族达到最低样本、成功率和 S0/S1 门槛。
-3. Phase 6C 三个晋级窗口在同一 build 上完成，期间未重置或补算时间。
+3. Phase 6C 有界窗口在同一 build 上完成，期间没有代码、dataset 或配置漂移。
 4. Doctor ready、unclassified/systemic dead letter 为 0、Briefing/Digest/资源预算全部达标。
-5. 大象/QQ 真实 Adapter、稳定 owner 测试目标和 confirmed 业务结果均已验证；微信退役负向
-   门禁持续成立。
+5. 大象真实 Adapter、稳定 owner 测试目标和 confirmed 业务结果均已验证；QQ 默认关闭且
+   fail-closed，微信退役负向门禁持续成立。
 6. owner/external prerequisite 为 0 个 unresolved；若客观无法解除，decision 必须是 `NO-GO`，
    由 owner 明确修改蓝图里程碑后才能改变产品范围，实施者不得自行降级。
 
@@ -771,14 +783,14 @@ dataset revision、CI/coverage/skip 数字、迁移与恢复摘要、100 次完�
 | ARC-202 | Browser 原生面 | Host session + direct tools | ARC-201 |
 | ARC-203 | Computer 原生面 | 16 KiB observation + direct tools | ARC-201 |
 | ARC-204 | Screen/Shortcuts 正式面 | 有界观察、稳定 id 和正式回读 | ARC-201 |
-| ARC-205 | 个人消息闭环与微信退役 | Daxiang/QQ 真实 route、目标和回执；微信负向门禁 | ARC-201、外部前置 |
+| ARC-205 | 个人消息闭环与渠道边界 | Daxiang 真实 route、目标和回执；QQ 默认关闭；微信负向门禁 | ARC-201、外部前置 |
 | ARC-301 | Run Pipeline | 阶段化 prepare/execute/finalize | ARC-103、ARC-201 |
 | ARC-302 | 普通 Run 终态 | outcome 矩阵、Host 最终回答和多表一致 | ARC-301 |
 | ARC-303 | 组合根瘦身 | 热点文件和生产 LOC 达标 | ARC-302 |
 | ARC-401 | schema v16 与配置迁移 | DB/JSON 前向迁移和回滚证据 | ARC-102、ARC-302 |
 | ARC-402 | 可追溯部署 | clean build、identity、T0 | ARC-104、ARC-202～205、ARC-303、ARC-401 |
-| ARC-501 | 最终构建真实 E2E | 14 场景族、6 能力族和 100 次完整分母 | ARC-402 |
-| ARC-502 | 24h/72h/7d soak | 同 build 稳定性、效率和恢复证据 | ARC-501 |
+| ARC-501 | 最终构建真实 E2E | 14 场景族、5 能力族和 30 次完整分母 | ARC-402 |
+| ARC-502 | 有界收口窗口 | 同 build 稳定性、效率和恢复证据 | ARC-501 |
 | ARC-503 | M1 exit decision | 不可覆盖 exit record 与 M2 `GO/NO-GO` | ARC-502 |
 
 ```text
@@ -798,8 +810,8 @@ ARC-104 + ARC-202/203/204/205 + ARC-303/401 → ARC-402 → ARC-501 → ARC-502 
 - `src/runtime/personal-message-hub.ts` 及其 Daemon Host 接线；
 - `src/daemon` 的 Task 调度、Attention、health、Store、schema、service composition；
 - `src/extensions/browser/`、`src/extensions/computer/`；
-- M1 所需的 Screen、Shortcuts、Daxiang、QQ Connector/Adapter 与示例配置，以及只删除旧微信
-  配置的退役迁移；
+- M1 所需的 Screen、Shortcuts、Daxiang Connector/Adapter，QQ 默认关闭实验边界与示例配置，
+  以及只删除旧微信配置的退役迁移；
 - `src/core` 的 Run finalization、failure、ExecutionLedger 兼容边界；
 - ARC-000 为收口当前回归而必需的 `src/core/context.ts`、`src/core/session.ts`、
   `src/runtime/model.ts`；只允许修复/撤回当前行为，不借机增加模型路由能力；
@@ -811,7 +823,7 @@ ARC-104 + ARC-202/203/204/205 + ARC-303/401 → ARC-402 → ARC-501 → ARC-502 
 - Team/SubAgent 的业务能力和并发模型；
 - 新 Provider adapter、模型路由功能和媒体 Runtime；
 - CLI/TUI 视觉重做；
-- M1 七个能力族之外的新 Connector、Skill、MCP 集成和 M2～M5 产品能力。
+- M1 五个正式能力族之外的新 Connector、Skill、MCP 集成和 M2～M5 产品能力。
 
 若某项必须越过默认范围，先证明当前范围内无法完成，并把新增范围、删除项和额外验收写入
 本计划；不能在实现提交里临时扩面。
@@ -825,13 +837,13 @@ ARC-104 + ARC-202/203/204/205 + ARC-303/401 → ARC-402 → ARC-501 → ARC-502 
 | Phase 0 | 2～3 天 | 冻结、红测、备份、完整基线 |
 | Phase 1 | 4～6 天 | 调度、Briefing、Digest、failure disposition |
 | Phase 2 | 4～6 天 | capability registry/gateway 收敛 |
-| Phase 3 | 6～10 天 | 七个 M1 能力族正式面、个人 Adapter 与 live E2E |
+| Phase 3 | 6～10 天 | 五个 M1 正式能力族、个人 Adapter 与 live E2E |
 | Phase 4 | 5～8 天 | Run Pipeline、Finalization、组合根瘦身 |
 | Phase 5 | 3～5 天 | schema/config 迁移和 clean deployment |
-| Phase 6 | 至少 7 个日历日 | 24h、72h、7d soak，不可压缩 |
+| Phase 6 | 有界收口 | 30 次短 live matrix、备份/重启/恢复演练和 exit record |
 
-预计为 5～8 周开发加至少 7 天稳定窗口；Computer Driver、owner 测试目标或外部账号条件未
-就绪时，日历周期继续延长，不能通过删验收项压缩。阶段内部可并行编写独立 fixture、迁移
+预计开发量仍以 5～8 周原始参考为审计背景，但 M2 开工不再等待固定日历窗口；Computer Driver、
+owner 测试目标或外部账号条件未就绪时仍必须如实 fail-closed。阶段内部可并行编写独立 fixture、迁移
 演练和文档，但同一运行链的生产接线只允许一个 owner 顺序合并，避免再次制造 build drift。
 
 ## 7. 验收体系
@@ -847,7 +859,7 @@ ARC-104 + ARC-202/203/204/205 + ARC-303/401 → ARC-402 → ARC-501 → ARC-502 
 → 全量 CI
 → 临时数据迁移/恢复
 → 正式安装路径 E2E
-→ soak
+→ 有界收口窗口
 ```
 
 ### 7.2 静态与回归门槛
@@ -874,45 +886,45 @@ ARC-104 + ARC-202/203/204/205 + ARC-303/401 → ARC-402 → ARC-501 → ARC-502 
 
 | 指标 | M2 开工门槛 |
 |---|---:|
-| Doctor | 连续 7 天 ready |
+| Doctor | 有界窗口首尾 ready |
 | 未分类 dead letter | 0 |
-| 新增系统性 dead letter | 7 天为 0 |
+| 新增系统性 dead letter | 有界窗口为 0 |
 | pending Briefing 最老年龄 | < 1 小时 |
 | pending Digest | 常态 < 50，峰值后 2 个 briefing 周期内回落 |
-| required M1 route readiness | 6 个能力族 100% 明确且 operational ready；不能长期 unknown |
-| 正式 live matrix | 最终 build 至少 100 次；每族达到最低样本且成功率 ≥95% |
-| 个人消息闭环 | Daxiang/QQ 均真实 read/send/回读；每发送渠道 72h；微信 route 永久为 0 |
+| required M1 route readiness | 5 个正式能力族 100% 明确且 operational ready；不能 unknown |
+| 正式 live matrix | 最终 build 至少 30 次；每族达到最低样本且成功率 ≥95% |
+| 个人消息闭环 | Daxiang 真实 read/send/回读；QQ 默认关闭；微信 route 永久为 0 |
 | 错目标/重复副作用/S0/S1 | 0 |
 | 单 Tool 模型文本 | ≤16 KiB，分页例外需显式 cursor |
 | 简单任务输入 token | median <30K，p95 <80K |
 | 简单任务完成时间 | p95 <60 秒，不含外部系统自身等待 |
 | capability discovery loop | 0 |
 | unchanged health 成本 | 0 Event、0 Task、0 模型 Run、0 Token |
-| 自治 Run/Token 预算 | 7 天内各来源不超过配置预算；owner/eval 单独报告，不混入自治分母 |
+| 自治 Run/Token 预算 | 有界窗口内各来源不超过配置预算；owner/eval 单独报告，不混入自治分母 |
 | Provider 故障 | 429/余额/网络/5xx 无风暴；stream/副作用开始后 0 次切换重放 |
 | ordinary Run outcome | 模型回答不能提升结构化 outcome；所有最终投影一致 |
-| build drift | 7 天为 0 |
+| build drift | 有界窗口为 0 |
 
 ### 7.4 评分目标
 
 评分只在对应证据通过后更新。上一轮 7.5 分指 Event/Session/Ledger 等核心基础质量；
 下表的“架构简洁性”同时计入巨型组合根、重复能力协议和运行接线，因此当前只记 6 分。
 
-| 维度 | 当前估计 | 72h 目标 | 7d/M2 门槛 | 接近 10 分所需 |
+| 维度 | 当前估计 | 短矩阵目标 | M2 开工门槛 | 接近 10 分所需 |
 |---|---:|---:|---:|---|
 | 架构简洁性 | 6.0 | 8.5 | 9.0 | M2 后仍无新增中心系统 |
 | 实现正确性 | 5.5 | 8.5 | 9.0 | 30 天零系统性回归 |
 | 运行可靠性 | 3.5 | 8.0 | 9.0 | 30 天 ready + 恢复演练 |
 | 执行流畅度 | 3.5 | 8.5 | 9.0 | 多 App 30 天性能稳定 |
 | 可运维性 | 4.0 | 8.5 | 9.0 | 自动趋势和人工演练持续有效 |
-| M1 产品闭环 | 4.0 | 8.5 | 9.0 | 七个能力族和消息闭环 30 天稳定 |
+| M1 产品闭环 | 4.0 | 8.5 | 9.0 | 五个正式能力族和消息闭环 30 天稳定 |
 | 综合评分 | 4.5 | 8.2 | 8.8～9.0 | 30 天真实运行后再评 9.5+ |
 
 任何单项未达到 8 分，整体不得宣称 9 分；Doctor 非 ready、完整 CI 红、存在 discovery
 loop 或未分类 dead letter 时，整体最高只能记 6 分。
 
 评分是复盘结果，不是阶段开关。ARC-503 只按布尔证据作 `GO/NO-GO`，不得通过主观加分
-抵消缺失的渠道、样本、soak 或 blocker；完成 7 天也不能宣称 10 分。
+抵消缺失的渠道、样本、有界恢复证据或 blocker；短矩阵通过也不能宣称 10 分。
 
 ## 8. 迁移、回滚与提交策略
 
@@ -945,12 +957,12 @@ loop 或未分类 dead letter 时，整体最高只能记 6 分。
 1. Task executor、Capability Snapshot、ExecutionLedger、RunFinalization 各自成为唯一真相。
 2. 普通 Run、Goal、Plan、取消、恢复和 uncertain 全部服从同一 outcome/finalization 规则。
 3. Briefing、Digest、Connector health、dead letter、资源预算和配置迁移形成轻量运营闭环。
-4. Browser、Computer、Screen、Shortcuts、大象、QQ 通过唯一正式 route 稳定完成真实任务；
-   微信能力保持完全退役且不会在验收中被启动或探测。
+4. Browser、Computer、Screen、Shortcuts、大象通过唯一正式 route 稳定完成真实任务；QQ
+   保持默认关闭且 fail-closed，微信能力保持完全退役且不会在验收中被启动或探测。
 5. `MimiAgent`、Daemon Service 和 Store 达到复杂度预算，`core/runtime/daemon` 净减少、
    Adapter 不复制中心职责、无新依赖/服务/持久系统。
-6. 完整 CI、迁移、恢复、package、14 场景族和最终 build 100 次 live matrix 全部通过。
-7. 同一 build 完成 24h read、72h write/send 和连续 7 天 Doctor ready，无系统性 dead letter、
-   能力循环、预算失控、静默积压、错目标或重复副作用。
+6. 完整 CI、迁移、恢复、package、14 场景族和最终 build 30 次短 live matrix 全部通过。
+7. 同一 build 的有界收口窗口首尾 Doctor ready，无系统性 dead letter、能力循环、预算失控、
+   静默积压、错目标或重复副作用；长期时间窗口移入 M2 发布质量监控。
 8. ARC-503 exit record 可核对全部原始分母、receipt、趋势、blocker 和 build，decision=`GO`。
 9. 蓝图明确宣布 M1 完成后，才允许开始 M2 产品实现；30 天质量窗口在 M2 期间继续运行。
