@@ -138,6 +138,18 @@ test('autonomous Run budget stops Task growth while owner work survives and tran
     assert.equal(store.activitySnapshot(20, now).autonomousBudgetExhaustions.length, 1);
     assert.equal(store.activitySnapshot(20, now).recentTransitions
       .filter((item) => item.type === 'attention.budget_exhausted').length, 1);
+    const firstExhaustion = store.activitySnapshot(20, now).autonomousBudgetExhaustions[0];
+    assert.ok(firstExhaustion);
+    const repeatedAt = new Date(now.getTime() + 30 * 60_000);
+    assert.deepEqual(attention.routeIngress(event(
+      'budgeted-later', 'connector:calendar', 'external', repeatedAt,
+    ), repeatedAt), {
+      decision: 'digest',
+      reasonCode: 'hourly_budget',
+    });
+    const repeatedExhaustion = store.activitySnapshot(20, repeatedAt).autonomousBudgetExhaustions[0];
+    assert.equal(repeatedExhaustion?.exhaustedAt, firstExhaustion.exhaustedAt);
+    assert.equal(repeatedExhaustion?.retryAt, firstExhaustion.retryAt);
     const health = buildDaemonHealth({
       tasks: store.counts().tasks,
       outbox: store.counts().outbox,

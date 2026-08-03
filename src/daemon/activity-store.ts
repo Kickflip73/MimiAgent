@@ -168,10 +168,10 @@ export class ActivityStore extends SqliteDomain {
         source,
         reasonCode,
         exhaustedAt: existing?.exhaustedAt ?? timestamp,
-        retryAt: retryAt.toISOString(),
+        retryAt: existing?.reasonCode === reasonCode && existing.retryAt < retryAt.toISOString() ? existing.retryAt : retryAt.toISOString(),
       };
       if (existing) {
-        if (existing.reasonCode !== reasonCode || existing.retryAt < next.retryAt) {
+        if (existing.reasonCode !== reasonCode || existing.retryAt !== next.retryAt) {
           this.database.prepare('UPDATE attention_state SET value = ?, updated_at = ? WHERE key = ?')
             .run(JSON.stringify(next), timestamp, key);
         }
