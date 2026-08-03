@@ -950,3 +950,27 @@
    投影，远低于 `<50` 常态门槛，未为追求 0 而清理。个人微信仍缺 readable session 与真实
    send/readback，故 T0/100/24h/72h/7d 不起算。不可覆盖证据：
    `evals/m1/deployments/20260803T142212+0800-unlock-probes-wechat.json`。
+
+## 2026-08-03 微信账号安全退役
+
+1. Owner 报告腾讯官方外挂警告并明确撤销 MimiAgent 的全部微信能力。该裁决覆盖旧 M1 v2
+   的微信 Adapter 要求；计划已修订为 v3，微信从能力族和 soak 前置中删除，改为永久负向门禁。
+2. `9f30419` 从 schema、PersonalMessageHub、Connector 模板、默认初始化、脚本、示例桥和当前
+   文档中移除微信能力；升级时以 version 3 迁移原子删除旧 `personal-wechat`、
+   `openclaw-weixin` 及历史微信 Connector id，后续启动不会补回。detached clean `npm run ci`
+   为 893/893、fail/skip/todo=0，覆盖率 line/branch/function=`88.32%/78.41%/84.65%`，build 与
+   package smoke 通过；tarball SHA-256=
+   `9c1e12349f1a769fb25f7c3a1d355ea2e2efe703cd6fd15ee45f71fd4eb491c1`。
+3. 完整备份 `/Users/liuyuran/.mimi-agent/backups/m1-wechat-retirement-20260803T144550`
+   已验证 2,757 个 manifest entry、SQLite integrity=ok；manifest SHA-256=
+   `e24f8d0db6182cfcf3e95e420f318e29461bd38f8ae667b92bcf397cbb7ae787`。空闲切换后线上运行
+   clean build `0.12.0+g9f30419b0e6109feb81776b7d1f4e0427f3fb042.clean.71d220cf5c4d`，
+   queued/running/active Event/Tool/Host mutation/Outbox pending/sending 均为 0，Connector 中微信 id=0。
+4. 主机侧已停止签名克隆和 `wx-daemon`，卸载 `@jackwener/wx-cli`；克隆 App 与 wx-cli 状态移入
+   Trash 可恢复保留，原路径和运行进程均为 0，官方 `/Applications/微信.app` 未修改。
+   OpenClaw 的 `mimiagent-bridge` 配置和 load path、`openclaw-weixin` 通道与插件登记均已删除；
+   微信插件安装和状态目录移入 Trash 可恢复保留，active path=0，并在配置变更后强制重启
+   gateway；没有启动、探测、读取或发送微信来验证退役。
+5. 当前 heartbeat 已改为只验证退役，不得执行任何微信动作或重新安装组件。退役后的聚焦回归
+   28/28、fail/skip/todo=0；完整不可覆盖证据：
+   `evals/m1/deployments/20260803T145419+0800-wechat-retirement.json`。

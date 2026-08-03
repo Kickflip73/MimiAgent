@@ -278,3 +278,10 @@
   Codex 不索取、不记录也不绕过密码。即使此后读取转绿，`wx-cli@0.3.0` 仍无 send 命令，必须
   另有合法、可验证的个人账号发送与业务回读 route 才能解除 ARC-205。证据：
   `evals/m1/deployments/20260803T142212+0800-unlock-probes-wechat.json`。
+- **2026-08-03 个人微信 blocker 已由 Owner 安全裁决永久撤销**：腾讯官方外挂警告后，Owner
+  明确要求 MimiAgent 不再接触微信。旧条目仅保留为历史审计，不再是待解除前置，也不得据此
+  继续密钥提取、寻找发送后端或恢复 Adapter。代码、已部署配置、签名克隆、wx-cli、OpenClaw
+  Mimi bridge/微信通道/插件和自动 heartbeat 均已退役；官方微信未修改。M1 计划 v3 只把“微信 route
+  始终为 0”作为负向门禁，ARC-205 余下范围为 Daxiang/QQ。原 ARC-503 NO-GO 记录保持不可覆盖；
+  其后续 GO 只能按 v3 的 6 能力族重新冻结 T0 和分母，不得重放任何历史微信动作。证据：
+  `evals/m1/deployments/20260803T145419+0800-wechat-retirement.json`。

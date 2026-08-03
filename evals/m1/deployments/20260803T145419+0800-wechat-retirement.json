@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-03T14:54:19+08:00",
+  "decision": "wechat_capability_retired",
+  "reason": "Owner reported an official Tencent外挂 warning and ordered all MimiAgent WeChat functionality removed.",
+  "scopeRevision": {
+    "plan": "docs/plans/20260731-MimiAgent-M1架构收敛重构计划.md",
+    "planVersion": 3,
+    "wechatIsRequiredCapability": false,
+    "wechatRetirementIsNegativeGate": true
+  },
+  "source": {
+    "commit": "9f30419b0e6109feb81776b7d1f4e0427f3fb042",
+    "subject": "fix(security): retire WeChat capabilities",
+    "package": "mimi-agent-0.12.0.tgz",
+    "packageSha256": "9c1e12349f1a769fb25f7c3a1d355ea2e2efe703cd6fd15ee45f71fd4eb491c1"
+  },
+  "verification": {
+    "detachedCleanCi": {
+      "passed": true,
+      "tests": 893,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "lineCoveragePercent": 88.32,
+      "branchCoveragePercent": 78.41,
+      "functionCoveragePercent": 84.65,
+      "buildPassed": true,
+      "packageSmokePassed": true
+    },
+    "postRetirementFocusedTests": {
+      "passed": 28,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0
+    }
+  },
+  "deployment": {
+    "backupRoot": "/Users/liuyuran/.mimi-agent/backups/m1-wechat-retirement-20260803T144550",
+    "backupManifestSha256": "e24f8d0db6182cfcf3e95e420f318e29461bd38f8ae667b92bcf397cbb7ae787",
+    "backupFileCount": 2757,
+    "backupDatabaseIntegrity": "ok",
+    "runningBuild": "0.12.0+g9f30419b0e6109feb81776b7d1f4e0427f3fb042.clean.71d220cf5c4d",
+    "daemonPid": 55725,
+    "idleBoundary": {
+      "activeEvents": 0,
+      "queuedTasks": 0,
+      "runningTasks": 0,
+      "activeTools": 0,
+      "activeHostMutations": 0,
+      "outboxPending": 0,
+      "outboxSending": 0
+    },
+    "backgroundDefaultsVersion": 3,
+    "runtimeWechatConnectorIds": []
+  },
+  "hostRetirement": {
+    "wxCliInstalled": false,
+    "wxDaemonPids": [],
+    "signedCloneRunningPids": [],
+    "signedCloneOriginalPathExists": false,
+    "signedCloneRecoveryPath": "/Users/liuyuran/.Trash/微信-Mimi-retired-20260803.app",
+    "wxCliStateRecoveryPath": "/Users/liuyuran/.Trash/wx-cli-retired-20260803",
+    "officialWechatAppPreserved": true,
+    "openclaw": {
+      "mimiagentBridgeEntryPresent": false,
+      "mimiagentBridgeLoadPathPresent": false,
+      "weixinChannelPresent": false,
+      "weixinPluginEntryPresent": false,
+      "weixinPluginEnabled": false,
+      "weixinActiveInstallPaths": [],
+      "weixinStateRecoveryPath": "/Users/liuyuran/.Trash/openclaw-weixin-state-retired-20260803",
+      "weixinPackageRecoveryPath": "/Users/liuyuran/.Trash/openclaw-weixin-package-retired-20260803",
+      "gatewayRestartedAfterConfigChange": true,
+      "gatewayPid": 60253
+    }
+  },
+  "safetyInvariants": [
+    "Do not launch, probe, read, send, decrypt, inject, sign, clone, or bridge WeChat.",
+    "Do not reinstall wx-cli, wx-daemon, personal-wechat, openclaw-weixin, or mimiagent-bridge.",
+    "Do not touch /Applications/微信.app while verifying retirement.",
+    "Historical evidence and recoverable backups are retained but never replayed."
+  ]
+}
