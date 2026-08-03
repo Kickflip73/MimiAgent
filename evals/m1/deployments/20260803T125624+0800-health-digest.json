@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "recordId": "m1-deployment-20260803T125624+0800-health-digest",
+  "createdAt": "2026-08-03T12:56:24+08:00",
+  "authorization": "Owner explicitly required continued forced redeployment without further permission prompts.",
+  "supersedesExitDecision": false,
+  "fix": {
+    "commitSha": "e9d06bd8cb75e52b5c6755520c0c38f1ef25f9f4",
+    "subject": "fix(daemon): compact historical health digests",
+    "rootCause": "The v16 upgrade compacted connector-health Digest projections only during the original v15-to-v16 migration. A later Daxiang process flap therefore accumulated thousands of duplicate pending projections in an already-v16 production database.",
+    "invariant": "Keep every immutable Event, retain the newest pending Digest projection for each connector and normalized health status, mark only older duplicates digested, create a database backup first, apply in one immediate transaction, verify integrity and foreign keys, and record one idempotency audit marker.",
+    "redGreen": {
+      "red": "The regression could not import the absent historical v16 compaction API; after implementation it also verified exact retained rows, one-time backup/audit behavior, Event preservation, and full rollback on foreign-key failure.",
+      "focusedTests": 20,
+      "focusedPassed": 20
+    },
+    "cleanCi": {
+      "command": "npm run ci",
+      "cleanWorktree": true,
+      "tests": 900,
+      "passed": 900,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "coverage": {
+        "linePercent": 88.32,
+        "branchPercent": 78.41,
+        "functionPercent": 84.65
+      },
+      "buildPassed": true,
+      "packageSmokePassed": true,
+      "architectureBudgetPassed": true
+    },
+    "buildIdentity": "0.12.0+ge9d06bd8cb75e52b5c6755520c0c38f1ef25f9f4.clean.7364ab4782d6",
+    "tarballSha256": "99856c109abb71415e77e5fafa60f49a5a89e0551d1b49d52402c331ba22ad32"
+  },
+  "dryRun": {
+    "databaseVersion": 16,
+    "databaseIntegrity": "ok",
+    "foreignKeyViolations": 0,
+    "immutableEvents": 15782,
+    "pendingDigestItems": 7506,
+    "pendingHealthDigestItems": 7211,
+    "retainedHealthGroups": 15,
+    "collapsibleHealthDigestItems": 7196,
+    "unclassifiedHealthDigestItems": 0,
+    "existingAuditMarkers": 0,
+    "repairRequired": true
+  },
+  "backups": [
+    {
+      "directory": "/Users/liuyuran/.mimi-agent/backups/m1-health-digest-20260803T124913",
+      "manifestFiles": 2753,
+      "manifestSha256": "45dc96d57f64f528a8ad7a192f0b436e68da18e07d2a239d5767994536f5ff9a",
+      "databaseIntegrity": "ok",
+      "verified": true
+    },
+    {
+      "directory": "/Users/liuyuran/.mimi-agent/daemon/backups/health-digest-compaction-v16-2026-08-03T04-50-04-578Z-5fd7466f",
+      "kind": "automatic-pre-migration-database-backup",
+      "databaseSha256": "8202ae7b3054f34bb5b7d43642fa24abfc6373fc5ff94a3a1e5752d1cddc68f2"
+    }
+  ],
+  "cutover": {
+    "targetCommitSha": "e9d06bd8cb75e52b5c6755520c0c38f1ef25f9f4",
+    "oldDaemonPid": 76201,
+    "newDaemonPid": 98228,
+    "queuedTasks": 0,
+    "runningTasks": 0,
+    "activeTools": 0,
+    "activeHostMutations": 0,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "safeStop": true
+  },
+  "migrationAudit": {
+    "auditMarkers": 1,
+    "before": {
+      "pendingHealthDigestItems": 7211,
+      "retainedHealthGroups": 15,
+      "collapsibleHealthDigestItems": 7196,
+      "unclassifiedHealthDigestItems": 0
+    },
+    "after": {
+      "pendingHealthDigestItems": 15,
+      "collapsedHealthDigestItems": 7196
+    },
+    "integrity": "ok",
+    "foreignKeyViolations": 0,
+    "immutableEventsDeleted": 0
+  },
+  "briefingDrain": {
+    "initialPendingAfterStartupAndProbes": 316,
+    "batches": [
+      {
+        "eventId": "8557463d-8f12-464d-9734-dfcdaaa943c7",
+        "items": 92,
+        "status": "completed",
+        "attempts": 1
+      },
+      {
+        "eventId": "6de95666-6115-4008-aad9-0736a358ac93",
+        "items": 95,
+        "status": "completed",
+        "attempts": 1
+      },
+      {
+        "eventId": "8fa2b4aa-db7e-41aa-8e7e-db09f83cce25",
+        "items": 63,
+        "status": "completed",
+        "attempts": 1
+      },
+      {
+        "eventId": "a74aacd9-f7b3-4404-8c13-e239f8cd8e15",
+        "items": 66,
+        "status": "completed",
+        "attempts": 1
+      }
+    ],
+    "finalPendingDigestItems": 0,
+    "failedBatches": 0,
+    "remainingBriefingAssignments": 0
+  },
+  "liveEvidence": {
+    "personalDaxiang": {
+      "online": true,
+      "inbound": "ready",
+      "outbound": "ready",
+      "accountVerified": true,
+      "backgroundSafe": true,
+      "stableConversationId": true,
+      "stableMessageId": true,
+      "targetBound": true,
+      "reportedAt": "2026-08-03T04:50:27.719Z"
+    },
+    "shortcutsReadProbe": {
+      "receiptId": "ed7308e1-68e5-4e34-a33b-6199105b2cdb",
+      "classification": "readonly-probe-ok",
+      "eligible": true
+    },
+    "browserReadProbe": {
+      "receiptId": "fc12352e-a0f6-4e15-ac0f-f52e44a44a98",
+      "classification": "readonly-probe-ok",
+      "eligible": true
+    },
+    "computerAndScreen": {
+      "eligible": false,
+      "classification": "console-locked",
+      "consoleLocked": true,
+      "screenSessionLocked": true,
+      "safetyDisposition": "fail_closed",
+      "nextAction": "Re-run computer-window and screen-window after the owner unlocks the existing macOS console session; do not bypass the OS lock."
+    }
+  },
+  "doctor": {
+    "ready": false,
+    "installedBuild": "0.12.0+ge9d06bd8cb75e52b5c6755520c0c38f1ef25f9f4.clean.7364ab4782d6",
+    "runningBuild": "0.12.0+ge9d06bd8cb75e52b5c6755520c0c38f1ef25f9f4.clean.7364ab4782d6",
+    "buildAligned": true,
+    "providerCircuit": "closed",
+    "queuedTasks": 0,
+    "runningTasks": 0,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "digestBacklog": 0,
+    "enabledConnectors": 8,
+    "onlineConnectors": 8,
+    "readyConnectors": 7,
+    "unknownConnectors": [
+      "macos-screen"
+    ],
+    "historicalDeadLetters": 549,
+    "autonomousBudgetExhaustedSources": 4,
+    "blockedHistoricalTasks": 2
+  },
+  "t0Established": false,
+  "t0Reason": "The macOS console is locked, personal QQ and personal WeChat still have no operational Adapter, four truthful 24-hour budget windows have not rolled off, and retained manual-verification history remains visible.",
+  "liveMatrix": {
+    "requested": 0,
+    "eligible": 0,
+    "executed": 0,
+    "minimumEligibleRequired": 100
+  },
+  "soak": {
+    "read24hStarted": false,
+    "write72hStarted": false,
+    "ready7dStarted": false,
+    "historicalEvidenceCounted": false
+  },
+  "arc503Decision": "NO-GO",
+  "unresolved": [
+    "The current macOS console is locked; Computer and Screen cannot obtain a trustworthy AX window until it is unlocked.",
+    "personal-qq and personal-wechat still have no enabled operational Connector Adapter and stable live test targets.",
+    "Four autonomous source 24-hour budget windows truthfully remain exhausted until their recorded retry boundaries.",
+    "The 549 retained legacy/manual_verify dead letters remain visible and must not be replayed or archived automatically.",
+    "Two historical blocked scheduled Tasks refer to a removed schedule and still contain owner-question results; they were preserved rather than silently cancelled.",
+    "Externally exposed Provider credentials still require rotation in their respective control planes.",
+    "The 100 eligible live-action matrix and 24h, 72h, and 7d windows have not started."
+  ],
+  "evidenceRefs": [
+    "PROGRESS.md",
+    "BLOCKED.md",
+    "evals/m1/exit-records/20260803T033746+0800-no-go.json"
+  ]
+}

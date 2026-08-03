@@ -254,3 +254,13 @@
   retained legacy/manual_verify dead letter、外部 Provider 凭证轮换及 100/24h/72h/7d 仍未完成，
   因而 T0 和 ARC-503 继续 NO-GO。证据：
   `evals/m1/deployments/20260803T123144+0800-daxiang-computer-probe.json`。
+- **2026-08-03 Digest 洪峰 blocker 已解除，剩余均为真实门禁**：`e9d06bd` 已在完整备份与
+  clean CI 900/900 后部署；现有-v16 修复审计确认只压缩 7,196 个重复 connector-health 投影、
+  保留 15 个最新组、删除 Event=0，随后 4 个原生 Briefing attempt 1 全部成功，Digest=0。
+  当前 installed=running aligned、Provider circuit=closed、queued/running/outbox=0，大象与
+  Shortcuts/Browser 实测正常。尚不能建立 T0 的条件是：控制台仍锁定导致 Computer/Screen
+  fail-closed；4 个历史 24h 自治预算窗口需等真实 retryAt 自然滚出；549 个 retained
+  legacy/manual_verify dead letter 不得自动重放/归档；两个旧 blocked schedule Task 仍含
+  owner-question 结果而未静默取消；personal-qq/personal-wechat 正式 Adapter/live target、外部
+  Provider 凭证轮换、100 live matrix 与 24h/72h/7d 均未完成。证据：
+  `evals/m1/deployments/20260803T125624+0800-health-digest.json`。

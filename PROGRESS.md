@@ -886,3 +886,34 @@
    不绕过 OS 锁；解锁后重跑两个固定 probe。Doctor 仍因该项、Digest=7506、4 个自治来源预算、
    QQ/个人微信正式 Adapter 缺口而 ready=false。完整不可覆盖部署证据见
    `evals/m1/deployments/20260803T123144+0800-daxiang-computer-probe.json`。
+
+## 2026-08-03 历史健康投影压缩、第三次强制部署与 Digest 清零
+
+1. Digest=7506 的主因不是 7506 个待处理业务事实，而是旧大象进程每约 5 秒离线/恢复一次，
+   在已经升级为 v16 的库中累计 6857 次状态切换；原 v16 压缩只在 v15→v16 时运行，无法处理
+   后续抖动。`e9d06bd` 增加一次性现有-v16 修复：保留全部不可变 Event，只保留每个
+   connector+规范 status 的最新待简报投影，启动前备份、单事务写入、计数/SQLite/外键检查、
+   审计 marker 幂等。回归覆盖精确保留、Event 不删、只执行一次和完整回滚。
+2. 生产只读 dry-run：SQLite integrity=ok、foreign key=0、Event=15,782、Digest=7,506；其中
+   connector-health=7,211，15 个分组保留，7,196 可压缩，unclassified=0。detached clean
+   `npm run ci` 为 900/900、fail/skip/todo=0，覆盖率 line/branch/function=
+   `88.32%/78.41%/84.65%`，架构预算、build、package smoke 全绿；tarball SHA-256=
+   `99856c109abb71415e77e5fafa60f49a5a89e0551d1b49d52402c331ba22ad32`。
+3. 全量恢复备份 `/Users/liuyuran/.mimi-agent/backups/m1-health-digest-20260803T124913`
+   已逐文件复验 2,753 个 manifest entry、SQLite integrity=ok，manifest SHA-256=
+   `45dc96d57f64f528a8ad7a192f0b436e68da18e07d2a239d5767994536f5ff9a`。旧进程在 queued/
+   running/Tool/Host mutation/Outbox 均为 0 时安全停止；新 PID=98228，installed=running=
+   `0.12.0+ge9d06bd8cb75e52b5c6755520c0c38f1ef25f9f4.clean.7364ab4782d6`、aligned=true。
+4. 首次启动另自动生成数据库级备份并写入唯一 audit；实库审计 before=7,211、collapsed=7,196、
+   after=15、integrity=ok、foreign key=0，Event 删除数=0。启动/探针产生的正常状态边沿与剩余
+   真实个人消息共 316 条，没有再做数据迁移；改用四次原生 Owner Briefing，分别处理
+   92/95/63/66 条，全部 attempt 1 completed、无错误，最终 Digest=0。
+5. 新 build 实测 Shortcuts receipt `ed7308e1…`、Browser `fc12352e…` 成功；大象继续双向 ready，
+   accountVerified/backgroundSafe/stable IDs/targetBound=true。Doctor 当前 enabled/online/ready=
+   8/8/7，Provider circuit=closed、queued/running/outbox/digest=0。唯一 unknown 为 macos-screen；
+   系统仍明确 `IOConsoleLocked=Yes`、`CGSSessionScreenIsLocked=Yes`，Computer/Screen 正确拒绝。
+6. 当前仍不建立 T0：4 个真实 24h 自治预算窗口尚未自然滚出，549 条 retained
+   legacy/manual_verify dead letter 不授权自动重放/归档；两个旧 blocked schedule Task 的 schedule
+   已不存在但仍保留 owner-question 结果，未静默取消；QQ/个人微信正式 route、外部凭证轮换及
+   100/24h/72h/7d 仍未完成。完整证据：
+   `evals/m1/deployments/20260803T125624+0800-health-digest.json`。
