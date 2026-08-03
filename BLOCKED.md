@@ -264,3 +264,9 @@
   owner-question 结果而未静默取消；personal-qq/personal-wechat 正式 Adapter/live target、外部
   Provider 凭证轮换、100 live matrix 与 24h/72h/7d 均未完成。证据：
   `evals/m1/deployments/20260803T125624+0800-health-digest.json`。
+- **2026-08-03 个人微信 blocker 已拆成两个可验证条件**：签名客户端已运行，
+  `@jackwener/wx-cli@0.3.0` 能找到 17 个加密数据库，但当前锁屏/未登录会话提取 0 个密钥，
+  `sessions` 因 `session.db` 无法解密而 fail-closed；owner 正常解锁并登录后可由 heartbeat 自动
+  重跑 `wx init --force`，不需要再授予 Codex 文件或命令权限。独立的产品能力缺口是该 CLI 没有
+  send 命令，只有读/检索/导出面；在找到并验证合法个人账号发送后端、稳定目标和业务回读前，
+  不得把只读 route、OpenClaw/Bot 通道或模拟 action 计为个人微信完成。

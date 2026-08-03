@@ -917,3 +917,19 @@
    已不存在但仍保留 owner-question 结果，未静默取消；QQ/个人微信正式 route、外部凭证轮换及
    100/24h/72h/7d 仍未完成。完整证据：
    `evals/m1/deployments/20260803T125624+0800-health-digest.json`。
+
+## 2026-08-03 个人微信 Adapter 预检与无人值守续跑
+
+1. 已安装并审计当前 npm latest `@jackwener/wx-cli@0.3.0`；保留官方
+   `/Applications/微信.app`，另启动签名副本
+   `/Users/liuyuran/Applications/微信-Mimi.app`。`wx init` 可定位 17 个加密数据库和客户端
+   task port，但锁屏/未登录状态下得到 0 个候选密钥、0 个匹配密钥；随后
+   `wx sessions --limit 1 --json` 精确失败为无法解密 `session.db`。这说明安装路径和进程启动
+   已成立，当前读路径缺口是现有登录会话的数据库密钥，不是文件权限。
+2. `wx --help` 的真实命令面包含 sessions/history/search/contacts/export/unread/new-messages，
+   不包含 send；因此即使 owner 正常解锁并登录、重新 `wx init --force` 后读路径转绿，该工具
+   仍不能独立满足 M1 规定的个人微信精确发送和 confirmed readback。未创建只读冒充双向能力的
+   Adapter，也未把模糊 chat-name 匹配写成稳定目标绑定。
+3. 已启用当前 Codex task 的小时级 heartbeat `MimiAgent M1 长任务续跑`：每轮先只读复核 build、
+   idle boundary、锁屏、微信进程和解密状态；解锁后自动重跑 Computer/Screen，微信可读后冻结
+   脱敏 schema；没有真实发送后端时继续 fail-closed，不重复部署、不清历史、不重放不确定副作用。
