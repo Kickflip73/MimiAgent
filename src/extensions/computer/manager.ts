@@ -67,10 +67,13 @@ export interface ComputerHostObservation {
 }
 
 const PROTECTED_CONTROL_PLANE_APPS = new Set([
-  'com.apple.Terminal',
   'com.googlecode.iterm2',
   'com.microsoft.VSCode',
   'com.openai.codex',
+]);
+
+const OBSERVE_ONLY_CONTROL_PLANE_APPS = new Set([
+  'com.apple.Terminal',
 ]);
 
 const PROTECTED_CONTROL_PLANE_PREFIXES = [
@@ -619,7 +622,7 @@ export class ComputerManager {
           `${observation.blockedReason ?? 'observation_unusable'}；拒绝投递 UI 动作，请修复 AX/截图能力后重新观察`,
         );
       }
-      this.authorizeApp(authority, target.bundleId);
+      this.authorizeApp(authority, target.bundleId, 'act');
       if (this.config.pauseWhenTargetFrontmost && requiredAccess === 'background' && observation.frontmost !== false) {
         if (!promoteToForeground()) {
           throw new Error('target_in_use：目标应用处于前台或焦点状态未知，当前 Run 没有前台权限');
@@ -628,7 +631,7 @@ export class ComputerManager {
       for (const point of actionCoordinates(input.action)) this.assertPoint(point.x, point.y, observation.dimensions);
       element = actionElement(input.action, observation);
     } else if (input.action.type === 'launch_app' && input.action.bundleId) {
-      this.authorizeApp(authority, input.action.bundleId);
+      this.authorizeApp(authority, input.action.bundleId, 'act');
     } else if (input.action.type === 'launch_app') {
       throw new Error('launch_app 必须使用经过发现的精确 bundleId，不能仅按名称启动');
     } else if (input.action.type === 'bring_to_front' || input.action.type === 'handoff_to_user' || input.action.type === 'kill_app') {
@@ -637,7 +640,7 @@ export class ComputerManager {
       target = targets.find((candidate) => candidate.pid === controlAction.pid
         && (controlAction.type === 'kill_app' || controlAction.windowId === undefined || candidate.windowId === controlAction.windowId));
       if (!target) throw new Error('target_not_found：无法把 pid 解析为精确应用窗口');
-      this.authorizeApp(authority, target.bundleId);
+      this.authorizeApp(authority, target.bundleId, 'act');
       if (input.action.type === 'bring_to_front') {
         if (run.foregroundRestore) throw new Error('当前 Run 已持有 foreground lease，请先释放');
         foregroundRestoreTarget = targets.find((candidate) => candidate.frontmost && candidate.pid !== target!.pid);
@@ -855,7 +858,14 @@ export class ComputerManager {
     if (!hasAccess(authority.access, required)) throw new Error(`approval_required：Computer 动作需要 ${required}，当前授权为 ${authority.access}`);
   }
 
-  private authorizeApp(authority: ComputerRunAuthority, bundleId: string): void {
+  private authorizeApp(
+    authority: ComputerRunAuthority,
+    bundleId: string,
+    operation: 'observe' | 'act' = 'observe',
+  ): void {
+    if (operation === 'act' && OBSERVE_ONLY_CONTROL_PLANE_APPS.has(bundleId)) {
+      throw new Error(`应用 ${bundleId} 是只读控制面，Computer 可以观察但不得注入输入`);
+    }
     if (PROTECTED_CONTROL_PLANE_APPS.has(bundleId)
       || PROTECTED_CONTROL_PLANE_PREFIXES.some((prefix) => bundleId.startsWith(prefix))) {
       throw new Error(`应用 ${bundleId} 是受保护控制面，Computer 不得观察或注入输入`);

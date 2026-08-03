@@ -111,6 +111,16 @@ function delegatedCapabilities(
   return available;
 }
 
+function effectiveWorkspaceAccess(
+  input: z.infer<typeof delegationSchema>,
+): 'read' | 'write' {
+  // A supervised Shell process is a host side effect even when its command does
+  // not edit project files. Give that worker the exclusive write lane so a
+  // "keep the dev server running, do not modify files" task remains executable
+  // without weakening the deterministic read-only worker contract.
+  return input.requiredCapabilities.includes('shell.execute') ? 'write' : input.workspaceAccess;
+}
+
 function delegatedTaskId(idempotencyKey: string): string {
   const bytes = createHash('sha256').update(idempotencyKey).digest().subarray(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x50;
@@ -400,13 +410,15 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
       parameters: delegationSchema,
       execute: async (input) => {
         const normalized = delegationSchema.parse(input);
+        const workspaceAccess = effectiveWorkspaceAccess(normalized);
+        const effectiveInput = { ...normalized, workspaceAccess };
         if (normalized.executor === 'codex' && normalized.modelTarget) {
           throw new Error(
             'modelTarget 只适用于 executor=mimi；Codex executor 不使用 Mimi Provider registry',
           );
         }
         const availableCapabilities = delegatedCapabilities(
-          normalized,
+          effectiveInput,
           context.connectorCapabilities ?? [],
         );
         const missingCapabilities = normalized.requiredCapabilities.filter(
@@ -440,7 +452,7 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
           profileId: context.task.profileId,
           sessionKey: taskSessionId,
           objective: {
-            prompt: taskPrompt(normalized),
+            prompt: taskPrompt(effectiveInput),
             objective: normalized.objective,
             ...(normalized.successCriteria ? { successCriteria: normalized.successCriteria } : {}),
             ...(normalized.context ? { context: normalized.context } : {}),
@@ -449,14 +461,14 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
             ...(normalized.modelTarget
               ? { modelProfile: { modelTarget: normalized.modelTarget } }
               : {}),
-            workspaceAccess: normalized.workspaceAccess,
+            workspaceAccess,
             requiredCapabilities: normalized.requiredCapabilities,
             ...(context.workspaceRoot ? { workspaceRoot: context.workspaceRoot } : {}),
             originSessionId: context.sessionId,
             replyRoute: context.replyRoute ?? context.event.replyRoute ?? { channel: 'system' },
           },
           executor: normalized.executor === 'codex' ? 'codex' : 'isolated_worker',
-          workspaceAccess: normalized.workspaceAccess,
+          workspaceAccess,
           priority: normalized.priority,
           ...(normalized.executor === 'codex' ? { maxAttempts: 1 } : {}),
         });
@@ -464,7 +476,7 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
           taskId: inserted.id,
           sessionId: inserted.sessionKey,
           status: inserted.status,
-          workspaceAccess: normalized.workspaceAccess,
+          workspaceAccess,
           executor: normalized.executor,
           requestedModelTarget: normalized.modelTarget,
           accepted: true,

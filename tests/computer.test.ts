@@ -473,7 +473,7 @@ test('enforces image capability and application allowlist', async () => {
   );
 });
 
-test('protects control-plane apps and Connector-owned apps from Computer takeover', async () => {
+test('allows Terminal observation while protecting control-plane input and Connector-owned apps', async () => {
   const { backend, manager, authority } = await fixture({ deniedApps: ['com.google.Chrome'] });
   const setTarget = (bundleId: string) => {
     const claimed = { ...target, bundleId };
@@ -482,15 +482,20 @@ test('protects control-plane apps and Connector-owned apps from Computer takeove
   };
 
   setTarget('com.apple.Terminal');
-  await assert.rejects(
-    () => manager.observe(authority, {
+  const terminalObservation = await manager.observe(authority, {
       scope: 'window',
       target: { bundleId: 'com.apple.Terminal', pid: target.pid, windowId: target.windowId },
       includeScreenshot: false,
       maxElements: 400,
       maxDepth: 12,
+    });
+  assert.equal((terminalObservation as { actionable?: boolean }).actionable, true);
+  await assert.rejects(
+    () => manager.act(authority, {
+      observationId: String((terminalObservation as { observationId?: string }).observationId),
+      action: { type: 'click', x: 10, y: 10, button: 'left', dispatch: 'background' },
     }),
-    /受保护控制面/,
+    /只读控制面/,
   );
 
   setTarget('com.google.Chrome');

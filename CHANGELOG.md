@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- promote delegated tasks that require `shell.execute` into the supervised
+  exclusive worker lane even when the caller describes the workspace as read-only,
+  and allow read-only Terminal observation while continuing to block Computer input
+  injection into control-plane applications
 - retire every WeChat capability after an owner account-safety incident: remove
   personal and OpenClaw Connector catalog entries, bridge scripts, probes, Host
   channel schemas, and package examples; atomically delete legacy registrations

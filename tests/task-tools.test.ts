@@ -97,6 +97,17 @@ test('repeated background delegation returns the same durable task', async () =>
       (store.getTask(first.taskId)?.objective as Record<string, unknown>).requiredCapabilities,
       ['workspace.read', 'workspace.write', 'shell.execute'],
     );
+    const supervisedShell = await invoke(tools, 'delegate_background_task', {
+      objective: 'Keep the local development server running without modifying files',
+      workspaceAccess: 'read',
+      requiredCapabilities: ['workspace.read', 'shell.execute'],
+    }) as { taskId: string; workspaceAccess: string };
+    assert.equal(supervisedShell.workspaceAccess, 'write');
+    assert.equal(store.getTask(supervisedShell.taskId)?.workspaceAccess, 'write');
+    assert.match(
+      String((store.getTask(supervisedShell.taskId)?.objective as Record<string, unknown>).prompt),
+      /## 工作区访问\nwrite/,
+    );
     const targeted = await invoke(tools, 'delegate_background_task', {
       ...input,
       objective: 'Implement the game MVP with Kimi',
