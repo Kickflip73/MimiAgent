@@ -790,3 +790,51 @@
    macos-screen/macos-shortcuts readiness unknown，Digest=7047，另有 3 个自治来源预算耗尽。
    因此未建立 T0，既有 NO-GO record 不覆盖、不提升；完整部署证据见
    `evals/m1/deployments/20260803T094107+0800-forced.json`。
+
+## 2026-08-03 scheduled worker 运行时修复与第二次强制部署
+
+1. 首次强制部署记录中“credential snapshot 已解除”只被同进程 Briefing 证明，不能外推到
+   isolated scheduled worker。真实 scheduled instances `57bd45fc…`、`fb18c16d…` 仍在
+   01:45/01:50 UTC 以 36/62ms 在 Provider 前报缺少 `GENIUSRD_API_KEY`；根因是 worker 只在
+   `MimiAgent.create()` 期间保留 credential，但模型 client 为 lazy。`e4cf4aa` 将所选 Provider
+   与 embedding credential 保留到 Host 完整执行结束，同时继续从 Shell/MCP 环境排除；红→绿
+   回归和 clean CI 893/893 通过，tarball SHA-256=`136be09607ab6567aaf8fabb739bd5bc93567539c4f702524b6c5dd82385c0a4`。
+2. 修复后 Task `325ce1a6-9224-4b6e-9ce5-6531c7141010` 于
+   `2026-08-03T01:55:31.381Z` 真正发出 HTTPS 请求并完成工具路径，但
+   `finish_mimi_silently` 最后语义进展 `01:56:09.194Z` 后仍被 Provider 空 metadata stream
+   持续刷新 idle watchdog；直到安全切换 `02:44:30.058Z` 才中断，静默持续 2,900,864ms。
+   `75f0985` 改为只让可投影的非空 text/status 刷新进展；clean CI 894/894 通过，tarball
+   SHA-256=`f3fde82aac3d58690d31c2b572f6efc487862611f5f1c889343cd5d1794144fd`。
+3. `75f0985` 上同一 Task 的 attempt 2 从 `02:44:48.816Z` 运行；最后语义进展
+   `02:45:40.609Z`，在 `03:05:40.820Z` 自动终止，距 20 分钟阈值仅 211ms，无人工干预、
+   无残留 lease。该实测证明空 keepalive 已不再延长 watchdog；同时暴露 SDK 包装 abort 后被
+   错分为 `runtime.unclassified / retryable=false`，与错误文案和重试合同冲突。
+4. `470f57c` 用本次 Run 的 typed `RunFailureError` sentinel 穿透 SDK 包装；先加 Dispatcher
+   integration 回归得到红证据（预期 queued、实际 failed），实现后聚焦 12/12、check 通过。
+   detached clean worktree 最终完整 `npm run ci` 为 895/895、fail/skip/todo=0，覆盖率
+   line/branch/function=`88.27%/78.35%/84.62%`，build/package smoke 通过。一次复验因既有
+   macOS desktop mock state 并发竞态为 894/895；原文件聚焦 2/2 后再次完整 CI 全绿，未修改
+   夹具、断言或生产代码；另一个已归档 clean CI log 也为 895/895。最终 tarball SHA-256=
+   `bd412884ee0804f1b4ae7e987586533b4b5d1280b65db89531746720c9c5d075`，manifest commit 为
+   `470f57c2475cc305be4df6f8c19b31721d0956e7`、dirty=false。
+5. 部署前备份 `/Users/liuyuran/.mimi-agent/backups/m1-idle-retry-fix-20260803T112152`
+   复验 2,747 文件、SQLite integrity=ok，manifest SHA-256=
+   `1499913c63a83892387e556c299ba729291b992f287faedd592624b1c3653ec8`，目录/manifest 为
+   0700/0600。边界再次为 active Tool/Host mutation=0、Outbox pending/sending=0；按 Owner
+   强制授权只向精确旧 worker PID 2837 与 daemon PID 86550 发送 SIGTERM，attempt 1 被持久化为
+   `task.requeued / transient / retryable=true / dispatchStarted=false`，未使用 SIGKILL、未重放
+   uncertain 副作用。
+6. 新 daemon PID=20520，运行 identity=
+   `0.12.0+g470f57c2475cc305be4df6f8c19b31721d0956e7.clean.e260906b23e3`；稳定后 Doctor 证明
+   installed=running、aligned=true。启动冷页扫描曾令 status/Doctor IPC 瞬时超时，3 秒 sample
+   指向 SQLite covering-index 读取；随后 status/Doctor 均恢复到 1 秒内且进程保持同一 PID，
+   未为该瞬时现象改代码或再次重启。线上 attempt 2 已在本 clean build 运行，最后语义进展为
+   `2026-08-03T03:24:35.765Z`。
+7. 该 attempt 2（Run `1380146b-a547-48e7-bad4-af0b1c84f996`）在
+   `2026-08-03T03:44:35.982Z` 自动终止，偏差 1,200,217ms；Task 随即为 queued，failure 精确为
+   `runtime.idle_timeout / runtime / transient / retryable=true / dispatchStarted=false`，error 已清空，
+   lease=false、worker=null。无人工动作、无 active Tool/Host mutation、Outbox pending/sending=0；
+   Supervisor 随后领取其他 queued Task，未把本 Task 错误终结或立即重放。scheduled credential、
+   空 keepalive watchdog 与 typed idle retry 三项线上闭环；不可覆盖部署记录为
+   `evals/m1/deployments/20260803T114532+0800-worker-runtime-fixes.json`，SHA-256=
+   `bc482d63dd95c5c5d3c252aaf6978139c500ab674a681f6469bd436687535401`。

@@ -218,3 +218,18 @@
   所以 Computer unavailable。`personal-daxiang` unavailable，macos-screen/macos-shortcuts
   readiness unknown，Digest=7047，3 个自治来源预算耗尽。强制部署不能安全绕过 TCC、猜测个人
   消息目标或压缩日历验收，所以当前仍不得建立 T0，100 次矩阵与 24h/72h/7d 尚未起算。
+- **2026-08-03 scheduled worker credential 与空 keepalive 阻塞已解除**：首次强制部署只证明
+  Briefing，不足以证明 isolated worker；后续真实 Task 复现并定位 credential 生命周期过短，
+  `e4cf4aa` 已让所选 Provider/embedding credential 保留到 Host 执行结束，同时继续隔离
+  Shell/MCP。`75f0985` 又让 Provider 空 metadata stream 不再刷新 idle watchdog，线上实测从最后
+  语义进展到自动终止为 1,200,211ms。旧 Task 的 `runtime.unclassified / retryable=false` 是第三个
+  独立缺口，`470f57c` 已用红→绿 integration 回归修复并完成 clean package 强制部署；线上 typed
+  retry 已在最后语义进展后 1,200,217ms 真实得到
+  `runtime.idle_timeout / transient / retryable=true / dispatchStarted=false`，Task queued、lease=false、
+  worker=null；这三项不再是 blocker。
+- **2026-08-03 第二次强制部署后的剩余 NO-GO 门禁**：Doctor 已证明 clean build `470f57c`
+  installed=running、aligned=true，但 ready=false：Computer transport 已连接却没有真实窗口
+  observation，`personal-daxiang` unavailable，macos-screen/macos-shortcuts readiness unknown，
+  Digest 约 7.3k，3 个自治来源预算耗尽，历史 dead letter=549。没有 TCC、稳定消息目标和连续
+  日历证据时仍不得建立 T0 或启动/补算 100 live matrix、24h read、72h write/send、连续 7d
+  ready；既有 ARC-503 NO-GO record 保持不可覆盖。

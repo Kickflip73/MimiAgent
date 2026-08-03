@@ -1,0 +1,298 @@
+{
+  "schemaVersion": 1,
+  "recordId": "m1-deployment-20260803T114532+0800-worker-runtime-fixes",
+  "createdAt": "2026-08-03T11:45:32+08:00",
+  "authorization": "Owner explicitly required forced redeployment and authorized exact process cutover without further permission prompts.",
+  "supersedes": {
+    "record": "evals/m1/deployments/20260803T094107+0800-forced.json",
+    "scope": "The first record proved the in-process Briefing path but did not prove credential lifetime in an isolated scheduled worker. This record supersedes only that scheduled-worker conclusion.",
+    "preservesOriginalRecord": true,
+    "supersedesExitDecision": false
+  },
+  "fixes": [
+    {
+      "commitSha": "e4cf4aa4916a30bba045885eeb50d9925405edf9",
+      "subject": "fix(daemon): retain worker credentials through execution",
+      "rootCause": "The isolated worker released its selected Provider and embedding credentials after MimiAgent.create(), while model clients are lazy and first use occurs during Host execution.",
+      "invariant": "The selected credential remains available to the Host for the complete execution and remains excluded from Shell and MCP environment copies.",
+      "cleanCi": {
+        "tests": 893,
+        "passed": 893,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0,
+        "coverage": {
+          "linePercent": 88.28,
+          "branchPercent": 78.34,
+          "functionPercent": 84.60
+        },
+        "buildPassed": true,
+        "packageSmokePassed": true
+      },
+      "buildIdentity": "0.12.0+ge4cf4aa4916a30bba045885eeb50d9925405edf9.clean.33e2d28f8987",
+      "tarballSha256": "136be09607ab6567aaf8fabb739bd5bc93567539c4f702524b6c5dd82385c0a4"
+    },
+    {
+      "commitSha": "75f0985650b53930692ed1c79729edd40dafb847",
+      "subject": "fix(daemon): ignore provider keepalives for idle timeout",
+      "rootCause": "Empty Provider metadata and raw stream keepalives refreshed the run idle watchdog despite producing no projected text, reasoning, tool, or runtime progress.",
+      "invariant": "Only an observable projected status or non-empty text delta refreshes run idle progress.",
+      "cleanCi": {
+        "tests": 894,
+        "passed": 894,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0,
+        "coverage": {
+          "linePercent": 88.26,
+          "branchPercent": 78.35,
+          "functionPercent": 84.58
+        },
+        "buildPassed": true,
+        "packageSmokePassed": true
+      },
+      "buildIdentity": "0.12.0+g75f0985650b53930692ed1c79729edd40dafb847.clean.d44a097ac704",
+      "tarballSha256": "f3fde82aac3d58690d31c2b572f6efc487862611f5f1c889343cd5d1794144fd"
+    },
+    {
+      "commitSha": "470f57c2475cc305be4df6f8c19b31721d0956e7",
+      "subject": "fix(daemon): retry typed idle timeouts",
+      "rootCause": "The Agents SDK wrapped the abort reason, causing an idle timeout to fall back to runtime.unclassified and become a permanent failure.",
+      "invariant": "The Dispatcher retains the run-local typed idle failure sentinel after ephemeral-secret safety checks, so SDK abort wrapping cannot erase retry classification.",
+      "redGreen": {
+        "red": "Dispatcher integration expected queued but observed failed after a simulated SDK-wrapped abort.",
+        "greenFocusedTests": 12
+      },
+      "cleanCi": {
+        "command": "npm run ci",
+        "cleanWorktree": true,
+        "greenRuns": 2,
+        "tests": 895,
+        "passed": 895,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0,
+        "coverage": {
+          "linePercent": 88.27,
+          "branchPercent": 78.35,
+          "functionPercent": 84.62
+        },
+        "buildPassed": true,
+        "packageSmokePassed": true,
+        "interveningEnvironmentFlake": {
+          "tests": 895,
+          "passed": 894,
+          "failed": 1,
+          "test": "macOS desktop connector controls apps with argv-only actions and bounded clipboard events",
+          "observed": "A fixture activation array was overwritten during concurrent mock state-file writes.",
+          "focusedRerun": "2/2 passed",
+          "sourceOrTestChangesMade": false
+        },
+        "archivedLogSha256": "d32840421287fc3ac8bfc7cd93330e824ec71e6102ec376c055abc69c61d6d1d"
+      },
+      "buildIdentity": "0.12.0+g470f57c2475cc305be4df6f8c19b31721d0956e7.clean.e260906b23e3",
+      "tarballSha256": "bd412884ee0804f1b4ae7e987586533b4b5d1280b65db89531746720c9c5d075",
+      "releaseDirectory": "/Users/liuyuran/.mimi-agent/releases/470f57c2475cc305be4df6f8c19b31721d0956e7",
+      "cleanWorktreeRemoved": true
+    }
+  ],
+  "backups": [
+    {
+      "directory": "/Users/liuyuran/.mimi-agent/backups/m1-worker-credential-fix-20260803T095151",
+      "files": 5,
+      "manifestSha256": "c5198b7db579f6e2f73077f3c18188b7051ba5752681e111e8f30cd7f7dd5371",
+      "databaseIntegrity": "ok",
+      "directoryMode": "0700",
+      "manifestMode": "0600"
+    },
+    {
+      "directory": "/Users/liuyuran/.mimi-agent/backups/m1-idle-progress-fix-20260803T104237",
+      "files": 2745,
+      "manifestSha256": "0be0cb4ada13474c39ad29e81bb6d6f48f469e4c47162bcc34b163677aaa99c6",
+      "databaseIntegrity": "ok",
+      "directoryMode": "0700",
+      "manifestMode": "0600"
+    },
+    {
+      "directory": "/Users/liuyuran/.mimi-agent/backups/m1-idle-retry-fix-20260803T112152",
+      "files": 2747,
+      "manifestSha256": "1499913c63a83892387e556c299ba729291b992f287faedd592624b1c3653ec8",
+      "databaseIntegrity": "ok",
+      "directoryMode": "0700",
+      "manifestMode": "0600"
+    }
+  ],
+  "liveEvidence": {
+    "scheduledCredential": {
+      "preFixFailures": [
+        {
+          "taskId": "0a6e7923-1d43-47d8-aa5f-5c71713efe5f",
+          "runId": "9ae845a9-f860-4987-9e82-21e350f5f8ab",
+          "startedAt": "2026-08-03T01:40:30.700Z",
+          "completedAt": "2026-08-03T01:40:30.761Z",
+          "elapsedMs": 61,
+          "boundary": "before Provider execution",
+          "reason": "selected Provider credential was unavailable in the isolated worker"
+        },
+        {
+          "taskId": "57bd45fc-00f1-4b29-8dc6-c6a172be2b27",
+          "runId": "095abd7a-4ec7-4f13-bd98-4be1f0da7405",
+          "startedAt": "2026-08-03T01:45:29.449Z",
+          "completedAt": "2026-08-03T01:45:29.485Z",
+          "elapsedMs": 36,
+          "boundary": "before Provider execution",
+          "reason": "selected Provider credential was unavailable in the isolated worker"
+        },
+        {
+          "taskId": "fb18c16d-e303-485e-b999-c0a256f55053",
+          "runId": "2784e1b2-56e9-4404-aef1-a6ab326e3865",
+          "startedAt": "2026-08-03T01:50:30.953Z",
+          "completedAt": "2026-08-03T01:50:31.015Z",
+          "elapsedMs": 62,
+          "boundary": "before Provider execution",
+          "reason": "selected Provider credential was unavailable in the isolated worker"
+        }
+      ],
+      "postFixTaskId": "325ce1a6-9224-4b6e-9ce5-6531c7141010",
+      "postFixRunId": "499dd492-8ac4-4c8b-9f44-e968f3548f9f",
+      "postFixStartedAt": "2026-08-03T01:55:31.381Z",
+      "providerRequestObserved": true,
+      "toolPathObserved": true,
+      "credentialGatePassed": true
+    },
+    "keepaliveWatchdog": {
+      "preFixRunId": "499dd492-8ac4-4c8b-9f44-e968f3548f9f",
+      "preFixLastSemanticProgressAt": "2026-08-03T01:56:09.194Z",
+      "preFixInterruptedAt": "2026-08-03T02:44:30.058Z",
+      "preFixSilentMs": 2900864,
+      "postFixRunId": "d07c9e79-e44f-4478-99f7-6d78bd1012b7",
+      "postFixStartedAt": "2026-08-03T02:44:48.816Z",
+      "postFixLastSemanticProgressAt": "2026-08-03T02:45:40.609Z",
+      "postFixCompletedAt": "2026-08-03T03:05:40.820Z",
+      "postFixIdleMs": 1200211,
+      "operatorIntervention": false,
+      "leaseRemaining": false
+    },
+    "typedIdleRetry": {
+      "taskId": "7d233e8b-5ff4-46fd-8a2b-9b787a4ea7c3",
+      "runId": "1380146b-a547-48e7-bad4-af0b1c84f996",
+      "attempt": 2,
+      "startedAt": "2026-08-03T03:24:03.150Z",
+      "lastSemanticProgressAt": "2026-08-03T03:24:35.765Z",
+      "completedAt": "2026-08-03T03:44:35.982Z",
+      "idleMs": 1200217,
+      "taskStatusAfterFailure": "queued",
+      "failure": {
+        "code": "runtime.idle_timeout",
+        "disposition": {
+          "phase": "runtime",
+          "kind": "transient",
+          "retryable": true,
+          "dispatchStarted": false
+        }
+      },
+      "taskErrorAfterFailure": null,
+      "leaseActiveAfterFailure": false,
+      "workerAfterFailure": null,
+      "operatorIntervention": false,
+      "uncertainSideEffectObserved": false
+    }
+  },
+  "cutovers": [
+    {
+      "targetBuild": "0.12.0+g75f0985650b53930692ed1c79729edd40dafb847.clean.d44a097ac704",
+      "oldDaemonPid": 62164,
+      "oldWorkerPid": 63108,
+      "activeTools": 0,
+      "activeHostMutations": 0,
+      "outboxPending": 0,
+      "outboxSending": 0,
+      "signal": "SIGTERM",
+      "sigkillUsed": false,
+      "interruptedTaskSafelyRequeued": true,
+      "newDaemonPid": 86550
+    },
+    {
+      "targetBuild": "0.12.0+g470f57c2475cc305be4df6f8c19b31721d0956e7.clean.e260906b23e3",
+      "oldDaemonPid": 86550,
+      "oldWorkerPid": 2837,
+      "activeTools": 0,
+      "activeHostMutations": 0,
+      "outboxPending": 0,
+      "outboxSending": 0,
+      "signal": "SIGTERM",
+      "sigkillUsed": false,
+      "interruptedRunId": "2a3cd2c4-fd16-4f9d-a6c2-e49e177ef435",
+      "interruptedTaskSafelyRequeued": true,
+      "newDaemonPid": 20520
+    }
+  ],
+  "postDeploy": {
+    "pid": 20520,
+    "daemonRunning": true,
+    "installedBuild": "0.12.0+g470f57c2475cc305be4df6f8c19b31721d0956e7.clean.e260906b23e3",
+    "runningBuild": "0.12.0+g470f57c2475cc305be4df6f8c19b31721d0956e7.clean.e260906b23e3",
+    "buildAligned": true,
+    "activeEvents": 0,
+    "activeTools": 0,
+    "activeHostMutations": 0,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "startupColdReadObservation": {
+      "statusIpcTimedOut": true,
+      "sample": "Main event loop was temporarily in synchronous SQLite page reads after cold startup.",
+      "recoveredWithoutRestart": true,
+      "stableDoctorLatencyUnderOneSecond": true
+    }
+  },
+  "doctor": {
+    "ready": false,
+    "computerReady": false,
+    "computerTransportReady": true,
+    "computerOperationalReadiness": "unknown",
+    "connectorsEnabled": 8,
+    "connectorsOnline": 7,
+    "connectorsInboundReady": 4,
+    "connectorsOutboundReady": 5,
+    "connectorOffline": [
+      "personal-daxiang"
+    ],
+    "connectorReadinessUnknown": [
+      "macos-screen",
+      "macos-shortcuts"
+    ],
+    "pendingDigest": 7343,
+    "historicalDeadLetters": 549,
+    "unclassifiedDeadLetters": 0,
+    "autonomousBudgetExhaustedSources": 3
+  },
+  "t0Established": false,
+  "t0Reason": "Doctor is not ready; required Computer observation, Connector readiness, stable personal-message targets, and calendar soak prerequisites remain unresolved.",
+  "liveMatrix": {
+    "requested": 0,
+    "eligible": 0,
+    "executed": 0,
+    "minimumEligibleRequired": 100
+  },
+  "soak": {
+    "read24hStarted": false,
+    "write72hStarted": false,
+    "ready7dStarted": false,
+    "historicalEvidenceCounted": false
+  },
+  "arc503Decision": "NO-GO",
+  "unresolved": [
+    "Computer has transport readiness but no real window observation establishing operational readiness.",
+    "personal-daxiang is offline and no stable owner test target is bound.",
+    "macos-screen and macos-shortcuts have incomplete readiness evidence.",
+    "Digest backlog and three autonomous source budgets are not within the T0 contract.",
+    "The externally exposed Provider credentials still require rotation in their respective control planes.",
+    "The 100 eligible live-action matrix and 24h, 72h, and 7d windows have not started."
+  ],
+  "evidenceRefs": [
+    "PROGRESS.md",
+    "BLOCKED.md",
+    "evals/m1/deployments/20260803T094107+0800-forced.json",
+    "evals/m1/exit-records/20260803T033746+0800-no-go.json"
+  ]
+}
