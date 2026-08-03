@@ -947,6 +947,78 @@ test('Daxiang health fails closed when its dedicated background tab is missing',
   assert.equal(diagnostics.errorCategory, 'dedicated_tab_unavailable');
 });
 
+test('Daxiang health probe safely provisions one replacement background tab', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'daxiang-recovery-success-'));
+  const diagnosticsFile = path.join(root, 'diagnostics.json');
+  class RecoverableDriver extends FakeDriver {
+    locateCalls = 0;
+    provisions = 0;
+
+    override async locate(marker?: string): Promise<Record<string, unknown>> {
+      this.locateCalls += 1;
+      if (this.provisions === 0) throw new Error('Daxiang bound tab is missing or ambiguous');
+      return super.locate(marker);
+    }
+
+    async provision(_marker: string): Promise<Record<string, unknown>> {
+      this.provisions += 1;
+      return { tab: { active: false }, provisioned: true };
+    }
+  }
+  const driver = new RecoverableDriver();
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(root, 'cursor.json'),
+    diagnosticsFile,
+  });
+
+  const health = await adapter.health({ probe: true });
+
+  assert.equal(health.accountVerified, true);
+  assert.equal(health.backgroundSafe, true);
+  assert.equal(health.recoveryAttempted, true);
+  assert.equal(health.recovered, true);
+  assert.equal(driver.provisions, 1);
+  assert.ok(driver.locateCalls >= 2);
+  const diagnostics = JSON.parse(await readFile(diagnosticsFile, 'utf8')) as Record<string, unknown>;
+  assert.equal(diagnostics.recoveryAttempted, true);
+  assert.equal(diagnostics.recovered, true);
+});
+
+test('Daxiang health probe remains unavailable when replacement provisioning fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'daxiang-recovery-failure-'));
+  class FailingRecoveryDriver extends FakeDriver {
+    provisions = 0;
+
+    override async locate(): Promise<Record<string, unknown>> {
+      throw new Error('Daxiang bound tab is missing or ambiguous');
+    }
+
+    async provision(): Promise<Record<string, unknown>> {
+      this.provisions += 1;
+      throw new Error('Daxiang provisioned page load timed out');
+    }
+  }
+  const driver = new FailingRecoveryDriver();
+  const adapter = new DaxiangWebAdapter({
+    config: config(),
+    driver,
+    bridgeSource: 'bridge',
+    stateFile: path.join(root, 'cursor.json'),
+  });
+
+  const health = await adapter.health({ probe: true });
+
+  assert.equal(health.accountVerified, false);
+  assert.equal(health.backgroundSafe, false);
+  assert.equal(health.errorCategory, 'dedicated_tab_provisioning');
+  assert.equal(health.recoveryAttempted, true);
+  assert.equal(health.recovered, false);
+  assert.equal(driver.provisions, 1);
+});
+
 test('Daxiang send clicks once and reports observed rather than confirmed', async () => {
   const driver = new FakeDriver();
   const adapter = new DaxiangWebAdapter({
@@ -1073,16 +1145,21 @@ test('Daxiang page bridge has no credential access or foreground activation path
   new Function(bridge);
 });
 
-test('Daxiang Chrome driver never provisions or activates a user tab during background work', async () => {
+test('Daxiang Chrome recovery only provisions a probe-owned background tab and restores focus', async () => {
   const adapterSource = await readFile(
     fileURLToPath(new URL('../examples/connectors/personal-message/daxiang-web.mjs', import.meta.url)),
     'utf8',
   );
   assert.doesNotMatch(adapterSource, /about:blank/);
-  assert.doesNotMatch(adapterSource, /tabs\.push/);
-  assert.doesNotMatch(adapterSource, /activeTabIndex\s*=/);
   assert.doesNotMatch(adapterSource, /System Events/);
   assert.doesNotMatch(adapterSource, /chromeFrontmost/);
+  assert.doesNotMatch(adapterSource, /app\.activate/);
+  assert.match(adapterSource, /if \(input\.provision\)/);
+  assert.match(adapterSource, /targetWindow\.tabs\.push\(createdTab\)/);
+  assert.match(adapterSource, /targetWindow\.activeTabIndex = originalActiveIndex/);
+  assert.match(adapterSource, /if \(createdTab\) createdTab\.close\(\)/);
+  assert.match(adapterSource, /const canRecover = probe/);
+  assert.doesNotMatch(adapterSource, /targetWindow\.activeTabIndex\s*=\s*createdIndex/);
   assert.match(adapterSource, /if \(target\.item\.active\)/);
   assert.doesNotMatch(adapterSource, /allowBind/);
 });

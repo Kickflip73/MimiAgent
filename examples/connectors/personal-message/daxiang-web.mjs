@@ -232,6 +232,57 @@ function run(argv) {
       if (marker === input.marker) markerCandidates.push({ item: item, tab: tab });
     }
   }
+  if (input.provision) {
+    if (windows.length === 0) throw new Error('Daxiang dedicated tab cannot be provisioned without a Chrome window');
+    var targetWindow = windows[0];
+    var originalActiveIndex = Number(safe(function() { return targetWindow.activeTabIndex(); }, 1));
+    var createdTab;
+    try {
+      createdTab = app.Tab({ url: input.origin });
+      targetWindow.tabs.push(createdTab);
+      targetWindow.activeTabIndex = originalActiveIndex;
+      var deadline = Date.now() + Number(input.provisionTimeoutMs || 10000);
+      var provisionedUrl = '';
+      while (Date.now() < deadline) {
+        provisionedUrl = String(safe(function() { return createdTab.url(); }, ''));
+        var loading = Boolean(safe(function() { return createdTab.loading(); }, true));
+        if ((provisionedUrl === input.origin || provisionedUrl.indexOf(input.origin + '/') === 0) && !loading) break;
+        delay(0.25);
+      }
+      provisionedUrl = String(safe(function() { return createdTab.url(); }, ''));
+      var stillLoading = Boolean(safe(function() { return createdTab.loading(); }, true));
+      if ((provisionedUrl !== input.origin && provisionedUrl.indexOf(input.origin + '/') !== 0) || stillLoading) {
+        throw new Error('Daxiang provisioned page load timed out');
+      }
+      var installedMarker = String(execute(
+        createdTab,
+        'window.name = ' + JSON.stringify(input.marker) + '; window.name'
+      ) || '');
+      if (installedMarker !== input.marker) throw new Error('Daxiang provisioned tab marker verification failed');
+      for (var mi = 0; mi < markerCandidates.length; mi += 1) {
+        execute(markerCandidates[mi].tab, 'window.name = ""; window.name');
+      }
+      targetWindow.activeTabIndex = originalActiveIndex;
+      var finalTabs = targetWindow.tabs();
+      var createdIndex = finalTabs.length;
+      var finalActiveIndex = Number(safe(function() { return targetWindow.activeTabIndex(); }, 1));
+      if (createdIndex === finalActiveIndex) throw new Error('Daxiang provisioned tab became active');
+      return JSON.stringify({
+        tab: {
+          window: 1,
+          tab: createdIndex,
+          active: false,
+          marker: installedMarker,
+          url: provisionedUrl,
+        },
+        provisioned: true,
+      });
+    } catch (error) {
+      try { targetWindow.activeTabIndex = originalActiveIndex; } catch (_) {}
+      try { if (createdTab) createdTab.close(); } catch (_) {}
+      throw error;
+    }
+  }
   if (markerCandidates.length !== 1) throw new Error('Daxiang bound tab is missing or ambiguous');
   var target = markerCandidates[0];
   if (target.item.active) {
@@ -304,6 +355,15 @@ export class ChromeJxaDriver {
 
   async execute(marker, script) {
     return this.#call({ origin: ORIGIN, marker, script });
+  }
+
+  async provision(marker) {
+    return this.#call({
+      origin: ORIGIN,
+      marker,
+      provision: true,
+      provisionTimeoutMs: Math.max(250, Math.min(10_000, this.timeoutMs - 500)),
+    });
   }
 
   async refresh(marker) {
@@ -452,8 +512,23 @@ export class DaxiangWebAdapter {
   }
 
   async health({ probe = false } = {}) {
+    let recoveryAttempted = false;
+    let recovered = false;
     try {
-      await this.driver.locate(this.config.tabMarker);
+      try {
+        await this.driver.locate(this.config.tabMarker);
+      } catch (error) {
+        const category = errorCategory(error);
+        const canRecover = probe
+          && (category === 'dedicated_tab_unavailable' || category === 'dedicated_tab_active')
+          && typeof this.driver.provision === 'function';
+        if (!canRecover) throw error;
+        recoveryAttempted = true;
+        this.bridgeReady = false;
+        await this.driver.provision(this.config.tabMarker);
+        await this.driver.locate(this.config.tabMarker);
+        recovered = true;
+      }
       let inspect = await this.#bridgeCall(
         'inspect',
         { selfSid: this.config.selfConversation.sid },
@@ -528,7 +603,7 @@ export class DaxiangWebAdapter {
         }
       }
       const now = new Date().toISOString();
-      const errorCategory = !readable
+      const healthErrorCategory = !readable
         ? 'page_unreadable'
         : !accountVerified
           ? 'account_fingerprint_mismatch'
@@ -559,7 +634,8 @@ export class DaxiangWebAdapter {
         probedAt: now,
         ...(sessionNavigationStartedAt ? { sessionNavigationStartedAt } : {}),
         ...(sessionRefreshedAt ? { sessionRefreshedAt } : {}),
-        ...(errorCategory ? { errorCategory } : {}),
+        ...(recoveryAttempted ? { recoveryAttempted, recovered } : {}),
+        ...(healthErrorCategory ? { errorCategory: healthErrorCategory } : {}),
       };
       if (readable) await this.#bridgeCall('installObserver', {});
       await this.#recordDiagnostics({
@@ -571,6 +647,7 @@ export class DaxiangWebAdapter {
         accountFingerprintDigest: accountFingerprint ? sha256(accountFingerprint) : undefined,
         ...(sessionNavigationStartedAt ? { sessionNavigationStartedAt } : {}),
         ...(sessionRefreshedAt ? { sessionRefreshedAt } : {}),
+        ...(recoveryAttempted ? { recoveryAttempted, recovered } : {}),
       });
       return {
         ...this.lastHealth,
@@ -599,6 +676,7 @@ export class DaxiangWebAdapter {
         targetBindingStatus: 'target_not_bound',
         probedAt: now,
         errorCategory: category,
+        ...(recoveryAttempted ? { recoveryAttempted, recovered } : {}),
       };
       await this.#recordDiagnostics({
         checkedAt: now,
@@ -606,6 +684,7 @@ export class DaxiangWebAdapter {
         accountVerified: false,
         backgroundSafe: false,
         errorCategory: this.lastHealth.errorCategory,
+        ...(recoveryAttempted ? { recoveryAttempted, recovered } : {}),
       });
       return this.lastHealth;
     }

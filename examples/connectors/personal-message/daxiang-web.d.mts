@@ -38,6 +38,7 @@ export class ChromeJxaDriver {
   constructor(options?: { command?: string; timeoutMs?: number });
   locate(marker: string): Promise<Record<string, unknown>>;
   execute(marker: string, script: string): Promise<{ value?: unknown }>;
+  provision(marker: string): Promise<Record<string, unknown>>;
 }
 
 export class DaxiangWebAdapter {
@@ -46,6 +47,7 @@ export class DaxiangWebAdapter {
     driver: {
       locate(marker: string): Promise<unknown>;
       execute(marker: string, script: string): Promise<{ value?: unknown }>;
+      provision?(marker: string): Promise<unknown>;
     };
     bridgeSource: string;
     stateFile: string;

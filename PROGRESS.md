@@ -838,3 +838,25 @@
    空 keepalive watchdog 与 typed idle retry 三项线上闭环；不可覆盖部署记录为
    `evals/m1/deployments/20260803T114532+0800-worker-runtime-fixes.json`，SHA-256=
    `bc482d63dd95c5c5d3c252aaf6978139c500ab674a681f6469bd436687535401`。
+
+## 2026-08-03 运行队列解锁与实机 readiness 复核
+
+1. 本轮开始时 Daemon 未运行；`mimi daemon start` 已恢复同一 clean build `470f57c`，
+   installed=running、aligned=true。随后确认真正挡住只读 probe 的不是文件权限，而是
+   `跟踪 personal-daxiang 恢复` watch 每 5 分钟产生新 Task，而 worker 在成功调用
+   `finish_mimi_silently` 后仍停留到 20 分钟 idle timeout，形成 1 running + 23 queued。
+2. 已删除故障 schedule `bd23c626-2b45-4a8a-8e3c-922b92d4f8ee`；ScheduleStore 同一事务取消
+   23 个尚未执行的 queued Task。旧独立 worker 不接受 `restart --force`，通过认证 IPC
+   `tasks.cancel` 精确取消 Task `11177868-c60d-44fe-83e6-f4adfc485413`；最终 queued/running/
+   active worker 均为 0，没有 active Tool/Host mutation 或 uncertain 外部动作重放。
+3. 解锁后正式只读 probe 全部通过：Computer receipt `8b564141…`、Screen `446416ee…`、
+   Shortcuts `1ce7508b…`、Browser `f1ad78e5…`。Connector reload 后再次取得 Screen
+   `8350d4b1…`、Shortcuts `8f100548…`、Browser `574c59c6…`；Doctor 现报告 Computer
+   `operationalReadiness=ready`、enabled Connector ready=7/8、unknown=0。
+4. 当前唯一 unavailable Connector 为 `personal-daxiang`：进程 online，但
+   `reasonCode=dedicated_tab_unavailable`。脱敏配置检查证明 tab marker、账号/页面指纹、
+   self conversation 及 12/12 owner binding 均已配置，因此当前直接缺口是唯一非活动
+   `x.sankuai.com` 专用 Chrome 标签不存在或歧义，而不是凭证、账号配置或目标 binding 缺失。
+5. Doctor 仍为 ready=false：除大象专用标签外，Digest backlog=7386、3 个自治来源当日预算
+   耗尽、历史 dead letter=549（unclassified=0、均为 legacy/manual_verify）；QQ 与个人微信
+   正式 route 仍未 operational ready。故尚未建立 T0，100 live matrix 与 24h/72h/7d 不补算。

@@ -233,3 +233,13 @@
   Digest 约 7.3k，3 个自治来源预算耗尽，历史 dead letter=549。没有 TCC、稳定消息目标和连续
   日历证据时仍不得建立 T0 或启动/补算 100 live matrix、24h read、72h write/send、连续 7d
   ready；既有 ARC-503 NO-GO record 保持不可覆盖。
+- **2026-08-03 队列/实机门禁已解除，个人消息与运营状态仍阻塞 T0**：故障
+  `personal-daxiang` 5 分钟 watch 已删除，23 个 queued Task 与 1 个挂起 worker 已通过
+  ScheduleStore/认证 IPC 精确取消；当前 queued=0、running=0、active worker=0。Computer、Screen、
+  Shortcuts、Browser 只读实机 probe 均成功，Doctor 已为 Computer operational ready、enabled
+  Connector ready=7/8、unknown=0，因此旧 Computer/TCC 与 Screen/Shortcuts unknown 不再是当前
+  blocker。剩余直接故障为 `personal-daxiang` online 但 `dedicated_tab_unavailable`；其配置中的
+  marker、账号/页面指纹、self conversation 与 12/12 owner binding 均已具备，只缺唯一非活动
+  大象 Web 专用标签。更上层仍缺 QQ/个人微信正式 operational route 与稳定测试目标，另有
+  Digest=7386、3 个自治来源当日预算耗尽、549 个 retained legacy/manual_verify dead letter。
+  这些项未全部收口前 Doctor 仍 ready=false，不得建立 T0 或补算 100 live matrix、24h/72h/7d。
