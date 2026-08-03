@@ -202,7 +202,7 @@ export class PersonalMessageHub {
       version: z.literal(1),
       runId: z.string().min(1),
       eventId: z.string().min(1),
-      channel: z.enum(['daxiang', 'qq', 'wechat']),
+      channel: z.enum(['daxiang', 'qq']),
       accountFingerprint: z.string(),
       conversationId: z.string(),
       latestFingerprint: z.string(),

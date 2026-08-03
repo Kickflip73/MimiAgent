@@ -259,7 +259,7 @@ Outbox 仍会阻止重启，避免 uncertain 副作用被重放。排队、阻�
 积压本身不是重启阻塞项。若从 MimiAgent 自己的 Shell Tool 内执行，当前 Tool 会构成
 安全阻塞；需要在另一个终端运行该维护命令。
 
-首次 `mimi` 会执行幂等初始化：创建权限为 `0700` 的 MimiAgent 数据目录、`0600` 的策略/Connector 配置和本机数据库，并把发布包内的 Connector 目录物化为当前安装位置的绝对路径。macOS 默认启用无界面的 System Connector 和 action-only Desktop Connector；Desktop 默认不轮询、不打开 GUI，只有明确调用 action 才执行。Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Browser、Screen、Voice 和三个个人消息配置槽位默认关闭。旧版自动启用的 canonical 本机 Connector 会一次性切换到轻量默认，后续用户显式启停仍会保留；个人消息槽位也只补一次，owner 删除后不会反复恢复。Calendar/Reminders 与 Mail 即使被启用，也不会为了后台轮询重新打开已关闭的 App。OpenClaw 微信、Radar 等额外数据源保持关闭。升级会删除旧大象 Bot/AppleScript、QQ OneBot/NapCat、通用 HTTP Action 及 QQ/微信 AppleScript Connector 配置，补齐缺失的默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充新 action。个人 QQ/微信 Adapter 尚未实现；现有 QQ CUA Skill 和 OpenClaw iLink Bot 都不是个人消息通道的自动降级路线。发布构建把完整 Git commit 与 dirty 标志写入包内 identity，并和运行代码内容摘要共同形成 Daemon 版本；dirty/unknown 构建可开发运行但不能建立 soak T0。`mimi daemon doctor` 只读检查模型 Key、脚本、系统命令、后台、运行中 Connector、dead letter、容量阈值、launchd 状态，以及 installed/running/workspace HEAD 的构建漂移；它不读取邮件、消息或屏幕，不触发系统授权，也不会因漂移自动重启或修改工作树。
+首次 `mimi` 会执行幂等初始化：创建权限为 `0700` 的 MimiAgent 数据目录、`0600` 的策略/Connector 配置和本机数据库，并把发布包内的 Connector 目录物化为当前安装位置的绝对路径。macOS 默认启用无界面的 System Connector 和 action-only Desktop Connector；Desktop 默认不轮询、不打开 GUI，只有明确调用 action 才执行。Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Browser、Screen、Voice 和大象/QQ 两个个人消息配置槽位默认关闭。旧版自动启用的 canonical 本机 Connector 会一次性切换到轻量默认，后续用户显式启停仍会保留；个人消息槽位也只补一次，owner 删除后不会反复恢复。Calendar/Reminders 与 Mail 即使被启用，也不会为了后台轮询重新打开已关闭的 App。Radar 等额外数据源保持关闭。升级会删除全部旧微信 Connector/桥、旧大象 Bot/AppleScript、QQ OneBot/NapCat、通用 HTTP Action 及 QQ AppleScript Connector 配置，补齐缺失的默认本机 Connector，并为仍指向同名内置脚本的 Connector 补充新 action。MimiAgent 不再注册、探测、读取或发送任何微信渠道；个人 QQ 继续只走受约束的 CUA route。发布构建把完整 Git commit 与 dirty 标志写入包内 identity，并和运行代码内容摘要共同形成 Daemon 版本；dirty/unknown 构建可开发运行但不能建立 soak T0。`mimi daemon doctor` 只读检查模型 Key、脚本、系统命令、后台、运行中 Connector、dead letter、容量阈值、launchd 状态，以及 installed/running/workspace HEAD 的构建漂移；它不读取邮件、消息或屏幕，不触发系统授权，也不会因漂移自动重启或修改工作树。
 
 LaunchAgent 的 plist 不保存 API Key，而是读取持久环境文件；只在当前 Shell `export` 的临时 Key 不会被写入磁盘，此时 MimiAgent 仍可在当前登录会话内运行。首次访问邮件、消息、联系人、屏幕等能力时，macOS 可能向实际 Node/Terminal/LaunchAgent 进程请求系统权限；MimiAgent 不再叠加审批层。
 
@@ -283,7 +283,7 @@ owner/system 以及命中 owner source policy 的 MimiAgent 事件可使用有�
 
 `get_mimi_settings` 与 `update_mimi_settings` 让 owner 通过对话调整个人画像、时区、静默时段、自治预算、告警阈值、运行超时、历史保留和简报设置。更新使用先读后写的完整快照，不会覆盖上述独立管理的人物、规则、例程和替身策略。需要临时专注时可直接说“免打扰 2 小时”，由 `snooze_mimi` 暂停非紧急自主处理和定时简报，到期自动恢复；当前 owner 命令与紧急事件照常执行，`clear_mimi_snooze` 可提前恢复。
 
-微信 Bot、邮件、Messages、新闻和天气等渠道通过隔离的 stdio Connector 接入：Daemon 负责拉起、确定性 readiness 探活、连续失败后的单 Connector 重启、崩溃退避、事件去重和可靠回传，Connector 只负责渠道协议。探活与恢复不启动模型 Run；MimiAgent 只在无法自愈或影响事务时通知，中断期间结果不确定的外部动作不会自动重放。每个 Daemon Run 都通过统一的 `inspect_capabilities`/`invoke_capability` 按需查看和调用 Connector action；目录直接读取 Manager 的 enabled、online、readiness 和 action 快照，readiness 变化会使本 Run 的发现缓存失效。配置示例见 `mimi.connectors.example.json`，协议见 [docs/CONNECTORS.md](docs/CONNECTORS.md)。
+邮件、Messages、新闻和天气等渠道通过隔离的 stdio Connector 接入：Daemon 负责拉起、确定性 readiness 探活、连续失败后的单 Connector 重启、崩溃退避、事件去重和可靠回传，Connector 只负责渠道协议。探活与恢复不启动模型 Run；MimiAgent 只在无法自愈或影响事务时通知，中断期间结果不确定的外部动作不会自动重放。每个 Daemon Run 都通过统一的 `inspect_capabilities`/`invoke_capability` 按需查看和调用 Connector action；目录直接读取 Manager 的 enabled、online、readiness 和 action 快照，readiness 变化会使本 Run 的发现缓存失效。配置示例见 `mimi.connectors.example.json`，协议见 [docs/CONNECTORS.md](docs/CONNECTORS.md)。
 
 大象个人账号通道通过默认关闭的 `personal-daxiang` Connector 接入已登录的专用
 Chrome 后台标签，动态分页发现当前账号已有会话并提供有界读取、首次监听历史基线、
@@ -296,8 +296,7 @@ ACK 后游标和一次性观察式发送。专用标签由 Connector 自行补�
 `PersonalMessageHub → ComputerManager/CUA` 窄路由：只读取当前唯一后台窗口，按界面
 账号与会话指纹复核目标，保护 owner 前台活动和已有草稿，并在唯一一次 Return 后重新
 观察同一会话；缺少正式入站观察器或 Computer 实机 readiness 时仍保持 unavailable，
-不会退回外部 Shell Skill。个人微信仍未达到真实 Adapter 门禁，配置槽位无 action 且
-默认关闭；腾讯官方 `openclaw-weixin` 仍是独立 iLink Bot，不能冒充个人微信。
+不会退回外部 Shell Skill。微信渠道已经整体退休，不存在个人账号或 Bot 降级路线。
 向 owner 自己发送时模型只调用 `send_owner_message(channel,text)`；自会话、账号、
 最新上下文和一次性发送由 Host 与 Connector 内部完成。
 owner 查询大象消息时通过稳定 capability 发现正式 action，再使用

@@ -1,9 +1,8 @@
-export const BACKGROUND_DEFAULTS_VERSION = 2;
+export const BACKGROUND_DEFAULTS_VERSION = 3;
 
 export const PERSONAL_MESSAGE_CONNECTOR_IDS = [
   'personal-daxiang',
   'personal-qq',
-  'personal-wechat',
 ] as const;
 
 const LEGACY_VISIBLE_DEFAULTS_VERSION = 1;

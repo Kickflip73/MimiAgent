@@ -124,16 +124,14 @@ test('personal message connector stays diagnosable when Daxiang config is missin
   }
 });
 
-test('Connector host does not impersonate QQ Computer or an unavailable personal WeChat adapter', async () => {
-  for (const channel of ['qq', 'wechat']) {
-    const child = spawn(process.execPath, [connector, `--channel=${channel}`], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
-    let stderr = '';
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
-    const exitCode = await new Promise<number | null>((resolve) => child.once('exit', resolve));
-    assert.notEqual(exitCode, 0);
-    assert.match(stderr, /not implemented/);
-  }
+test('Connector host does not impersonate the QQ Computer route', async () => {
+  const child = spawn(process.execPath, [connector, '--channel=qq'], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+  const exitCode = await new Promise<number | null>((resolve) => child.once('exit', resolve));
+  assert.notEqual(exitCode, 0);
+  assert.match(stderr, /not implemented/);
 });

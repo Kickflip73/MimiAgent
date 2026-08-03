@@ -12,14 +12,13 @@ import {
 import { NotifierRegistry } from '../src/daemon/notifier.js';
 import { MimiStore } from '../src/daemon/store.js';
 
-test('personal channel templates stay disabled and only protocol-backed Daxiang declares Connector actions', async () => {
+test('supported personal channel templates exclude retired WeChat capability', async () => {
   const template = parseConnectorConfig(JSON.parse(
     await readFile(path.join(process.cwd(), 'mimi.connectors.example.json'), 'utf8'),
   ));
   const daxiang = template.connectors['personal-daxiang'];
   const qq = template.connectors['personal-qq'];
-  const wechat = template.connectors['personal-wechat'];
-  assert.ok(daxiang && qq && wechat);
+  assert.ok(daxiang && qq);
   assert.equal(daxiang.enabled, false);
   assert.deepEqual(Object.keys(daxiang.actions).sort(), [
     'bind_target', 'get_context', 'health_check', 'list_targets', 'search_targets', 'send_message',
@@ -30,8 +29,8 @@ test('personal channel templates stay disabled and only protocol-backed Daxiang 
   assert.equal(daxiang.actions.sync_now, undefined);
   assert.equal(qq.enabled, false);
   assert.deepEqual(qq.actions, {});
-  assert.equal(wechat.enabled, false);
-  assert.deepEqual(wechat.actions, {});
+  assert.equal(template.connectors['personal-wechat'], undefined);
+  assert.equal(template.connectors['openclaw-weixin'], undefined);
 });
 
 test('M1 execution surfaces have stable capability, effect, and route ownership metadata', async () => {

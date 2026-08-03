@@ -27,6 +27,8 @@ const RETIRED_CONNECTORS = new Set([
   'daxiang-applescript',
   'http-action',
   'macos-browser',
+  'openclaw-weixin',
+  'personal-wechat',
   'qq',
   'qq-applescript',
   'wechat-applescript',
@@ -38,9 +40,7 @@ const RETIRED_CONNECTORS = new Set([
   'qq-napcat-connector.mjs',
   'wechat-applescript-connector.mjs',
 ]);
-const REQUIRED_CONNECTOR_ENV: Readonly<Record<string, readonly string[]>> = {
-  'openclaw-weixin': ['MIMI_DAEMON_SOCKET'],
-};
+const REQUIRED_CONNECTOR_ENV: Readonly<Record<string, readonly string[]>> = {};
 
 interface InitializeOptions {
   platform?: NodeJS.Platform;

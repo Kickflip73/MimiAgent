@@ -1,10 +1,10 @@
 # MimiAgent Connector Protocol
 
-Connector 把个人大象、微信 Bot、邮件、Messages、新闻、天气、日历或其他事件源适配为 MimiAgent 的统一事件协议。它运行在独立子进程中，通过 stdin/stdout 交换一行一个 JSON 的 NDJSON；渠道 SDK、崩溃和凭证不会进入 MimiAgent Runtime。个人 QQ、个人微信 Adapter 尚未实现；现有 `qq-messenger-skill` 仍只是 CUA 兜底，OpenClaw 微信仍是独立 Bot 来源。
+Connector 把个人大象、邮件、Messages、新闻、天气、日历或其他事件源适配为 MimiAgent 的统一事件协议。它运行在独立子进程中，通过 stdin/stdout 交换一行一个 JSON 的 NDJSON；渠道 SDK、崩溃和凭证不会进入 MimiAgent Runtime。个人 QQ 使用受约束的 CUA route；微信个人账号与 Bot 通道均已退休，不再进入 Connector catalog。
 
 ## 配置
 
-首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认启用不启动 GUI App 的 System Connector 和 action-only Desktop Connector；Desktop 默认不轮询，只有调用明确 action 时才工作。Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Browser、Screen、Voice 和三个个人消息配置槽位均需用户显式启用。旧版自动启用的 canonical 本机 Connector 会一次性迁移到轻量默认，之后用户的显式启停选择继续保留；三个个人消息槽位也只补一次。Calendar/Reminders 启用后通过 EventKit 静默访问系统数据；Mail 的主动轮询只在 Mail 已经运行时读取，绝不为了后台轮询重新打开 App。OpenClaw 微信、Radar 和 File Radar 默认关闭。初始化会移除已退役 Connector，并为 canonical packaged Connector 补齐新 action。写入是原子的，无变更时不改文件。
+首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认启用不启动 GUI App 的 System Connector 和 action-only Desktop Connector；Desktop 默认不轮询，只有调用明确 action 时才工作。Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Browser、Screen、Voice 和大象/QQ 两个个人消息配置槽位均需用户显式启用。旧版自动启用的 canonical 本机 Connector 会一次性迁移到轻量默认，之后用户的显式启停选择继续保留；两个个人消息槽位也只补一次。Calendar/Reminders 启用后通过 EventKit 静默访问系统数据；Mail 的主动轮询只在 Mail 已经运行时读取，绝不为了后台轮询重新打开 App。Radar 和 File Radar 默认关闭。初始化会原子移除全部旧微信 Connector/桥和其他已退役 Connector，并为 canonical packaged Connector 补齐新 action。写入无变更时不改文件。
 
 `~/.mimi-agent/daemon` 是唯一默认常驻状态目录。三个配置示例文件均使用统一的 MimiAgent 命名。
 
@@ -79,20 +79,6 @@ stdout 必须专用于协议消息；诊断日志写 stderr。单条未换行消
 写入失败返回 `ok:false` 和有界 `error`。Connector 必须等整批 Event 全部收到
 成功 ACK 后才推进上游 cursor；ACK 丢失或失败时保留原 cursor 并重读，由 Host
 去重。未声明该能力的旧 Connector 不会收到新消息类型。
-
-## OpenClaw 微信传输桥
-
-已登录 `@tencent-weixin/openclaw-weixin` 的机器可以复用该通道，不需要在 MimiAgent 中复制微信 Token：
-
-1. 用 `openclaw plugins install --link <MimiAgent>/examples/openclaw/mimiagent-bridge` 安装薄桥插件。
-2. 在该插件配置中设置非空 `ownerSenders`，每项必须是精确 `sender` 或更严格的 `account:sender`，例如 `{"ownerSenders":["wxid-owner","bot-account:wxid-owner"]}`，然后重启 OpenClaw Gateway。
-3. 启用 `openclaw-weixin` Connector 后重载 MimiAgent Connectors。
-
-OpenClaw 插件只在 `inbound_claim` 截获微信入站并写入本用户的 MimiAgent Unix Socket；成功后返回 `handled`，所以 OpenClaw 自己的 Agent 不再处理同一条消息。`before_dispatch` 是出站 hook，不能用于接收微信消息。桥兼容 hook 把 channel/account/sender 放在 event 或 context、以及正文为字符串或 text parts 的形态；部分 OpenClaw 版本不传 `context.accountId` 时，可在插件配置写精确 `accountId` 作为只读路由兜底。桥会从 Socket 同目录读取 bootstrap 自动维护的 `0600` control bearer 并随每个 RPC 发送，不需要新增插件凭证，也不会把 token 写入日志；旧 daemon 尚无 token 时仍可完成协议升级，新 daemon 的 token 缺失、权限错误或不匹配则 fail closed。`dmPolicy: pairing` 只限制谁能到达插件，不等于 MimiAgent owner 身份。桥会精确比较 `ownerSenders`：命中者才先读取同一 Owner Session 并以 owner provenance 提交；未配置或未命中者固定作为 `external`，不请求、不携带 owner Session，只能按普通外部 Event 或另行配置的 source policy 处理。来源始终保留为 `openclaw-weixin`。MimiAgent 的回复由 `openclaw-weixin-connector.mjs` 调用 OpenClaw 官方发送命令回到同一账号和联系人。若 MimiAgent 不在线，插件会明确失败并阻止第二 Agent 接管。Connector readiness 还会用 `MIMI_DAEMON_SOCKET` 和同目录 control token 执行认证 `status` RPC；只有腾讯 channel、bridge plugin 和真实 MimiAgent socket 三者同时可用才报告双向 ready。OpenClaw 插件显式配置其他 `socketPath` 时，这个环境变量必须指向同一路径。
-
-插件目录、package name 和 ID 统一为 `mimiagent-bridge`，显示名为 **MimiAgent Bridge**。Socket 优先级是插件 `socketPath` → `MIMI_DAEMON_SOCKET` → `MIMI_DAEMON_DATA_DIR` 下的 socket → 默认 `~/.mimi-agent/daemon/mimi.sock`。
-
-这条通道是腾讯 iLink Bot，不是个人微信桌面账号的完整收件箱：只能回复已经与机器人建立上下文的配对用户，不能按个人微信通讯录昵称主动联系任意好友，也没有联系人目录或任意历史消息查询 API。MimiAgent 只保留 bridge 接通后自己持久化的 Bot Event；`local_history` 可按精确 account/to 路由读取本机 OpenClaw 会话文件中仍留存的有界微信入站记录（包括 `.deleted.*` 归档），但它不是腾讯上游历史，已被 sync cursor 消费且本机未落盘的消息仍不可恢复。读取过程不打开或操控 WeChat.app，也不存在 UI 自动化降级路线。
 
 Connector 应在渠道状态变化时输出就绪度；这和子进程是否存活是两件事：
 
@@ -206,8 +192,7 @@ Connector 执行完成后返回：
 `personal-message-connector.mjs` 是个人账号协议 Adapter 的共享 NDJSON host，当前只实现
 `--channel=daxiang`。QQ 的正式业务读写不伪装成 Connector：已绑定的 QQ Event 通过
 `PersonalMessageHub → ComputerManager/CUA` 执行；`personal-qq` 的 disabled 空配置只记录
-尚缺正式入站观察器这一 capability gap。`personal-wechat` 也保持默认关闭、无 action，
-启用两个空槽位都会明确报告尚未实现，不会冒充可用通道。
+尚缺正式入站观察器这一 capability gap。微信不保留配置槽位、Host channel 或降级路线。
 
 M0 运行基线允许把尚未达到其所属阶段门禁的实验渠道暂时停用，但不得删除配置。
 当前阶段归属和恢复门禁如下：
@@ -324,7 +309,7 @@ token，不扫描正文中的业务词汇来猜测风险。
 
 ## 已退役的消息渠道
 
-旧大象 Bot/AppleScript Connector、QQ OneBot/NapCat Connector、通用 HTTP Action/Event Connector，以及 QQ、微信 AppleScript IM Connector 已从运行时、发布包和默认配置中移除。它们不会作为个人消息 Adapter 的降级路线。个人 QQ/微信仍未实现；微信另行保留上文的 OpenClaw iLink Bot 来源。旧配置会在初始化时删除这些已退役项。
+全部微信 Connector/桥、旧大象 Bot/AppleScript Connector、QQ OneBot/NapCat Connector、通用 HTTP Action/Event Connector，以及 QQ AppleScript IM Connector 已从运行时、发布包和默认配置中移除。它们不会作为个人消息 Adapter 的降级路线。旧配置会在初始化时删除这些已退役项。
 
 ## 信息雷达（RSS / Atom / 天气）
 

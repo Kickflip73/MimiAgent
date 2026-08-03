@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const PERSONAL_MESSAGE_CHANNELS = ['daxiang', 'qq', 'wechat'] as const;
+export const PERSONAL_MESSAGE_CHANNELS = ['daxiang', 'qq'] as const;
 export const PERSONAL_MESSAGE_COVERAGE = [
   'complete',
   'bounded',

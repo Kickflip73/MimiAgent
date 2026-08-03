@@ -19,7 +19,7 @@ const MAX_CONNECTORS = 50;
 const MAX_ACTIONS = 100;
 const MAX_DESCRIPTION_CHARS = 300;
 const MAX_ACTION_RESULT_BYTES = 32_000;
-const OWNER_MESSAGE_CHANNELS = ['daxiang', 'qq', 'wechat'] as const;
+const OWNER_MESSAGE_CHANNELS = ['daxiang', 'qq'] as const;
 type OwnerMessageChannel = typeof OWNER_MESSAGE_CHANNELS[number];
 
 function modelVisibleCapabilities(
@@ -345,7 +345,7 @@ export function createConnectorCapabilityRuntimeTool(inspect: InspectCapabilitie
     name: 'inspect_mimi_capabilities',
     description: '读取当前可供模型使用的 Connector 业务能力目录及结构化就绪状态。Host 内部动作不会出现在目录中。',
     parameters: z.object({
-      connector: identifier.optional().describe('可选完整 Connector ID 精确过滤，例如 personal-daxiang 或 openclaw-weixin；不要填 daxiang、qq 等渠道简称'),
+      connector: identifier.optional().describe('可选完整 Connector ID 精确过滤，例如 personal-daxiang；不要填 daxiang、qq 等渠道简称'),
       capability: z.string()
         .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)
         .max(120)

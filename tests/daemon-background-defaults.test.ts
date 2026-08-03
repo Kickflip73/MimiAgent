@@ -15,7 +15,7 @@ import {
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('fresh macOS defaults enable the system connector and bounded desktop open route', () => {
-  assert.equal(BACKGROUND_DEFAULTS_VERSION, 2);
+  assert.equal(BACKGROUND_DEFAULTS_VERSION, 3);
   assert.equal(defaultConnectorEnabled('macos-system', 'darwin'), true);
   assert.equal(defaultConnectorEnabled('macos-desktop', 'darwin'), true);
   for (const id of LEGACY_VISIBLE_MACOS_CONNECTORS) {
@@ -42,18 +42,18 @@ test('legacy canonical defaults are silenced once and later explicit opt-in is p
   assert.deepEqual(custom, { version: 1, disabled: [], changed: true });
 });
 
-test('personal message connector templates are added disabled exactly once', () => {
+test('supported personal message connector templates are added disabled exactly once', () => {
   const migration = personalMessageConnectorsToAdd(1, new Set(['personal-qq']));
-  assert.equal(migration.version, 2);
-  assert.deepEqual(migration.added, ['personal-daxiang', 'personal-wechat']);
+  assert.equal(migration.version, 3);
+  assert.deepEqual(migration.added, ['personal-daxiang']);
   assert.equal(migration.changed, true);
 
   assert.deepEqual(
-    personalMessageConnectorsToAdd(2, new Set()),
-    { version: 2, added: [], changed: false },
+    personalMessageConnectorsToAdd(3, new Set()),
+    { version: 3, added: [], changed: false },
   );
   assert.deepEqual(PERSONAL_MESSAGE_CONNECTOR_IDS, [
-    'personal-daxiang', 'personal-qq', 'personal-wechat',
+    'personal-daxiang', 'personal-qq',
   ]);
 });
 

@@ -151,7 +151,7 @@ owner 也可先调用 `get_mimi_settings` 读取完整快照，再用 `update_mi
   "rules": [
     {
       "id": "family-now",
-      "source": "wechat:family",
+      "source": "messages:family",
       "kinds": ["command", "alert"],
       "action": "run",
       "reason": "家人消息及时处理"

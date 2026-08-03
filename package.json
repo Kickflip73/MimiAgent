@@ -72,7 +72,6 @@
     "mimi.radar.example.json",
     "mimi.files.example.json",
     "examples/connectors",
-    "examples/openclaw",
     "MIMI.md",
     ".env.example",
     "mcp.example.json",

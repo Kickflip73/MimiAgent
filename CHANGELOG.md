@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- retire every WeChat capability after an owner account-safety incident: remove
+  personal and OpenClaw Connector catalog entries, bridge scripts, probes, Host
+  channel schemas, and package examples; atomically delete legacy registrations
+  during initialization without touching the official desktop client
 - keep isolated Task worker Provider and embedding credentials available for the
   full lazy model/runtime lifecycle while continuing to exclude them from Shell,
   MCP payload copies, persisted state, and worker diagnostics

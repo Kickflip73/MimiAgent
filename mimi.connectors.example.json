@@ -42,36 +42,6 @@
       "restart": false,
       "actions": {}
     },
-    "personal-wechat": {
-      "enabled": false,
-      "command": "node",
-      "args": ["/absolute/path/to/MimiAgent/examples/connectors/personal-message-connector.mjs", "--channel=wechat"],
-      "envAllowlist": [],
-      "source": "personal-message:wechat",
-      "trust": "external",
-      "profileId": "owner",
-      "restart": false,
-      "actions": {}
-    },
-    "openclaw-weixin": {
-      "enabled": false,
-      "command": "node",
-      "args": ["/absolute/path/to/MimiAgent/examples/connectors/openclaw-weixin-connector.mjs"],
-      "envAllowlist": ["OPENCLAW_BIN", "OPENCLAW_COMMAND_TIMEOUT_MS", "OPENCLAW_STATE_DIR", "MIMI_DAEMON_SOCKET"],
-      "source": "openclaw-weixin",
-      "trust": "owner",
-      "profileId": "owner",
-      "restart": true,
-      "healthEvents": true,
-      "healthStabilityMs": 5000,
-      "deliveryTimeoutMs": 45000,
-      "actionTimeoutMs": 45000,
-      "actions": {
-        "send_message": { "description": "通过已登录的 OpenClaw 微信通道主动发送文本；target 使用入站事件提供的 account/to 路由" },
-        "health_check": { "description": "检查腾讯 iLink channel account、MimiAgent bridge plugin 与后台 socket 是否同时在线" },
-        "local_history": { "description": "读取本机 OpenClaw 已持久化的有界微信入站历史；target 使用 account/to 路由，不代表腾讯上游历史 API" }
-      }
-    },
     "radar": {
       "enabled": false,
       "command": "node",

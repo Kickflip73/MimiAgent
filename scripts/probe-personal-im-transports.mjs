@@ -17,16 +17,6 @@ const apps = [
     path: '/Applications/QQ.app',
     executable: '/Applications/QQ.app/Contents/MacOS/QQ',
   },
-  {
-    id: 'wechat',
-    label: '微信',
-    path: existsSync('/Applications/微信.app')
-      ? '/Applications/微信.app'
-      : '/Applications/WeChat.app',
-    executable: existsSync('/Applications/微信.app')
-      ? '/Applications/微信.app/Contents/MacOS/WeChat'
-      : '/Applications/WeChat.app/Contents/MacOS/WeChat',
-  },
 ];
 
 function run(command, args) {
@@ -161,10 +151,6 @@ async function probeOneBot() {
   };
 }
 
-function commandAvailable(command) {
-  return Boolean(run('/usr/bin/which', [command]));
-}
-
 function loadDaxiangWebPoc() {
   const defaultPath = fileURLToPath(
     new URL('../../daxiang-web-poc/experiment-result.json', import.meta.url),
@@ -228,12 +214,10 @@ const installed = Object.fromEntries(
 
 const daxiangPorts = listeningPorts(installed.daxiang.runningPids);
 const qqPorts = listeningPorts(installed.qq.runningPids);
-const wechatPorts = listeningPorts(installed.wechat.runningPids);
 const daxiangBridge = await findDaxiangBridge(daxiangPorts);
 const daxiangWebPoc = loadDaxiangWebPoc();
 const oneBot = await probeOneBot();
 const napCatRunning = hasNapCatProcess();
-const wxCliInstalled = commandAvailable('wx');
 
 const report = {
   scope: {
@@ -243,7 +227,6 @@ const report = {
     excluded: [
       '大象开放平台机器人',
       'QQ 官方 Bot',
-      '微信 iLink/OpenClaw Bot',
       'CUA/Accessibility/AppleScript',
     ],
   },
@@ -279,19 +262,6 @@ const report = {
       blocker: oneBot.accountVerified
         ? '个人账号协议已握手；仍需验证 WS 入站事件，并向安全目标发送 nonce 后回读确认。'
         : '当前个人 QQ 未安装或未配置 NapCat/OneBot；QQ 自带本地端口不是 OneBot API。',
-    },
-    wechat: {
-      client: installed.wechat,
-      localListeningPorts: wechatPorts,
-      candidate: '个人微信本地只读数据库 + 独立非 CUA 发送协议',
-      wxCliInstalled,
-      accountVerified: false,
-      receiveReady: false,
-      sendReady: false,
-      roundTripTested: false,
-      blocker: wxCliInstalled
-        ? 'wx-cli 只能只读本地消息；当前仍缺少适配微信 4.x macOS 的非 CUA 个人账号发送协议。'
-        : '未配置个人微信读取工具，且当前未发现适配微信 4.x macOS 的非 CUA 个人账号发送协议。',
     },
   },
 };

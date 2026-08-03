@@ -10,7 +10,7 @@ import {
 const fingerprint = `sha256:${'a'.repeat(64)}`;
 
 test('all personal channels share one bounded payload schema', () => {
-  for (const channel of ['daxiang', 'qq', 'wechat'] as const) {
+  for (const channel of ['daxiang', 'qq'] as const) {
     const payload = personalMessagePayloadSchema.parse({
       version: 1,
       channel,
@@ -23,6 +23,14 @@ test('all personal channels share one bounded payload schema', () => {
     });
     assert.equal(payload.channel, channel);
   }
+  assert.throws(() => personalMessagePayloadSchema.parse({
+    version: 1,
+    channel: 'wechat',
+    accountFingerprint: fingerprint,
+    direction: 'incoming',
+    messageType: 'text',
+    coverage: 'bounded',
+  }));
   assert.throws(() => personalMessagePayloadSchema.parse({
     version: 1,
     channel: 'daxiang',

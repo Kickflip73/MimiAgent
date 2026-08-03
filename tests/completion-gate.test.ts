@@ -12,14 +12,14 @@ import {
 } from '../src/runtime/completion.js';
 
 const contract: CompletionContract = {
-  objective: '给好友发送一条微信消息',
+  objective: '给好友发送一条消息',
   kind: 'external_action',
   criteria: [{
     id: 'message-sent',
-    description: '消息已提交到微信发送界面',
+    description: '消息已提交到渠道发送界面',
     requiredEvidence: 'tool_receipt',
     expectedTool: 'connector_action',
-    expectedArgumentsContain: ['wechat', '好友'],
+    expectedArgumentsContain: ['daxiang', '好友'],
   }],
 };
 
@@ -27,7 +27,7 @@ const report: CompletionReport = {
   status: 'completed',
   proofs: [{
     criterionId: 'message-sent',
-    evidence: '微信 Connector 返回 confirmed 回执',
+    evidence: '消息 Connector 返回 confirmed 回执',
     toolCallIds: ['send-1'],
   }],
 };
@@ -36,11 +36,11 @@ function actionEvidence(outcome: 'accepted' | 'confirmed' | 'uncertain' | 'faile
   return [{
     toolName: 'connector_action',
     callId: 'send-1',
-    argumentsJson: '{"connector":"wechat","target":"好友"}',
+    argumentsJson: '{"connector":"daxiang","target":"好友"}',
     status: outcome === 'failed' ? 'failed' : 'succeeded',
     output: {
       outcome,
-      operationId: 'wechat-1',
+      operationId: 'message-1',
       tool: 'connector_action',
       occurredAt: '2026-07-16T00:00:00.000Z',
     },
@@ -56,7 +56,7 @@ test('completion gate intent stays explicit instead of guessing from task verbs'
   for (const input of [
     '请问今天天气怎么样', '帮我解释闭包', '翻译 hello', '分析这段错误日志', '检查这份方案',
     '这是链路测试。不要调用任何工具，仅回复：MIMI_AUDIT_OK',
-    '发送微信消息', '修复登录页', '运行测试', '导出报告', 'Move report.md to docs',
+    '发送渠道消息', '修复登录页', '运行测试', '导出报告', 'Move report.md to docs',
     'Copy a.txt to b.txt', 'Commit and push the current changes', '打开构建产物进入游戏',
   ]) {
     assert.equal(requiresCompletionContract(input), false, input);
@@ -126,7 +126,7 @@ test('artifact evidence requires a structured mutation from the current run', ()
 
 test('completion contract requires objective evidence for side effects and artifacts', () => {
   assert.throws(() => completionContractSchema.parse({
-    objective: '发送微信消息',
+    objective: '发送渠道消息',
     kind: 'external_action',
     criteria: [{ id: 'claimed', description: '声称已发送', requiredEvidence: 'semantic' }],
   }), /tool_receipt/);
@@ -176,7 +176,7 @@ test('host validates the structured contract and locks the first accepted versio
     ...contract,
     criteria: [{
       id: 'weaker', description: '另一份标准', requiredEvidence: 'tool_receipt',
-      expectedTool: 'connector_action', expectedArgumentsContain: ['wechat'],
+      expectedTool: 'connector_action', expectedArgumentsContain: ['daxiang'],
     }],
   }, contract), /已锁定/);
   assert.equal(assertCompletionContractForTask(contract, contract), contract);
@@ -193,8 +193,8 @@ test('completion gate only permits blockers that really require user action', ()
   const realBlock = evaluateCompletion(contract, {
     status: 'blocked', proofs: [], blocker: {
       requiresUser: true,
-      reason: '微信尚未登录，需要 owner 在本机完成扫码',
-      question: '请完成微信扫码登录后告诉我。',
+      reason: '渠道尚未登录，需要 owner 在本机完成登录',
+      question: '请完成渠道登录后告诉我。',
       attemptedAlternatives: ['检查现有登录态', '检查 Connector readiness'],
     },
   }, []);
