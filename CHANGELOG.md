@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- keep isolated Task worker Provider and embedding credentials available for the
+  full lazy model/runtime lifecycle while continuing to exclude them from Shell,
+  MCP payload copies, persisted state, and worker diagnostics
+- refresh the daemon Run idle watchdog only for observable model, Agent, Tool, or
+  Runtime progress so empty Provider chunks and metadata keepalives cannot hold a
+  scheduled worker forever while later occurrences accumulate
 - constrain historical dead-letter projections to the frozen archive,
   retry-after-fix, blocked, or manual-verify contract; retain unknown rows as
   readiness blockers and require manual verification for legacy failures instead

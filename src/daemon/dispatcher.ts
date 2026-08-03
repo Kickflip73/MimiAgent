@@ -5,6 +5,7 @@ import { MimiHost } from '../runtime/mimi-host.js';
 import { attachmentPayload, inputWithAttachments } from '../runtime/attachments.js';
 import type { RuntimeEvent } from '../runtime/hooks.js';
 import { TerminalRunInterruptedError } from '../runtime/run-outcome.js';
+import { projectRunStreamEvent } from '../runtime/stream-projection.js';
 import { CompletionGateError } from '../core/completion.js';
 import { runFinalizationFromError } from '../core/run-finalization.js';
 import { NotifierRegistry } from './notifier.js';
@@ -67,6 +68,12 @@ export interface DispatcherOptions {
     event: ImmutableEvent,
     sessionId: string,
   ) => MaybePromise<string | undefined>;
+}
+
+export function runStreamMakesObservableProgress(event: RunStreamEvent): boolean {
+  const projection = projectRunStreamEvent(event);
+  if (!projection) return false;
+  return projection.kind === 'status' || projection.text.trim().length > 0;
 }
 
 interface ActiveExecution {
@@ -642,7 +649,7 @@ export class MimiDispatcher {
               return;
             }
           }
-          refreshRunIdleWatchdog();
+          if (runStreamMakesObservableProgress(streamEvent)) refreshRunIdleWatchdog();
         },
         onRuntimeEvent: (runtimeEvent) => {
           refreshRunIdleWatchdog();

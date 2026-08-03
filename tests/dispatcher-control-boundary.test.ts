@@ -4,7 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { RunContext } from '@openai/agents';
-import { MimiDispatcher } from '../src/daemon/dispatcher.js';
+import {
+  MimiDispatcher,
+  runStreamMakesObservableProgress,
+} from '../src/daemon/dispatcher.js';
 import { AttentionEngine } from '../src/daemon/attention.js';
 import type { ConnectorManager } from '../src/daemon/connectors.js';
 import { MimiStore } from '../src/daemon/store.js';
@@ -15,6 +18,34 @@ import {
 import { RunFailureError } from '../src/core/run-failure.js';
 import { MimiHost } from '../src/runtime/mimi-host.js';
 import type { MimiAgent } from '../src/runtime/mimi-agent.js';
+
+test('dispatcher idle progress ignores provider keepalives without observable progress', () => {
+  assert.equal(runStreamMakesObservableProgress({
+    type: 'raw_model_stream_event',
+    data: { type: 'model', event: {} },
+  } as never), false);
+  assert.equal(runStreamMakesObservableProgress({
+    type: 'raw_model_stream_event',
+    data: { type: 'output_text_delta', delta: '' },
+  } as never), false);
+  assert.equal(runStreamMakesObservableProgress({
+    type: 'raw_model_stream_event',
+    data: { type: 'model', event: { choices: [{ delta: { reasoning_content: '' } }] } },
+  } as never), false);
+  assert.equal(runStreamMakesObservableProgress({
+    type: 'raw_model_stream_event',
+    data: { type: 'output_text_delta', delta: 'done' },
+  } as never), true);
+  assert.equal(runStreamMakesObservableProgress({
+    type: 'raw_model_stream_event',
+    data: { type: 'model', event: { choices: [{ delta: { reasoning_content: 'thinking' } }] } },
+  } as never), true);
+  assert.equal(runStreamMakesObservableProgress({
+    type: 'run_item_stream_event',
+    name: 'tool_output',
+    item: { rawItem: { name: 'inspect_mimi_activity' }, output: { ok: true } },
+  } as never), true);
+});
 
 test('dispatcher control surface is idempotent for missing, queued, paused, and terminal tasks', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-control-'));
