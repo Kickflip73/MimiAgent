@@ -1091,3 +1091,31 @@
 5. 当前工作树 `npm run check` 通过；聚焦 149/149；首次全量 897/898 仅 CUA lifecycle 500ms
    同步断言在整机负载下红，精确复跑绿；第二次完整 `npm test` 稳定 899/899、skip/todo=0。
    本轮尚未提交、部署或执行 live matrix，必须继续 clean CI/package、备份、空闲切换后取证。
+
+## 2026-08-03 M1 v4 快速收口实测与新 ARC-503 NO-GO
+
+1. `f153f27` 已提交并推送 M1 v4 计划、64 个 fixture manifest、五族 30 条 canary、
+   `daxiang-health` 正式只读 probe、write evidence schema 和 Doctor 非阻塞历史预算/已分类
+   dead-letter 规则。随后并发任务留下的 Shell 直启 `.app` 风险由 `d03b5c2` 收口：Darwin
+   sandbox 在 exec 前拒绝 GUI bundle binary，避免无 LaunchServices 上下文制造 AppKit crash dialog。
+2. 最终 `d03b5c2` detached clean `npm run ci` 全绿：900/900、skip/todo=0，line/branch/function
+   coverage=`88.35%/78.56%/84.77%`，build/package smoke 通过；tarball SHA-256=
+   `c8daa7d7a178dcb52defc1c764f86e26d68c424f2c9890ea99e55f0f68f3198a`、build dirty=false。
+   origin 与 HEAD 对齐。
+3. 最终切换前备份
+   `/Users/liuyuran/.mimi-agent/backups/m1-fast-closeout-d03b5c2-20260803T1802` 已通过 verify，
+   manifest 2,808 entries、SQLite integrity=ok。Event/Task/Tool/Host mutation/Outbox 全部为 0 时
+   安装同一 tarball 并 `restart --force`；PID=73017，installed=running=
+   `0.12.0+gd03b5c2f54548ac917b7bc1b051bebdc6aeb5f88.clean.2ee7645cd89d`。
+4. 前一 clean build `f153f27` 的短矩阵真实得到 requested/eligible/executed/success/blocked=
+   `30/18/18/18/12`、failed/uncertain=`0/0`；Browser 8/8、Computer 8/8、Screen 2/4，后续
+   12 条 fail-closed。该记录因最终代码随后变为 `d03b5c2` 而不计入最终分母，也未被删除或改写。
+5. 最终 build 上 Browser、Shortcuts、Daxiang 健康读均成功，但 Computer/Screen 复现真实
+   `ax_window_unresolved`：CuaDriver 0.16.0 自报 Accessibility/Screen Recording=true，服务在
+   idle 边界重启后 transport 恢复，两个 Finder 和一个 TextEdit 真实窗口仍各为 0 AXWindow。
+   未使用 PID-only、最大窗口、坐标或前台 fallback，也未重放任何动作。
+6. 因此新不可覆盖 ARC-503
+   `evals/m1/exit-records/20260803T180700+0800-no-go.json` 为 `NO-GO`。当前精确阻塞是 CUA AX
+   grounding 上游边界、最终 30 条同 build matrix、Browser/Computer/Shortcuts 写覆盖、大象 owner
+   自会话 confirmed send/readback、外部 Provider 凭证轮换和其后的 restore dry-run/有界窗口。
+   微信退休门禁继续为 route=0、wx-cli=0、签名副本=0，未触碰官方客户端；QQ 默认关闭且不计分。

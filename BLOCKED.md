@@ -320,6 +320,17 @@
   `ax_window_unresolved` 并正确 fail-closed；解锁后才重跑只读 probe，不重复部署。其余历史预算、
   549 条 manual_verify、QQ 上游 RFC、live matrix/soak 与 Provider 凭证轮换继续独立阻塞 M1 GO。
   证据：`evals/m1/deployments/20260803T164435+0800-forced-host-lifecycle.json`。
+- **2026-08-03 M1 v4 最新 ARC-503 仍为 NO-GO，根因已收敛为真实 CUA AX grounding 缺口**：
+  最终 `d03b5c2` 已 clean CI 900/900、推送、备份、安装并在全空闲边界强制重启，installed/running
+  完全一致，Provider closed，日 Run 上限 1000；部署本身不再阻塞。CuaDriver 0.16.0 权限报告
+  Accessibility/Screen Recording 均为 true，idle restart 也成功换新 Driver PID，但两个 Finder
+  窗口和一个 TextEdit 窗口仍全部返回 0 AXWindow/`ax_window_unresolved`。因此 Computer/Screen
+  必须 fail-closed，不能用 PID-only、最大窗口、坐标或前台 fallback 凑数。`f153f27` 的旧矩阵
+  `30/18/18/18/12` 因不是最终 build 仅保留为诊断证据；最终 build 的 30 条 read/write matrix、
+  Browser/Computer/Shortcuts 写覆盖、大象 owner 自会话 confirmed send/readback、外部 Provider
+  凭证轮换和 restore dry-run/有界窗口均未完成。新不可覆盖记录为
+  `evals/m1/exit-records/20260803T180700+0800-no-go.json`；下一步只能跟进
+  `trycua/cua#2807/#2808` 或等价上游安全接口，红→绿后重新 clean build/T0，不能编辑或晋升本记录。
 - **2026-08-03 QQ 与固定日历窗口已由 Owner 从 M1 开工门槛移除**：QQ 仍默认关闭、
   fail-closed 并继续跟进 `trycua/cua#2807/#2808`，不得宣称 completed 或启用；微信永久退休
   不变。24h/72h/7d/30d 改为 M2 发布质量信号，M1 改用同一 clean build 五族 30 次短矩阵与

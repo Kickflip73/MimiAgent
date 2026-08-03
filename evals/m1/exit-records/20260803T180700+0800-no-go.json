@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "recordId": "m1-exit-20260803T180700+0800-no-go",
+  "createdAt": "2026-08-03T18:07:00+08:00",
+  "decision": "NO-GO",
+  "decisionContract": "docs/plans/20260731-MimiAgent-M1架构收敛重构计划.md#phase-6d-m2-go-no-go",
+  "reason": "The final clean build is deployed and idle, but CUA cannot ground real Finder/TextEdit windows to AXWindow elements; Computer/Screen readiness and the complete 30-sample read/write matrix are therefore ineligible.",
+  "source": {
+    "branch": "codex/mimiagent-integrated",
+    "evidenceHead": "d03b5c2f54548ac917b7bc1b051bebdc6aeb5f88",
+    "frozenCodeCommit": "d03b5c2f54548ac917b7bc1b051bebdc6aeb5f88",
+    "frozenBuildIdentity": "0.12.0+gd03b5c2f54548ac917b7bc1b051bebdc6aeb5f88.clean.2ee7645cd89d",
+    "frozenBuildDirty": false,
+    "installedRunningAligned": true,
+    "workspaceHeadDirty": true,
+    "workspaceDirtyDisposition": "Only pre-existing owner files, excluded untracked Skills/plan copies, and this immutable M1 evidence remain outside the frozen package."
+  },
+  "dataset": {
+    "schemaVersion": 2,
+    "revision": "m1-fixtures-2026-08-03.2",
+    "policyRevision": "m1-fast-closeout-v4",
+    "toolSnapshotRevision": "m1-tools-a53d4f7.1",
+    "manifest": "evals/m1/manifest.v2.json"
+  },
+  "ci": {
+    "command": "npm run ci",
+    "cleanWorktree": true,
+    "exitCode": 0,
+    "tests": 900,
+    "passed": 900,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "coverage": {
+      "linePercent": 88.35,
+      "branchPercent": 78.56,
+      "functionPercent": 84.77
+    },
+    "buildPassed": true,
+    "packageSmokePassed": true,
+    "packageSha256": "c8daa7d7a178dcb52defc1c764f86e26d68c424f2c9890ea99e55f0f68f3198a"
+  },
+  "deployment": {
+    "backupRoot": "/Users/liuyuran/.mimi-agent/backups/m1-fast-closeout-d03b5c2-20260803T1802",
+    "backupVerified": true,
+    "backupFileCount": 2808,
+    "databaseIntegrity": "ok",
+    "daemonPid": 73017,
+    "idleCutover": true,
+    "providerCircuit": "closed"
+  },
+  "runtimeAtDecision": {
+    "doctorReady": false,
+    "activeEvents": 0,
+    "activeTools": 0,
+    "runningTasks": 0,
+    "activeHostMutations": 0,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "dailyRunLimit": 1000,
+    "pendingDigest": 63,
+    "taskDeadLetters": 549,
+    "unclassifiedDeadLetters": 0,
+    "computer": {
+      "driverVersion": "0.16.0",
+      "accessibility": true,
+      "screenRecording": true,
+      "transportReady": true,
+      "operationalReadiness": "degraded",
+      "failure": "ax_window_unresolved",
+      "realWindowsChecked": 3,
+      "realWindowsWithAxWindow": 0
+    },
+    "connectors": {
+      "enabled": 7,
+      "online": 7,
+      "ready": 6,
+      "unknown": [
+        "macos-screen"
+      ]
+    }
+  },
+  "liveMatrix": {
+    "finalBuild": {
+      "requested": 0,
+      "eligible": 0,
+      "executed": 0,
+      "success": 0,
+      "blocked": 0,
+      "failed": 0,
+      "uncertain": 0,
+      "reasonNotStarted": "Computer operational prerequisite failed before T0."
+    },
+    "preFinalDiagnosticRun": {
+      "artifact": "evals/m1/deployments/20260803T1753+0800-fast-closeout-canary.json",
+      "requested": 30,
+      "eligible": 18,
+      "executed": 18,
+      "success": 18,
+      "blocked": 12,
+      "failed": 0,
+      "uncertain": 0,
+      "counted": false
+    },
+    "minimumEligibleRequired": 30,
+    "families": {
+      "browser": { "required": 8, "eligibleOnFinalBuild": 0 },
+      "computer": { "required": 8, "eligibleOnFinalBuild": 0 },
+      "screen": { "required": 4, "eligibleOnFinalBuild": 0 },
+      "shortcuts": { "required": 4, "eligibleOnFinalBuild": 0 },
+      "daxiang": { "required": 6, "eligibleOnFinalBuild": 0 }
+    },
+    "historicalBuildsCounted": false,
+    "fixturesCounted": false,
+    "readinessCounted": false
+  },
+  "failureInjection": {
+    "buildProvenance": "Dirty and installed/running mismatches failed closed before canary execution.",
+    "computerGrounding": "Three real allowlisted windows returned ax_window_unresolved with zero AXWindow elements; no PID-only, largest-window, coordinate, or foreground fallback was used.",
+    "driverRecovery": "An idle CuaDriver stop/relaunch recovered transport with a new daemon PID but did not recover AX enumeration.",
+    "uncertainSideEffects": "No uncertain external action was replayed."
+  },
+  "unresolved": [
+    {
+      "id": "cua-ax-window-grounding",
+      "disposition": "blocked",
+      "owner": "external_dependency",
+      "condition": "CUA must expose a safe, verifiable exact-window or application-composite AX scope; track trycua/cua#2807 and #2808."
+    },
+    {
+      "id": "m1-final-live-matrix",
+      "disposition": "blocked",
+      "owner": "mimiagent",
+      "condition": "After the CUA prerequisite is fixed, execute all 30 final-build samples with every family at or above 95% and zero S0/S1, wrong target, duplicate, or uncertain replay."
+    },
+    {
+      "id": "required-write-coverage",
+      "disposition": "blocked",
+      "owner": "mimiagent",
+      "condition": "Verify reversible Browser write, Computer action/readback, non-destructive Shortcut execution, and one Daxiang owner-self confirmed send/readback."
+    },
+    {
+      "id": "provider-credential-rotation",
+      "disposition": "blocked",
+      "owner": "owner_action_required",
+      "condition": "Rotate previously exposed provider credentials in their external control planes and atomically update the local environment before final Provider validation."
+    },
+    {
+      "id": "restore-dry-run-and-window",
+      "disposition": "blocked",
+      "owner": "mimiagent",
+      "condition": "Complete the restore dry-run and same-build bounded closeout window only after Computer becomes operationally ready."
+    }
+  ],
+  "nonBlockingAudit": {
+    "classifiedLegacyManualVerifyDeadLetters": 549,
+    "safelyThrottledAutonomousSources": 4,
+    "wechatRetired": true,
+    "wechatRuntimeRoutes": 0,
+    "qqDefaultDisabled": true,
+    "qqInM1Denominator": false
+  },
+  "evidenceIndex": [
+    "evals/m1/deployments/20260803T180700+0800-fast-closeout-no-go.json",
+    "evals/m1/deployments/20260803T1753+0800-fast-closeout-canary.json",
+    "evals/m1/deployments/20260803T162656+0800-cua-rfc.json",
+    "PROGRESS.md",
+    "BLOCKED.md",
+    "docs/plans/20260731-MimiAgent-M1架构收敛重构计划.md",
+    "evals/m1/manifest.v2.json",
+    "tests/m1-eval.test.ts",
+    "tests/computer.test.ts",
+    "tests/tools.test.ts"
+  ],
+  "nextEligibleStep": "Do not edit or promote this record. Resolve CUA AX grounding and provider credential rotation, then create a new clean-build deployment, T0, 30-sample matrix, and a new ARC-503 record."
+}

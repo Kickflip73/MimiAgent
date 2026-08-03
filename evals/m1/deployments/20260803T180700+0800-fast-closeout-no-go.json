@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-03T18:07:00+08:00",
+  "decision": "m1_fast_closeout_no_go",
+  "source": {
+    "branch": "codex/mimiagent-integrated",
+    "commit": "d03b5c2f54548ac917b7bc1b051bebdc6aeb5f88",
+    "originAligned": true,
+    "package": "/tmp/mimi-m1-package.vvDNoa/mimi-agent-0.12.0.tgz",
+    "packageSha256": "c8daa7d7a178dcb52defc1c764f86e26d68c424f2c9890ea99e55f0f68f3198a",
+    "buildIdentity": "0.12.0+gd03b5c2f54548ac917b7bc1b051bebdc6aeb5f88.clean.2ee7645cd89d",
+    "buildDirty": false
+  },
+  "verification": {
+    "detachedCleanCi": {
+      "passed": true,
+      "tests": 900,
+      "passedTests": 900,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "lineCoveragePercent": 88.35,
+      "branchCoveragePercent": 78.56,
+      "functionCoveragePercent": 84.77,
+      "buildPassed": true,
+      "packageSmokePassed": true
+    },
+    "focusedShellBoundary": {
+      "passed": 3,
+      "failed": 0
+    },
+    "m1FixtureRun": {
+      "requested": 64,
+      "eligible": 42,
+      "executed": 42,
+      "runnerPassed": true
+    }
+  },
+  "deployment": {
+    "backupRoot": "/Users/liuyuran/.mimi-agent/backups/m1-fast-closeout-d03b5c2-20260803T1802",
+    "backupManifestSha256": "9804d508b791e8926afc3d8e1beee7974e89b6883951695abbf4e1d6515b02f5",
+    "backupFileCount": 2808,
+    "backupVerified": true,
+    "databaseIntegrity": "ok",
+    "daemonPid": 73017,
+    "idleBoundaryBeforeRestart": {
+      "activeEvents": 0,
+      "activeTools": 0,
+      "runningTasks": 0,
+      "activeHostMutations": 0,
+      "outboxPending": 0,
+      "outboxSending": 0
+    },
+    "installedEqualsRunning": true
+  },
+  "runtimeAtDecision": {
+    "doctorReady": false,
+    "providerCircuit": "closed",
+    "activeEvents": 0,
+    "activeTools": 0,
+    "runningTasks": 0,
+    "activeHostMutations": 0,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "enabledSchedules": 0,
+    "dailyRunLimit": 1000,
+    "pendingDigest": 63,
+    "taskDeadLetters": 549,
+    "unclassifiedDeadLetters": 0,
+    "computerOperationalReadiness": "degraded",
+    "screenReadiness": "unknown"
+  },
+  "cuaBoundary": {
+    "driverVersion": "0.16.0",
+    "accessibility": true,
+    "screenRecording": true,
+    "transportReady": true,
+    "serviceRestartedAtIdleBoundary": true,
+    "serviceRestartRecoveredTransport": true,
+    "serviceRestartRecoveredAxEnumeration": false,
+    "observedWindows": [
+      {
+        "bundleId": "com.apple.finder",
+        "windowId": 49858,
+        "axWindowCount": 0,
+        "result": "ax_window_unresolved"
+      },
+      {
+        "bundleId": "com.apple.finder",
+        "windowId": 49943,
+        "axWindowCount": 0,
+        "result": "ax_window_unresolved"
+      },
+      {
+        "bundleId": "com.apple.TextEdit",
+        "windowId": 49810,
+        "axWindowCount": 0,
+        "result": "ax_window_unresolved"
+      }
+    ],
+    "wrongTargetFallbackUsed": false,
+    "foregroundFallbackUsed": false,
+    "upstreamIssue": "https://github.com/trycua/cua/issues/2807",
+    "upstreamRfcPullRequest": "https://github.com/trycua/cua/pull/2808"
+  },
+  "liveEvidence": {
+    "preFinalBuildCanary": {
+      "artifact": "evals/m1/deployments/20260803T1753+0800-fast-closeout-canary.json",
+      "buildCommit": "f153f274a6f8ddc0ea3bb5649e50b636fd872f74",
+      "requested": 30,
+      "eligible": 18,
+      "executed": 18,
+      "success": 18,
+      "blocked": 12,
+      "failed": 0,
+      "uncertain": 0,
+      "qualifyingLiveActions": 18,
+      "countedForFinalBuild": false,
+      "reasonNotCounted": "A later shell-boundary fix changed the final commit; the record remains immutable diagnostic evidence."
+    },
+    "finalBuildDiagnostics": {
+      "browserRead": "success",
+      "shortcutsCatalogRead": "success",
+      "daxiangHealthRead": "success",
+      "computerWindowRead": "blocked_ax_window_unresolved",
+      "screenWindowRead": "blocked_by_computer_target_verification",
+      "formalThirtySampleMatrixStarted": false
+    },
+    "requiredWriteCoverage": {
+      "browserReversibleWrite": "not_run",
+      "computerActionReadback": "blocked_by_cua",
+      "shortcutsNonDestructiveExecution": "not_run",
+      "daxiangOwnerSelfConfirmedSend": "not_run"
+    }
+  },
+  "retiredAndExperimentalChannels": {
+    "wechatConnectorMatches": 0,
+    "wxCliInstalled": false,
+    "signedWechatClonePresent": false,
+    "officialWechatTouched": false,
+    "qqEnabled": false,
+    "qqCountedInM1": false
+  },
+  "safety": {
+    "uncertainExternalActionsReplayed": 0,
+    "ownerDataCleared": false,
+    "ownerTasksCancelled": false,
+    "historicalDeadLettersReplayed": false,
+    "wrongTargets": 0,
+    "duplicateSideEffects": 0
+  },
+  "blockers": [
+    "CUA 0.16.0 reports healthy TCC permissions but returns zero AXWindow elements for multiple real Finder and TextEdit windows.",
+    "The final d03b5c2 build therefore cannot obtain 8 Computer and 4 Screen qualifying live actions without violating fail-closed target grounding.",
+    "Required Browser/Computer/Shortcuts write coverage and the Daxiang owner-self confirmed send/readback remain unexecuted.",
+    "External Provider credentials previously exposed to tool output still require rotation in their provider control planes.",
+    "A restore dry-run and a same-build bounded closeout window cannot be accepted before the operational Computer prerequisite is ready."
+  ],
+  "nextEligibleStep": "Land or adopt an upstream-approved CUA application-composite/exact-window AX fix, reproduce red then green against Finder and TextEdit, cut a new clean build, and execute the complete 30-sample read/write matrix without reusing this record."
+}
