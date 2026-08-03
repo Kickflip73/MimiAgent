@@ -7,6 +7,7 @@ import type { RuntimeEvent } from '../runtime/hooks.js';
 import { TerminalRunInterruptedError } from '../runtime/run-outcome.js';
 import { projectRunStreamEvent } from '../runtime/stream-projection.js';
 import { CompletionGateError } from '../core/completion.js';
+import { RunFailureError } from '../core/run-failure.js';
 import { runFinalizationFromError } from '../core/run-finalization.js';
 import { NotifierRegistry } from './notifier.js';
 import type { ConnectorTaskRuntime } from './connector-action-tool.js';
@@ -361,6 +362,7 @@ export class MimiDispatcher {
     let preemptTimer: NodeJS.Timeout | undefined;
     let preemptedBy: { id: string; priority: number; ownerCorrection: boolean } | undefined;
     let runIdleTimer: NodeJS.Timeout | undefined;
+    let runIdleFailure: RunFailureError | undefined;
     let execution: { sessionId: string; key: string } | undefined;
     let leaseFailure: Error | undefined;
     let ephemeralSensitiveValues: readonly string[] = [];
@@ -447,7 +449,17 @@ export class MimiDispatcher {
         pauseRunIdleWatchdog();
         if (runSignal.aborted || active.tools > 0) return;
         runIdleTimer = setTimeout(() => {
-          runController.abort(new Error(`Agent 连续 ${runIdleTimeoutMs}ms 无进展，已中止并等待重试`));
+          runIdleFailure = new RunFailureError(
+            'runtime.idle_timeout',
+            `Agent 连续 ${runIdleTimeoutMs}ms 无进展，已中止并等待重试`,
+            {
+              phase: 'runtime',
+              kind: 'transient',
+              retryable: true,
+              dispatchStarted: false,
+            },
+          );
+          runController.abort(runIdleFailure);
         }, runIdleTimeoutMs);
       };
       if (task.type !== 'scheduled') this.store.schedules.wake(decision.sessionId!, task.id);
@@ -842,7 +854,7 @@ export class MimiDispatcher {
         const configuredMaxAttempts = this.options.maxAttempts ?? 5;
         const taskError = ephemeralSecretReferences(task.objective).length
           ? new EphemeralSensitiveRunFailedError(error, ephemeralSensitiveValues)
-          : error;
+          : runIdleFailure ?? error;
         const failure = classifyRunFailureRecord(taskError);
         this.store.failTask(
           task.id,

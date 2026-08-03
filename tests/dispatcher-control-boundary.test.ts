@@ -47,6 +47,66 @@ test('dispatcher idle progress ignores provider keepalives without observable pr
   } as never), true);
 });
 
+test('dispatcher records idle timeout as a retryable typed failure after SDK abort wrapping', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-idle-timeout-'));
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  const agent = {
+    currentSessionId: 'owner',
+    currentCapabilitySnapshot: () => undefined,
+    completedExecution: async () => undefined,
+    finalizeExecutionLedger: async () => undefined,
+    reopenExecutionLedger: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, {
+    execute: async (request) => new Promise((_, reject) => {
+      const signal = request.signal;
+      assert.ok(signal);
+      const abort = () => reject(new Error(signal.reason instanceof Error
+        ? signal.reason.message
+        : String(signal.reason)));
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+    }),
+  });
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {
+    runIdleTimeoutMs: 25,
+  });
+  try {
+    const now = new Date().toISOString();
+    const routed = store.ingestEvent({
+      id: 'idle-timeout-event',
+      externalId: 'idle-timeout-event',
+      source: 'local-cli',
+      kind: 'command',
+      trust: 'owner',
+      payload: { prompt: 'wait for provider' },
+      occurredAt: now,
+      receivedAt: now,
+      priority: 100,
+      profileId: 'owner',
+      sessionKey: 'owner',
+    });
+    assert.ok(routed.task);
+
+    assert.equal(await dispatcher.processTaskById(routed.task.id), true);
+    const task = store.getTask(routed.task.id);
+    assert.equal(task?.status, 'queued');
+    assert.match(task?.error ?? '', /Agent 连续 25ms 无进展/);
+    assert.deepEqual((task?.result as { failure?: unknown }).failure, {
+      code: 'runtime.idle_timeout',
+      disposition: {
+        phase: 'runtime',
+        kind: 'transient',
+        retryable: true,
+        dispatchStarted: false,
+      },
+    });
+  } finally {
+    store.close();
+  }
+});
+
 test('dispatcher control surface is idempotent for missing, queued, paused, and terminal tasks', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-control-'));
   const store = new MimiStore(path.join(root, 'mimi.db'));
