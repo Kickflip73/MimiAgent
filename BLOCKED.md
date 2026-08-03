@@ -208,3 +208,13 @@
   eligible live matrix=0/100，T0/24h/72h/7d 均未开始，以及上述全部 unresolved disposition；
   后续只能在门禁解除后建立新 clean build/T0 并新增 exit record，不得修改本记录或用历史证据
   将它提升为 GO。
+- **2026-08-03 build drift 与旧进程 credential snapshot 已解除**：Owner 明确要求强制部署后，
+  `2071c5f` clean tarball 已在双重验证备份后全局安装；installed=running=
+  `0.12.0+g2071c5f03e132d7ff79cc70865cc9484efa1716e.clean.d8fecfcbb50c`、aligned=true。
+  新 Briefing Task completed，旧进程缺 `GENIUSRD_API_KEY` 的失败未复现；真实 dead letter
+  unclassified 已为 0。该两项不再是 blocker，证据见
+  `evals/m1/deployments/20260803T094107+0800-forced.json`。
+- **2026-08-03 部署后剩余运行门禁**：Doctor 仍 ready=false；Cua Driver 的 Screen Recording=false，
+  所以 Computer unavailable。`personal-daxiang` unavailable，macos-screen/macos-shortcuts
+  readiness unknown，Digest=7047，3 个自治来源预算耗尽。强制部署不能安全绕过 TCC、猜测个人
+  消息目标或压缩日历验收，所以当前仍不得建立 T0，100 次矩阵与 24h/72h/7d 尚未起算。

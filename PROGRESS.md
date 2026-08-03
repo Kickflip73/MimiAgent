@@ -765,3 +765,28 @@
    requested/eligible/executed=`0/0/0`，T0、24h、72h、7d 均为 null/未通过，历史 build、fixture
    与 readiness 均未补数。JSON 校验和 `git diff --check` 通过，敏感值模式扫描零命中（`rg`
    exit 1），文件 SHA-256=`88c824a2e7f684687fcf8201a1e2bf44c66a758902c7874f8875ee598bd2c5be`。
+
+## 2026-08-03 Owner 强制 clean package 重新部署
+
+1. Owner 明确要求强制重新部署后，从 HEAD `2071c5f03e132d7ff79cc70865cc9484efa1716e`
+   建立独立 detached clean worktree，真实 `npm ci && npm run ci` 全绿：四项 repository checks、
+   892/892、fail/skip/todo=0，line/branch/function=`88.24%/78.30%/84.58%`，build/package smoke
+   通过。tarball SHA-256=`11f81bbbac07fd25fd7cb9cb82c5a134b56da6c8339fcf967415bc6c329a0537`，
+   包内 manifest 为完整提交、dirty=false。
+2. 切换前旧 build `0.12.0+54d3940e1185` 的 Event/Task/Tool/Host mutation 和 Outbox
+   pending/sending 均为 0；另有 1 个 queued Task，但不持有执行权或副作用。使用 SQLite Online
+   Backup 创建备份，停止前和移动至持久目录后均验证 integrity=ok。持久备份为
+   `/Users/liuyuran/.mimi-agent/backups/m1-force-deploy-20260803T093813`，目录/manifest 权限
+   0700/0600，manifest SHA-256=`9d03d0139e9285c1fbc860362ca31d8659cd5a0659e7d78ad4f2c2dcad82a862`。
+3. 旧 Daemon 安全停止后，通过 tarball 全局安装，原来指向主工作树的 npm link 已替换为真实
+   package directory；新 Daemon PID=54665。串行 Doctor 证明 installed=running=
+   `0.12.0+g2071c5f03e132d7ff79cc70865cc9484efa1716e.clean.d8fecfcbb50c`、aligned=true。
+4. 启动时接管的 Briefing Task 已真实 completed、Outbox sent，旧进程因环境快照未加载
+   `GENIUSRD_API_KEY` 的失败未复现；启动工作结束后 Event/Task/Tool/Host mutation 与 Outbox
+   pending/sending 再次全为 0。新分类器在真实状态上得到 dead letter=549、unclassified=0，
+   全部历史记录为 `legacy_failure/manual_verify`，没有自动重放或归档。
+5. 强制部署只解除 build drift 和旧进程 credential snapshot 两项。Doctor 仍 ready=false：
+   Screen Recording=false 导致 Computer unavailable；`personal-daxiang` unavailable，
+   macos-screen/macos-shortcuts readiness unknown，Digest=7047，另有 3 个自治来源预算耗尽。
+   因此未建立 T0，既有 NO-GO record 不覆盖、不提升；完整部署证据见
+   `evals/m1/deployments/20260803T094107+0800-forced.json`。

@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "recordId": "m1-deployment-20260803T094107+0800-forced",
+  "createdAt": "2026-08-03T09:41:07+08:00",
+  "authorization": "Owner explicitly requested a forced redeployment.",
+  "package": {
+    "version": "0.12.0",
+    "commitSha": "2071c5f03e132d7ff79cc70865cc9484efa1716e",
+    "dirty": false,
+    "buildIdentity": "0.12.0+g2071c5f03e132d7ff79cc70865cc9484efa1716e.clean.d8fecfcbb50c",
+    "tarballSha256": "11f81bbbac07fd25fd7cb9cb82c5a134b56da6c8339fcf967415bc6c329a0537",
+    "globalPath": "/Users/liuyuran/.local/node-v24.18.0/lib/node_modules/mimi-agent"
+  },
+  "ci": {
+    "command": "npm run ci",
+    "cleanWorktree": true,
+    "repositoryChecks": 4,
+    "tests": 892,
+    "passed": 892,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "coverage": {
+      "linePercent": 88.24,
+      "branchPercent": 78.30,
+      "functionPercent": 84.58
+    },
+    "buildPassed": true,
+    "packageSmokePassed": true
+  },
+  "backup": {
+    "directory": "/Users/liuyuran/.mimi-agent/backups/m1-force-deploy-20260803T093813",
+    "manifestSha256": "9d03d0139e9285c1fbc860362ca31d8659cd5a0659e7d78ad4f2c2dcad82a862",
+    "databaseIntegrity": "ok",
+    "verifiedBeforeStop": true,
+    "verifiedAfterMove": true,
+    "directoryMode": "0700",
+    "manifestMode": "0600"
+  },
+  "cutover": {
+    "previousBuild": "0.12.0+54d3940e1185",
+    "activeEvents": 0,
+    "activeTasks": 0,
+    "activeTools": 0,
+    "activeHostMutations": 0,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "safeStop": true,
+    "globalSymlinkReplacedByPackageDirectory": true
+  },
+  "postDeploy": {
+    "pid": 54665,
+    "daemonRunning": true,
+    "installedBuild": "0.12.0+g2071c5f03e132d7ff79cc70865cc9484efa1716e.clean.d8fecfcbb50c",
+    "runningBuild": "0.12.0+g2071c5f03e132d7ff79cc70865cc9484efa1716e.clean.d8fecfcbb50c",
+    "buildAligned": true,
+    "idleAfterStartupWork": true,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "briefingTaskCompleted": true,
+    "briefingProviderError": null,
+    "historicalDeadLetters": 549,
+    "unclassifiedDeadLetters": 0,
+    "historicalDeadLetterDisposition": "legacy_failure/manual_verify"
+  },
+  "doctor": {
+    "ready": false,
+    "computerReady": false,
+    "computerReason": "Cua Driver health_report overall=degraded; Screen Recording is not granted.",
+    "connectorsEnabled": 8,
+    "connectorsOnline": 8,
+    "connectorsReady": 5,
+    "connectorUnavailable": [
+      "personal-daxiang"
+    ],
+    "connectorReadinessUnknown": [
+      "macos-screen",
+      "macos-shortcuts"
+    ],
+    "pendingDigest": 7047,
+    "autonomousBudgetExhaustedSources": 3
+  },
+  "t0Established": false,
+  "t0Reason": "Doctor is not ready; Computer and required Connector readiness gates remain unresolved.",
+  "supersedesExitDecision": false,
+  "evidenceRefs": [
+    "PROGRESS.md",
+    "BLOCKED.md",
+    "evals/m1/exit-records/20260803T033746+0800-no-go.json"
+  ]
+}
