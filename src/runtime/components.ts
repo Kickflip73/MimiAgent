@@ -199,6 +199,13 @@ export async function createRuntimeComponents(
   });
   await Promise.all([skills.load(), mcp.connect()]);
   if (options.releaseMcpEnvironmentAfterConnect) mcpSecrets.length = 0;
+  const computerLifecycle = config.computer
+    ? sharedCuaDriverLifecycle(
+        config.computer.driverCommand,
+        config.computer.actionTimeoutMs,
+      )
+    : undefined;
+  if (computerLifecycle) await computerLifecycle.start();
   return {
     modelRuntime,
     modelConfig,
@@ -218,10 +225,7 @@ export async function createRuntimeComponents(
         new CuaDriverClient(
           config.computer.driverCommand,
           config.computer.actionTimeoutMs,
-          sharedCuaDriverLifecycle(
-            config.computer.driverCommand,
-            config.computer.actionTimeoutMs,
-          ),
+          computerLifecycle,
         ),
         config.dataRoot,
       ),

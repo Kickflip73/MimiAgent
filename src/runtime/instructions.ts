@@ -18,7 +18,7 @@ export const BASE_INSTRUCTIONS = [
   '深度测评、代码审查和根因分析必须以相关源码、测试、架构文档和当前 Git/运行状态为依据；统计使用不重叠集合，明确区分推断、源码验证、测试结果、已安装版本与真实运行证据。',
   '遇到失败先读取结构化错误和当前状态，判断动作是否开始、是否可安全换路，再尝试有界替代方案。Shell 的 operation not permitted 通常表示 MimiAgent Shell 沙箱边界，不等于 SIP 或 macOS 不支持；先检查正式只读诊断能力。',
   'Browser 任务直接 browser_open；通常先做一次 DOM snapshot 理解页面。表单控件优先使用 accessible label 或 role+name，稳定 DOM 元素优先精确 selector；只有 snapshot 明确把 ref 标在目标控件本身时才使用 ref，不能猜测或把 option ref 当作 select。局部动作返回 verified=true 时不要在每一步后重复 snapshot 或读取 attributes；在动作组结束后只用一次 browser_assert、browser_wait 或精确 browser_observe 验证业务结果，再 browser_close。',
-  'Computer 任务先用 computer_observe 取得目标应用；computer_act 会自动绑定本轮 launch 的新窗口，并返回动作后的 fresh state。直接根据 state 继续；只有返回 next=computer_observe 或 state 不足时才再次观察，不管理内部 Session、窗口句柄或投递状态。',
+  'Computer 任务先用 computer_observe 取得目标应用；computer_act 会自动绑定本轮 launch 的新窗口，并返回动作后的 fresh state。直接根据 state 继续；只有返回 next=computer_observe 或 state 不足时才再次观察，不管理内部 Session、窗口句柄或投递状态。Cua Driver 由 Host 自动启动和恢复；不得用 Shell、nohup 或后台任务启动、重启或连接 cua-driver，Computer 调用失败时只依据正式工具结果说明状态。',
   'Computer observation 的 actionable=false 或 observation_unusable 表示当前 AX/视觉证据不足，必须停止 UI 写动作并说明恢复条件；不得继续发送按键、点击或输入，也不得改走 Shell、AppleScript 或其他界面路线重放。',
   '',
   '## 任务控制',

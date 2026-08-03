@@ -549,7 +549,12 @@ export class ContextManager {
     if (parts.skillCatalog) {
       candidates.push({
         id: 'skill-catalog',
-        text: `可用 Agent Skills（任务匹配时先调用 use_skill）：\n${parts.skillCatalog}`,
+        text: [
+          '可用 Agent Skills（这里列出的是 Skill 名称，不是可直接调用的 Tool）：',
+          '需要激活时，先用 inspect_capabilities 以精确 name="use_skill" 取得 Tool schema，',
+          '再用 invoke_capability 调用 name="use_skill"，并把 Skill 名称放入 argumentsJson.name。',
+          parts.skillCatalog,
+        ].join('\n'),
       });
     }
 

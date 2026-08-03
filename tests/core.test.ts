@@ -36,8 +36,62 @@ import {
   parseMcpConfig,
 } from '../src/extensions/mcp.js';
 import { SkillLoader } from '../src/extensions/skills.js';
+import { sharedCuaDriverLifecycle } from '../src/extensions/computer/cua-driver-lifecycle.js';
 import { createSubAgentTools } from '../src/extensions/subagents.js';
 import { MimiAgent } from '../src/agent.js';
+
+test('ordinary runtime starts and owns the configured Cua Driver lifecycle', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-runtime-lifecycle-'));
+  const ready = path.join(root, 'driver-ready');
+  const command = path.join(root, 'cua-driver.mjs');
+  await writeFile(command, `#!/usr/bin/env node
+import { existsSync, writeFileSync } from 'node:fs';
+if (process.argv[2] === 'serve') {
+  writeFileSync(${JSON.stringify(ready)}, 'ready');
+  process.exit(0);
+}
+if (process.argv[2] === 'call' && process.argv[3] === 'health_report') {
+  if (!existsSync(${JSON.stringify(ready)})) {
+    process.stderr.write('Cua Driver daemon is not running on cua-driver.sock\\n');
+    process.exit(1);
+  }
+  process.stdout.write('{"content":[],"structuredContent":{"overall":"ok"}}\\n');
+  process.exit(0);
+}
+process.exit(1);
+`, { mode: 0o700 });
+  const lifecycle = sharedCuaDriverLifecycle(command, 2_000);
+  const agent = await MimiAgent.create({
+    provider: 'openai',
+    workspaceRoot: root,
+    dataRoot: path.join(root, '.mimi-agent'),
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: 20,
+    permissionMode: 'trusted',
+    securityProfile: 'full-owner',
+    computer: {
+      backend: 'cua',
+      driverCommand: command,
+      actionTimeoutMs: 2_000,
+      maxActionsPerRun: 10,
+      maxScreenshotsPerRun: 2,
+      pauseWhenTargetFrontmost: true,
+      defaultAccess: 'foreground',
+      foregroundLeaseSeconds: 30,
+      artifactMaxBytes: 1024 * 1024,
+    },
+  });
+  try {
+    assert.equal(lifecycle.status().managed, true);
+    assert.equal(lifecycle.status().ready, true, JSON.stringify(lifecycle.status()));
+    assert.equal(await readFile(ready, 'utf8'), 'ready');
+  } finally {
+    await agent.close();
+    lifecycle.stop();
+  }
+});
 
 test('daemon read probes must pass runtime policy and cannot invent an unregistered Computer manager', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-probe-policy-'));
@@ -1207,6 +1261,9 @@ test('context keeps recent history and injects Memory Cards and plan', async () 
   assert.match(instructions, /当前会话状态/);
   assert.match(instructions, /Session：demo/);
   assert.match(instructions, /Plan：1\/2 completed/);
+  assert.match(instructions, /精确 name="use_skill"/);
+  assert.match(instructions, /Skill 名称放入 argumentsJson\.name/);
+  assert.doesNotMatch(instructions, /任务匹配时先调用 use_skill/);
 });
 
 test('context trimming keeps tool calls paired and never persists generated summaries', async () => {

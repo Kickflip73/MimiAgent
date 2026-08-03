@@ -71,6 +71,8 @@ test('model instructions drive verified business outcomes through discoverable c
   assert.match(BASE_INSTRUCTIONS, /表单控件优先使用 accessible label 或 role\+name/);
   assert.match(BASE_INSTRUCTIONS, /不能猜测或把 option ref 当作 select/);
   assert.match(BASE_INSTRUCTIONS, /actionable=false.*必须停止 UI 写动作/);
+  assert.match(BASE_INSTRUCTIONS, /Cua Driver 由 Host 自动启动和恢复/);
+  assert.match(BASE_INSTRUCTIONS, /不得用 Shell、nohup 或后台任务启动、重启或连接 cua-driver/);
   assert.match(BASE_INSTRUCTIONS, /结果 uncertain 时先做只读核对/);
   assert.match(BASE_INSTRUCTIONS, /不跨 Connector、Browser、Computer、Shell 或其他路径重复同一业务动作/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /大象|QQ|微信/);
