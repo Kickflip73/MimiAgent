@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "recordId": "m1-deployment-20260803T123144+0800-daxiang-computer-probe",
+  "createdAt": "2026-08-03T12:31:44+08:00",
+  "authorization": "Owner explicitly required continued forced redeployment without further permission prompts.",
+  "supersedesExitDecision": false,
+  "fixes": [
+    {
+      "commitSha": "232eacd3b56c17addb9c4d48f0b7ed39cd6525e9",
+      "subject": "fix(connectors): recover Daxiang background tab",
+      "rootCause": "The documented Daxiang Supervisor recovery contract existed, but the Chrome adapter only located a pre-existing dedicated tab and could not provision a missing non-foreground replacement.",
+      "invariant": "Only an explicit health probe may provision one x.sankuai.com tab, restore the prior active tab immediately, validate the exact marker and origin, and close only the newly created tab on failure.",
+      "redGreen": {
+        "red": "The recovery regression expected a provisioned background tab but observed recovered=false.",
+        "greenFocusedTests": 28
+      },
+      "cleanCi": {
+        "command": "npm run ci",
+        "cleanWorktree": true,
+        "tests": 897,
+        "passed": 897,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0,
+        "coverage": {
+          "linePercent": 88.27,
+          "branchPercent": 78.36,
+          "functionPercent": 84.62
+        },
+        "buildPassed": true,
+        "packageSmokePassed": true
+      },
+      "buildIdentity": "0.12.0+g232eacd3b56c17addb9c4d48f0b7ed39cd6525e9.clean.e260906b23e3",
+      "tarballSha256": "0f19054f6524f945fd9eb031a51e250a5b4963a1dd858c59de630967a26ce7d0"
+    },
+    {
+      "commitSha": "10dc7b5edb37545e5a71bb3bb312c217e6079de0",
+      "subject": "fix(computer): skip unresolved probe surfaces",
+      "rootCause": "The read-only Computer probe selected the first allowlisted background CGWindow even when that surface had no matching AXWindow, instead of trying the next independently safe background candidate.",
+      "invariant": "An initial probe may skip only an AX-unresolvable background candidate; an exact expected target remains fail-closed and is never silently replaced.",
+      "redGreen": {
+        "red": "The regression presented one unresolved candidate followed by one actionable candidate; the probe stopped on the first with computer_unavailable.",
+        "greenFocusedTests": 55
+      },
+      "cleanCi": {
+        "command": "npm run ci",
+        "cleanWorktree": true,
+        "tests": 898,
+        "passed": 898,
+        "failed": 0,
+        "skipped": 0,
+        "todo": 0,
+        "coverage": {
+          "linePercent": 88.30,
+          "branchPercent": 78.35,
+          "functionPercent": 84.62
+        },
+        "buildPassed": true,
+        "packageSmokePassed": true
+      },
+      "buildIdentity": "0.12.0+g10dc7b5edb37545e5a71bb3bb312c217e6079de0.clean.28d15bbc2a85",
+      "tarballSha256": "0afdaf0bacfb80a319b900c309f37965f2f3136a26360373a748fa84ee80927a"
+    }
+  ],
+  "backups": [
+    {
+      "directory": "/Users/liuyuran/.mimi-agent/backups/m1-daxiang-recovery-20260803T121630",
+      "files": 2757,
+      "manifestSha256": "3d1df1f4ef7900a84efa67068b83dbfec90c1fed5af05ee39e5ac1c5817dec9f",
+      "databaseIntegrity": "ok"
+    },
+    {
+      "directory": "/Users/liuyuran/.mimi-agent/backups/m1-computer-probe-20260803T122725",
+      "files": 2753,
+      "manifestSha256": "bbec70c20ddae150dc3f66dfb7d82c30cf3a99fa9eb4966d4b7319adefa7cf05",
+      "databaseIntegrity": "ok"
+    }
+  ],
+  "cutovers": [
+    {
+      "targetCommitSha": "232eacd3b56c17addb9c4d48f0b7ed39cd6525e9",
+      "oldDaemonPid": 20520,
+      "newDaemonPid": 67017,
+      "activeEvents": 0,
+      "activeTasks": 0,
+      "activeTools": 0,
+      "activeHostMutations": 0,
+      "outboxPending": 0,
+      "outboxSending": 0,
+      "safeStop": true
+    },
+    {
+      "targetCommitSha": "10dc7b5edb37545e5a71bb3bb312c217e6079de0",
+      "oldDaemonPid": 67017,
+      "newDaemonPid": 76201,
+      "activeEvents": 0,
+      "activeTasks": 0,
+      "activeTools": 0,
+      "activeHostMutations": 0,
+      "outboxPending": 0,
+      "outboxSending": 0,
+      "safeStop": true
+    }
+  ],
+  "postDeploy": {
+    "daemonRunning": true,
+    "pid": 76201,
+    "installedBuild": "0.12.0+g10dc7b5edb37545e5a71bb3bb312c217e6079de0.clean.28d15bbc2a85",
+    "runningBuild": "0.12.0+g10dc7b5edb37545e5a71bb3bb312c217e6079de0.clean.28d15bbc2a85",
+    "buildAligned": true,
+    "queuedTasks": 0,
+    "runningTasks": 0,
+    "activeTools": 0,
+    "activeHostMutations": 0,
+    "outboxPending": 0,
+    "outboxSending": 0
+  },
+  "liveEvidence": {
+    "personalDaxiang": {
+      "online": true,
+      "inbound": "ready",
+      "outbound": "ready",
+      "accountVerified": true,
+      "backgroundSafe": true,
+      "stableConversationId": true,
+      "stableMessageId": true,
+      "targetBound": true,
+      "reportedAt": "2026-08-03T04:28:55.822Z"
+    },
+    "shortcutsReadProbe": {
+      "receiptId": "7b6406ca-dbb4-43a5-a236-49d33d24e4ee",
+      "classification": "readonly-probe-ok",
+      "eligible": true
+    },
+    "browserReadProbe": {
+      "receiptId": "3ccc8776-5227-48cb-8188-ef729480fc4c",
+      "classification": "readonly-probe-ok",
+      "eligible": true
+    },
+    "computerAndScreen": {
+      "eligible": false,
+      "classification": "console-locked",
+      "consoleLocked": true,
+      "driverAccessibility": true,
+      "driverScreenRecording": true,
+      "observedAxWindowCount": 0,
+      "safetyDisposition": "fail_closed",
+      "nextAction": "Re-run computer-window and screen-window after the owner unlocks the existing macOS console session; do not bypass the OS lock."
+    }
+  },
+  "doctor": {
+    "ready": false,
+    "computerTransportReady": true,
+    "computerOperationalReadiness": "degraded",
+    "enabledConnectors": 8,
+    "onlineConnectors": 8,
+    "readyConnectors": 7,
+    "unknownConnectors": [
+      "macos-screen"
+    ],
+    "digestBacklog": 7506,
+    "historicalDeadLetters": 549,
+    "autonomousBudgetExhaustedSources": 4
+  },
+  "t0Established": false,
+  "t0Reason": "The macOS console is locked, personal QQ and personal WeChat still have no operational Adapter, and Doctor backlog/budget prerequisites remain unresolved.",
+  "liveMatrix": {
+    "requested": 0,
+    "eligible": 0,
+    "executed": 0,
+    "minimumEligibleRequired": 100
+  },
+  "soak": {
+    "read24hStarted": false,
+    "write72hStarted": false,
+    "ready7dStarted": false,
+    "historicalEvidenceCounted": false
+  },
+  "arc503Decision": "NO-GO",
+  "unresolved": [
+    "The current macOS console is locked; Computer and Screen cannot obtain a trustworthy AX window until it is unlocked.",
+    "personal-qq and personal-wechat still have no enabled operational Connector Adapter and stable live test targets.",
+    "Digest backlog is 7506 and four autonomous source daily budgets remain exhausted.",
+    "The 549 retained legacy/manual_verify dead letters remain visible and must not be replayed automatically.",
+    "Externally exposed Provider credentials still require rotation in their respective control planes.",
+    "The 100 eligible live-action matrix and 24h, 72h, and 7d windows have not started."
+  ],
+  "evidenceRefs": [
+    "PROGRESS.md",
+    "BLOCKED.md",
+    "evals/m1/exit-records/20260803T033746+0800-no-go.json"
+  ]
+}

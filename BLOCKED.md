@@ -243,3 +243,14 @@
   大象 Web 专用标签。更上层仍缺 QQ/个人微信正式 operational route 与稳定测试目标，另有
   Digest=7386、3 个自治来源当日预算耗尽、549 个 retained legacy/manual_verify dead letter。
   这些项未全部收口前 Doctor 仍 ready=false，不得建立 T0 或补算 100 live matrix、24h/72h/7d。
+- **2026-08-03 大象 blocker 已解除，当前 Computer/Screen 是锁屏外部状态**：`232eacd` 已补齐
+  probe-only 非前台标签自愈并在 clean build 上部署；线上 `personal-daxiang` 现为 online、双向
+  ready、accountVerified/backgroundSafe/targetBound=true。`10dc7b5` 也已让初始 Computer probe
+  跳过无 AX 对应的后台伪窗口，同时保持 exact target fail-closed；clean CI 898/898 后部署为
+  installed=running aligned build。当前系统明确为 `IOConsoleLocked=Yes`，所以即使 Driver TCC
+  Accessibility/Screen Recording 均为 true，Finder/TextEdit/System Settings 仍返回 0 AXWindow；
+  Computer/Screen 必须等现有控制台被 owner 正常解锁后重跑，不得绕过 OS 锁。与此同时
+  personal-qq/personal-wechat 正式 Adapter 与稳定 live target、Digest=7506、4 个当日预算、549 个
+  retained legacy/manual_verify dead letter、外部 Provider 凭证轮换及 100/24h/72h/7d 仍未完成，
+  因而 T0 和 ARC-503 继续 NO-GO。证据：
+  `evals/m1/deployments/20260803T123144+0800-daxiang-computer-probe.json`。

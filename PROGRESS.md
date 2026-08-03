@@ -860,3 +860,29 @@
 5. Doctor 仍为 ready=false：除大象专用标签外，Digest backlog=7386、3 个自治来源当日预算
    耗尽、历史 dead letter=549（unclassified=0、均为 legacy/manual_verify）；QQ 与个人微信
    正式 route 仍未 operational ready。故尚未建立 T0，100 live matrix 与 24h/72h/7d 不补算。
+
+## 2026-08-03 大象后台自愈与锁屏边界实测
+
+1. `232eacd` 补齐文档已承诺但生产代码缺失的大象后台标签自愈：只有 `health({probe:true})`
+   可新建一个 `x.sankuai.com` 标签，立即恢复原 active tab，验证 origin/marker/非活动状态；失败
+   只关闭本轮新建标签。回归先红（预期 recovered=true、实际 false），后 28/28 绿；detached clean
+   `npm run ci` 为 897/897，tarball SHA-256=`0f19054f6524f945fd9eb031a51e250a5b4963a1dd858c59de630967a26ce7d0`。
+2. 备份 `/Users/liuyuran/.mimi-agent/backups/m1-daxiang-recovery-20260803T121630` 经 2,757 文件与
+   SQLite integrity=ok 复验后完成安全 stop/install/start。线上 `personal-daxiang` 已为 online、
+   inbound/outbound ready、accountVerified/backgroundSafe/targetBound=true，缺专用标签不再是 blocker。
+3. 首轮新 build 实测又发现 Finder 桌面 CGWindow 没有对应 AXWindow 时，Computer probe 只尝试
+   第一个候选。`10dc7b5` 仅允许初始 probe 跳过 `ax_window_unresolved` 候选；Screen 二次校验的
+   exact target 仍 fail-closed，绝不换窗。回归先红后绿，Computer/Probe 55/55、主测试 898/898；
+   detached clean CI 898/898，覆盖率 line/branch/function=`88.30%/78.35%/84.62%`，build/package
+   smoke 通过，tarball SHA-256=`0afdaf0bacfb80a319b900c309f37965f2f3136a26360373a748fa84ee80927a`。
+4. 第二份备份 `/Users/liuyuran/.mimi-agent/backups/m1-computer-probe-20260803T122725` 经 2,753 文件、
+   SQLite integrity=ok 复验后部署；当前 installed=running=
+   `0.12.0+g10dc7b5edb37545e5a71bb3bb312c217e6079de0.clean.28d15bbc2a85`、aligned=true，PID=76201，
+   queued/running/active Tool/Host mutation/Outbox pending/sending 均为 0。Shortcuts receipt
+   `7b6406ca…`、Browser `3ccc8776…` 为 eligible live read。
+5. Computer/Screen 当前失败的底层条件已由系统状态确认：`IOConsoleLocked=Yes`。Driver 自身
+   Accessibility=true、Screen Recording=true，但锁屏下 Finder、后台 TextEdit 与 System Settings
+   均暴露 0 个 AXWindow；因此当前 `ax_window_unresolved` 是正确 fail-closed，不是 TCC 或部署故障。
+   不绕过 OS 锁；解锁后重跑两个固定 probe。Doctor 仍因该项、Digest=7506、4 个自治来源预算、
+   QQ/个人微信正式 Adapter 缺口而 ready=false。完整不可覆盖部署证据见
+   `evals/m1/deployments/20260803T123144+0800-daxiang-computer-probe.json`。
