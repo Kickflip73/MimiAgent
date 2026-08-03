@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-03T16:26:56+08:00",
+  "subject": "cua_application_composite_ax_scope",
+  "classification": "upstream_rfc_required",
+  "driverEvidence": {
+    "name": "cua-driver",
+    "version": "0.16.0",
+    "latest": true,
+    "exactWindowRequiresPidAndWindowId": true,
+    "unresolvedWindowDisposition": "ax_window_unresolved",
+    "publicApplicationWideSemanticState": false,
+    "internalMacosApplicationRootWalkExists": true
+  },
+  "duplicateReview": {
+    "exactDuplicateFound": false,
+    "adjacentIssues": [2238, 2200, 1968, 1753],
+    "priorSafetyChangeIssue": 2237,
+    "priorSafetyChangePullRequest": 2645
+  },
+  "upstream": {
+    "repository": "trycua/cua",
+    "baseCommit": "e7b42ca04f306084b8bd5dc60c47b18bbdf9aed1",
+    "rfcIssue": "https://github.com/trycua/cua/issues/2807",
+    "rfcPullRequest": "https://github.com/trycua/cua/pull/2808",
+    "fork": "Kickflip73/cua",
+    "branch": "rfc/2807-application-composite-ax-scope",
+    "commits": [
+      "882e279b0b20deb2b710fda76240cc5f723ea28e",
+      "aee32018a6467a2a466a126463e34808b305f269"
+    ],
+    "pullRequestStatus": {
+      "review": "required",
+      "contributorAttribution": "success",
+      "workflowsAwaitingMaintainerApproval": 3,
+      "pendingChecks": 2
+    },
+    "productionCodeChanged": false,
+    "reasonProductionCodeNotChanged": "The repository requires an accepted RFC before implementing a public MCP, protocol, or cross-platform contract change."
+  },
+  "proposalSafety": {
+    "restoresLargestWindowHeuristic": false,
+    "allowsPidOnlyActions": false,
+    "createsDesktopWideElementIndex": false,
+    "preservesExactWindowFailClosed": true,
+    "requiresExplicitCapability": true,
+    "requiresScopeBoundRevalidationBeforeActions": true,
+    "containsPrivateApplicationContent": false,
+    "containsScreenshots": false,
+    "containsAccountOrContactIdentifiers": false
+  },
+  "validation": {
+    "focusedPrettier": "pass",
+    "gitDiffCheck": "pass",
+    "repositoryWidePrettier": {
+      "status": "pre_existing_failure",
+      "driftFiles": 285,
+      "changedFilesInDrift": 0
+    }
+  },
+  "mimiAgentDisposition": {
+    "qqFormalRoute": "implemented_blocked",
+    "externalBoundary": "awaiting_upstream_rfc_decision",
+    "m1Decision": "NO-GO"
+  }
+}

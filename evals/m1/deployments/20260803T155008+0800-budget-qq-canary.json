@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-03T15:50:08+08:00",
+  "build": {
+    "commitSha": "69f8b14e0ca236d7ae97ef60a731d632308e0dbc",
+    "installed": "0.12.0+g69f8b14e0ca236d7ae97ef60a731d632308e0dbc.clean.4aab864d17f4",
+    "running": "0.12.0+g69f8b14e0ca236d7ae97ef60a731d632308e0dbc.clean.4aab864d17f4",
+    "aligned": true,
+    "packageSha256": "8ef13188c0cbef1b2756d7dc2060f0d838771bc8aa275c0409c5b7a39077a232"
+  },
+  "backup": {
+    "path": "/Users/liuyuran/.mimi-agent/backups/m1-budget-1000-20260803T153335",
+    "manifestEntries": 2759,
+    "manifestSha256": "c7d0143055fef1f8e2f442ac5331bac524757c3a914f8c0893e8fa5b5fea8a38",
+    "sqliteIntegrity": "ok"
+  },
+  "attention": {
+    "maxRunsPerDay": 1000,
+    "activeConfigVerified": true,
+    "defaultCommit": "db74deb",
+    "historicalTokenUsageWindowsPreserved": true
+  },
+  "qq": {
+    "ownerApprovedTarget": "我的好乖乖",
+    "targetMatchesBeforeAction": 1,
+    "draftHashPrefix": "45d68bdbf3b7",
+    "returnPressCount": 1,
+    "sameTextVisibleElementsAfterAction": 2,
+    "automaticRetryCount": 0,
+    "wrongTargetObserved": false,
+    "productRouteConfirmed": false,
+    "canaryBoundary": "codex_computer_use",
+    "canaryDisposition": "observed_once_no_replay",
+    "driver": {
+      "name": "cua-driver",
+      "version": "0.16.0",
+      "latest": true,
+      "windowStateSupportsApplicationWideAx": false
+    },
+    "code": {
+      "commit": "69f8b14",
+      "containedCompositorSurfacesDisambiguated": true,
+      "independentWindowsStillFailClosed": true,
+      "focusedTests": "7/7"
+    },
+    "remainingBoundary": {
+      "code": "qq_composer_ax_surface_unresolved",
+      "detail": "The exact conversation is visible in the resolved QQ window, while the writable composer belongs to a separate compositor surface that cua-driver get_window_state cannot map to an AXWindow.",
+      "inboundObserver": "not_implemented",
+      "safeSendReadback": "not_available",
+      "classification": "implemented_blocked"
+    }
+  },
+  "verification": {
+    "typecheck": "pass",
+    "fullTests": {
+      "tests": 896,
+      "pass": 896,
+      "fail": 0,
+      "skipped": 0
+    },
+    "detachedCleanCi": "pass",
+    "coverage": {
+      "lines": 88.33,
+      "branches": 78.37,
+      "functions": 84.66
+    },
+    "packageSmoke": "pass",
+    "liveReadOnlyProbes": {
+      "computerWindow": "readonly-probe-ok",
+      "screenWindow": "readonly-probe-ok",
+      "shortcutsCatalog": "readonly-probe-ok"
+    }
+  },
+  "runtime": {
+    "pid": 5589,
+    "queued": 0,
+    "running": 0,
+    "activeEvents": 0,
+    "activeTools": 0,
+    "activeHostMutations": 0,
+    "outboxPending": 0,
+    "outboxSending": 0,
+    "enabledConnectors": 7,
+    "readyConnectors": 7,
+    "doctorReady": false,
+    "doctorRemainingRisks": [
+      "autonomous_budget_exhausted",
+      "task_dead_letters"
+    ]
+  },
+  "wechatRetirement": {
+    "connectorConfigMatches": 0,
+    "wxCliPresent": false,
+    "signedClonePresent": false,
+    "officialClientAccessed": false
+  },
+  "disposition": "NO-GO"
+}

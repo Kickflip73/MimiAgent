@@ -285,3 +285,30 @@
   始终为 0”作为负向门禁，ARC-205 余下范围为 Daxiang/QQ。原 ARC-503 NO-GO 记录保持不可覆盖；
   其后续 GO 只能按 v3 的 6 能力族重新冻结 T0 和分母，不得重放任何历史微信动作。证据：
   `evals/m1/deployments/20260803T145419+0800-wechat-retirement.json`。
+- **2026-08-03 自治预算 `retryAt` 漂移 blocker 已解除**：`7a9ca1d` 已让相同来源、相同原因的
+  重复阻断保留最早恢复点，红回归、893/893 全量、detached clean CI/package、备份部署和生产
+  同原因事件均已验证。当前 4 个耗尽来源仍须等各自真实窗口自然滚出；不得为追求 Doctor green
+  清空、改写或提前释放预算。549 条 `manual_verify` dead letter 仍原样保留且不得自动重放/归档。
+  QQ 正式 inbound observer、稳定 owner canary、100 live matrix、24h/72h/7d 日历窗口和外部
+  Provider 凭证轮换仍是独立门禁，所以 M1/T0 保持 NO-GO。证据：
+  `evals/m1/deployments/20260803T151643+0800-budget-window-stability.json`。
+- **2026-08-03 QQ 目标歧义已修复，但正式闭环仍卡在 CUA compositor AX 边界**：Owner 已明确
+  唯一 canary 目标“我的好乖乖”；单次 Codex Computer Use 动作前精确匹配 1 个目标，Return 仅执行
+  1 次，目标会话内已看到同文本，因 composer 清空无法由 AX 同时证明而严格保留为 uncertain，
+  没有重试。`69f8b14` 已让正式 Adapter 从三个重叠 surface 中安全选择唯一语义窗口，同时继续
+  拒绝任何独立窗口。当前 `cua-driver 0.16.0` 的 `get_window_state` 只能解析主窗口，writable
+  composer 所在合成面返回 `ax_window_unresolved`，且 driver 没有 application-wide AX API；M1
+  计划又明确禁止用 Shell/JXA、硬编码坐标或前台脚本替代 CUA。因此 QQ inbound observer 与正式
+  `PersonalMessageHub` confirmed send/readback 仍为 `implemented_blocked`，需要上游 Driver 提供
+  可验证的 app-wide/composite AX surface，或在不改变正式 CUA route 的前提下新增等价确定性接口。
+  日 Run 上限 1000、clean build 部署及 896/896 已完成；剩余 4 个历史预算窗口、549 条
+  `manual_verify`、QQ 正式闭环、live matrix/soak 和外部 Provider 凭证轮换继续阻塞 M1 GO。证据：
+  `evals/m1/deployments/20260803T155008+0800-budget-qq-canary.json`。
+- **2026-08-03 CUA 缺口已进入正式上游 RFC，当前外部边界是维护者决策而非本地权限**：公开
+  RFC issue `trycua/cua#2807` 与设计文档 PR `trycua/cua#2808` 已创建，提出显式、fail-closed、
+  capability-gated 的 application-composite AX scope，并保留现有 exact-window 合同。CUA 贡献规范
+  明确要求公开 MCP/协议/跨平台合同先获 RFC 接受，因此在维护者确定 API shape、macOS scope identity、
+  read-only/action 分期与 Windows/Linux 语义前，不得先写生产补丁或声称 QQ 闭环已解锁。MimiAgent
+  无新增权限 blocker；其余 4 个历史预算窗口、549 条 `manual_verify`、live matrix/soak 与外部
+  Provider 凭证轮换仍独立阻塞 GO。证据：
+  `evals/m1/deployments/20260803T162656+0800-cua-rfc.json`。

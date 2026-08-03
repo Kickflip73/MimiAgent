@@ -974,3 +974,74 @@
 5. 当前 heartbeat 已改为只验证退役，不得执行任何微信动作或重新安装组件。退役后的聚焦回归
    28/28、fail/skip/todo=0；完整不可覆盖证据：
    `evals/m1/deployments/20260803T145419+0800-wechat-retirement.json`。
+
+## 2026-08-03 自治预算恢复窗口不再漂移
+
+1. 生产巡检发现同一来源、同一耗尽原因的重复事件会把 `retryAt` 每次重算为“当前时间 + 窗口”，
+   造成预算恢复点持续后移。新增红回归先精确复现：5 项中 1 项失败，第二次事件把同一窗口向后
+   推约 35 分钟；修复后相同 reason 保留最早恢复点，reason 改变仍可更新，聚焦 5/5、架构预算
+   联测 7/7、全量 893/893，fail/skip/todo=0。
+2. 提交 `7a9ca1d` 的 detached clean `npm run ci` 全绿，coverage line/branch/function=
+   `88.31%/78.40%/84.65%`，build 与 package smoke 通过；tarball SHA-256=
+   `1464e82ae5a8ad46a436ff8e7cd43e04f6ae43abee5691d897822177d451b3cd`。
+3. 部署前完整备份 `/Users/liuyuran/.mimi-agent/backups/m1-budget-window-stability-20260803T151300`
+   已复验 2,762 个 manifest entry，manifest SHA-256=
+   `bec7370450bb00d6a856bae78411bae8a54eb81534e31973957d83ac78b551ab`。仅在 Event/Task/Tool/
+   Host mutation/Outbox 全部空闲时切换，线上 PID=78276，installed=running=HEAD，clean build=
+   `0.12.0+g7a9ca1d3396a008d7d0653babf310bf4b335333d.clean.7fb8c4804d5b`。
+4. 新 build 的 Computer、Screen、Shortcuts 只读探针全部成功；生产中
+   `personal-message:daxiang` 与 `system:connector-health` 在新同原因事件后 `retryAt` 逐字节不变，
+   证明滑动窗口已停止。没有清理预算、删除 owner 数据、重放 uncertain 动作或操纵恢复时间。
+5. 微信永久退役门禁继续成立：runtime 微信 id=0、签名副本不存在、wx-cli 不存在、OpenClaw
+   微信 active path=0，验证未接触官方微信客户端。M1 仍未 GO：4 个真实预算窗口需自然恢复，
+   549 条 `manual_verify` dead letter 继续保留，QQ inbound/owner canary、live matrix、日历 soak 与
+   外部凭证轮换尚未完成。完整证据：
+   `evals/m1/deployments/20260803T151643+0800-budget-window-stability.json`。
+
+## 2026-08-03 日预算 1000 与 QQ 定向 canary
+
+1. 日自治 Run 上限已从 100 改为 1000：新增默认值红回归后修改 `src/daemon/attention.ts`、
+   `docs/ATTENTION.md`，提交 `db74deb`；运行配置也已原子 reload，部署后 Doctor/Status 均显示
+   `maxRunsPerDay=1000`。历史 token accounting 缺失导致的 4 个真实恢复窗口继续保留，没有清空、
+   改写或提前释放 owner 数据。
+2. QQ 实机发现 3 个同 PID、同标题的重叠 compositor surface；旧 Adapter 会直接报目标歧义。
+   提交 `69f8b14` 现在只接受唯一语义窗口及其 90% 以上包含的 unresolved compositor surface，
+   对独立窗口仍 fail-closed。包含面与独立面回归均已覆盖，QQ 聚焦测试 7/7。
+3. Owner 指定的唯一测试目标“我的好乖乖”在动作前精确匹配 1 次；草稿 hash 回读一致后只按
+   Return 1 次，随后同文本在该目标的会话预览与消息区可见，未观察到错目标。由于发送后 AX tree
+   不再暴露 composer，无法同时证明输入框清空，因此按 uncertain/no-replay 处理，未再次按键，
+   也不把这次 Codex Computer Use canary 冒充 Mimi 正式 `PersonalMessageHub` live_action。
+4. 真正剩余根因是 `cua-driver 0.16.0` 的窗口级 AX 映射：可解析的 QQ 主窗口能看到精确会话，
+   但 writable composer 位于另一个 `ax_window_unresolved` 合成面；当前 driver 无 application-wide
+   AX API。按计划禁止用 Shell/JXA、硬编码坐标或视觉猜测替代正式 CUA，所以 QQ inbound observer、
+   安全 send/readback 仍为 `implemented_blocked`。
+5. 最终 HEAD `69f8b14` 完整测试 896/896；detached clean CI/package 全绿，覆盖率
+   line/branch/function=`88.33%/78.37%/84.66%`，tarball SHA-256=
+   `8ef13188c0cbef1b2756d7dc2060f0d838771bc8aa275c0409c5b7a39077a232`。完整备份
+   `/Users/liuyuran/.mimi-agent/backups/m1-budget-1000-20260803T153335` 验证 2,759 个 entry、
+   SQLite integrity=ok；空闲切换后 installed=running=HEAD，Computer/Screen/Shortcuts 正式只读
+   probe 全绿，7/7 enabled Connector ready。微信退休门禁继续成立且未接触官方客户端。
+6. Doctor 仍非 GO：4 个历史自治 token/Run 窗口等待真实滚出，549 条 retained
+   `manual_verify` dead letter 不重放；QQ 正式 inbound/send/readback、100 live matrix、24h/72h/7d
+   与外部 Provider 凭证轮换尚未完成。证据：
+   `evals/m1/deployments/20260803T155008+0800-budget-qq-canary.json`。
+
+## 2026-08-03 CUA application-composite AX 上游 RFC
+
+1. 对当前 latest `cua-driver 0.16.0`、公开工具 schema、macOS AX walker 源码及相邻 issue/PR 做了
+   脱敏复核。结论是：精确 `(pid, window_id)` 对 `ax_window_unresolved` fail-closed 属于预期安全
+   合同，但应用级 AX 元素无法归属任一 CGWindowID 时没有公开、可安全动作的语义 scope；该缺口
+   真实、通用且不应通过恢复最大窗口启发式、PID-only action 或桌面级 element index 绕过。
+2. 已按 CUA 强制 RFC 流程创建公开讨论
+   `https://github.com/trycua/cua/issues/2807`，内容只含版本、脱敏 surface 拓扑、公开源码/issue
+   及安全验收，不含联系人、消息、账号、截图或应用内容。
+3. 已创建 fork 与独立分支 `rfc/2807-application-composite-ax-scope`，提交
+   `882e279b0`、`aee32018a`，并创建仓库内 RFC 文档 PR
+   `https://github.com/trycua/cua/pull/2808`。新 RFC 文件通过 pinned Prettier 与
+   `git diff --check`；全仓 `pnpm prettier:check` 精确暴露上游已有 285 个格式漂移文件，未修改
+   任何无关文件来掩盖基线。PR contributor-attribution 已成功；其余 3 个 workflow 正等待
+   maintainer approval，页面明确 `Review required`，不是代码或权限失败。
+4. 上游规范要求公开协议/跨平台合同在 RFC 被接受前不得实现，因此当前没有修改 CUA 生产代码，
+   也没有把提案冒充可用能力。QQ 正式闭环继续 fail-closed；下一步由 #2807/#2808 维护者评审
+   决定 API shape、read-only 首发和跨平台 capability 语义。证据：
+   `evals/m1/deployments/20260803T162656+0800-cua-rfc.json`。

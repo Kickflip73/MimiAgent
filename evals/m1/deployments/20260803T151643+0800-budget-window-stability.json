@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-08-03T15:16:43+08:00",
+  "decision": "autonomous_budget_recovery_window_stabilized",
+  "source": {
+    "commit": "7a9ca1d3396a008d7d0653babf310bf4b335333d",
+    "subject": "fix(daemon): keep budget recovery windows stable",
+    "package": "mimi-agent-0.12.0.tgz",
+    "packageSha256": "1464e82ae5a8ad46a436ff8e7cd43e04f6ae43abee5691d897822177d451b3cd"
+  },
+  "regression": {
+    "red": {
+      "passed": 4,
+      "failed": 1,
+      "finding": "A repeated blocked event with the same reason moved retryAt later by approximately 35 minutes."
+    },
+    "green": {
+      "focusedPassed": 5,
+      "architectureAndFocusedPassed": 7,
+      "fullTestsPassed": 893,
+      "fullTestsFailed": 0,
+      "fullTestsSkipped": 0,
+      "fullTestsTodo": 0
+    }
+  },
+  "verification": {
+    "detachedCleanCi": {
+      "passed": true,
+      "tests": 893,
+      "failed": 0,
+      "skipped": 0,
+      "todo": 0,
+      "lineCoveragePercent": 88.31,
+      "branchCoveragePercent": 78.40,
+      "functionCoveragePercent": 84.65,
+      "buildPassed": true,
+      "packageSmokePassed": true
+    },
+    "productionSameReasonProof": {
+      "personalMessageDaxiangRetryAtBefore": "2026-08-04T06:14:47.326Z",
+      "personalMessageDaxiangRetryAtAfter": "2026-08-04T06:14:47.326Z",
+      "connectorHealthRetryAtBefore": "2026-08-04T07:04:16.582Z",
+      "connectorHealthRetryAtAfter": "2026-08-04T07:04:16.582Z",
+      "stable": true
+    }
+  },
+  "deployment": {
+    "backupRoot": "/Users/liuyuran/.mimi-agent/backups/m1-budget-window-stability-20260803T151300",
+    "backupManifestSha256": "bec7370450bb00d6a856bae78411bae8a54eb81534e31973957d83ac78b551ab",
+    "backupFileCount": 2762,
+    "backupVerified": true,
+    "runningBuild": "0.12.0+g7a9ca1d3396a008d7d0653babf310bf4b335333d.clean.7fb8c4804d5b",
+    "daemonPid": 78276,
+    "installedRunningHeadAligned": true,
+    "idleBoundary": {
+      "activeEvents": 0,
+      "queuedTasks": 0,
+      "runningTasks": 0,
+      "activeTools": 0,
+      "activeHostMutations": 0,
+      "outboxPending": 0,
+      "outboxSending": 0
+    },
+    "postDeployReadOnlyProbes": {
+      "computerWindowReceipt": "fc5cb542-e4b4-4f43-8707-fe9bcffa8c10",
+      "screenWindowReceipt": "f908487c-f41b-405e-93ba-6b5a33b2254c",
+      "shortcutsReceipt": "6696abf0-ea64-45b2-b2fd-0d5f73f4214d"
+    }
+  },
+  "wechatRetirementGate": {
+    "runtimeWechatConnectorCount": 0,
+    "signedCloneExists": false,
+    "wxCliExists": false,
+    "openclawWechatActivePathCount": 0,
+    "officialWechatClientTouched": false
+  },
+  "remainingRisks": {
+    "autonomousBudgetSources": 4,
+    "retainedManualVerifyDeadLetters": 549,
+    "personalQqOperational": false,
+    "liveMatrixCompleted": false,
+    "calendarSoakCompleted": false,
+    "providerCredentialRotationCompleted": false,
+    "uncertainExternalActionsReplayed": false,
+    "ownerDataClearedOrCancelled": false
+  }
+}
