@@ -199,7 +199,33 @@ export function withExecutionLedger(
             throw run?.sanitizeError?.(error) ?? error;
           }
         };
-        const action = (tool as LedgerAwareTool)[TOOL_ACTION_INTENT]?.(input);
+        let action: ToolActionIntentMetadata | undefined;
+        try {
+          action = (tool as LedgerAwareTool)[TOOL_ACTION_INTENT]?.(input);
+        } catch (error) {
+          const sanitized = run?.sanitizeError?.(error) ?? error;
+          const message = sanitized instanceof Error
+            ? sanitized.message
+            : sanitized && typeof sanitized === 'object' && 'message' in sanitized
+              && typeof sanitized.message === 'string'
+              ? sanitized.message
+              : String(sanitized);
+          const explicitCode = sanitized && typeof sanitized === 'object' && 'code' in sanitized
+            && typeof sanitized.code === 'string'
+            ? sanitized.code
+            : undefined;
+          const code = explicitCode ?? (/^stale_observation(?:：|:|\b)/.test(message)
+            ? 'stale_observation'
+            : undefined);
+          if (code !== 'stale_observation') throw error;
+          return {
+            mimiStatus: 'tool_input_rejected',
+            retryable: true,
+            code,
+            message,
+            next: 'computer_observe',
+          };
+        }
         if (!sideEffect || action?.effect === 'read') return invokeSanitized();
         if (action && uncertainActionFence && matchesUncertainActionFence(uncertainActionFence, action)) {
           return uncertainActionFenceResult(uncertainActionFence.error, uncertainActionFence);

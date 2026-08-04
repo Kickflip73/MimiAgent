@@ -624,6 +624,38 @@ test('model-facing Computer tools keep observation and authorization handles ins
   assert.ok(Array.isArray((acted.state as Record<string, unknown>).elements));
 });
 
+test('model-facing Computer tools return a retryable recovery when the current Run has no observation', async () => {
+  const { backend, manager, authority } = await fixture();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-stale-observation-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const act = createComputerTools(manager, () => authority).find((item) => item.name === 'computer_act')!;
+  const [wrapped] = withExecutionLedger([act], ledger, () => ({
+    sessionId: 'owner',
+    runId: authority.runId,
+    guardedActionContext: {
+      ownerAuthenticated: true,
+      exactTarget: true,
+      lowRisk: true,
+      reversible: true,
+    },
+  }));
+  assert.ok(wrapped && 'invoke' in wrapped);
+
+  const result = await wrapped.invoke(new RunContext({}), JSON.stringify({
+    action: {
+      type: 'keypress',
+      keys: ['TAB'],
+    },
+  }), { toolCall: { callId: 'stale-observation' } } as never) as Record<string, unknown>;
+
+  assert.equal(result.mimiStatus, 'tool_input_rejected');
+  assert.equal(result.code, 'stale_observation');
+  assert.equal(result.retryable, true);
+  assert.equal(result.next, 'computer_observe');
+  assert.match(String(result.message), /没有可绑定的最新窗口观察/);
+  assert.equal(backend.actions.length, 0);
+});
+
 test('model-facing Computer tools return a retryable recovery for an empty launch target', async () => {
   const { backend, manager, authority } = await fixture();
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-invalid-launch-'));
