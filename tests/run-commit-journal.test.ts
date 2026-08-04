@@ -71,7 +71,29 @@ test('every commit phase survives a journal reopen', async () => {
   }
 });
 
-test('run commit journal rejects a conflicting answer or action plan', async () => {
+test('run commit journal replaces a conflicting plan before any phase becomes durable', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-run-commit-replace-prepared-'));
+  const journal = new RunCommitJournal(path.join(root, 'journal.json'));
+  await journal.prepare({
+    sessionId: 'owner',
+    runId: 'run-1',
+    answerDigest: runAnswerDigest('one'),
+    runtimeActions: [],
+  });
+
+  const prepared = await journal.prepare({
+    sessionId: 'owner',
+    runId: 'run-1',
+    answerDigest: runAnswerDigest('two'),
+    outcome: 'failed',
+    runtimeActions: [],
+  });
+
+  assert.equal(prepared.answerDigest, runAnswerDigest('two'));
+  assert.equal(prepared.outcome, 'failed');
+});
+
+test('run commit journal rejects a conflicting plan after durable progress', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-run-commit-conflict-'));
   const journal = new RunCommitJournal(path.join(root, 'journal.json'));
   await journal.prepare({
@@ -80,6 +102,8 @@ test('run commit journal rejects a conflicting answer or action plan', async () 
     answerDigest: runAnswerDigest('one'),
     runtimeActions: [],
   });
+  await journal.advance('owner', 'run-1', 'receipt_committed');
+
   await assert.rejects(journal.prepare({
     sessionId: 'owner',
     runId: 'run-1',

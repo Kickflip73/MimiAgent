@@ -108,12 +108,25 @@ export class RunCommitJournal {
     return this.state.update((journal) => {
       const existing = journal.entries[id];
       if (existing) {
-        if (existing.answerDigest !== input.answerDigest
+        const conflicts = existing.answerDigest !== input.answerDigest
           || existing.executionKey !== input.executionKey
           || existing.outcome !== input.outcome
           || JSON.stringify(existing.runtimeActions) !== JSON.stringify(input.runtimeActions)
-          || JSON.stringify(existing.finalization) !== JSON.stringify(input.finalization)) {
-          throw new Error(`Run ${input.runId} 已存在不同的提交计划，拒绝覆盖`);
+          || JSON.stringify(existing.finalization) !== JSON.stringify(input.finalization);
+        if (conflicts) {
+          const hasDurableProgress = existing.phase !== 'prepared';
+          if (hasDurableProgress) {
+            throw new Error(`Run ${input.runId} 已存在不同的提交计划，拒绝覆盖`);
+          }
+          const replacement: RunCommitJournalEntry = {
+            id,
+            ...input,
+            outcome: input.outcome ?? 'completed',
+            phase: 'prepared',
+            updatedAt: new Date().toISOString(),
+          };
+          journal.entries[id] = replacement;
+          return { ...replacement };
         }
         return { ...existing };
       }
