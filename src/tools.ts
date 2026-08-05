@@ -1688,10 +1688,10 @@ export function createTools(
   const shell = tool({
     name: 'run_shell',
     description:
-      '直接在用户本机 Shell 中执行工程命令，不经过虚拟机且不限制 CPU 或网络速度。macOS 安全边界只隔离 GUI、系统自动化、私有运行数据和控制通道；命令超时不表示沙箱限速。可用于搜索文件、Git、网络请求、安装依赖和运行代码。',
+      '直接在用户本机 Shell 中执行工程命令，不经过虚拟机且不限制 CPU 或网络速度。macOS 安全边界只隔离 GUI、系统自动化、私有运行数据和控制通道；命令超时不表示沙箱限速。可用于搜索文件、Git、网络请求、安装依赖和运行代码；安装、编译等长任务可将超时设为最多 7200 秒（2 小时）。',
     parameters: z.object({
       command: z.string().min(1),
-      timeoutSeconds: z.number().int().min(1).max(300).default(60),
+      timeoutSeconds: z.number().int().min(1).max(7_200).default(60),
     }),
     execute: async ({ command, timeoutSeconds }, _context, details) =>
       runShellCommand(

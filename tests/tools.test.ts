@@ -102,6 +102,20 @@ test('exposes unique tool names for OpenAI and compatible providers', () => {
   }
 });
 
+test('allows Shell deadlines up to two hours', () => {
+  const selected = createTools(process.cwd(), false).find((item) => item.name === 'run_shell');
+  assert.ok(selected && 'parameters' in selected);
+  const parameters = selected.parameters as {
+    properties?: { timeoutSeconds?: { default?: number; maximum?: number } };
+  };
+  assert.deepEqual(parameters.properties?.timeoutSeconds, {
+    default: 60,
+    type: 'integer',
+    minimum: 1,
+    maximum: 7_200,
+  });
+});
+
 test('process inspection is a bounded read-only host capability outside the Shell sandbox', async () => {
   const selected = createTools(process.cwd(), false).find((item) => item.name === 'inspect_processes');
   assert.ok(selected && 'invoke' in selected);
