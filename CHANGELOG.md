@@ -4,7 +4,10 @@ All notable changes to MimiAgent are documented here.
 
 ## Unreleased
 
-- No unreleased changes.
+### Changed
+
+- Reorganized public documentation into a concise bilingual project overview, focused getting-started/configuration/CLI guides, an English architecture overview, and categorized documentation indexes.
+- Added bilingual contribution, security, and community conduct documentation.
 
 ## [0.12.0] - 2026-08-05
 

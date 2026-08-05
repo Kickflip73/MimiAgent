@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="./ARCHITECTURE.en.md">English</a> | <strong>简体中文</strong>
+</p>
+
 # MimiAgent Architecture
 
 MimiAgent 是 7×24 小时在线、本地优先的全能个人 Agent，同时提供有边界的轻量多 Agent 编排能力：面向真实文件、命令、检索、知识与外部系统事务，同时保持运行内核小而可直接阅读。
