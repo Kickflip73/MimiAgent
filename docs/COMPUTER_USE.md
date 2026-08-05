@@ -228,6 +228,9 @@ Driver Session。Goal、Plan 和 Checkpoint 仍是唯一的长任务状态。
 
 `computer_act` 仍是 side-effect Tool，并使用现有 ExecutionLedger。这里的防重放只在 Host
 处理 transport 边界；模型在成功路径上只看到 `ok + state`，失败路径只看到可操作原因。
+`target_in_use` 等明确发生在 Driver 投递前的拒绝返回结构化
+`failed_safe`，不会被 SDK 包装成笼统的 Tool error；投递边界不可判定时仍返回
+`uncertain` 并冻结同一动作的自动重放。
 
 ## 配置
 

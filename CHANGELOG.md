@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- stop exposing direct Browser tools when the Browser Connector lifecycle is
+  disabled, offline, stale, or incomplete; preserve pre-dispatch Browser and
+  Computer rejections as structured failed-safe results instead of generic SDK
+  tool errors; add exact Connector capability discovery with legacy-name
+  compatibility; and route owner-visible URL opens through one Computer launch
+  action instead of address-bar click and key sequences
 - reject direct execution of macOS application-bundle binaries at the Shell
   sandbox boundary so browser-backed CLIs cannot launch Chrome without GUI
   services and produce misleading AppKit crash dialogs

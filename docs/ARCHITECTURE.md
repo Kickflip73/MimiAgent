@@ -126,6 +126,13 @@ Context Window 由当前模型 Profile 提供，而不是按 Provider 使用同�
 
 能力披露与授权是两层独立边界。每个 Run 先把经过 Mode、Task、readiness、route owner、Policy 和 ExecutionLedger 包装的 builtin、Browser、Computer、Memory、Goal、Skill、MCP 与 Connector Tool 放入唯一 `HostCapabilityRegistry`。初始模型工具面只保留文件/Shell、Browser、Computer、PersonalMessage、Memory、Goal/Plan、Background Task、runtime/session summary 等高频 direct tools，以及唯一的 `inspect_capabilities`/`invoke_capability` deferred gateway；旧 `inspect_runtime_capabilities`、`invoke_runtime_capability` 和 `inspect_mimi_capabilities` 只允许用于历史 transcript 或内部兼容诊断，不进入新 Run 工具面。隐藏 schema 不会增加或撤销权限。每轮 Effective Capability Snapshot 从同一 Registry 生成，`tools` 严格等于 SDK `getAllTools()` 的实际首轮名称，并按 builtin、MCP、Browser、Computer、Memory、Goal、Skill、Connector 记录隐藏索引；每组只披露总数及至多 12 个稳定名称，不复制 description 或 schema，超出时显式 `truncated`。模型按 source/name/query 查询后才取得 deferred schema 并调用；完全相同的发现按 Run 和 Connector semantic revision 缓存，readiness 或目录变化立即使 Connector 发现失效。Connector 查询直接调用 Manager 的有界结构化 catalog API，不经过 Tool 调 Tool。`name` 保持精确匹配；`query` 对规范化后的名称与描述做有界多关键词匹配，零结果只代表当前查询未命中，并返回有重叠的名称建议而不自动授权。统一入口只代理 Registry 中的精确原始 Tool；未知、未授权、未发现或 revision 后未重新发现的 action 失败关闭。Skill availability、运行 instructions 与 status 都读取同一 Snapshot/Registry 投影。Connector 首轮只提供 id、availability、能力组和可用 action 数量，禁用 action 不暴露描述；目录缺少某 action 不能推导其他 Host 能力不存在。整个选择过程使用结构化事实和显式查询，不读取 owner 文本做关键词工具路由，也不保存第二份 capability 状态。
 
+`inspect_capabilities.name` 只精确匹配 deferred Tool，Connector action 使用
+`inspect_capabilities.capability` 精确匹配稳定 ID；历史
+`source=connector + name=<capability>` 输入仅作无副作用兼容解析。Browser direct
+tools 只在 Browser Connector 的 `open_session` 与 `close_session` 同时实时 ready
+时进入 Registry，disabled、offline、stale 或生命周期不完整时不向模型
+暴露一组必然失败的 `browser_*` schema。
+
 ## 分层模型路由
 
 模型选择与厂商协议分离。Conversation、Background、Schedule、SubAgent、TeamTask

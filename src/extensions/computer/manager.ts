@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { ActionFailedSafeError } from '../../core/action-intent.js';
 import { withExclusiveFileLock } from '../../core/state-file.js';
 import type {
   BackendObservation,
@@ -643,7 +644,7 @@ export class ComputerManager {
       this.authorizeApp(authority, target.bundleId, 'act');
       if (this.config.pauseWhenTargetFrontmost && requiredAccess === 'background' && observation.frontmost !== false) {
         if (!promoteToForeground()) {
-          throw new Error('target_in_use：目标应用处于前台或焦点状态未知，当前 Run 没有前台权限');
+          throw new ActionFailedSafeError('target_in_use：目标应用处于前台或焦点状态未知，当前 Run 没有前台权限');
         }
       }
       for (const point of actionCoordinates(input.action)) this.assertPoint(point.x, point.y, observation.dimensions);
@@ -691,7 +692,7 @@ export class ComputerManager {
           if (!fresh) throw new Error('stale_observation：目标窗口身份已变化，请重新观察');
           if (this.config.pauseWhenTargetFrontmost && effectiveAccess === 'background' && fresh.frontmost !== false) {
             if (!promoteToForeground()) {
-              throw new Error('target_in_use：目标应用处于前台或焦点状态未知，当前 Run 没有前台权限');
+              throw new ActionFailedSafeError('target_in_use：目标应用处于前台或焦点状态未知，当前 Run 没有前台权限');
             }
           }
         }

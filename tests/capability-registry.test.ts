@@ -34,6 +34,7 @@ function connectorActionTool(): Tool {
 test('registry reads Connector catalog directly, caches by Run revision, and excludes legacy tools', async () => {
   let revision = 'ready:v1';
   let catalogReads = 0;
+  const catalogFilters: Array<{ connector?: string; capability?: string; query?: string }> = [];
   let legacyToolCalls = 0;
   const legacyInspector = tool({
     name: 'inspect_mimi_capabilities',
@@ -48,8 +49,9 @@ test('registry reads Connector catalog directly, caches by Run revision, and exc
     [legacyInspector, connectorActionTool()],
     {
       revision: () => revision,
-      inspectConnector: async () => {
+      inspectConnector: async (filter) => {
         catalogReads += 1;
+        catalogFilters.push(filter);
         return {
           filterMatched: true,
           actions: 1,
@@ -93,6 +95,21 @@ test('registry reads Connector catalog directly, caches by Run revision, and exc
   await inspect.invoke(context, query, {});
   assert.equal(catalogReads, 2);
   assert.equal(legacyToolCalls, 0);
+
+  const exact = await inspect.invoke(context, JSON.stringify({
+    source: 'connector', capability: 'mail.send',
+  }), {}) as { matchedCount: number };
+  assert.match(JSON.stringify(exact), /mail\.send/);
+  assert.equal(exact.matchedCount, 1);
+  assert.equal(catalogReads, 3);
+  assert.deepEqual(catalogFilters.at(-1), { capability: 'mail.send' });
+  assert.deepEqual(
+    await inspect.invoke(context, JSON.stringify({
+      source: 'connector', name: 'mail.send',
+    }), {}),
+    exact,
+  );
+  assert.equal(catalogReads, 3);
 });
 
 test('registry rejects duplicate authority and snapshot equals the SDK model surface', async () => {

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { tool, type Tool } from '@openai/agents';
 import { z } from 'zod';
+import { ActionFailedSafeError } from '../../core/action-intent.js';
 import {
   TOOL_ACTION_INTENT,
   TOOL_LEDGER_ARGUMENTS,
@@ -62,6 +63,25 @@ type BrowserAwareTool = Tool & {
   [TOOL_LEDGER_ARGUMENTS]?: (rawInput: string) => string;
   [TOOL_ACTION_INTENT]?: (rawInput: string) => ToolActionIntentMetadata;
 };
+
+function browserActionErrorResult(error: unknown): string {
+  const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+  if (error instanceof ActionFailedSafeError
+    || (error instanceof Error && error.name === 'ActionFailedSafeError')) {
+    return JSON.stringify({
+      mimiStatus: 'action_failed_safe',
+      retryable: true,
+      sideEffectsFrozen: false,
+      message,
+    });
+  }
+  return JSON.stringify({
+    mimiStatus: 'action_uncertain',
+    retryable: false,
+    sideEffectsFrozen: true,
+    message: `${message}；无法确认 Browser 动作是否越过副作用提交点`,
+  });
+}
 
 function compactPayload(input: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== null && value !== undefined));
@@ -150,7 +170,7 @@ function sideEffectMetadata(
       guarded,
       outcome: (result) => {
         const serialized = JSON.stringify(result);
-        if (/"outcome":"accepted"|"status":"uncertain"/.test(serialized)) return 'uncertain';
+        if (/"outcome":"accepted"|"status":"uncertain"|action_uncertain/.test(serialized)) return 'uncertain';
         if (/failed_safe|capability_unavailable/.test(serialized)) return 'failed_safe';
         return 'confirmed';
       },
@@ -163,6 +183,7 @@ export function createBrowserTools(manager: BrowserRunManager): Tool[] {
     name: 'browser_open',
     description: '在后台打开一个由 Host 管理的浏览器会话。后续直接 browser_observe/browser_act；不要查询 Connector 目录或传 sessionRef。',
     parameters: z.object({ url: z.string().min(1).max(8_000) }).strict(),
+    errorFunction: (_context, error) => browserActionErrorResult(error),
     execute: (input, _context, details) => manager.open(input, details?.signal),
   }) as BrowserAwareTool;
   sideEffectMetadata(open, manager, () => 'browser.open', {
@@ -188,6 +209,7 @@ export function createBrowserTools(manager: BrowserRunManager): Tool[] {
     name: 'browser_act',
     description: '在 Host 管理的浏览器会话中执行结构化动作。verified=true 的动作回执已验证底层状态，不要再读取 attributes；完成一组连贯表单动作后，用一次 browser_assert 或 browser_observe 验证业务结果。不重复不确定动作。',
     parameters: actParameters,
+    errorFunction: (_context, error) => browserActionErrorResult(error),
     execute: (input, _context, details) => {
       const payload = compactPayload(input);
       delete payload.operation;
@@ -218,6 +240,7 @@ export function createBrowserTools(manager: BrowserRunManager): Tool[] {
     name: 'browser_close',
     description: '显式关闭本轮 Host-owned 浏览器会话。Run 结束时 Host 也会兜底清理。',
     parameters: z.object({}).strict(),
+    errorFunction: (_context, error) => browserActionErrorResult(error),
     execute: (_input, _context, details) => manager.close(details?.signal),
   }) as BrowserAwareTool;
   sideEffectMetadata(close, manager, () => 'browser.close', {

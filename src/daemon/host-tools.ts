@@ -10,7 +10,10 @@ import {
   createConnectorTaskHostTools,
   type ConnectorTaskRuntime,
 } from './connector-action-tool.js';
-import type { ConnectorManager } from './connectors.js';
+import {
+  connectorCapabilityActionReady,
+  type ConnectorManager,
+} from './connectors.js';
 import { createMimiDeliveryTools, type MimiDeliveryControl } from './delivery-tools.js';
 import { createMimiPeopleTools } from './people-tools.js';
 import { createMemoryMaintenanceTools, type MemoryMaintenanceRuntime } from './memory-maintenance-tools.js';
@@ -50,6 +53,19 @@ export interface MimiHostToolContext {
   memoryMaintenance?: MemoryMaintenanceRuntime;
 }
 
+function browserLifecycleReady(connectors: ConnectorManager | undefined): boolean {
+  const browser = connectors?.listCapabilities().find((connector) => connector.id === 'browser');
+  if (!browser) return false;
+  return ['open_session', 'close_session'].every((name) => {
+    const action = browser.actions.find((candidate) => (
+      candidate.name === name
+      && candidate.capability === 'browser.session.write'
+      && candidate.modelVisible !== false
+    ));
+    return action !== undefined && connectorCapabilityActionReady(browser, action);
+  });
+}
+
 /** One composition root for the Host Tools exposed to every Daemon run. */
 export function createMimiHostTools(context: MimiHostToolContext): Tool[] {
   return [
@@ -79,7 +95,9 @@ export function createMimiHostTools(context: MimiHostToolContext): Tool[] {
       pause: context.pauseEvent,
       block: context.blockTask,
     }),
-    ...(context.browserRun ? createBrowserTools(context.browserRun) : []),
+    ...(context.browserRun && browserLifecycleReady(context.connectors)
+      ? createBrowserTools(context.browserRun)
+      : []),
     ...(context.connectors
       ? createConnectorHostTools(context.connectors, (request, receipt) => {
           const route = context.replyRoute;

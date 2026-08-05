@@ -171,7 +171,7 @@ effect、幂等和失败分级；模型不接触 `operationRef`、探活、内�
 
 个人消息的查看、读取和汇总只调用 `effect=read` 的目标目录与上下文动作。新消息 Event 由 Connector 自身的定时轮询采集；该内部同步不登记为模型 action，也不能作为普通消息读取的前置步骤。
 
-每个 Daemon Agent Run 只看到统一的 `inspect_capabilities`/`invoke_capability` deferred gateway。Connector query 直接读取 Manager 的 enabled/online、inbound/outbound readiness、`capability/effect/routeOwner` 与 action 目录，不通过另一个 Tool 转调。能力选择优先使用 `capability` 精确过滤；`query` 只检索展示元数据，业务词零命中时 `total=0` 但 `catalogTotal/catalogActions` 和 `availableCapabilities` 仍明确保留，不能据此声称没有 Connector 或切换到更宽权限路线。精确 ID 未注册会明确报错。输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals、`filterMatched` 与 `truncated` 明示过滤和截断。目录结果按 Run 与 semantic revision 缓存；readiness 或 action 目录变化立即失效，Manager 在真正发送前仍会再次校验。
+每个 Daemon Agent Run 只看到统一的 `inspect_capabilities`/`invoke_capability` deferred gateway。Connector query 直接读取 Manager 的 enabled/online、inbound/outbound readiness、`capability/effect/routeOwner` 与 action 目录，不通过另一个 Tool 转调。能力选择优先使用 `inspect_capabilities.capability` 精确过滤；`name` 专用于 deferred Tool，历史 `source=connector + name=<capability>` 输入会按精确 capability 兼容处理而不抛出笼统 Tool error。`query` 只检索展示元数据，业务词零命中时 `total=0` 但 `catalogTotal/catalogActions` 和 `availableCapabilities` 仍明确保留，不能据此声称没有 Connector 或切换到更宽权限路线。精确 ID 未注册会明确报错。输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals、`filterMatched` 与 `truncated` 明示过滤和截断。目录结果按 Run 与 semantic revision 缓存；readiness 或 action 目录变化立即失效，Manager 在真正发送前仍会再次校验。
 
 ```json
 {"type":"action","id":"action-uuid","action":"send_message","target":"group:123","payload":{"text":"会议延后 10 分钟"},"deadlineAt":1784176000000}

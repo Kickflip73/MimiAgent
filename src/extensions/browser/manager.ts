@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ActionFailedSafeError } from '../../core/action-intent.js';
 
 const MAX_MODEL_RESULT_BYTES = 16 * 1024;
 const RESULT_PREVIEW_CHARS = 12_000;
@@ -75,16 +76,16 @@ function resultOutcome(value: unknown): string | undefined {
 
 function safeHttpUrl(value: unknown): string {
   if (typeof value !== 'string' || value.length < 1 || value.length > 8_000) {
-    throw new Error('browser_url_invalid：URL 必须是 1..8000 字符的字符串');
+    throw new ActionFailedSafeError('browser_url_invalid：URL 必须是 1..8000 字符的字符串');
   }
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
-    throw new Error('browser_url_invalid：URL 必须是绝对 http/https URL');
+    throw new ActionFailedSafeError('browser_url_invalid：URL 必须是绝对 http/https URL');
   }
   if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
-    throw new Error('browser_url_invalid：只允许不含内嵌凭证的绝对 http/https URL');
+    throw new ActionFailedSafeError('browser_url_invalid：只允许不含内嵌凭证的绝对 http/https URL');
   }
   return parsed.toString();
 }
@@ -104,7 +105,7 @@ export class BrowserRunManager {
 
   async open(input: BrowserOpenInput, signal?: AbortSignal): Promise<unknown> {
     if (this.state !== 'idle') {
-      throw new Error('browser_session_exists：每个 Run 只允许一个 Host-owned Browser session 生命周期');
+      throw new ActionFailedSafeError('browser_session_exists：每个 Run 只允许一个 Host-owned Browser session 生命周期');
     }
     const url = safeHttpUrl(input.url);
     signal?.throwIfAborted();
@@ -202,7 +203,7 @@ export class BrowserRunManager {
       throw new Error('browser_session_uncertain：会话创建结果不确定；禁止继续页面动作，只允许 browser_close 清理');
     }
     if (this.state !== 'active') {
-      throw new Error('browser_session_missing：先调用 browser_open 创建本轮 Host-owned session');
+      throw new ActionFailedSafeError('browser_session_missing：先调用 browser_open 创建本轮 Host-owned session');
     }
   }
 

@@ -656,6 +656,81 @@ test('model-facing Computer tools return a retryable recovery when the current R
   assert.equal(backend.actions.length, 0);
 });
 
+test('model-facing Computer tools classify target_in_use as failed-safe without generic SDK wrapping', async () => {
+  const { backend, manager, authority } = await fixture();
+  const frontmost = { ...target, frontmost: true };
+  backend.targets = [frontmost];
+  backend.observation = { ...backend.observation, target: frontmost, frontmost: true };
+  const tools = createComputerTools(manager, () => authority);
+  const observe = tools.find((item) => item.name === 'computer_observe');
+  const act = tools.find((item) => item.name === 'computer_act')!;
+  assert.ok(observe && 'invoke' in observe);
+  await observe.invoke(new RunContext({}), JSON.stringify({ app: target.bundleId }));
+
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-target-in-use-'));
+  const ledger = new ExecutionLedger(path.join(root, 'ledger.json'));
+  const [wrapped] = withExecutionLedger([act], ledger, () => ({
+    sessionId: 'owner',
+    runId: authority.runId,
+    guardedActionContext: {
+      ownerAuthenticated: true,
+      exactTarget: true,
+      lowRisk: false,
+      reversible: false,
+      boundedLocal: true,
+    },
+  }));
+  assert.ok(wrapped && 'invoke' in wrapped);
+
+  const result = await wrapped.invoke(new RunContext({}), JSON.stringify({
+    action: { type: 'click', elementIndex: 1, button: 'left' },
+  }), { toolCall: { callId: 'target-in-use' } } as never) as Record<string, unknown>;
+
+  assert.match(String(result.error), /target_in_use/);
+  assert.doesNotMatch(String(result.error), /An error occurred while running the tool/);
+  assert.equal((result.mimiActionIntent as Record<string, unknown>).outcome, 'failed_safe');
+  assert.equal(backend.actions.length, 0);
+});
+
+test('Computer action evidence keeps a successful text-and-image state confirmed', async () => {
+  const { backend, manager, authority } = await fixture();
+  const tools = createComputerTools(manager, () => authority);
+  const observe = tools.find((item) => item.name === 'computer_observe');
+  const act = tools.find((item) => item.name === 'computer_act')!;
+  assert.ok(observe && 'invoke' in observe);
+  await observe.invoke(new RunContext({}), JSON.stringify({ app: target.bundleId }));
+  backend.observation = {
+    ...backend.observation,
+    screenshot: { data: Buffer.from('fixture').toString('base64'), mediaType: 'image/png' },
+  };
+
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-image-action-'));
+  const [wrapped] = withExecutionLedger(
+    [act],
+    new ExecutionLedger(path.join(root, 'ledger.json')),
+    () => ({
+      sessionId: 'owner',
+      runId: authority.runId,
+      guardedActionContext: {
+        ownerAuthenticated: true,
+        exactTarget: true,
+        lowRisk: false,
+        reversible: false,
+        boundedLocal: true,
+      },
+    }),
+  );
+  assert.ok(wrapped && 'invoke' in wrapped);
+
+  const result = await wrapped.invoke(new RunContext({}), JSON.stringify({
+    action: { type: 'click', elementIndex: 1, button: 'left' },
+  }), { toolCall: { callId: 'image-action' } } as never) as Record<string, unknown>;
+
+  assert.equal((result.mimiActionIntent as Record<string, unknown>).outcome, 'confirmed');
+  assert.ok(Array.isArray(result.result));
+  assert.equal(backend.actions.length, 1);
+});
+
 test('model-facing Computer tools return a retryable recovery for an empty launch target', async () => {
   const { backend, manager, authority } = await fixture();
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-invalid-launch-'));

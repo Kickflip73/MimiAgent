@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RunContext } from '@openai/agents';
+import { ActionFailedSafeError } from '../src/core/action-intent.js';
 import {
   BrowserRunManager,
   type BrowserCapabilityRequest,
@@ -197,6 +198,25 @@ test('Browser run only clears cleanup responsibility for a declared failed-safe 
       calls.filter((call) => call.action === 'close_session').length,
       errorName === 'ActionFailedSafeError' ? 0 : 1,
     );
+  }
+});
+
+test('Browser tools expose failed-safe and uncertain action errors without generic SDK wrapping', async () => {
+  for (const [error, expected] of [
+    [new ActionFailedSafeError('capability_unavailable: browser is stale'), 'action_failed_safe'],
+    [new Error('transport lost after dispatch'), 'action_uncertain'],
+  ] as const) {
+    const manager = new BrowserRunManager(`structured-${expected}`, async () => {
+      throw error;
+    });
+    const result = await invokable(createBrowserTools(manager), 'browser_open').invoke(
+      new RunContext({}),
+      JSON.stringify({ url: 'https://example.com' }),
+    );
+    const parsed = JSON.parse(String(result)) as Record<string, unknown>;
+    assert.equal(parsed.mimiStatus, expected);
+    assert.doesNotMatch(String(parsed.message), /An error occurred while running the tool/);
+    assert.equal(parsed.sideEffectsFrozen, expected === 'action_uncertain');
   }
 });
 

@@ -66,7 +66,9 @@ test('model instructions drive verified business outcomes through discoverable c
   assert.match(BASE_INSTRUCTIONS, /源码验证、测试结果、已安装版本与真实运行证据/);
   assert.match(BASE_INSTRUCTIONS, /Shell 沙箱边界.*不等于 SIP/);
   assert.match(BASE_INSTRUCTIONS, /只读诊断能力/);
-  assert.match(BASE_INSTRUCTIONS, /Browser 任务直接 browser_open/);
+  assert.match(BASE_INSTRUCTIONS, /后台网页.*直接 browser_open/);
+  assert.match(BASE_INSTRUCTIONS, /打开给我看.*launch_app \+ urls/);
+  assert.match(BASE_INSTRUCTIONS, /不点击地址栏/);
   assert.match(BASE_INSTRUCTIONS, /verified=true 时不要在每一步后重复 snapshot/);
   assert.match(BASE_INSTRUCTIONS, /表单控件优先使用 accessible label 或 role\+name/);
   assert.match(BASE_INSTRUCTIONS, /不能猜测或把 option ref 当作 select/);

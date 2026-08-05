@@ -246,7 +246,7 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
 
     const manager = {
       configPath: '/fixture/connectors.json',
-      size: 1,
+      size: 3,
       listCapabilities: () => [{
           id: 'mail',
           enabled: true,
@@ -276,6 +276,22 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
             routeOwner: 'personal-daxiang',
             modelVisible: false,
           }],
+        }, {
+          id: 'browser',
+          enabled: true,
+          online: true,
+          readiness: { inbound: 'unavailable', outbound: 'ready' },
+          source: 'fixture:browser',
+          trust: 'external',
+          claimedComputerApps: ['com.google.Chrome'],
+          actions: ['open_session', 'close_session'].map((name) => ({
+            name,
+            description: name,
+            capability: 'browser.session.write',
+            effect: 'write' as const,
+            routeOwner: 'browser',
+            modelVisible: true,
+          })),
         }],
       setEnabled: async () => ({ ok: true }),
       reload: async () => [],
@@ -309,6 +325,28 @@ test('Host composition exposes one catalog and suppresses only a confirmed same-
     assert.deepEqual(
       connectorTools.filter((tool) => tool.name.startsWith('browser_')).map((tool) => tool.name),
       ['browser_open', 'browser_observe', 'browser_act', 'browser_wait', 'browser_assert', 'browser_close'],
+    );
+    const unavailableManager = {
+      ...manager,
+      listCapabilities: () => manager.listCapabilities().map((connector) => (
+        connector.id === 'browser'
+          ? { ...connector, readiness: { ...connector.readiness, stale: true } }
+          : connector
+      )),
+    } as ConnectorManager;
+    const unavailableBrowserTools = createMimiHostTools({
+      store,
+      attention,
+      task,
+      event,
+      deliveryControl: { suppressed: false },
+      sessionId: 'session-owner',
+      connectors: unavailableManager,
+      browserRun,
+    });
+    assert.deepEqual(
+      unavailableBrowserTools.filter((tool) => tool.name.startsWith('browser_')),
+      [],
     );
     await invoke(connectorTools, 'connector_capability', {
       capability: 'message.send',

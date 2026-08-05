@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { tool, type Tool, type ToolOutputImage, type ToolOutputText } from '@openai/agents';
 import { z } from 'zod';
+import { ActionFailedSafeError } from '../../core/action-intent.js';
 import {
   TOOL_ACTION_INTENT,
   TOOL_LEDGER_ARGUMENTS,
@@ -9,6 +10,49 @@ import { ComputerManager, type ComputerRunAuthority } from './manager.js';
 import { computerActionSchema, type ComputerAction } from './types.js';
 
 type StructuredOutput = ToolOutputText | ToolOutputImage;
+
+function computerActionErrorResult(error: unknown): string {
+  const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+  if (error instanceof ActionFailedSafeError
+    || (error instanceof Error && error.name === 'ActionFailedSafeError')) {
+    return JSON.stringify({
+      mimiStatus: 'action_failed_safe',
+      retryable: false,
+      sideEffectsFrozen: false,
+      message,
+    });
+  }
+  return JSON.stringify({
+    mimiStatus: 'action_uncertain',
+    retryable: false,
+    sideEffectsFrozen: true,
+    message: `${message}；无法确认 Computer 动作是否越过副作用提交点`,
+  });
+}
+
+function computerActionOutcome(result: unknown): 'confirmed' | 'failed_safe' | 'uncertain' {
+  let value = result;
+  if (Array.isArray(value)) {
+    const text = value.find((item) => (
+      item && typeof item === 'object' && !Array.isArray(item)
+      && (item as Record<string, unknown>).type === 'text'
+      && typeof (item as Record<string, unknown>).text === 'string'
+    )) as Record<string, unknown> | undefined;
+    value = text?.text;
+  }
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value) as unknown;
+    } catch {
+      return 'uncertain';
+    }
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 'uncertain';
+  const record = value as Record<string, unknown>;
+  if (record.mimiStatus === 'action_failed_safe' || record.ok === false) return 'failed_safe';
+  if (record.mimiStatus === 'action_uncertain') return 'uncertain';
+  return 'confirmed';
+}
 
 const modelOptional = <T extends z.ZodType>(schema: T) => schema.nullable().optional();
 
@@ -166,8 +210,9 @@ export function createComputerTools(
   });
   const act = tool({
     name: 'computer_act',
-    description: '执行一个原子电脑动作。Host 自动绑定最新窗口；launch_app 必须传 computer_observe 返回的精确 apps[].bundleId，并会绑定本轮新建的应用窗口。动作后直接返回 fresh state，使用 state 继续；只有返回 next=computer_observe 时才再观察。',
+    description: '执行一个原子电脑动作。Host 自动绑定最新窗口；打开 URL/文件直接使用 launch_app + urls，不要点击地址栏或拆成按键输入。launch_app 必须传 computer_observe 返回的精确 apps[].bundleId。动作后直接返回 fresh state，使用 state 继续；只有返回 next=computer_observe 时才再观察。',
     parameters: actToolParameters,
+    errorFunction: (_context, error) => computerActionErrorResult(error),
     execute: async (input, _context, details) => {
       const parsedAction = parseModelAction((input as Record<string, unknown>).action);
       if (!parsedAction.success) return parsedAction.result;
@@ -278,11 +323,7 @@ export function createComputerTools(
           reversible: true,
         },
       } : {}),
-      outcome: (result) => {
-        if (!result || typeof result !== 'object') return 'confirmed';
-        if ((result as Record<string, unknown>).ok === false) return 'failed_safe';
-        return 'confirmed';
-      },
+      outcome: computerActionOutcome,
     };
   };
   return [observe, act];

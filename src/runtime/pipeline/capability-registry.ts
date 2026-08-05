@@ -167,35 +167,56 @@ export class HostCapabilityRegistry {
     return [
       tool({
         name: 'inspect_capabilities',
-        description: '查询本轮 Host 已授权的 deferred 能力目录；首轮已可见的 direct tools 不会在此重复。按 source 或精确 name 查询，精确结果会返回调用 schema。',
+        description: '查询本轮 Host 已授权的 deferred 能力目录；首轮已可见的 direct tools 不会在此重复。Tool 用精确 name，Connector action 用精确 capability；精确结果会返回调用 schema。',
         parameters: z.object({
           source: z.enum(['builtin', 'mcp', 'browser', 'computer', 'memory', 'goal', 'skill', 'connector']).optional(),
-          name: z.string().trim().min(1).max(200).optional(),
+          name: z.string().trim().min(1).max(200).optional()
+            .describe('deferred Tool 的精确名称；Connector action 请使用 capability'),
+          capability: z.string().trim()
+            .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)
+            .max(120)
+            .optional()
+            .describe('Connector action 的稳定 capability 精确名称'),
           query: z.string().trim().min(1).max(100).optional(),
         }).strict(),
-        execute: async ({ source, name, query }, _context, details) => {
+        execute: async ({ source, name, capability, query }, _context, details) => {
           this.refreshCatalogRevision(connectorInvokerEntry);
-          const signature = JSON.stringify({ source, name, query, revision: this.catalogRevision });
+          // Older model turns used source=connector + name for an action capability.
+          // Keep that input non-throwing while making the schema unambiguous going forward.
+          const connectorCapability = capability ?? (
+            source === 'connector' && name && !deferredNames.has(name) ? name : undefined
+          );
+          const toolName = connectorCapability ? undefined : name;
+          const signature = JSON.stringify({
+            source, name: toolName, capability: connectorCapability, query, revision: this.catalogRevision,
+          });
           const cached = this.discoveryCache.get(signature);
           if (cached !== undefined) return cached;
-          if (name && !deferredNames.has(name)) throw new Error(`能力未授权、不是 deferred capability 或不存在：${name}`);
+          if (toolName && !deferredNames.has(toolName)) {
+            throw new Error(`能力未授权、不是 deferred capability 或不存在：${toolName}`);
+          }
           const eligibleEntries = entries.filter((entry) =>
             (!source || entry.source === source)
-            && (!name || entry.name === name));
-          const directMatches = eligibleEntries
-            .map((entry) => ({
-              entry,
-              score: query ? matchesCapabilityQuery(query, `${entry.name} ${entry.description}`) : 1,
-            }))
-            .filter(({ score }) => score > 0)
-            .sort((left, right) => right.score - left.score || left.entry.name.localeCompare(right.entry.name))
-            .map(({ entry }) => entry);
-          const connectorCatalog = query
-            && !name
+            && (!toolName || entry.name === toolName));
+          const directMatches = connectorCapability
+            ? []
+            : eligibleEntries
+              .map((entry) => ({
+                entry,
+                score: query ? matchesCapabilityQuery(query, `${entry.name} ${entry.description}`) : 1,
+              }))
+              .filter(({ score }) => score > 0)
+              .sort((left, right) => right.score - left.score || left.entry.name.localeCompare(right.entry.name))
+              .map(({ entry }) => entry);
+          const connectorCatalog = (connectorCapability || query)
+            && !toolName
             && (!source || source === 'connector')
             && connectorInvokerEntry
             && this.catalogAccess
-            ? await this.catalogAccess.inspectConnector({ query }, details?.signal)
+            ? await this.catalogAccess.inspectConnector({
+                ...(connectorCapability ? { capability: connectorCapability } : {}),
+                ...(query ? { query } : {}),
+              }, details?.signal)
             : undefined;
           const connectorMatched = connectorCatalog !== undefined
             && connectorCatalog !== null
@@ -208,7 +229,7 @@ export class HostCapabilityRegistry {
             && !directMatches.some((entry) => entry.name === connectorInvokerEntry.name)
             ? [...directMatches, connectorInvokerEntry]
             : directMatches;
-          if (name) {
+          if (toolName) {
             for (const match of matches) this.discoveredNames.add(match.name);
           }
           if (connectorMatched && connectorInvokerEntry) {
@@ -225,7 +246,7 @@ export class HostCapabilityRegistry {
               name: entry.name,
               source: entry.source,
               effect: entry.effect,
-              ...(name || (connectorMatched && entry.name === connectorInvokerEntry?.name) ? {
+              ...(toolName || (connectorMatched && entry.name === connectorInvokerEntry?.name) ? {
                 description: entry.description,
                 parameters: entry.parameters,
                 invokeWith: 'invoke_capability',
