@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- accept and canonically migrate legacy versioned Connector configuration so an
+  idle CLI/Daemon build upgrade cannot fail before replacing the old Daemon
+- return structured Context Artifact rejections instead of generic SDK tool
+  errors, and provide a current-Run replacement ref only when the same canonical
+  result already has an explicit alias in the same Session
 - stop exposing direct Browser tools when the Browser Connector lifecycle is
   disabled, offline, stale, or incomplete; preserve pre-dispatch Browser and
   Computer rejections as structured failed-safe results instead of generic SDK

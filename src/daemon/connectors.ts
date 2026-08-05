@@ -78,13 +78,22 @@ const configSchema = z.object({
   connectors: z.record(z.string().regex(/^[a-zA-Z0-9._-]+$/), connectorSchema).default({}),
 }).strict();
 
+const legacyVersionedConfigSchema = configSchema.extend({
+  version: z.literal(1),
+}).transform(({ version: _version, ...config }) => config);
+
+const connectorFileConfigSchema = z.union([
+  configSchema,
+  legacyVersionedConfigSchema,
+]);
+
 const READ_PROBE_FRESHNESS_MS = 15 * 60_000;
 
 type ConnectorConfig = z.infer<typeof connectorSchema>;
 export type ConnectorFileConfig = z.infer<typeof configSchema>;
 
 export function parseConnectorConfig(value: unknown): ConnectorFileConfig {
-  return configSchema.parse(value);
+  return connectorFileConfigSchema.parse(value);
 }
 
 export function connectorReadinessMonitorAction(config: ConnectorConfig): string | undefined {

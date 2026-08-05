@@ -2,6 +2,11 @@
   "schemaVersion": 1,
   "skills": [
     {
+      "name": "agent-reach",
+      "status": "experimental",
+      "published": false
+    },
+    {
       "name": "agent-skill-creator",
       "status": "product",
       "published": true
@@ -20,6 +25,11 @@
       "name": "docx",
       "status": "product",
       "published": true
+    },
+    {
+      "name": "guizang-social-card-skill",
+      "status": "experimental",
+      "published": false
     },
     {
       "name": "pdf",

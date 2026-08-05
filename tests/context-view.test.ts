@@ -539,19 +539,30 @@ test('persists the 70% work snapshot and binds artifact reads to Session and Run
     canonical,
   );
   assert.deepEqual(pendingRead.output, (result as unknown as { output: unknown }).output);
-  await assert.rejects(
-    pendingSession.readContextToolArtifact(pendingArtifacts[0]!.ref, pendingRun.runId),
-    /canonical\/pending 工具结果缺失/,
+  const missingPending = await pendingSession.readContextToolArtifact(
+    pendingArtifacts[0]!.ref,
+    pendingRun.runId,
   );
+  assert.equal(missingPending.mimiStatus, 'tool_input_rejected');
+  assert.equal(missingPending.code, 'context_artifact_integrity_failed');
+  assert.equal(missingPending.retryable, false);
   await pendingSession.failRun('pending test complete', false, pendingRun.runId);
   const otherSession = new FileSession(root, 'other');
   await otherSession.beginRun('other', 'run-other');
-  await assert.rejects(
-    otherSession.readContextToolArtifact(artifacts[0]!.ref, 'run-other'),
-    /不存在|无权/,
-  );
+  const unauthorized = await otherSession.readContextToolArtifact(artifacts[0]!.ref, 'run-other');
+  assert.equal(unauthorized.mimiStatus, 'tool_input_rejected');
+  assert.equal(unauthorized.code, 'context_artifact_unavailable');
+  assert.equal(unauthorized.retryable, false);
   await reopened.completeRun('done', run.runId);
   const nextRun = await reopened.beginRun('continue', 'run-next');
+  const staleWithoutAlias = await reopened.readContextToolArtifact(
+    artifacts[0]!.ref,
+    nextRun.runId,
+  );
+  assert.equal(staleWithoutAlias.mimiStatus, 'tool_input_rejected');
+  assert.equal(staleWithoutAlias.code, 'context_artifact_stale');
+  assert.equal(staleWithoutAlias.retryable, false);
+  assert.equal(staleWithoutAlias.replacementRef, undefined);
   const aliases = await reopened.registerContextToolArtifacts(canonical, nextRun.runId);
   assert.equal(aliases.length, 1);
   assert.notEqual(aliases[0]!.ref, artifacts[0]!.ref);
@@ -561,9 +572,11 @@ test('persists the 70% work snapshot and binds artifact reads to Session and Run
     (await reopened.readContextToolArtifact(aliases[0]!.ref, nextRun.runId)).output,
     (result as unknown as { output: unknown }).output,
   );
-  await assert.rejects(
-    reopened.readContextToolArtifact(artifacts[0]!.ref, nextRun.runId),
-    /不存在|无权/,
-  );
+  const stale = await reopened.readContextToolArtifact(artifacts[0]!.ref, nextRun.runId);
+  assert.equal(stale.mimiStatus, 'tool_input_rejected');
+  assert.equal(stale.code, 'context_artifact_stale');
+  assert.equal(stale.retryable, true);
+  assert.equal(stale.next, 'read_context_artifact');
+  assert.equal(stale.replacementRef, aliases[0]!.ref);
   assert.deepEqual(await reopened.getItems(), canonical);
 });

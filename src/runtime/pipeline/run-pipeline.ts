@@ -435,7 +435,7 @@ export async function executeRunPipeline(
       ...memoryTools,
       tool({
         name: 'read_context_artifact',
-        description: '按本轮 Context View 中的稳定 ref 只读回取当前 Session、当前 Run 的 canonical 工具结果；跨 Session/Run 或伪造 ref 会失败关闭。',
+        description: '按本轮 Context View 中的稳定 ref 只读回取当前 Session、当前 Run 的 canonical 工具结果。旧 Run ref 不可直接读；结构化拒绝返回 replacementRef 时只用该新 ref 重试一次，否则不重试。',
         parameters: z.object({
           ref: z.string().regex(/^context-artifact:[0-9a-f-]{36}$/),
         }).strict(),

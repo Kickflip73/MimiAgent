@@ -118,6 +118,31 @@ export interface ContextToolArtifact {
   consumedAt?: string;
 }
 
+export interface ContextToolArtifactRejected {
+  mimiStatus: 'tool_input_rejected';
+  code: 'context_artifact_unavailable' | 'context_artifact_stale' | 'context_artifact_integrity_failed';
+  retryable: boolean;
+  message: string;
+  next?: 'read_context_artifact';
+  replacementRef?: string;
+  output?: never;
+}
+
+export interface ContextToolArtifactReadSuccess {
+  ref: string;
+  callId: string;
+  toolName: string;
+  output: unknown;
+  mimiStatus?: never;
+  code?: never;
+  retryable?: never;
+  message?: never;
+  next?: never;
+  replacementRef?: never;
+}
+
+export type ContextToolArtifactReadResult = ContextToolArtifactReadSuccess | ContextToolArtifactRejected;
+
 export interface SessionPreferences {
   mode?: string;
   provider?: 'openai' | 'deepseek' | 'openai-compatible';
@@ -761,11 +786,30 @@ export class FileSession implements Session {
     ref: string,
     expectedRunId: string,
     pendingItems: readonly AgentInputItem[] = [],
-  ): Promise<{ ref: string; callId: string; toolName: string; output: unknown }> {
+  ): Promise<ContextToolArtifactReadResult> {
     const session = await this.load();
     const artifact = session.contextToolArtifacts?.find((candidate) =>
       candidate.ref === ref && candidate.runId === expectedRunId);
-    if (!artifact) throw new Error('Context Artifact 不存在、所属 Run 不匹配或当前 Session 无权读取');
+    if (!artifact) {
+      const stale = session.contextToolArtifacts?.find((candidate) => candidate.ref === ref);
+      const replacement = stale && session.contextToolArtifacts?.find((candidate) => (
+        candidate.runId === expectedRunId
+        && candidate.callId === stale.callId
+        && candidate.outputDigest === stale.outputDigest
+      ));
+      return {
+        mimiStatus: 'tool_input_rejected',
+        code: stale ? 'context_artifact_stale' : 'context_artifact_unavailable',
+        retryable: replacement !== undefined,
+        message: replacement
+          ? 'Context Artifact ref 属于旧 Run；原 ref 仍不可读，请使用当前 Run 的 replacementRef 重试一次'
+          : '当前 Session/Run 没有可读的 Context Artifact 或当前 Context View 未提供有效 alias；不要重试原 ref',
+        ...(replacement ? {
+          next: 'read_context_artifact' as const,
+          replacementRef: replacement.ref,
+        } : {}),
+      };
+    }
     const item = [...session.items, ...pendingItems].find((candidate) => {
       const value = candidate as unknown as Record<string, unknown>;
       if (value.type !== 'function_call_result') return false;
@@ -776,7 +820,12 @@ export class FileSession implements Session {
         .digest('hex')}`;
       return digest === artifact.outputDigest;
     }) as unknown as Record<string, unknown> | undefined;
-    if (!item) throw new Error('Context Artifact 的 canonical/pending 工具结果缺失或摘要引用校验失败');
+    if (!item) return {
+      mimiStatus: 'tool_input_rejected',
+      code: 'context_artifact_integrity_failed',
+      retryable: false,
+      message: 'Context Artifact 的 canonical/pending 工具结果缺失或摘要引用校验失败；不要重试或换路重做原工具动作',
+    };
     return {
       ref: artifact.ref,
       callId: artifact.callId,

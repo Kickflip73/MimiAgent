@@ -15,11 +15,6 @@ When rules conflict, follow this order:
 
 `MIMI.md` is runtime guidance loaded by MimiAgent itself. This file is the development contract for agents modifying the repository; keep them consistent when changing shared architectural rules.
 
-## Project Skill Policy
-
-- `writing-partner` is disabled in this repository. Do not load, invoke, or follow it, including for deep research, reports, or long-form writing. Handle those requests directly under this guide unless the user explicitly asks to re-enable the Skill for this project.
-- Keep the globally installed `writing-partner` Skill intact; this is a project-scoped policy, not an uninstall.
-
 ## Working Principles
 
 ### Think before coding

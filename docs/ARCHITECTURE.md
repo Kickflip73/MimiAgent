@@ -133,6 +133,12 @@ tools 只在 Browser Connector 的 `open_session` 与 `close_session` 同时实�
 时进入 Registry，disabled、offline、stale 或生命周期不完整时不向模型
 暴露一组必然失败的 `browser_*` schema。
 
+Context Artifact 的 ref 继续绑定原 Session/Run，旧 ref 不能直接读取。若同一
+canonical 工具结果已为当前 Run 生成显式 alias，读取旧 ref 仅返回结构化
+`context_artifact_stale` 与 `replacementRef`，由模型使用新 ref 最多重试一次；
+伪造、跨 Session、无当前 alias 或摘要校验失败都返回不可重试拒绝，不暴露
+canonical 内容，也不触发原工具动作重放。
+
 ## 分层模型路由
 
 模型选择与厂商协议分离。Conversation、Background、Schedule、SubAgent、TeamTask

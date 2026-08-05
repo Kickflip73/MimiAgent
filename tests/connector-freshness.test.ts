@@ -22,6 +22,21 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<v
   throw new Error('condition timed out');
 }
 
+test('accepts legacy versioned Connector config without weakening strict validation', () => {
+  assert.deepEqual(
+    parseConnectorConfig({ version: 1, connectors: {} }),
+    { backgroundDefaultsVersion: 0, connectors: {} },
+  );
+  assert.throws(
+    () => parseConnectorConfig({ version: 2, connectors: {} }),
+    /version/,
+  );
+  assert.throws(
+    () => parseConnectorConfig({ version: 1, connectors: {}, unexpected: true }),
+    /unexpected/,
+  );
+});
+
 test('marks an online Connector stale after its declared readiness heartbeat expires', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-connector-freshness-'));
   const database = path.join(root, 'mimi.db');
