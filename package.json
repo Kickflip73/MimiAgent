@@ -125,7 +125,6 @@
   },
   "devDependencies": {
     "@trycua/cua-driver": "^0.12.3",
-    "@trycua/cua-driver-darwin-arm64": "^0.12.3",
     "@types/node": "^22.0.0",
     "tsx": "^4.0.0",
     "typescript": "5.9.3"
