@@ -1,10 +1,25 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { loadConfig, loadEnvironment, type AppConfig } from '../src/config.js';
-import { resolveModelProfile } from '../src/runtime/model.js';
+import {
+  adoptWorkspaceConfig,
+  loadConfig,
+  loadEnvironment,
+  privateRuntimePaths,
+  resolveEnvironmentFile,
+  type AppConfig,
+} from '../src/config.js';
+import { normalizeModelInput, resolveModelProfile } from '../src/runtime/model.js';
+import {
+  PRE_MIMI_DAEMON_DIRECTORY,
+  PRE_MIMI_DAEMON_FILES,
+  PRE_MIMI_DATA_DIRECTORY,
+} from '../src/core/mimi-legacy.js';
+import { migrateLegacyMimiDaemon, mimiPaths } from '../src/daemon/client-runtime.js';
+
+const ISOLATED_HOME = path.join(os.tmpdir(), `mimi-config-tests-${process.pid}`);
 
 test('loads the unified environment when launched from any workspace', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-config-'));
@@ -41,25 +56,35 @@ test('loads the unified environment when launched from any workspace', async () 
 test('resolves model-specific context profiles and override precedence', () => {
   const config: AppConfig = {
     provider: 'deepseek' as const,
-    workspaceRoot: process.cwd(), dataRoot: '.nano-agent', skillsRoot: 'skills', mcpConfig: 'mcp.json',
+    workspaceRoot: process.cwd(), dataRoot: '.mimi-agent', daemonDataRoot: '.mimi-agent/daemon', skillsRoot: 'skills', mcpConfig: 'mcp.json',
     historyLimit: 40, maxTurns: 20,
   };
-  const keys = ['CONTEXT_WINDOW', 'OUTPUT_TOKEN_RESERVE', 'DEEPSEEK_V4_PRO_CONTEXT_WINDOW', 'DEEPSEEK_V4_PRO_OUTPUT_RESERVE'] as const;
+  const keys = [
+    'CONTEXT_WINDOW', 'OUTPUT_TOKEN_RESERVE',
+    'DEEPSEEK_V4_PRO_CONTEXT_WINDOW', 'DEEPSEEK_V4_PRO_OUTPUT_RESERVE',
+    'GPT_5_6_SOL_CONTEXT_WINDOW', 'GPT_5_6_SOL_OUTPUT_RESERVE',
+  ] as const;
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   try {
     for (const key of keys) delete process.env[key];
     assert.deepEqual(resolveModelProfile(config, 'deepseek-v4-pro'), {
-      contextWindow: 1_048_576, outputReserve: 65_536,
+      contextWindow: 1_048_576, outputReserve: 65_536, supportsImageInput: false,
     });
     assert.deepEqual(resolveModelProfile(config, 'deepseek-v4-flash'), {
-      contextWindow: 128_000, outputReserve: 16_384,
+      contextWindow: 128_000, outputReserve: 16_384, supportsImageInput: false,
     });
     config.contextWindow = 256_000;
     config.outputReserve = 24_000;
+    assert.deepEqual(resolveModelProfile(config, 'gpt-5.6-sol'), {
+      contextWindow: 1_050_000, outputReserve: 32_768, supportsImageInput: true,
+    });
+    assert.deepEqual(resolveModelProfile(config, 'custom-model'), {
+      contextWindow: 256_000, outputReserve: 24_000, supportsImageInput: false,
+    });
     process.env.DEEPSEEK_V4_PRO_CONTEXT_WINDOW = '512000';
     process.env.DEEPSEEK_V4_PRO_OUTPUT_RESERVE = '48000';
     assert.deepEqual(resolveModelProfile(config, 'deepseek-v4-pro'), {
-      contextWindow: 512_000, outputReserve: 48_000,
+      contextWindow: 512_000, outputReserve: 48_000, supportsImageInput: false,
     });
   } finally {
     for (const key of keys) {
@@ -70,15 +95,38 @@ test('resolves model-specific context profiles and override precedence', () => {
   }
 });
 
+test('removes non-OpenAI message ids when a persisted session changes provider', () => {
+  const deepSeekMessage = {
+    type: 'message', role: 'assistant', id: 'bca45ecf-c171-4a57-8025-38ba9e552613',
+    status: 'completed', content: [{ type: 'output_text', text: '旧回复' }],
+  };
+  const openAiMessage = {
+    type: 'message', role: 'assistant', id: 'msg_existing',
+    status: 'completed', content: [{ type: 'output_text', text: '新回复' }],
+  };
+  const functionCall = {
+    type: 'function_call', callId: 'call_1', name: 'inspect', arguments: '{}',
+  };
+  const items = [deepSeekMessage, openAiMessage, functionCall] as never[];
+
+  const normalized = normalizeModelInput('openai', items) as unknown as Array<Record<string, unknown>>;
+  assert.equal(Object.hasOwn(normalized[0]!, 'id'), false);
+  assert.equal(normalized[1]?.id, 'msg_existing');
+  assert.equal(normalized[2], functionCall);
+  assert.equal(deepSeekMessage.id, 'bca45ecf-c171-4a57-8025-38ba9e552613');
+  assert.equal(normalizeModelInput('deepseek', items), items);
+});
+
 test('fails fast on invalid runtime environment values', () => {
   const keys = [
-    'MODEL_PROVIDER', 'HISTORY_LIMIT', 'CONTEXT_WINDOW', 'OUTPUT_TOKEN_RESERVE',
+    'MIMI_CONFIG_VERSION', 'MODEL_PROVIDER', 'HISTORY_LIMIT', 'CONTEXT_WINDOW', 'OUTPUT_TOKEN_RESERVE',
     'MAX_TURNS', 'TEAM_MAX_CONCURRENCY', 'AGENT_PERMISSION_MODE', 'TRUST_WORKSPACE_MCP',
   ] as const;
   const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   try {
     for (const key of keys) delete process.env[key];
     const invalid = [
+      ['MIMI_CONFIG_VERSION', 'two'],
       ['HISTORY_LIMIT', 'oops'],
       ['CONTEXT_WINDOW', '0'],
       ['OUTPUT_TOKEN_RESERVE', '-1'],
@@ -90,12 +138,41 @@ test('fails fast on invalid runtime environment values', () => {
     ] as const;
     for (const [key, value] of invalid) {
       process.env[key] = value;
-      assert.throws(loadConfig, new RegExp(key));
+      assert.throws(() => loadConfig(ISOLATED_HOME), new RegExp(key));
       delete process.env[key];
     }
     process.env.CONTEXT_WINDOW = '1000';
     process.env.OUTPUT_TOKEN_RESERVE = '1000';
-    assert.throws(loadConfig, /OUTPUT_TOKEN_RESERVE.*CONTEXT_WINDOW/);
+    assert.throws(() => loadConfig(ISOLATED_HOME), /OUTPUT_TOKEN_RESERVE.*CONTEXT_WINDOW/);
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('loads a generic OpenAI-compatible provider and validates required endpoint settings', () => {
+  const keys = [
+    'MIMI_MODEL_PROVIDER', 'MIMI_PROVIDER_BASE_URL', 'MIMI_MODEL', 'MIMI_MODELS',
+  ] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.MIMI_MODEL_PROVIDER = 'openai-compatible';
+    assert.throws(() => loadConfig(ISOLATED_HOME), /MIMI_PROVIDER_BASE_URL/);
+    process.env.MIMI_PROVIDER_BASE_URL = 'not-a-url';
+    assert.throws(() => loadConfig(ISOLATED_HOME), /MIMI_PROVIDER_BASE_URL.*URL/);
+    process.env.MIMI_PROVIDER_BASE_URL = 'https://api.provider.example/v1';
+    assert.throws(() => loadConfig(ISOLATED_HOME), /MIMI_MODEL/);
+    process.env.MIMI_MODEL = 'provider-model';
+    process.env.MIMI_MODELS = 'provider-model, provider-fast,provider-model';
+    const config = loadConfig(ISOLATED_HOME);
+    assert.equal(config.provider, 'openai-compatible');
+    assert.equal(config.providerBaseUrl, 'https://api.provider.example/v1');
+    assert.equal(config.defaultModel, 'provider-model');
+    assert.deepEqual(config.availableModels, ['provider-model', 'provider-fast', 'provider-model']);
   } finally {
     for (const key of keys) {
       const value = previous[key];
@@ -117,15 +194,15 @@ test('parses valid runtime limits once at startup', () => {
     process.env.OUTPUT_TOKEN_RESERVE = '16000';
     process.env.MAX_TURNS = '120';
     process.env.TEAM_MAX_CONCURRENCY = '3';
-    process.env.AGENT_PERMISSION_MODE = 'read-only';
+    process.env.AGENT_PERMISSION_MODE = 'trusted';
     process.env.TRUST_WORKSPACE_MCP = process.cwd();
-    const config = loadConfig();
+    const config = loadConfig(ISOLATED_HOME);
     assert.deepEqual(
       [
         config.historyLimit, config.contextWindow, config.outputReserve, config.maxTurns,
         config.teamMaxConcurrency, config.permissionMode, config.trustedWorkspaceMcp,
       ],
-      [60, 128_000, 16_000, 120, 3, 'read-only', process.cwd()],
+      [60, 128_000, 16_000, 120, 3, 'trusted', process.cwd()],
     );
   } finally {
     for (const key of keys) {
@@ -136,13 +213,522 @@ test('parses valid runtime limits once at startup', () => {
   }
 });
 
-test('uses a workspace-scoped local permission mode by default', () => {
-  const previous = process.env.AGENT_PERMISSION_MODE;
-  delete process.env.AGENT_PERMISSION_MODE;
+test('enables Computer Use by default for full-owner when CUA is installed and supports opt-out', async () => {
+  const keys = [
+    'MIMI_COMPUTER_BACKEND', 'MIMI_CUA_DRIVER_COMMAND', 'MIMI_COMPUTER_ACTION_TIMEOUT_MS',
+    'MIMI_COMPUTER_MAX_ACTIONS_PER_RUN', 'MIMI_COMPUTER_MAX_SCREENSHOTS_PER_RUN',
+    'MIMI_COMPUTER_PAUSE_WHEN_TARGET_FRONTMOST', 'MIMI_COMPUTER_DEFAULT_ACCESS',
+    'MIMI_COMPUTER_FOREGROUND_LEASE_SECONDS', 'MIMI_COMPUTER_ARTIFACT_MAX_MIB',
+    'MIMI_SECURITY_PROFILE',
+  ] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const home = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-default-'));
+  const driver = path.join(home, '.local', 'bin', 'cua-driver');
+  await mkdir(path.dirname(driver), { recursive: true });
+  await writeFile(driver, '#!/bin/sh\nexit 0\n');
+  await chmod(driver, 0o755);
   try {
-    assert.equal(loadConfig().permissionMode, 'workspace');
+    for (const key of keys) delete process.env[key];
+    assert.deepEqual(loadConfig(home).computer, {
+      backend: 'cua', driverCommand: driver, actionTimeoutMs: 15_000,
+      maxActionsPerRun: 50, maxScreenshotsPerRun: 12, pauseWhenTargetFrontmost: true,
+      defaultAccess: 'foreground', foregroundLeaseSeconds: 30,
+      artifactMaxBytes: 1024 * 1024 * 1024,
+    });
+    process.env.MIMI_SECURITY_PROFILE = 'full-owner';
+    assert.equal(loadConfig(home).securityProfile, 'full-owner');
+    process.env.MIMI_COMPUTER_BACKEND = 'off';
+    assert.equal(loadConfig(home).computer, undefined);
+    process.env.MIMI_COMPUTER_BACKEND = 'cua';
+    process.env.MIMI_CUA_DRIVER_COMMAND = '/bin/echo';
+    process.env.MIMI_COMPUTER_ACTION_TIMEOUT_MS = '12000';
+    process.env.MIMI_COMPUTER_MAX_ACTIONS_PER_RUN = '25';
+    process.env.MIMI_COMPUTER_MAX_SCREENSHOTS_PER_RUN = '6';
+    process.env.MIMI_COMPUTER_PAUSE_WHEN_TARGET_FRONTMOST = 'false';
+    process.env.MIMI_COMPUTER_DEFAULT_ACCESS = 'observe';
+    process.env.MIMI_COMPUTER_FOREGROUND_LEASE_SECONDS = '15';
+    assert.deepEqual(loadConfig(home).computer, {
+      backend: 'cua', driverCommand: '/bin/echo', actionTimeoutMs: 12_000,
+      maxActionsPerRun: 25, maxScreenshotsPerRun: 6, pauseWhenTargetFrontmost: false,
+      defaultAccess: 'observe', foregroundLeaseSeconds: 15, artifactMaxBytes: 1024 * 1024 * 1024,
+    });
+    process.env.MIMI_COMPUTER_PAUSE_WHEN_TARGET_FRONTMOST = 'yes';
+    assert.throws(() => loadConfig(home), /只能是 true 或 false/);
   } finally {
-    if (previous === undefined) delete process.env.AGENT_PERMISSION_MODE;
-    else process.env.AGENT_PERMISSION_MODE = previous;
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
+});
+
+test('starts a fresh authenticated local owner in Full Owner by default', () => {
+  const previousModern = process.env.MIMI_PERMISSION_MODE;
+  const previousLegacy = process.env.AGENT_PERMISSION_MODE;
+  const previousProfile = process.env.MIMI_SECURITY_PROFILE;
+  delete process.env.MIMI_PERMISSION_MODE;
+  delete process.env.AGENT_PERMISSION_MODE;
+  delete process.env.MIMI_SECURITY_PROFILE;
+  try {
+    const config = loadConfig(ISOLATED_HOME);
+    assert.equal(config.permissionMode, 'trusted');
+    assert.equal(config.securityProfile, 'full-owner');
+  } finally {
+    if (previousModern === undefined) delete process.env.MIMI_PERMISSION_MODE;
+    else process.env.MIMI_PERMISSION_MODE = previousModern;
+    if (previousLegacy === undefined) delete process.env.AGENT_PERMISSION_MODE;
+    else process.env.AGENT_PERMISSION_MODE = previousLegacy;
+    if (previousProfile === undefined) delete process.env.MIMI_SECURITY_PROFILE;
+    else process.env.MIMI_SECURITY_PROFILE = previousProfile;
+  }
+});
+
+test('maps explicit security profiles to non-ambiguous permission modes', () => {
+  const previousProfile = process.env.MIMI_SECURITY_PROFILE;
+  const previousPermission = process.env.MIMI_PERMISSION_MODE;
+  try {
+    delete process.env.MIMI_PERMISSION_MODE;
+    for (const [profile, permission] of [
+      ['safe', 'read-only'],
+      ['workstation', 'workspace'],
+      ['full-owner', 'trusted'],
+    ] as const) {
+      process.env.MIMI_SECURITY_PROFILE = profile;
+      const config = loadConfig(ISOLATED_HOME);
+      assert.equal(config.securityProfile, profile);
+      assert.equal(config.permissionMode, permission);
+    }
+    process.env.MIMI_SECURITY_PROFILE = 'safe';
+    process.env.MIMI_PERMISSION_MODE = 'trusted';
+    const safe = loadConfig(ISOLATED_HOME);
+    assert.equal(safe.securityProfile, 'safe');
+    assert.equal(safe.permissionMode, 'read-only');
+    process.env.MIMI_SECURITY_PROFILE = 'invalid';
+    delete process.env.MIMI_PERMISSION_MODE;
+    assert.throws(() => loadConfig(ISOLATED_HOME), /只能是 safe、workstation 或 full-owner/);
+  } finally {
+    if (previousProfile === undefined) delete process.env.MIMI_SECURITY_PROFILE;
+    else process.env.MIMI_SECURITY_PROFILE = previousProfile;
+    if (previousPermission === undefined) delete process.env.MIMI_PERMISSION_MODE;
+    else process.env.MIMI_PERMISSION_MODE = previousPermission;
+  }
+});
+
+test('migrates old template workspace defaults without overriding versioned restrictions', () => {
+  const previousModern = process.env.MIMI_PERMISSION_MODE;
+  const previousLegacy = process.env.AGENT_PERMISSION_MODE;
+  const previousConfigVersion = process.env.MIMI_CONFIG_VERSION;
+  try {
+    delete process.env.MIMI_CONFIG_VERSION;
+    delete process.env.MIMI_PERMISSION_MODE;
+    process.env.AGENT_PERMISSION_MODE = 'workspace';
+    assert.equal(loadConfig(ISOLATED_HOME).permissionMode, 'trusted');
+
+    process.env.AGENT_PERMISSION_MODE = 'read-only';
+    assert.equal(loadConfig(ISOLATED_HOME).permissionMode, 'read-only');
+
+    process.env.MIMI_PERMISSION_MODE = 'workspace';
+    assert.equal(loadConfig(ISOLATED_HOME).permissionMode, 'trusted');
+
+    process.env.MIMI_CONFIG_VERSION = '2';
+    assert.equal(loadConfig(ISOLATED_HOME).permissionMode, 'workspace');
+
+    delete process.env.MIMI_PERMISSION_MODE;
+    process.env.AGENT_PERMISSION_MODE = 'workspace';
+    assert.equal(loadConfig(ISOLATED_HOME).permissionMode, 'workspace');
+  } finally {
+    if (previousModern === undefined) delete process.env.MIMI_PERMISSION_MODE;
+    else process.env.MIMI_PERMISSION_MODE = previousModern;
+    if (previousLegacy === undefined) delete process.env.AGENT_PERMISSION_MODE;
+    else process.env.AGENT_PERMISSION_MODE = previousLegacy;
+    if (previousConfigVersion === undefined) delete process.env.MIMI_CONFIG_VERSION;
+    else process.env.MIMI_CONFIG_VERSION = previousConfigVersion;
+  }
+});
+
+test('leaves conversation runs unlimited unless an operator configures a turn limit', () => {
+  const previousTurns = process.env.MIMI_MAX_TURNS;
+  const previousVersion = process.env.MIMI_CONFIG_VERSION;
+  try {
+    delete process.env.MIMI_MAX_TURNS;
+    const defaults = loadConfig(ISOLATED_HOME);
+    assert.equal(defaults.maxTurns, null);
+
+    process.env.MIMI_CONFIG_VERSION = '2';
+    process.env.MIMI_MAX_TURNS = '200';
+    assert.equal(loadConfig(ISOLATED_HOME).maxTurns, null);
+
+    process.env.MIMI_MAX_TURNS = '120';
+    assert.equal(loadConfig(ISOLATED_HOME).maxTurns, 120);
+    process.env.MIMI_CONFIG_VERSION = '3';
+    process.env.MIMI_MAX_TURNS = '32';
+    assert.equal(loadConfig(ISOLATED_HOME).maxTurns, null);
+    process.env.MIMI_CONFIG_VERSION = '4';
+    assert.equal(loadConfig(ISOLATED_HOME).maxTurns, 32);
+  } finally {
+    if (previousTurns === undefined) delete process.env.MIMI_MAX_TURNS;
+    else process.env.MIMI_MAX_TURNS = previousTurns;
+    if (previousVersion === undefined) delete process.env.MIMI_CONFIG_VERSION;
+    else process.env.MIMI_CONFIG_VERSION = previousVersion;
+  }
+});
+
+test('rebuilds workspace-derived paths when the CLI adopts an existing Host workspace', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'mimi-adopt-config-'));
+  const localWorkspace = path.join(home, 'local');
+  const daemonWorkspace = path.join(home, 'daemon');
+  await mkdir(localWorkspace);
+  await mkdir(path.join(daemonWorkspace, PRE_MIMI_DATA_DIRECTORY), { recursive: true });
+  await writeFile(path.join(daemonWorkspace, PRE_MIMI_DATA_DIRECTORY, 'sessions.json'), '{}');
+  const keys = [
+    'MIMI_WORKSPACE', 'AGENT_WORKSPACE', 'MIMI_DATA_DIR', 'AGENT_DATA_DIR',
+    'MIMI_SKILLS_DIR', 'AGENT_SKILLS_DIR', 'MIMI_MCP_CONFIG', 'MCP_CONFIG',
+  ] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const previousDirectory = process.cwd();
+  try {
+    for (const key of keys) delete process.env[key];
+    process.chdir(localWorkspace);
+    const local = loadConfig(home);
+    const adopted = adoptWorkspaceConfig(local, daemonWorkspace, home);
+    assert.equal(adopted.workspaceRoot, daemonWorkspace);
+    assert.equal(adopted.dataRoot, path.join(daemonWorkspace, '.mimi-agent'));
+    assert.equal(await readFile(path.join(adopted.dataRoot, 'sessions.json'), 'utf8'), '{}');
+    assert.equal(adopted.skillsRoot, path.join(daemonWorkspace, 'skills'));
+    assert.equal(adopted.mcpConfig, path.join(daemonWorkspace, 'mcp.json'));
+    assert.equal(adopted.daemonDataRoot, local.daemonDataRoot);
+  } finally {
+    process.chdir(previousDirectory);
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('prefers MIMI environment names, keeps legacy aliases, and expands home paths', () => {
+  const keys = [
+    'MIMI_MODEL_PROVIDER', 'MODEL_PROVIDER',
+    'MIMI_WORKSPACE', 'AGENT_WORKSPACE',
+    'MIMI_DATA_DIR', 'AGENT_DATA_DIR',
+    'MIMI_DAEMON_DATA_DIR',
+    'MIMI_SKILLS_DIR', 'AGENT_SKILLS_DIR',
+    'MIMI_MCP_CONFIG', 'MCP_CONFIG',
+    'MIMI_HISTORY_LIMIT', 'HISTORY_LIMIT',
+    'MIMI_MAX_TURNS', 'MAX_TURNS',
+    'MIMI_TEAM_MAX_CONCURRENCY', 'TEAM_MAX_CONCURRENCY',
+    'MIMI_PERMISSION_MODE', 'AGENT_PERMISSION_MODE', 'MIMI_SECURITY_PROFILE',
+    'MIMI_TRUST_WORKSPACE_MCP', 'TRUST_WORKSPACE_MCP',
+  ] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.MIMI_MODEL_PROVIDER = 'deepseek';
+    process.env.MODEL_PROVIDER = 'openai';
+    process.env.MIMI_WORKSPACE = '~/mimi-modern-workspace';
+    process.env.AGENT_WORKSPACE = '/legacy/workspace';
+    process.env.MIMI_DATA_DIR = '~/mimi-modern-data';
+    process.env.AGENT_DATA_DIR = '/legacy/data';
+    process.env.MIMI_DAEMON_DATA_DIR = '~/mimi-modern-daemon';
+    process.env.MIMI_SKILLS_DIR = '~/mimi-modern-skills';
+    process.env.AGENT_SKILLS_DIR = '/legacy/skills';
+    process.env.MIMI_MCP_CONFIG = '~/mimi-modern-mcp.json';
+    process.env.MCP_CONFIG = '/legacy/mcp.json';
+    process.env.MIMI_HISTORY_LIMIT = '17';
+    process.env.HISTORY_LIMIT = 'invalid-legacy-value';
+    process.env.MIMI_MAX_TURNS = '23';
+    process.env.MAX_TURNS = '99';
+    process.env.MIMI_TEAM_MAX_CONCURRENCY = '2';
+    process.env.TEAM_MAX_CONCURRENCY = '4';
+    process.env.MIMI_PERMISSION_MODE = 'trusted';
+    process.env.AGENT_PERMISSION_MODE = 'trusted';
+    process.env.MIMI_TRUST_WORKSPACE_MCP = '~/mimi-modern-workspace';
+    process.env.TRUST_WORKSPACE_MCP = '/legacy/workspace';
+
+    const config = loadConfig();
+    assert.equal(config.provider, 'deepseek');
+    assert.equal(config.workspaceRoot, path.join(os.homedir(), 'mimi-modern-workspace'));
+    assert.equal(config.dataRoot, path.join(os.homedir(), 'mimi-modern-data'));
+    assert.equal(config.daemonDataRoot, path.join(os.homedir(), 'mimi-modern-daemon'));
+    assert.equal(config.skillsRoot, path.join(os.homedir(), 'mimi-modern-skills'));
+    assert.equal(config.mcpConfig, path.join(os.homedir(), 'mimi-modern-mcp.json'));
+    assert.equal(config.historyLimit, 17);
+    assert.equal(config.maxTurns, 23);
+    assert.equal(config.teamMaxConcurrency, 2);
+    assert.equal(config.permissionMode, 'trusted');
+    assert.equal(config.securityProfile, 'full-owner');
+    assert.equal(config.trustedWorkspaceMcp, path.join(os.homedir(), 'mimi-modern-workspace'));
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('uses the new runtime directory, ignores empty migration residue, and rejects split state', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-directory-migration-'));
+  const freshWorkspace = path.join(root, 'fresh');
+  const legacyWorkspace = path.join(root, 'legacy');
+  const emptyModernWorkspace = path.join(root, 'empty-modern');
+  const conflictWorkspace = path.join(root, 'conflict');
+  await mkdir(freshWorkspace);
+  await mkdir(path.join(legacyWorkspace, PRE_MIMI_DATA_DIRECTORY), { recursive: true });
+  await writeFile(path.join(legacyWorkspace, PRE_MIMI_DATA_DIRECTORY, 'sessions.json'), '{}');
+  await mkdir(path.join(emptyModernWorkspace, PRE_MIMI_DATA_DIRECTORY), { recursive: true });
+  await mkdir(path.join(emptyModernWorkspace, '.mimi-agent'), { recursive: true });
+  await writeFile(path.join(emptyModernWorkspace, PRE_MIMI_DATA_DIRECTORY, 'memories.json'), '[]');
+  await mkdir(path.join(conflictWorkspace, PRE_MIMI_DATA_DIRECTORY), { recursive: true });
+  await mkdir(path.join(conflictWorkspace, '.mimi-agent'), { recursive: true });
+  await writeFile(path.join(conflictWorkspace, PRE_MIMI_DATA_DIRECTORY, 'sessions.json'), '{}');
+  await writeFile(path.join(conflictWorkspace, '.mimi-agent', 'sessions.json'), '{}');
+  const keys = ['MIMI_WORKSPACE', 'AGENT_WORKSPACE', 'MIMI_DATA_DIR', 'AGENT_DATA_DIR', 'MIMI_DAEMON_DATA_DIR'] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.MIMI_DAEMON_DATA_DIR = path.join(root, 'daemon');
+
+    process.env.MIMI_WORKSPACE = freshWorkspace;
+    assert.equal(loadConfig().dataRoot, path.join(freshWorkspace, '.mimi-agent'));
+
+    process.env.MIMI_WORKSPACE = legacyWorkspace;
+    assert.equal(loadConfig().dataRoot, path.join(legacyWorkspace, '.mimi-agent'));
+    assert.equal(await readFile(path.join(legacyWorkspace, '.mimi-agent', 'sessions.json'), 'utf8'), '{}');
+
+    process.env.MIMI_WORKSPACE = emptyModernWorkspace;
+    assert.equal(loadConfig().dataRoot, path.join(emptyModernWorkspace, '.mimi-agent'));
+    assert.equal(await readFile(path.join(emptyModernWorkspace, '.mimi-agent', 'memories.json'), 'utf8'), '[]');
+
+    process.env.MIMI_WORKSPACE = conflictWorkspace;
+    assert.throws(loadConfig, /同时存在新目录.*旧目录/);
+
+    process.env.MIMI_DATA_DIR = '~/explicit-mimi-state';
+    assert.equal(loadConfig().dataRoot, path.join(os.homedir(), 'explicit-mimi-state'));
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('rejects symlinks for automatically discovered workspace runtime roots', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-directory-symlink-'));
+  const workspace = path.join(root, 'workspace');
+  const outside = path.join(root, 'outside');
+  await mkdir(workspace);
+  await mkdir(outside);
+  await symlink(outside, path.join(workspace, '.mimi-agent'));
+  const keys = ['MIMI_WORKSPACE', 'MIMI_DATA_DIR', 'AGENT_DATA_DIR', 'MIMI_DAEMON_DATA_DIR'] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.MIMI_WORKSPACE = workspace;
+    process.env.MIMI_DAEMON_DATA_DIR = path.join(root, 'daemon');
+    assert.throws(loadConfig, /不能包含符号链接.*\.mimi-agent/);
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('applies the same safe fallback to long-running daemon state', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-daemon-directory-migration-'));
+  const workspace = path.join(root, 'workspace');
+  await mkdir(workspace);
+  const keys = [
+    'MIMI_WORKSPACE', 'MIMI_DATA_DIR', 'AGENT_DATA_DIR',
+    'MIMI_DAEMON_DATA_DIR',
+  ] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.MIMI_WORKSPACE = workspace;
+
+    const freshHome = path.join(root, 'fresh-home');
+    assert.equal(loadConfig(freshHome).daemonDataRoot, path.join(freshHome, '.mimi-agent', 'daemon'));
+
+    const legacyHome = path.join(root, 'legacy-home');
+    await mkdir(path.join(legacyHome, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY), { recursive: true });
+    await writeFile(path.join(legacyHome, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY, 'old.db'), 'legacy');
+    assert.equal(loadConfig(legacyHome).daemonDataRoot,
+      path.join(legacyHome, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY));
+    assert.equal(await readFile(path.join(
+      legacyHome, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY, 'old.db',
+    ), 'utf8'), 'legacy');
+
+    const emptyModernHome = path.join(root, 'empty-modern-home');
+    await mkdir(path.join(emptyModernHome, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY), { recursive: true });
+    await mkdir(path.join(emptyModernHome, '.mimi-agent', 'daemon'), { recursive: true });
+    await writeFile(path.join(emptyModernHome, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY, 'old.db'), 'legacy');
+    assert.equal(loadConfig(emptyModernHome).daemonDataRoot,
+      path.join(emptyModernHome, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY));
+
+    const conflictHome = path.join(root, 'conflict-home');
+    await mkdir(path.join(conflictHome, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY), { recursive: true });
+    await mkdir(path.join(conflictHome, '.mimi-agent', 'daemon'), { recursive: true });
+    await writeFile(path.join(conflictHome, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY, 'old.db'), 'legacy');
+    await writeFile(path.join(conflictHome, '.mimi-agent', 'daemon', 'mimi.db'), 'modern');
+    assert.throws(() => loadConfig(conflictHome), /同时存在新目录.*旧目录/);
+
+    process.env.MIMI_DAEMON_DATA_DIR = '~/explicit-daemon';
+    assert.equal(loadConfig(conflictHome).daemonDataRoot, path.join(conflictHome, 'explicit-daemon'));
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('migrates legacy daemon files only at the explicit stopped-daemon boundary', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'mimi-stopped-daemon-migration-'));
+  const legacyRoot = path.join(home, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY);
+  await mkdir(legacyRoot, { recursive: true });
+  await writeFile(path.join(legacyRoot, PRE_MIMI_DAEMON_FILES.database), 'durable-state');
+  const config = {
+    provider: 'openai' as const,
+    workspaceRoot: home,
+    dataRoot: path.join(home, PRE_MIMI_DATA_DIRECTORY),
+    daemonDataRoot: legacyRoot,
+    skillsRoot: path.join(home, 'skills'),
+    mcpConfig: path.join(home, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: 20,
+  };
+  assert.equal(mimiPaths(config).database, path.join(legacyRoot, PRE_MIMI_DAEMON_FILES.database));
+  const migrated = migrateLegacyMimiDaemon(config, home);
+  assert.equal(migrated.daemonDataRoot, path.join(home, '.mimi-agent', 'daemon'));
+  assert.equal(await readFile(mimiPaths(migrated).database, 'utf8'), 'durable-state');
+});
+
+test('keeps modern daemon files authoritative when legacy filenames remain in the modern directory', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'mimi-modern-daemon-residue-'));
+  const modernRoot = path.join(home, '.mimi-agent', 'daemon');
+  await mkdir(modernRoot, { recursive: true });
+  await writeFile(path.join(modernRoot, 'mimi.db'), 'modern-state');
+  await writeFile(path.join(modernRoot, PRE_MIMI_DAEMON_FILES.database), 'legacy-residue');
+  const config = {
+    provider: 'openai' as const,
+    workspaceRoot: home,
+    dataRoot: path.join(home, '.mimi-agent'),
+    daemonDataRoot: modernRoot,
+    skillsRoot: path.join(home, 'skills'),
+    mcpConfig: path.join(home, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: 20,
+  };
+  const migrated = migrateLegacyMimiDaemon(config, home);
+  assert.equal(migrated, config);
+  assert.equal(await readFile(mimiPaths(migrated).database, 'utf8'), 'modern-state');
+  assert.equal(await readFile(path.join(modernRoot, PRE_MIMI_DAEMON_FILES.database), 'utf8'), 'legacy-residue');
+});
+
+test('rejects symlinks for automatically discovered daemon runtime roots', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-daemon-symlink-'));
+  const home = path.join(root, 'home');
+  const outside = path.join(root, 'outside');
+  const workspace = path.join(root, 'workspace');
+  await mkdir(path.join(home, '.mimi-agent'), { recursive: true });
+  await mkdir(outside);
+  await mkdir(workspace);
+  await symlink(outside, path.join(home, '.mimi-agent', 'daemon'));
+  const keys = ['MIMI_WORKSPACE', 'MIMI_DATA_DIR', 'AGENT_DATA_DIR', 'MIMI_DAEMON_DATA_DIR'] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.MIMI_WORKSPACE = workspace;
+    assert.throws(() => loadConfig(home), /不能包含符号链接.*daemon/);
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('rejects symlinked parents for automatically discovered daemon runtime roots', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-daemon-parent-symlink-'));
+  const home = path.join(root, 'home');
+  const outside = path.join(root, 'outside');
+  const workspace = path.join(root, 'workspace');
+  await mkdir(home);
+  await mkdir(path.join(outside, 'daemon'), { recursive: true });
+  await mkdir(workspace);
+  await symlink(outside, path.join(home, '.mimi-agent'));
+  const keys = ['MIMI_WORKSPACE', 'MIMI_DATA_DIR', 'AGENT_DATA_DIR', 'MIMI_DAEMON_DATA_DIR'] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.MIMI_WORKSPACE = workspace;
+    assert.throws(() => loadConfig(home), /不能包含符号链接.*\.mimi-agent/);
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('resolves dotenv as explicit, existing new, legacy, then the new default', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'mimi-environment-migration-'));
+  const modern = path.join(home, '.mimi-agent', '.env');
+  const legacy = path.join(home, PRE_MIMI_DATA_DIRECTORY, '.env');
+  const keys = ['MIMI_ENV_FILE', 'DOTENV_CONFIG_PATH'] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    assert.equal(resolveEnvironmentFile(undefined, home), modern);
+
+    await mkdir(path.dirname(legacy), { recursive: true });
+    await writeFile(legacy, 'SOURCE=legacy\n');
+    assert.equal(resolveEnvironmentFile(undefined, home), modern);
+    assert.equal(await readFile(modern, 'utf8'), 'SOURCE=legacy\n');
+
+    await mkdir(path.dirname(modern), { recursive: true });
+    await writeFile(modern, 'SOURCE=modern\n');
+    assert.equal(resolveEnvironmentFile(undefined, home), modern);
+
+    process.env.DOTENV_CONFIG_PATH = '~/legacy-explicit.env';
+    process.env.MIMI_ENV_FILE = '~/modern-explicit.env';
+    assert.equal(resolveEnvironmentFile(undefined, home), path.join(home, 'modern-explicit.env'));
+    assert.equal(resolveEnvironmentFile('~/argument.env', home), path.join(home, 'argument.env'));
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('protects explicit state plus both MimiAgent and MimiAgent private roots', () => {
+  const home = path.join(os.tmpdir(), 'mimi-protected-home');
+  const workspace = path.join(os.tmpdir(), 'mimi-protected-workspace');
+  const config: AppConfig = {
+    provider: 'openai', workspaceRoot: workspace,
+    dataRoot: path.join(os.tmpdir(), 'explicit-agent-state'),
+    daemonDataRoot: path.join(os.tmpdir(), 'explicit-daemon-state'),
+    skillsRoot: path.join(workspace, 'skills'), mcpConfig: path.join(workspace, 'mcp.json'),
+    historyLimit: 40, maxTurns: 20,
+  };
+  const protectedPaths = new Set(privateRuntimePaths(config, home));
+  for (const expected of [
+    config.dataRoot,
+    config.daemonDataRoot!,
+    path.join(workspace, '.mimi-agent'),
+    path.join(workspace, PRE_MIMI_DATA_DIRECTORY),
+    path.join(home, '.mimi-agent'),
+    path.join(home, PRE_MIMI_DATA_DIRECTORY),
+  ]) assert.ok(protectedPaths.has(expected), expected);
 });

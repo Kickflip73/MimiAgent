@@ -1,144 +1,212 @@
 import type { Tool } from '@openai/agents';
-import type { AgentPermissionMode } from '../config.js';
-import type { TeamRole } from '../core/team.js';
+import type { AgentPermissionMode, SecurityProfile } from '../config.js';
+import type { ToolCapability } from '../core/work-unit.js';
 import type { AgentMode } from './instructions.js';
 
-export type ToolCapability = 'read' | 'write' | 'execute' | 'network-read' | 'network-write' | 'control';
-export type SubAgentRole = 'researcher' | 'reviewer' | 'architect';
-
-interface ToolPolicy {
+export {
+  subAgentToolNames,
+  teamRoleToolNames,
+  type SubAgentRole,
+} from '../core/tool-role-policy.js';
+export type { ToolCapability } from '../core/work-unit.js';
+export interface ToolDescriptor {
+  name: string;
   capabilities?: readonly ToolCapability[];
   modes?: readonly AgentMode[];
-  subAgents?: readonly SubAgentRole[];
-  teamRoles?: readonly TeamRole[];
-  teamRolesWithShell?: readonly TeamRole[];
   sideEffect?: true;
   displayedOrchestrationTool?: true;
 }
+type ToolDescriptorDefinition = Omit<ToolDescriptor, 'name'>;
 
 const ALL_MODES = ['general', 'plan', 'ultra'] as const satisfies readonly AgentMode[];
+const GENERAL_AND_ULTRA = ['general', 'ultra'] as const satisfies readonly AgentMode[];
 const PLAN_AND_ULTRA = ['plan', 'ultra'] as const satisfies readonly AgentMode[];
 const ULTRA_ONLY = ['ultra'] as const satisfies readonly AgentMode[];
-const ALL_SUBAGENTS = ['researcher', 'architect', 'reviewer'] as const satisfies readonly SubAgentRole[];
-const ALL_TEAM_ROLES = ['explorer', 'architect', 'builder', 'tester', 'reviewer'] as const satisfies readonly TeamRole[];
 
-const TOOL_POLICY = {
+const TOOL_DESCRIPTOR_DEFINITIONS = {
   current_time: {
     modes: ALL_MODES,
-    subAgents: ['researcher'],
-    teamRoles: ['explorer', 'builder', 'tester'],
   },
-  calculate: { modes: ALL_MODES, teamRoles: ['builder', 'tester'] },
-  read_file: { capabilities: ['read'], modes: ALL_MODES, subAgents: ALL_SUBAGENTS, teamRoles: ALL_TEAM_ROLES },
-  write_file: { capabilities: ['write'], teamRoles: ['builder'], sideEffect: true },
-  edit_file: { capabilities: ['write'], teamRoles: ['builder'], sideEffect: true },
-  move_file: { capabilities: ['write'], teamRoles: ['builder'], sideEffect: true },
-  list_directory: { capabilities: ['read'], modes: ALL_MODES, subAgents: ALL_SUBAGENTS, teamRoles: ALL_TEAM_ROLES },
-  search_files: { capabilities: ['read'], modes: ALL_MODES, subAgents: ALL_SUBAGENTS, teamRoles: ALL_TEAM_ROLES },
+  calculate: { modes: ALL_MODES },
+  read_file: { capabilities: ['read'], modes: ALL_MODES },
+  write_file: { capabilities: ['write'], sideEffect: true },
+  edit_file: { capabilities: ['write'], sideEffect: true },
+  apply_patch: { capabilities: ['write'], sideEffect: true },
+  move_file: { capabilities: ['write'], sideEffect: true },
+  list_directory: { capabilities: ['read'], modes: ALL_MODES },
+  search_files: { capabilities: ['read'], modes: ALL_MODES },
+  inspect_changes: { capabilities: ['read'], modes: ALL_MODES },
+  inspect_processes: { capabilities: ['read'], modes: ALL_MODES },
   run_shell: {
     capabilities: ['execute'],
-    teamRolesWithShell: ['builder', 'tester', 'reviewer'],
     sideEffect: true,
   },
   http_get: {
     capabilities: ['network-read'],
     modes: ALL_MODES,
-    subAgents: ['researcher'],
-    teamRoles: ['explorer'],
   },
   web_search: {
     capabilities: ['network-read'],
     modes: ALL_MODES,
-    subAgents: ['researcher', 'architect'],
-    teamRoles: ['explorer', 'architect'],
   },
+  browser_open: { capabilities: ['network-write'], sideEffect: true },
+  browser_observe: { capabilities: ['network-read'], modes: ALL_MODES },
+  browser_act: { capabilities: ['network-write'], sideEffect: true },
+  browser_wait: { capabilities: ['network-read'], modes: ALL_MODES },
+  browser_assert: { capabilities: ['network-read'], modes: ALL_MODES },
+  browser_close: { capabilities: ['network-write'], sideEffect: true },
+  computer_observe: { capabilities: ['computer-read'], modes: ALL_MODES },
+  computer_act: { capabilities: ['computer-write'], sideEffect: true },
   http_request: { capabilities: ['network-read', 'network-write'], sideEffect: true },
-  search_knowledge: { capabilities: ['read'], modes: ALL_MODES, subAgents: ALL_SUBAGENTS, teamRoles: ALL_TEAM_ROLES },
-  index_knowledge: { sideEffect: true },
+  inspect_mimi_capabilities: { capabilities: ['state-read'], modes: ALL_MODES },
+  inspect_capabilities: { capabilities: ['state-read'], modes: ALL_MODES },
+  inspect_runtime_capabilities: { capabilities: ['state-read'], modes: ALL_MODES },
+  invoke_runtime_capability: { capabilities: ['state-read'], modes: ALL_MODES },
+  read_context_artifact: { capabilities: ['state-read'], modes: ALL_MODES },
+  set_mimi_connector_enabled: { capabilities: ['state-write'], sideEffect: true },
+  reload_mimi_connectors: { capabilities: ['state-write'], sideEffect: true },
+  connector_action: { capabilities: ['state-write'], sideEffect: true },
+  connector_capability: { capabilities: ['state-write'], sideEffect: true },
+  invoke_capability: { capabilities: ['state-read'], modes: ALL_MODES },
+  send_owner_message: { capabilities: ['state-write'], sideEffect: true },
+  get_personal_message_context: { capabilities: ['state-read'], modes: ALL_MODES },
+  send_personal_message: { capabilities: ['state-write'], sideEffect: true },
+  memory_search: { capabilities: ['memory-read'], modes: ALL_MODES },
+  memory_read: { capabilities: ['memory-read'], modes: ALL_MODES },
+  memory_links: { capabilities: ['memory-read'], modes: ALL_MODES },
+  remember: { capabilities: ['memory-write'], sideEffect: true },
+  forget: { capabilities: ['memory-write'], sideEffect: true },
+  memory_ingest: { capabilities: ['memory-write'], sideEffect: true },
+  list_mimi_preferences: { capabilities: ['state-read'], modes: ALL_MODES },
+  add_mimi_preference: { capabilities: ['state-write'], sideEffect: true },
+  remove_mimi_preference: { capabilities: ['state-write'], sideEffect: true },
+  list_memory_observations: { capabilities: ['state-read'], modes: ALL_MODES },
+  upsert_memory_page: { capabilities: ['memory-write'], sideEffect: true },
+  merge_memory_pages: { capabilities: ['memory-write'], sideEffect: true },
+  supersede_memory_page: { capabilities: ['memory-write'], sideEffect: true },
+  add_memory_links: { capabilities: ['memory-write'], sideEffect: true },
+  move_memory_scope: { capabilities: ['memory-write'], sideEffect: true },
+  refresh_memory_from_source: { capabilities: ['memory-write'], sideEffect: true },
+  complete_memory_observations: { capabilities: ['state-write'], sideEffect: true },
 
-  recall: { modes: ALL_MODES },
-  list_memories: { modes: ALL_MODES },
-  remember: { sideEffect: true },
-  forget: { sideEffect: true },
+  list_skills: { capabilities: ['read'], modes: ALL_MODES },
+  use_skill: { capabilities: ['read'], modes: ALL_MODES },
+  read_skill_resource: { capabilities: ['read'], modes: ALL_MODES },
+  reload_skills: { capabilities: ['control'], sideEffect: true },
+  list_mcp_resources: { capabilities: ['read'], modes: ALL_MODES },
+  read_mcp_resource: { capabilities: ['read'], modes: ALL_MODES },
+  list_mcp_prompts: { capabilities: ['read'], modes: ALL_MODES },
+  get_mcp_prompt: { capabilities: ['read'], modes: ALL_MODES },
 
-  list_skills: { modes: ALL_MODES },
-  use_skill: { modes: ALL_MODES },
-  read_skill_resource: { modes: ALL_MODES },
-  reload_skills: {},
-  list_mcp_resources: { modes: ALL_MODES },
-  read_mcp_resource: { modes: ALL_MODES },
+  update_plan: { capabilities: ['state-write'], modes: ALL_MODES, sideEffect: true },
+  prepare_task: { capabilities: ['state-read'], modes: ALL_MODES },
+  finish_task: { capabilities: ['state-read'], modes: ALL_MODES },
+  show_plan: { capabilities: ['state-read'], modes: ALL_MODES },
+  set_goal: { capabilities: ['state-write'], sideEffect: true },
+  update_goal: { capabilities: ['state-write'], sideEffect: true },
+  show_goal: { capabilities: ['state-read'], modes: ALL_MODES },
 
-  update_plan: { modes: ALL_MODES, sideEffect: true },
-  show_plan: { modes: ALL_MODES },
-  set_goal: { sideEffect: true },
-  update_goal: { sideEffect: true },
-  show_goal: { modes: ALL_MODES },
-
-  runtime_status: { modes: ALL_MODES },
-  list_models: { modes: ALL_MODES },
-  list_modes: { modes: ALL_MODES },
+  schedule_mimi_follow_up: { capabilities: ['state-write'], sideEffect: true },
+  schedule_mimi_routine: { capabilities: ['state-write'], sideEffect: true },
+  schedule_mimi_watch: { capabilities: ['state-write'], sideEffect: true },
+  complete_current_mimi_schedule: { capabilities: ['state-write'], sideEffect: true },
+  get_mimi_settings: { capabilities: ['state-read'], modes: ALL_MODES },
+  update_mimi_settings: { capabilities: ['state-write'], sideEffect: true },
+  get_mimi_snooze: { capabilities: ['state-read'], modes: ALL_MODES },
+  snooze_mimi: { capabilities: ['state-write'], sideEffect: true },
+  clear_mimi_snooze: { capabilities: ['state-write'], sideEffect: true },
+  list_mimi_attention_rules: { capabilities: ['state-read'], modes: ALL_MODES },
+  upsert_mimi_attention_rule: { capabilities: ['state-write'], sideEffect: true },
+  remove_mimi_attention_rule: { capabilities: ['state-write'], sideEffect: true },
+  list_mimi_routines: { capabilities: ['state-read'], modes: ALL_MODES },
+  upsert_mimi_routine: { capabilities: ['state-write'], sideEffect: true },
+  remove_mimi_routine: { capabilities: ['state-write'], sideEffect: true },
+  list_mimi_people: { capabilities: ['state-read'], modes: ALL_MODES },
+  upsert_mimi_person: { capabilities: ['state-write'], sideEffect: true },
+  remove_mimi_person: { capabilities: ['state-write'], sideEffect: true },
+  list_mimi_source_policies: { capabilities: ['state-read'], modes: ALL_MODES },
+  upsert_mimi_source_policy: { capabilities: ['state-write'], sideEffect: true },
+  remove_mimi_source_policy: { capabilities: ['state-write'], sideEffect: true },
+  list_mimi_standing_orders: { capabilities: ['state-read'], modes: ALL_MODES },
+  add_mimi_standing_order: { capabilities: ['state-write'], sideEffect: true },
+  remove_mimi_standing_order: { capabilities: ['state-write'], sideEffect: true },
+  finish_mimi_silently: { capabilities: ['delivery-control'], modes: ALL_MODES },
+  inspect_mimi_activity: { capabilities: ['state-read'], modes: ALL_MODES },
+  inspect_mimi_session_activity: { capabilities: ['state-read'], modes: ALL_MODES },
+  cancel_interrupted_mimi_task: { capabilities: ['state-write'], sideEffect: true },
+  list_mimi_schedules: { capabilities: ['state-read'], modes: ALL_MODES },
+  cancel_mimi_schedule: { capabilities: ['state-write'], sideEffect: true },
+  request_mimi_briefing: { capabilities: ['state-write'], sideEffect: true },
+  delegate_background_task: { capabilities: ['state-write'], sideEffect: true, displayedOrchestrationTool: true },
+  list_background_tasks: { capabilities: ['state-read'], modes: ALL_MODES },
+  inspect_background_task: { capabilities: ['state-read'], modes: ALL_MODES },
+  cancel_background_task: { capabilities: ['state-write'], sideEffect: true },
+  pause_background_task: { capabilities: ['state-write'], sideEffect: true },
+  resume_background_task: { capabilities: ['state-write'], sideEffect: true },
+  request_background_task_input: { capabilities: ['state-write'], sideEffect: true },
+  runtime_status: { capabilities: ['control'], modes: ALL_MODES },
+  model_control: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
+  generate_image: {
+    capabilities: ['network-write'],
+    modes: GENERAL_AND_ULTRA,
+    sideEffect: true,
+    displayedOrchestrationTool: true,
+  },
+  list_modes: { capabilities: ['control'], modes: ALL_MODES },
   switch_model: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
+  switch_provider: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
   switch_mode: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
-  set_output_level: { modes: ALL_MODES, sideEffect: true },
-  list_sessions: { modes: ALL_MODES },
-  get_session_history: { modes: ALL_MODES },
-  switch_session: { sideEffect: true },
-  new_session: { sideEffect: true },
-  clear_session: { sideEffect: true },
-  reload_mcp: { sideEffect: true },
-  request_exit: { sideEffect: true },
+  set_output_level: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
+  list_sessions: { capabilities: ['control'], modes: ALL_MODES },
+  get_session_history: { capabilities: ['control'], modes: ALL_MODES },
+  switch_session: { capabilities: ['control'], sideEffect: true },
+  new_session: { capabilities: ['control'], sideEffect: true },
+  clear_session: { capabilities: ['control'], sideEffect: true },
+  reload_mcp: { capabilities: ['control'], sideEffect: true },
+  request_exit: { capabilities: ['control'], sideEffect: true },
 
-  delegate_research: { modes: ALL_MODES, displayedOrchestrationTool: true },
-  delegate_architecture: { modes: PLAN_AND_ULTRA, displayedOrchestrationTool: true },
-  delegate_review: { modes: ALL_MODES, displayedOrchestrationTool: true },
+  delegate_research: { capabilities: ['read'], modes: ALL_MODES, displayedOrchestrationTool: true },
+  delegate_architecture: { capabilities: ['read'], modes: PLAN_AND_ULTRA, displayedOrchestrationTool: true },
+  delegate_review: { capabilities: ['read'], modes: ALL_MODES, displayedOrchestrationTool: true },
 
-  set_team_tasks: { modes: ULTRA_ONLY, sideEffect: true, displayedOrchestrationTool: true },
-  show_team_tasks: { modes: ULTRA_ONLY, displayedOrchestrationTool: true },
-  claim_team_task: { modes: ULTRA_ONLY, sideEffect: true, displayedOrchestrationTool: true },
-  update_team_task: { modes: ULTRA_ONLY, sideEffect: true, displayedOrchestrationTool: true },
-  retry_team_task: { modes: ULTRA_ONLY, sideEffect: true, displayedOrchestrationTool: true },
-  run_team: { modes: ULTRA_ONLY, sideEffect: true, displayedOrchestrationTool: true },
-} as const satisfies Record<string, ToolPolicy>;
+  set_team_tasks: { capabilities: ['state-write'], modes: ULTRA_ONLY, sideEffect: true, displayedOrchestrationTool: true },
+  show_team_tasks: { capabilities: ['state-read'], modes: ULTRA_ONLY, displayedOrchestrationTool: true },
+  claim_team_task: { capabilities: ['state-write'], modes: ULTRA_ONLY, sideEffect: true, displayedOrchestrationTool: true },
+  update_team_task: { capabilities: ['state-write'], modes: ULTRA_ONLY, sideEffect: true, displayedOrchestrationTool: true },
+  retry_team_task: { capabilities: ['state-write'], modes: ULTRA_ONLY, sideEffect: true, displayedOrchestrationTool: true },
+  run_team: { capabilities: ['execute', 'state-write'], modes: ULTRA_ONLY, sideEffect: true, displayedOrchestrationTool: true },
+} as const satisfies Record<string, ToolDescriptorDefinition>;
 
-type RegisteredToolName = keyof typeof TOOL_POLICY;
-const TOOL_POLICY_ENTRIES = Object.entries(TOOL_POLICY) as Array<[RegisteredToolName, ToolPolicy]>;
+type RegisteredToolName = keyof typeof TOOL_DESCRIPTOR_DEFINITIONS;
+const TOOL_DESCRIPTOR_ENTRIES = Object.entries(TOOL_DESCRIPTOR_DEFINITIONS) as Array<
+  [RegisteredToolName, ToolDescriptorDefinition]
+>;
 
-function policyFor(name: string): ToolPolicy | undefined {
-  return TOOL_POLICY[name as RegisteredToolName];
+export const TOOL_DESCRIPTORS: readonly ToolDescriptor[] = Object.freeze(
+  TOOL_DESCRIPTOR_ENTRIES.map(([name, descriptor]) => Object.freeze({ name, ...descriptor })),
+);
+const TOOL_DESCRIPTOR_BY_NAME = new Map(
+  TOOL_DESCRIPTORS.map((descriptor) => [descriptor.name, descriptor]),
+);
+
+export function toolDescriptor(name: string): ToolDescriptor | undefined {
+  return TOOL_DESCRIPTOR_BY_NAME.get(name);
 }
 
 function availableInMode(name: string, mode: AgentMode): boolean {
-  const modes = policyFor(name)?.modes;
+  const modes = toolDescriptor(name)?.modes;
   if (modes) return modes.includes(mode);
   return mode !== 'plan';
 }
 
 export const TOOL_CAPABILITIES: Readonly<Record<string, readonly ToolCapability[]>> = Object.freeze(
-  Object.fromEntries(TOOL_POLICY_ENTRIES
-    .filter((entry) => entry[1].capabilities !== undefined)
-    .map(([name, policy]) => [name, policy.capabilities!])),
+  Object.fromEntries(TOOL_DESCRIPTORS
+    .filter((descriptor) => descriptor.capabilities !== undefined)
+    .map((descriptor) => [descriptor.name, descriptor.capabilities!])),
 );
 
 export function isSideEffectTool(name: string): boolean {
-  return policyFor(name)?.sideEffect === true;
-}
-
-export function subAgentToolNames(role: SubAgentRole): readonly string[] {
-  return TOOL_POLICY_ENTRIES
-    .filter((entry) => entry[1].subAgents?.includes(role))
-    .map(([name]) => name);
-}
-
-export function teamRoleToolNames(role: TeamRole, allowUnsandboxedShell = false): readonly string[] {
-  const names = TOOL_POLICY_ENTRIES
-    .filter((entry) => entry[1].teamRoles?.includes(role))
-    .map(([name]) => name);
-  if (allowUnsandboxedShell) {
-    names.push(...TOOL_POLICY_ENTRIES
-      .filter((entry) => entry[1].teamRolesWithShell?.includes(role))
-      .map(([name]) => name));
-  }
-  return names;
+  return toolDescriptor(name)?.sideEffect === true;
 }
 
 export function toolsForMode(mode: AgentMode, baseTools: Tool[], teamTools: Tool[] = []): Tool[] {
@@ -146,26 +214,106 @@ export function toolsForMode(mode: AgentMode, baseTools: Tool[], teamTools: Tool
   return tools.filter((tool) => availableInMode(tool.name, mode));
 }
 
+const SAFE_CAPABILITIES = new Set<ToolCapability>([
+  'read',
+  'network-read',
+  'memory-read',
+  'state-read',
+  'delivery-control',
+  'control',
+]);
+
+const WORKSTATION_CAPABILITIES = new Set<ToolCapability>([
+  ...SAFE_CAPABILITIES,
+  'write',
+  'execute',
+  'memory-write',
+  'state-write',
+]);
+
+const FULL_OWNER_ONLY_TOOLS = new Set([
+  'connector_action',
+  'connector_capability',
+  'send_owner_message',
+  'send_personal_message',
+  'set_mimi_connector_enabled',
+  'reload_mimi_connectors',
+]);
+
+export function toolsForSecurity(
+  profile: SecurityProfile,
+  tools: Tool[],
+  customCapabilities: Readonly<Record<string, readonly ToolCapability[]>> = {},
+): Tool[] {
+  if (profile === 'full-owner') return tools;
+  const allowed = profile === 'safe' ? SAFE_CAPABILITIES : WORKSTATION_CAPABILITIES;
+  return tools.filter((tool) => {
+    if (profile === 'workstation' && FULL_OWNER_ONLY_TOOLS.has(tool.name)) return false;
+    const descriptor = toolDescriptor(tool.name);
+    const capabilities = descriptor?.capabilities ?? customCapabilities[tool.name];
+    if (!descriptor && !capabilities) return false;
+    return (capabilities ?? []).every((capability) => allowed.has(capability));
+  });
+}
+
+/** @deprecated SecurityProfile is the only runtime authorization source. */
 export function toolsForPermission(
   mode: AgentPermissionMode,
   tools: Tool[],
   customCapabilities: Readonly<Record<string, readonly ToolCapability[]>> = {},
+  securityProfile?: SecurityProfile,
 ): Tool[] {
-  if (mode === 'trusted') return tools;
+  const profile = securityProfile
+    ?? (mode === 'read-only' ? 'safe' : mode === 'workspace' ? 'workstation' : 'full-owner');
+  return toolsForSecurity(profile, tools, customCapabilities);
+}
+
+export interface RunToolPolicy {
+  allowedCapabilities: readonly ToolCapability[];
+  allowedTools?: readonly string[];
+  allowSideEffects?: boolean;
+  allowedSideEffectTools?: readonly string[];
+  allowUnknownTools?: boolean;
+}
+
+export function toolsForRunPolicy(tools: Tool[], policy?: RunToolPolicy): Tool[] {
+  if (!policy) return tools;
+  const allowed = new Set(policy.allowedCapabilities);
+  const allowedTools = policy.allowedTools ? new Set(policy.allowedTools) : undefined;
+  const allowedSideEffects = policy.allowedSideEffectTools
+    ? new Set(policy.allowedSideEffectTools)
+    : undefined;
   return tools.filter((tool) => {
-    const policy = policyFor(tool.name);
-    const declared = customCapabilities[tool.name];
-    if (!policy && !declared) return false;
-    const capabilities = policy?.capabilities ?? declared ?? [];
-    if (capabilities.includes('execute') || capabilities.includes('network-write')) return false;
-    return mode !== 'read-only' || !capabilities.includes('write');
+    if (allowedTools && !allowedTools.has(tool.name)) return false;
+    const registered = toolDescriptor(tool.name);
+    if (!registered) return policy.allowUnknownTools === true;
+    if (registered.sideEffect && policy.allowSideEffects !== true) return false;
+    if (registered.sideEffect && allowedSideEffects && !allowedSideEffects.has(tool.name)) return false;
+    return (registered.capabilities ?? []).every((capability) => allowed.has(capability));
   });
 }
 
-export function toolNamesForMode(mode: AgentMode, baseTools: Tool[]): string[] {
-  const names = toolsForMode(mode, baseTools).map((tool) => tool.name);
-  names.push(...TOOL_POLICY_ENTRIES
-    .filter(([name, policy]) => policy.displayedOrchestrationTool && availableInMode(name, mode))
-    .map(([name]) => name));
+export function toolNamesForMode(
+  mode: AgentMode,
+  baseTools: Tool[],
+  permissionMode: AgentPermissionMode = 'trusted',
+  securityProfile?: SecurityProfile,
+): string[] {
+  const profile = securityProfile
+    ?? (permissionMode === 'read-only' ? 'safe'
+      : permissionMode === 'workspace' ? 'workstation' : 'full-owner');
+  const names = toolsForMode(
+    mode,
+    toolsForSecurity(profile, baseTools),
+  ).map((tool) => tool.name);
+  names.push(...TOOL_DESCRIPTORS
+    .filter((descriptor) => descriptor.displayedOrchestrationTool
+      && availableInMode(descriptor.name, mode))
+    .filter((descriptor) =>
+      toolsForSecurity(
+        profile,
+        [{ name: descriptor.name } as Tool],
+      ).length === 1)
+    .map((descriptor) => descriptor.name));
   return [...new Set(names)].sort();
 }

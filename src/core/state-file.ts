@@ -10,8 +10,21 @@ const LOCK_RETRY_MS = 12;
 const queues = new Map<string, Promise<void>>();
 
 class InvalidStateFileError extends Error {
-  constructor(readonly cause: unknown) {
+  constructor(
+    readonly kind: 'syntax' | 'schema',
+    readonly cause: unknown,
+  ) {
     super(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
+export class StateFileIncompatibleError extends Error {
+  constructor(
+    readonly file: string,
+    options: { cause: unknown },
+  ) {
+    super(`状态文件格式与当前程序不兼容，已保留原文件：${file}`, options);
+    this.name = 'StateFileIncompatibleError';
   }
 }
 
@@ -26,10 +39,25 @@ export class StateFileCorruptError extends Error {
   }
 }
 
+export class UnsupportedStateVersionError extends Error {
+  constructor(
+    readonly fileKind: string,
+    readonly foundVersion: number,
+    readonly supportedVersion: number,
+  ) {
+    super(
+      `${fileKind} 状态版本 ${foundVersion} 高于当前支持的 ${supportedVersion}；`
+      + '这是由更新版 MimiAgent 写入的有效状态，为避免误隔离或副作用重放，拒绝版本回退。',
+    );
+    this.name = 'UnsupportedStateVersionError';
+  }
+}
+
 export interface AtomicJsonStoreOptions<T> {
   defaultValue: () => T;
   decode?: (value: unknown) => T;
   pretty?: boolean;
+  preserveSchemaMismatch?: boolean;
   recoverCorrupt?: boolean;
 }
 
@@ -79,7 +107,7 @@ export async function withExclusiveFileLock<R>(
   signal?: AbortSignal,
 ): Promise<R> {
   const digest = createHash('sha256').update(path.resolve(file)).digest('hex');
-  const lockTarget = path.join(os.tmpdir(), 'nano-agent-file-locks', digest);
+  const lockTarget = path.join(os.tmpdir(), 'mimi-agent-file-locks', digest);
   return enqueue(`external:${lockTarget}`, async () => {
     const release = await acquireLock(lockTarget, signal);
     let failed = false;
@@ -292,10 +320,17 @@ export class AtomicJsonStore<T> {
       if (isCode(error, 'ENOENT')) return this.options.defaultValue();
       throw error;
     }
+    let parsed: unknown;
     try {
-      return this.decode(JSON.parse(source));
+      parsed = JSON.parse(source);
     } catch (error) {
-      throw new InvalidStateFileError(error);
+      throw new InvalidStateFileError('syntax', error);
+    }
+    try {
+      return this.decode(parsed);
+    } catch (error) {
+      if (error instanceof UnsupportedStateVersionError) throw error;
+      throw new InvalidStateFileError('schema', error);
     }
   }
 
@@ -320,6 +355,9 @@ export class AtomicJsonStore<T> {
   }
 
   private async recoverInvalidState(error: InvalidStateFileError): Promise<T> {
+    if (error.kind === 'schema' && this.options.preserveSchemaMismatch) {
+      throw new StateFileIncompatibleError(this.file, { cause: error.cause });
+    }
     if (this.options.recoverCorrupt) {
       await this.quarantine();
       return this.options.defaultValue();
@@ -342,7 +380,8 @@ export class AtomicJsonStore<T> {
     try {
       backup = await this.quarantine();
       await markerHandle.truncate(0);
-      await markerHandle.writeFile(`${JSON.stringify({ state: 'quarantined', backup })}\n`, 'utf8');
+      const markerSource = Buffer.from(`${JSON.stringify({ state: 'quarantined', backup })}\n`, 'utf8');
+      await markerHandle.write(markerSource, 0, markerSource.length, 0);
       await markerHandle.sync();
     } finally {
       await markerHandle.close().catch(() => undefined);

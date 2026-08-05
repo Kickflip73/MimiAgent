@@ -1,0 +1,434 @@
+import path from 'node:path';
+import type { AppConfig } from '../config.js';
+import type { DaemonStatus, MimiSchedulePage } from './types.js';
+
+export function daemonHelp(): string {
+  return `MimiAgent 后台服务：
+  mimi daemon start                       一键初始化并启动后台服务
+  mimi daemon stop                        安全停止后台服务
+  mimi daemon restart [--force]           安全重启；--force 仅中断无在途 Tool 的活动 Run
+  mimi daemon status [--json]             查看可读状态；--json 输出完整数据
+  mimi daemon doctor                      检查本机就绪度与下一步
+  mimi daemon diagnostics [输出文件]       生成不含正文、目标、Token 和私人 Memory 的脱敏诊断包
+  mimi daemon backup [输出目录]            创建带哈希清单和 SQLite 完整性检查的恢复备份
+  mimi daemon backup verify <备份目录>     校验备份文件、摘要与数据库完整性
+  mimi daemon restore <备份目录>           仅向离线且不存在的空白数据目录恢复
+  mimi daemon activity [数量]              查看积压、失败与近期活动
+  mimi daemon events [数量]                查看不可变事件时间线
+  mimi daemon tasks [数量]                 查看任务队列与执行状态
+  mimi daemon runs [数量]                  查看执行尝试
+  mimi daemon outbox [数量]                查看待投递与投递历史
+  mimi daemon show <类型> <id>             查看 event/task/run/outbox/schedule 完整详情
+  mimi daemon retry task <id>              重新排队 dead-letter Task
+  mimi daemon retry outbox <id>            重新投递失败消息（可能重复）
+  mimi daemon archive outbox <id>          归档失败投递
+  mimi daemon connectors [reload]          查看或重载 Connector 在线状态和可执行能力
+  mimi daemon connectors <enable|disable> <id>
+                                             原子启停已配置 Connector，不改命令、凭证或 action
+  mimi daemon probe <profile>               认证执行固定只读 probe；profile 为 browser-tabs、
+                                             shortcuts-catalog、computer-window、screen-window
+  mimi daemon attention [reload]           查看或重载注意力策略
+  mimi daemon digest [数量]                 查看待简报摘要
+  mimi daemon brief                        立即生成主动简报
+  mimi daemon schedule list                查看计划任务
+  mimi daemon schedule at <ISO时间> "任务" 创建一次任务
+  mimi daemon schedule every <10m|1h> "任务" 创建周期任务
+  mimi daemon schedule remove <id>         删除计划任务
+
+模型 Provider：
+  mimi provider set openai-compatible --base-url <URL> --model <ID>
+      [--api-key-env <NAME>] [--models <ID,...>] [--context-window <N>]
+      当前 Run 仅有一个 MIMI_EPHEMERAL_SECRET_n 时自动使用；legacy 配置保存后重启
+  mimi provider add <providerId/modelId> [能力选项]
+      为 registry 中已有 Provider 注册模型，下一 Run 生效，不重启 Daemon`;
+}
+
+function output(value: unknown): void {
+  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function duration(value: number): string {
+  const seconds = Math.max(0, Math.floor(value / 1_000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时 ${minutes % 60} 分钟`;
+  const days = Math.floor(hours / 24);
+  return `${days} 天 ${hours % 24} 小时`;
+}
+
+function displayedHealthState(
+  health: DaemonStatus['health'],
+): NonNullable<DaemonStatus['health']>['state'] | undefined {
+  if (health?.state !== 'unhealthy') return health?.state;
+  const activeErrors = health.risks.filter((risk) =>
+    risk.severity === 'error'
+    && risk.code !== 'task_dead_letters'
+    && risk.code !== 'outbox_dead_letters');
+  return activeErrors.length === 0 ? 'degraded' : 'unhealthy';
+}
+
+function statusLabel(state: NonNullable<DaemonStatus['health']>['state'] | undefined): string {
+  if (state === 'ready') return '● 就绪';
+  if (state === 'degraded') return '⚠ 需关注';
+  if (state === 'unhealthy') return '✕ 异常';
+  return '○ 未知';
+}
+
+export function formatDaemonStatus(status: DaemonStatus, now = Date.now()): string {
+  const startedAt = Date.parse(status.startedAt);
+  const uptime = Number.isFinite(startedAt) ? duration(now - startedAt) : '未知';
+  const tasks = status.tasks;
+  const outbox = status.outbox;
+  const health = status.health;
+  const connectors = health?.connectors ?? { enabled: 0, online: 0, ready: 0 };
+  const attention = status.attention ?? {};
+  const snoozeValue = attention.snooze;
+  const snoozeActive = Boolean(
+    snoozeValue && typeof snoozeValue === 'object'
+      && (snoozeValue as Record<string, unknown>).active === true,
+  );
+  const pendingDigest = typeof attention.pendingDigest === 'number' ? attention.pendingDigest : 0;
+  const activeEventCount = status.activeEventCount ?? 0;
+  const activeTaskCount = status.activeTaskCount ?? 0;
+  const taskWorkers = status.taskWorkers ?? [];
+  const lines = [
+    'MimiAgent 后台状态',
+    '────────────────────────────────',
+    `状态       ${statusLabel(displayedHealthState(health))}`,
+    `进程       PID ${status.pid} · 已运行 ${uptime}`,
+    `版本       ${status.buildVersion ?? '未知'} · 协议 ${status.protocolVersion}`,
+    `工作区     ${status.workspaceRoot}`,
+    `安全       ${status.securityProfile?.label ?? '未报告'} · ${status.permissionMode ?? '未知'}`,
+    `Connector  已启用 ${connectors.enabled} · 在线 ${connectors.online} · 就绪 ${connectors.ready} · 总配置 ${status.connectorCount ?? 0}`,
+    `任务       排队 ${tasks.queued} · 运行 ${tasks.running} · 暂停 ${tasks.paused} · 阻塞 ${tasks.blocked} · 失败 ${tasks.failed} · 死信 ${tasks.dead_letter}`,
+    `投递       待发送 ${outbox.pending} · 发送中 ${outbox.sending} · 死信 ${outbox.dead_letter}`,
+    `计划       ${status.enabledSchedules} 个启用 · 待简报 ${pendingDigest}`,
+    `免打扰     静默时段 ${attention.quiet === true ? '开启' : '关闭'} · Snooze ${snoozeActive ? '开启' : '关闭'}`,
+  ];
+  if (activeEventCount > 0 || activeTaskCount > 0) {
+    lines.push(`活动       Event ${activeEventCount} · Task ${activeTaskCount} · Worker ${taskWorkers.length}`);
+  }
+  if ((health?.risks.length ?? 0) > 0) {
+    lines.push('', '需要关注');
+    for (const risk of health?.risks ?? []) {
+      lines.push(`- ${risk.message}${risk.nextAction ? `（建议：${risk.nextAction}）` : ''}`);
+    }
+  } else if (health) {
+    lines.push('', '没有需要处理的健康风险。');
+  } else {
+    lines.push('', '当前后台版本未提供统一健康信息，建议升级后重新查看。');
+  }
+  lines.push('', '详细信息：mimi daemon status --json');
+  return `${lines.join('\n')}\n`;
+}
+
+export function parseDaemonRestartOptions(args: string[]): { force: boolean } {
+  if (args.length === 0) return { force: false };
+  if (args.length === 1 && args[0] === '--force') return { force: true };
+  throw new Error(`mimi daemon restart 不支持参数：${args.join(' ')}`);
+}
+
+function unavailableDaemon(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return ['ECONNREFUSED', 'ECONNRESET', 'ENOENT', 'ENOTCONN'].includes(String(code ?? ''));
+}
+
+function durationMs(value: string): number {
+  const match = /^(\d+)(ms|s|m|h|d)$/.exec(value);
+  if (!match) throw new Error('周期格式应为 30s、10m、1h 或 1d');
+  const units = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
+  const duration = Number(match[1]) * units[match[2] as keyof typeof units];
+  if (!Number.isSafeInteger(duration) || duration <= 0) throw new Error('周期必须是正安全整数');
+  return duration;
+}
+
+export async function runDaemonCommand(config: AppConfig, args: string[]): Promise<void> {
+  const command = args[0] ?? 'status';
+  if (command === 'help' || command === '--help' || command === '-h') {
+    process.stdout.write(`${daemonHelp()}\n`);
+    return;
+  }
+  const [{ mimiRpc }, { mimiPaths }] = await Promise.all([
+    import('./ipc.js'),
+    import('./client-runtime.js'),
+  ]);
+  const socket = mimiPaths(config).socket;
+  if (command === 'run') {
+    const { runMimiDaemon } = await import('./service.js');
+    process.stdout.write(`MimiAgent 前台运行中，控制端点：${socket}\n`);
+    await runMimiDaemon(config);
+    return;
+  }
+  if (command === 'init') {
+    const { initializeMimi } = await import('./service.js');
+    output(await initializeMimi(config));
+    return;
+  }
+  if (command === 'doctor') {
+    const { doctorMimi } = await import('./service.js');
+    output(await doctorMimi(config));
+    return;
+  }
+  if (command === 'diagnostics') {
+    const [{ doctorMimi }, { buildRedactedDiagnosticBundle, writeRedactedDiagnosticBundle }] = await Promise.all([
+      import('./service.js'),
+      import('./diagnostics.js'),
+    ]);
+    const doctor = await doctorMimi(config);
+    const bundle = await buildRedactedDiagnosticBundle(config, doctor);
+    const destination = args[1] ?? path.resolve(`mimi-diagnostics-${new Date().toISOString().replaceAll(':', '-')}.json`);
+    output({ file: await writeRedactedDiagnosticBundle(destination, bundle), bundle });
+    return;
+  }
+  if (command === 'backup') {
+    const { createMimiBackup, verifyMimiBackup } = await import('./backup.js');
+    if (args[1] === 'verify') {
+      const source = args[2]?.trim();
+      if (!source) throw new Error('请提供要校验的备份目录');
+      output(await verifyMimiBackup(source));
+      return;
+    }
+    const destination = args[1]
+      ?? path.resolve(`mimi-backup-${new Date().toISOString().replaceAll(':', '-')}`);
+    output(await createMimiBackup(config, destination));
+    return;
+  }
+  if (command === 'restore') {
+    const source = args[1]?.trim();
+    if (!source) throw new Error('请提供要恢复的备份目录');
+    let daemonRunning = false;
+    try {
+      await mimiRpc(socket, 'status', undefined, 300);
+      daemonRunning = true;
+    } catch {
+      // Restore is permitted only after the control endpoint is offline.
+    }
+    if (daemonRunning) throw new Error('恢复前必须先停止 MimiAgent 后台服务');
+    const { restoreMimiBackup } = await import('./backup.js');
+    output(await restoreMimiBackup(config, source));
+    return;
+  }
+  if (command === 'start') {
+    const { startMimiDaemon } = await import('./service.js');
+    const status = await startMimiDaemon(config);
+    process.stdout.write(
+      `MimiAgent 后台已启动（PID ${status.pid}，工作区 ${status.workspaceRoot}）。\n`,
+    );
+    return;
+  }
+  if (command === 'stop') {
+    if (args.length > 1) {
+      throw new Error(`mimi daemon stop 不支持参数：${args.slice(1).join(' ')}`);
+    }
+    const { stopMimiDaemon } = await import('./service.js');
+    const stopped = await stopMimiDaemon(config);
+    process.stdout.write(stopped ? 'MimiAgent 后台已安全停止。\n' : 'MimiAgent 后台未运行。\n');
+    return;
+  }
+  if (command === 'restart') {
+    const options = parseDaemonRestartOptions(args.slice(1));
+    const { restartMimiDaemon } = await import('./service.js');
+    const status = await restartMimiDaemon(config, options);
+    process.stdout.write(
+      `MimiAgent 后台已重启（PID ${status.pid}，工作区 ${status.workspaceRoot}）。\n`,
+    );
+    return;
+  }
+  if (command === 'install') {
+    const { installMimiLaunchAgent } = await import('./service.js');
+    process.stdout.write(`MimiAgent launchd 服务已安装：${await installMimiLaunchAgent(config)}\n`);
+    return;
+  }
+  if (command === 'uninstall') {
+    const { uninstallMimiLaunchAgent } = await import('./service.js');
+    process.stdout.write(`MimiAgent launchd 服务已卸载：${await uninstallMimiLaunchAgent()}\n`);
+    return;
+  }
+  if (command === 'status') {
+    try {
+      const status = await mimiRpc<DaemonStatus>(socket, 'status');
+      if (args.includes('--json')) output(status);
+      else process.stdout.write(formatDaemonStatus(status));
+    } catch (error) {
+      if (!unavailableDaemon(error)) throw error;
+      const [{ DaemonLifecycleStore }, { mimiPaths: resolvePaths }] = await Promise.all([
+        import('./lifecycle.js'),
+        import('./client-runtime.js'),
+      ]);
+      const lifecycle = await new DaemonLifecycleStore(resolvePaths(config).lifecycle)
+        .latest()
+        .catch(() => undefined);
+      if (args.includes('--json')) output({ running: false, ...(lifecycle ? { lifecycle } : {}) });
+      else process.stdout.write([
+        'MimiAgent 后台状态',
+        '────────────────────────────────',
+        '状态       ○ 未运行',
+        lifecycle
+          ? `上次生命周期 ${lifecycle.phase} · ${lifecycle.reason ?? '无终态原因'} · ${lifecycle.updatedAt}`
+          : '上次生命周期 无记录',
+        '',
+        '启动：mimi daemon start',
+        '',
+      ].join('\n'));
+    }
+    return;
+  }
+  if (command === 'activity') {
+    output(await mimiRpc(socket, 'activity.get', { limit: Number(args[1] ?? 10) }));
+    return;
+  }
+  if (command === 'probe') {
+    const profile = args[1]?.trim();
+    if (!profile) throw new Error('probe 需要精确 profile');
+    output(await mimiRpc(socket, 'probe.read', { profile }, 60_000));
+    return;
+  }
+  if (command === 'submit') {
+    const wait = args.includes('--wait');
+    const text = args.slice(1).filter((arg) => arg !== '--wait').join(' ').trim();
+    if (!text) throw new Error('请提供要提交的任务');
+    const submitted = await mimiRpc<{ event: { id: string }; task?: { id: string }; inserted: boolean }>(socket, 'submit', { text });
+    if (!wait) {
+      output(submitted);
+      return;
+    }
+    if (!submitted.task) throw new Error('MimiAgent 没有为命令创建 Task');
+    const { waitForRemoteTask } = await import('./service.js');
+    output(await waitForRemoteTask(config, submitted.task.id));
+    return;
+  }
+  if (command === 'events') {
+    output(await mimiRpc(socket, 'events.list', { limit: Number(args[1] ?? 20) }));
+    return;
+  }
+  if (command === 'tasks') {
+    output(await mimiRpc(socket, 'tasks.list', { limit: Number(args[1] ?? 20) }));
+    return;
+  }
+  if (command === 'runs') {
+    output(await mimiRpc(socket, 'runs.list', { limit: Number(args[1] ?? 20) }));
+    return;
+  }
+  if (command === 'outbox') {
+    output(await mimiRpc(socket, 'outbox.list', { limit: Number(args[1] ?? 20) }));
+    return;
+  }
+  if (command === 'show') {
+    const entity = args[1];
+    const methods = {
+      event: 'event.get',
+      task: 'tasks.get',
+      run: 'run.get',
+      outbox: 'outbox.get',
+      schedule: 'schedule.get',
+    } as const;
+    if (!entity || !Object.hasOwn(methods, entity)) {
+      throw new Error('show 仅支持 event、task、run、outbox 或 schedule');
+    }
+    const id = args[2]?.trim();
+    if (!id) throw new Error(`请提供要查看的 ${entity} id`);
+    const detail = await mimiRpc(socket, methods[entity as keyof typeof methods], { id });
+    if (detail === undefined) throw new Error(`${entity} ${id} 不存在`);
+    output(detail);
+    return;
+  }
+  if (command === 'retry' || command === 'archive') {
+    const entity = args[1];
+    const supported = command === 'retry' ? ['task', 'outbox'] : ['outbox'];
+    if (!entity || !supported.includes(entity)) throw new Error(`${command} 仅支持 ${supported.join(' 或 ')}`);
+    const id = args[2]?.trim();
+    if (!id) throw new Error(`请提供要${command === 'retry' ? '重试' : '归档'}的 ${entity} id`);
+    output(await mimiRpc(socket, `${entity}.${command}`, { id }));
+    return;
+  }
+  if (command === 'connectors') {
+    if (args[1] === 'enable' || args[1] === 'disable') {
+      const id = args[2]?.trim();
+      if (!id || !/^[a-zA-Z0-9._-]+$/.test(id)) {
+        throw new Error(`connectors ${args[1]} 需要精确 Connector ID`);
+      }
+      output(await mimiRpc(socket, 'connectors.setEnabled', {
+        id,
+        enabled: args[1] === 'enable',
+      }, 15_000));
+      return;
+    }
+    output(await mimiRpc(
+      socket,
+      args[1] === 'reload' ? 'connectors.reload' : 'connectors.list',
+      {},
+      args[1] === 'reload' ? 15_000 : 5_000,
+    ));
+    return;
+  }
+  if (command === 'attention') {
+    output(await mimiRpc(socket, args[1] === 'reload' ? 'attention.reload' : 'attention.status'));
+    return;
+  }
+  if (command === 'digest') {
+    output(await mimiRpc(socket, 'digest.list', { limit: Number(args[1] ?? 50) }));
+    return;
+  }
+  if (command === 'brief') {
+    output(await mimiRpc(socket, 'attention.brief'));
+    return;
+  }
+  if (command === 'schedule') {
+    const operation = args[1] ?? 'list';
+    if (operation === 'list') {
+      const schedules: MimiSchedulePage['items'] = [];
+      let offset = 0;
+      let revision: string | undefined;
+      let total: number | undefined;
+      while (true) {
+        const page = await mimiRpc<MimiSchedulePage>(socket, 'schedules.page', {
+          offset, limit: 200, revision,
+        });
+        if (!Number.isSafeInteger(page.total) || page.total < 0 || (total !== undefined && page.total !== total)) {
+          throw new Error('MimiAgent 返回了无效的计划任务总数');
+        }
+        if (revision && page.revision !== revision) {
+          throw new Error('计划任务在读取期间发生变化，请重试 mimi daemon schedule list');
+        }
+        revision = page.revision;
+        total = page.total;
+        schedules.push(...page.items);
+        const expectedOffset = offset + page.items.length;
+        if (page.nextOffset === undefined) {
+          if (expectedOffset !== page.total) throw new Error('MimiAgent 计划任务分页提前结束');
+          break;
+        }
+        if (!Number.isSafeInteger(page.nextOffset) || page.nextOffset !== expectedOffset || page.nextOffset > page.total) {
+          throw new Error('MimiAgent 返回了无效的计划任务分页游标');
+        }
+        offset = page.nextOffset;
+      }
+      output(schedules);
+      return;
+    }
+    if (operation === 'remove') {
+      output({ removed: await mimiRpc(socket, 'schedules.remove', { id: args[2] }) });
+      return;
+    }
+    if (operation === 'at') {
+      const at = args[2];
+      const prompt = args.slice(3).join(' ').trim();
+      output(await mimiRpc(socket, 'schedules.add', {
+        name: prompt.slice(0, 80), type: 'at', value: at, prompt, nextRunAt: at, trust: 'owner',
+      }));
+      return;
+    }
+    if (operation === 'every') {
+      const duration = durationMs(args[2] ?? '');
+      const prompt = args.slice(3).join(' ').trim();
+      output(await mimiRpc(socket, 'schedules.add', {
+        name: prompt.slice(0, 80), type: 'interval', value: String(duration), prompt,
+        nextRunAt: new Date(Date.now() + duration).toISOString(), trust: 'owner',
+      }));
+      return;
+    }
+  }
+  throw new Error(`未知 MimiAgent 命令：${args.join(' ')}\n\n${daemonHelp()}`);
+}

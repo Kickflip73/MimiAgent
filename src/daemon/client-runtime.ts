@@ -1,0 +1,371 @@
+import os from 'node:os';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import {
+  preferredEnvironmentValue,
+  type AgentPermissionMode,
+  type AppConfig,
+} from '../config.js';
+import { DAEMON_PROTOCOL_VERSION, type DaemonStatus } from './types.js';
+import {
+  PRE_MIMI_DAEMON_DIRECTORY,
+  PRE_MIMI_DAEMON_FILES,
+  PRE_MIMI_DATA_DIRECTORY,
+} from '../core/mimi-legacy.js';
+
+export type DaemonStatusWire = Omit<DaemonStatus, 'protocolVersion'> & { protocolVersion?: unknown };
+export type DaemonProtocolState = 'legacy' | 'current' | 'newer';
+
+export interface GitBuildState {
+  commitSha: string;
+  dirty: boolean;
+}
+
+export interface MimiBuildIdentity extends GitBuildState {
+  schemaVersion: 1;
+  packageVersion: string;
+  runtimeDigest: string;
+  source: 'manifest' | 'git' | 'invalid_manifest' | 'unavailable';
+  value: string;
+}
+
+interface MimiBuildManifest extends GitBuildState {
+  schemaVersion: 1;
+  packageVersion: string;
+}
+
+const GIT_COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+
+function unknownGitBuildState(): GitBuildState {
+  return { commitSha: 'unknown', dirty: true };
+}
+
+export function inspectGitBuildState(workspaceRoot: string): GitBuildState | undefined {
+  try {
+    const output = (args: string[]): string => execFileSync('git', ['-C', workspaceRoot, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const commitSha = output(['rev-parse', '--verify', 'HEAD']).toLowerCase();
+    if (!GIT_COMMIT_PATTERN.test(commitSha)) return undefined;
+    return {
+      commitSha,
+      dirty: output(['status', '--porcelain=v1', '--untracked-files=normal']).length > 0,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function readBuildManifest(
+  manifestPath: string,
+  packageVersion: string,
+): { state: GitBuildState; source: MimiBuildIdentity['source'] } | undefined {
+  if (!existsSync(manifestPath)) return undefined;
+  try {
+    const value = JSON.parse(readFileSync(manifestPath, 'utf8')) as Partial<MimiBuildManifest>;
+    const validCommit = typeof value.commitSha === 'string'
+      && (GIT_COMMIT_PATTERN.test(value.commitSha)
+        || (value.commitSha === 'unknown' && value.dirty === true));
+    if (value.schemaVersion !== 1
+      || value.packageVersion !== packageVersion
+      || typeof value.dirty !== 'boolean'
+      || !validCommit) {
+      return { state: unknownGitBuildState(), source: 'invalid_manifest' };
+    }
+    return {
+      state: { commitSha: value.commitSha as string, dirty: value.dirty },
+      source: 'manifest',
+    };
+  } catch {
+    return { state: unknownGitBuildState(), source: 'invalid_manifest' };
+  }
+}
+
+export function computeMimiBuildIdentity(modulePath: string): MimiBuildIdentity {
+  try {
+    const runtimeRoot = path.dirname(path.dirname(modulePath));
+    const projectRoot = path.join(runtimeRoot, '..');
+    const manifest = JSON.parse(readFileSync(path.join(runtimeRoot, '..', 'package.json'), 'utf8')) as {
+      version?: unknown;
+    };
+    const packageVersion = typeof manifest.version === 'string' ? manifest.version : 'unknown';
+    const packaged = readBuildManifest(path.join(runtimeRoot, 'build-identity.json'), packageVersion);
+    const liveGit = packaged ? undefined : inspectGitBuildState(projectRoot);
+    const state = packaged?.state ?? liveGit ?? unknownGitBuildState();
+    const source: MimiBuildIdentity['source'] = packaged?.source
+      ?? (liveGit ? 'git' : 'unavailable');
+    const extension = path.extname(modulePath);
+    const files: string[] = [];
+    const directories = [runtimeRoot];
+    while (directories.length) {
+      const directory = directories.pop();
+      if (!directory) continue;
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const absolute = path.join(directory, entry.name);
+        if (entry.isDirectory()) directories.push(absolute);
+        else if (entry.isFile() && path.extname(entry.name) === extension) files.push(absolute);
+      }
+    }
+    files.sort();
+    const hash = createHash('sha256').update(packageVersion).update('\0');
+    for (const file of files) {
+      const relative = path.relative(runtimeRoot, file).split(path.sep).join('/');
+      hash.update(relative).update('\0').update(readFileSync(file)).update('\0');
+    }
+    const runtimeDigest = hash.digest('hex').slice(0, 12);
+    const value = `${packageVersion}+g${state.commitSha}.${state.dirty ? 'dirty' : 'clean'}.${runtimeDigest}`;
+    return {
+      schemaVersion: 1,
+      packageVersion,
+      ...state,
+      runtimeDigest,
+      source,
+      value,
+    };
+  } catch {
+    return {
+      schemaVersion: 1,
+      packageVersion: 'unknown',
+      ...unknownGitBuildState(),
+      runtimeDigest: 'unknown',
+      source: 'unavailable',
+      value: 'unknown+gunknown.dirty.unknown',
+    };
+  }
+}
+
+export function computeMimiBuildVersion(modulePath: string): string {
+  return computeMimiBuildIdentity(modulePath).value;
+}
+
+export const MIMI_BUILD_IDENTITY = computeMimiBuildIdentity(fileURLToPath(import.meta.url));
+export const MIMI_BUILD_VERSION = MIMI_BUILD_IDENTITY.value;
+
+export function mimiBuildDiagnostics(
+  runningBuild: string | undefined,
+  workspaceRoot: string,
+): {
+  installed: string;
+  running: string | null;
+  aligned: boolean | null;
+  workspaceHead?: GitBuildState;
+} {
+  const workspaceHead = inspectGitBuildState(workspaceRoot);
+  return {
+    installed: MIMI_BUILD_VERSION,
+    running: runningBuild ?? null,
+    aligned: runningBuild ? runningBuild === MIMI_BUILD_VERSION : null,
+    ...(workspaceHead ? { workspaceHead } : {}),
+  };
+}
+
+export interface MimiPaths {
+  root: string;
+  database: string;
+  lifecycle: string;
+  socket: string;
+  stdoutLog: string;
+  stderrLog: string;
+  connectorsConfig: string;
+  assistantConfig: string;
+}
+
+function daemonConfigPath(primary: string, fallback: string): string {
+  const value = preferredEnvironmentValue(primary);
+  if (!value) return path.resolve(fallback);
+  if (value === '~') return os.homedir();
+  if (/^~[\\/]/.test(value)) return path.resolve(os.homedir(), value.slice(2));
+  if (value.startsWith('~')) throw new Error(`${primary} 中的 ~ 只支持 ~/path 形式`);
+  return path.resolve(value);
+}
+
+export function mimiPaths(config: AppConfig): MimiPaths {
+  const root = path.resolve(config.daemonDataRoot ?? path.join(config.dataRoot, 'mimi'));
+  const compatibleFile = (modern: string, legacy: string): string => {
+    const modernPath = path.join(root, modern);
+    return !existsSync(modernPath) && existsSync(path.join(root, legacy))
+      ? path.join(root, legacy)
+      : modernPath;
+  };
+  return {
+    root,
+    database: compatibleFile('mimi.db', PRE_MIMI_DAEMON_FILES.database),
+    lifecycle: path.join(root, 'lifecycle.json'),
+    socket: compatibleFile('mimi.sock', PRE_MIMI_DAEMON_FILES.socket),
+    stdoutLog: compatibleFile('mimi.out.log', PRE_MIMI_DAEMON_FILES.stdoutLog),
+    stderrLog: compatibleFile('mimi.err.log', PRE_MIMI_DAEMON_FILES.stderrLog),
+    connectorsConfig: daemonConfigPath(
+      'MIMI_CONNECTORS_CONFIG', path.join(root, 'connectors.json'),
+    ),
+    assistantConfig: daemonConfigPath(
+      'MIMI_ASSISTANT_CONFIG', path.join(root, 'assistant.json'),
+    ),
+  };
+}
+
+export function migrateLegacyMimiDaemon(config: AppConfig, homeDirectory = os.homedir()): AppConfig {
+  const legacyRoot = path.join(homeDirectory, PRE_MIMI_DATA_DIRECTORY, PRE_MIMI_DAEMON_DIRECTORY);
+  const modernRoot = path.join(homeDirectory, '.mimi-agent', 'daemon');
+  const configuredRoot = path.resolve(config.daemonDataRoot ?? path.join(config.dataRoot, 'mimi'));
+  const migratingLegacyDirectory = configuredRoot === path.resolve(legacyRoot);
+  let root = configuredRoot;
+  if (migratingLegacyDirectory) {
+    mkdirSync(path.dirname(modernRoot), { recursive: true, mode: 0o700 });
+    if (existsSync(modernRoot)) {
+      if (readdirSync(modernRoot).length) {
+        throw new Error(`MimiAgent 新旧 Daemon 数据目录同时存在且非空：${modernRoot} / ${legacyRoot}`);
+      }
+      rmdirSync(modernRoot);
+    }
+    renameSync(legacyRoot, modernRoot);
+    root = modernRoot;
+  }
+  const renames = [
+    [PRE_MIMI_DAEMON_FILES.database, 'mimi.db'],
+    [PRE_MIMI_DAEMON_FILES.socket, 'mimi.sock'],
+    [PRE_MIMI_DAEMON_FILES.stdoutLog, 'mimi.out.log'],
+    [PRE_MIMI_DAEMON_FILES.stderrLog, 'mimi.err.log'],
+  ] as const;
+  for (const [legacy, modern] of renames) {
+    const from = path.join(root, legacy);
+    const to = path.join(root, modern);
+    if (!existsSync(from)) continue;
+    if (existsSync(to)) {
+      if (migratingLegacyDirectory) {
+        throw new Error(`MimiAgent 新旧 Daemon 文件同时存在：${to} / ${from}`);
+      }
+      continue;
+    }
+    renameSync(from, to);
+  }
+  return root === path.resolve(config.daemonDataRoot ?? path.join(config.dataRoot, 'mimi'))
+    ? config
+    : { ...config, daemonDataRoot: root };
+}
+
+export function daemonProtocolState(status: { protocolVersion?: unknown }): DaemonProtocolState {
+  const version = status.protocolVersion;
+  if (version === DAEMON_PROTOCOL_VERSION) return 'current';
+  if (typeof version === 'number' && Number.isSafeInteger(version) && version > DAEMON_PROTOCOL_VERSION) {
+    return 'newer';
+  }
+  return 'legacy';
+}
+
+export function daemonHasActiveWork(
+  status: {
+    activeEventId?: unknown;
+    activeEventIds?: unknown;
+    activeEventCount?: unknown;
+    activeHostMutations?: unknown;
+    activeTaskCount?: unknown;
+    tasks?: unknown;
+    events?: unknown;
+    outbox?: unknown;
+  },
+): boolean {
+  const positiveCount = (value: unknown): boolean => typeof value === 'number' && value > 0;
+  const count = (value: unknown, key: string): unknown => value && typeof value === 'object'
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+  return Boolean(status.activeEventId)
+    || (Array.isArray(status.activeEventIds) && status.activeEventIds.length > 0)
+    || positiveCount(status.activeEventCount)
+    || positiveCount(status.activeHostMutations)
+    || positiveCount(status.activeTaskCount)
+    || positiveCount(count(status.tasks, 'running'))
+    // Protocol <= 6 stored execution state on Events. Keep this read-only
+    // fallback so upgrade safety can detect an old daemon's in-flight work.
+    || positiveCount(count(status.events, 'running'))
+    || positiveCount(count(status.outbox, 'sending'));
+}
+
+export function forcedRestartBlockers(
+  status: {
+    activeEventId?: unknown;
+    activeEventIds?: unknown;
+    activeEventCount?: unknown;
+    activeToolCount?: unknown;
+    activeTaskCount?: unknown;
+    activeHostMutations?: unknown;
+    outbox?: unknown;
+  },
+): string[] {
+  const positiveCount = (value: unknown): number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
+  const activeEvents = positiveCount(status.activeEventCount)
+    || (Array.isArray(status.activeEventIds) ? status.activeEventIds.length : 0)
+    || (status.activeEventId ? 1 : 0);
+  const blockers: string[] = [];
+  if (activeEvents > 0 && typeof status.activeToolCount !== 'number') {
+    blockers.push('活动 Run 未报告在途 Tool 状态');
+  } else {
+    const tools = positiveCount(status.activeToolCount);
+    if (tools > 0) blockers.push(`在途 Tool ${tools}`);
+  }
+  const workers = positiveCount(status.activeTaskCount);
+  if (workers > 0) blockers.push(`独立 Task worker ${workers}`);
+  const mutations = positiveCount(status.activeHostMutations);
+  if (mutations > 0) blockers.push(`Host mutation ${mutations}`);
+  const sending = positiveCount(status.outbox && typeof status.outbox === 'object'
+    ? (status.outbox as Record<string, unknown>).sending
+    : undefined);
+  if (sending > 0) blockers.push(`Outbox sending ${sending}`);
+  return blockers;
+}
+
+export function assertDaemonWorkspace(
+  workspaceRoot: unknown,
+  expectedWorkspaceRoot: string,
+): asserts workspaceRoot is string {
+  const local = path.resolve(expectedWorkspaceRoot);
+  if (typeof workspaceRoot !== 'string' || !workspaceRoot.trim()) {
+    throw new Error([
+      'MimiAgent 后台未返回真实工作区，可能仍在运行旧版本；为避免误操作已拒绝连接。',
+      '请先执行 mimi daemon stop，再升级并从目标工作区重新运行 mimi。',
+    ].join('\n'));
+  }
+  const remote = path.resolve(workspaceRoot);
+  if (remote === local) return;
+  throw new Error([
+    `MimiAgent 后台工作区不一致：后台=${remote}，当前=${local}；为避免误操作已拒绝连接。`,
+    '请回到后台工作区使用，或先执行 mimi daemon stop，再从目标工作区重新运行 mimi。',
+  ].join('\n'));
+}
+
+export function daemonProtocolAction(
+  status: DaemonStatusWire,
+  expectedPermissionMode: AgentPermissionMode,
+): 'reuse' | 'upgrade' {
+  const state = daemonProtocolState(status);
+  const permissionMismatch = state === 'current' && status.permissionMode !== expectedPermissionMode;
+  const buildMismatch = state === 'current' && status.buildVersion !== MIMI_BUILD_VERSION;
+  if (state === 'current' && !permissionMismatch && !buildMismatch) return 'reuse';
+  if (state === 'newer') {
+    throw new Error(
+      `MimiAgent 后台协议版本 ${String(status.protocolVersion)} 高于当前 CLI ${DAEMON_PROTOCOL_VERSION}；请升级 CLI，当前后台未被停止。`,
+    );
+  }
+  // A matching protocol is the compatibility contract. When only the build
+  // differs, keep serving new clients until in-flight work reaches a safe
+  // restart boundary; the next idle client will perform the upgrade.
+  if (state === 'current' && buildMismatch && !permissionMismatch && daemonHasActiveWork(status)) {
+    return 'reuse';
+  }
+  if (daemonHasActiveWork(status)) {
+    const active = status.activeEventId ? `（活动事件 ${status.activeEventId}）` : '';
+    const configuration = permissionMismatch
+      ? `（后台执行档位 ${String(status.permissionMode ?? 'unknown')}，当前配置 ${expectedPermissionMode}）`
+      : buildMismatch
+        ? `（后台构建 ${String(status.buildVersion ?? 'unknown')}，当前构建 ${MIMI_BUILD_VERSION}）`
+        : '';
+    throw new Error(
+      `MimiAgent 后台需要升级${configuration}，但仍有活动任务${active}；为避免中断外部事务，等待任务完成后重试。`,
+    );
+  }
+  return 'upgrade';
+}

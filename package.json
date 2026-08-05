@@ -1,13 +1,13 @@
 {
-  "name": "nano-agent",
-  "version": "0.11.0",
-  "description": "A lightweight, general-purpose AI agent for real work, built with TypeScript and the OpenAI Agents SDK.",
+  "name": "mimi-agent",
+  "version": "0.12.0",
+  "description": "A lightweight, local-first, always-on personal AI agent built with TypeScript and the OpenAI Agents SDK.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Kickflip73/NanoAgent.git"
+    "url": "git+https://github.com/Kickflip73/MimiAgent.git"
   },
-  "homepage": "https://github.com/Kickflip73/NanoAgent#readme",
+  "homepage": "https://github.com/Kickflip73/MimiAgent#readme",
   "main": "./dist/agent.js",
   "types": "./dist/agent.d.ts",
   "exports": {
@@ -24,18 +24,19 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "nano-agent": "dist/index.js",
-    "nano": "dist/index.js"
+    "mimi": "dist/index.js"
   },
   "bugs": {
-    "url": "https://github.com/Kickflip73/NanoAgent/issues"
+    "url": "https://github.com/Kickflip73/MimiAgent/issues"
   },
   "keywords": [
     "ai-agent",
+    "personal-agent",
+    "always-on-agent",
     "openai-agents-sdk",
     "deepseek",
     "mcp",
-    "rag",
+    "memory-hub",
     "agent-skills",
     "subagents",
     "long-running-agents",
@@ -45,13 +46,33 @@
   "files": [
     "src",
     "dist",
+    "skills/agent-skill-creator",
     "skills/code-review",
+    "skills/docx",
     "skills/research",
     "skills/web-research",
-    "knowledge",
+    "skills/computer-use",
+    "skills/pdf",
+    "skills/pptx",
+    "skills/xlsx",
+    "skills/manifest.json",
+    "knowledge/mimi-agent.md",
     "evals",
     "docs/ARCHITECTURE.md",
-    "NANO.md",
+    "docs/ATTENTION.md",
+    "docs/BENCHMARKS.md",
+    "docs/CONNECTORS.md",
+    "docs/COMPUTER_USE.md",
+    "docs/PROVIDER_CANARY.md",
+    "docs/PROVIDER_CONTRACTS.md",
+    "docs/PUBLIC_API.md",
+    "docs/REPOSITORY_BOUNDARIES.md",
+    "docs/SECURITY_EVALS.md",
+    "mimi.connectors.example.json",
+    "mimi.radar.example.json",
+    "mimi.files.example.json",
+    "examples/connectors",
+    "MIMI.md",
     ".env.example",
     "mcp.example.json",
     "README.md",
@@ -63,34 +84,56 @@
     "tsconfig.build.json"
   ],
   "type": "module",
+  "packageManager": "npm@10.9.2",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/write-build-identity.mjs && node -e \"require('node:fs').chmodSync('dist/index.js',0o755)\"",
     "prepare": "npm run build",
     "dev": "tsx src/index.ts",
-    "start": "node dist/index.js",
     "eval": "tsx src/eval.ts",
+    "eval:security": "node --import tsx --import ./tests/test-environment.mjs --test tests/security-policy-eval.test.ts tests/tool-policy.test.ts",
+    "eval:m1": "tsx scripts/run-m1-eval.ts fixtures",
+    "eval:m1:canary": "tsx scripts/run-m1-canary.ts",
     "eval:agent": "tsx src/agent-eval.ts",
+    "eval:canary": "node --import tsx src/provider-canary.ts",
+    "bench:capacity": "node --import tsx scripts/benchmark-capacity.ts",
     "check": "tsc --noEmit",
-    "test": "node --import tsx --test tests/*.test.ts",
-    "test:coverage": "node --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-lines=85 --test-coverage-branches=75 --test-coverage-functions=75 --import tsx --test tests/*.test.ts",
+    "check:repo": "node scripts/check-repository-hygiene.mjs && node scripts/check-release-consistency.mjs && node scripts/check-dependency-direction.mjs && node scripts/check-asset-boundaries.mjs",
+    "test": "node --import tsx --import ./tests/test-environment.mjs --test --test-concurrency=1 tests/*.test.ts",
+    "test:api-contract": "node --import tsx --import ./tests/test-environment.mjs --test tests/public-api-contract.test.ts",
+    "test:provider-contract": "node --import tsx --import ./tests/test-environment.mjs --test tests/provider-contract.test.ts",
+    "test:browser:macos": "tsx scripts/run-browser-e2e.ts",
+    "test:browser:agent:macos": "tsx scripts/run-mimi-browser-e2e.ts",
+    "test:computer:macos": "tsx scripts/run-computer-e2e.ts",
+    "test:computer:agent:macos": "tsx scripts/run-mimi-computer-e2e.ts",
+    "test:ui:macos": "npm run test:browser:macos && npm run test:computer:macos",
+    "test:coverage": "node --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-lines=85 --test-coverage-branches=75 --test-coverage-functions=75 --import tsx --import ./tests/test-environment.mjs --test --test-concurrency=1 tests/*.test.ts",
     "test:package": "node tests/package-smoke.mjs",
-    "ci": "npm run check && npm run test:coverage && npm run build && npm run test:package"
+    "ci": "npm run check:repo && npm run check && npm run test:coverage && npm run build && npm run test:package"
   },
   "dependencies": {
-    "@openai/agents": "^0.13.2",
+    "@openai/agents": "0.13.2",
     "dotenv": "^17.0.0",
-    "openai": "^6.46.0",
-    "undici": "^8.7.0",
+    "openai": "6.46.0",
+    "undici": "8.10.0",
+    "ws": "8.21.0",
     "yaml": "^2.9.0",
-    "zod": "^4.0.0"
+    "zod": "4.4.3"
   },
   "devDependencies": {
+    "@trycua/cua-driver": "^0.12.3",
+    "@trycua/cua-driver-darwin-arm64": "^0.12.3",
     "@types/node": "^22.0.0",
     "tsx": "^4.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@openai/agents-core": "0.13.2",
+    "@openai/agents-openai": "0.13.2",
+    "@openai/agents-realtime": "0.13.2",
+    "fast-uri": "3.1.5"
   }
 }

@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "skills": [
+    {
+      "name": "agent-skill-creator",
+      "status": "product",
+      "published": true
+    },
+    {
+      "name": "code-review",
+      "status": "product",
+      "published": true
+    },
+    {
+      "name": "computer-use",
+      "status": "product",
+      "published": true
+    },
+    {
+      "name": "docx",
+      "status": "product",
+      "published": true
+    },
+    {
+      "name": "pdf",
+      "status": "product",
+      "published": true
+    },
+    {
+      "name": "pptx",
+      "status": "product",
+      "published": true
+    },
+    {
+      "name": "research",
+      "status": "product",
+      "published": true
+    },
+    {
+      "name": "web-research",
+      "status": "product",
+      "published": true
+    },
+    {
+      "name": "xlsx",
+      "status": "product",
+      "published": true
+    }
+  ]
+}

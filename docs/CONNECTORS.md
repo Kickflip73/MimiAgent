@@ -1,0 +1,612 @@
+# MimiAgent Connector Protocol
+
+Connector 把邮件、Messages、新闻、天气、日历或其他事件源适配为 MimiAgent 的统一事件协议。它运行在独立子进程中，通过 stdin/stdout 交换一行一个 JSON 的 NDJSON；渠道 SDK、崩溃和凭证不会进入 MimiAgent Runtime。个人 QQ 使用受约束的 CUA route，不伪装成 Connector 后端。
+
+## 配置
+
+首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认启用不启动 GUI App 的 System Connector 和 action-only Desktop Connector；Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Browser、Screen、Voice、Radar 和 File Radar 均需用户显式启用。初始化只为 canonical packaged Connector 补齐已声明的 action，且无变更时不改文件。
+
+`~/.mimi-agent/daemon` 是唯一默认常驻状态目录。三个配置示例文件均使用统一的 MimiAgent 命名。
+
+`mimi daemon doctor` 复用与 Host 相同的 schema，只读检查配置、启用项、脚本路径、必要系统命令、Provider Key 是否存在以及本机 Socket/launchd 状态。它不启动 Connector、不读取邮件、消息、联系人、屏幕等私人数据，也不主动触发 macOS 权限提示。
+
+已有渠道只由 operator 执行 `mimi daemon connectors enable <id>` /
+`mimi daemon connectors disable <id>` 原子启停。修改其他配置后运行
+`mimi daemon connectors reload` 换代 Connector 子进程。模型 Run 只获得能力发现和
+调用工具，不能启停、重载或修改 Connector 注册表。统一的 `inspect_capabilities`
+直接读取 ConnectorManager 的有界目录；`inspect_mimi_capabilities` 只保留为 Kernel
+只读诊断和旧 transcript 兼容，不进入新模型 Run 工具面。Host 会
+完整解析新配置；JSON/schema 无效时旧集合保持在线。启停和重载都仅在没有进行中的
+delivery/action 时切换，避免中断结果不确定的真实事务；繁忙时配置不变并快速失败。
+切换会短暂停止旧渠道再启动新渠道，不运行双份 Connector，也不自动监视文件变化。
+
+```json
+{
+  "connectors": {
+    "my-im": {
+      "enabled": true,
+      "command": "/absolute/path/to/my-im-bridge",
+      "args": ["--stdio"],
+      "cwd": "/absolute/working/directory",
+      "envAllowlist": ["MY_IM_TOKEN"],
+      "source": "my-im",
+      "trust": "external",
+      "profileId": "owner",
+      "restart": true,
+      "healthEvents": true,
+      "healthStabilityMs": 5000,
+      "deliveryTimeoutMs": 30000,
+      "actionTimeoutMs": 30000,
+      "syncTemplateActions": true,
+      "actions": {
+        "send_message": { "description": "主动发送一条消息" }
+      }
+    }
+  }
+}
+```
+
+Daemon 只向子进程传递 `PATH`、`HOME`、locale、临时目录和 `envAllowlist` 明确列出的变量，不会把整份模型密钥环境泄漏给 Connector。`actions` 是能力发现目录：每项除描述外可声明稳定 `capability` 与 `effect=read|write|unknown`；参数容易混淆时应同时声明 `targetExample` 和有效 JSON 字符串 `payloadExampleJson`，统一能力目录会把这两个调用契约原样交给模型。未声明 capability 的兼容配置使用 `connector.<id>.<action>`，不从描述或业务词推断。未声明的 action 不会发给子进程。旧 `claimedComputerApps` 只做配置读取与诊断兼容，不再粗粒度封锁整个应用；Computer 仍保护控制面并在每次动作前校验精确目标。`syncTemplateActions` 默认开启，随升级补齐内置 action 和稳定元数据。`trust` 是 Host 认定的 event provenance，不是来源自称即可获得的授权。
+
+`healthEvents` 默认开启。Connector 异常退出或启动失败时，Host 会把一条 `system:connector-health` 告警先写入 Inbox，再沿用 Attention、Agent 与 Outbox 处理；正常 daemon 停止和 disabled Connector 不产生告警。自动重启期间的连续失败属于同一个故障窗口，不重复告警；子进程连续存活 `healthStabilityMs`（默认 5 秒）后才生成一次恢复事件。MimiAgent 会先核对实时能力：自动重启中的故障只建立一个恢复 Watch，未启用自动重启的瞬时故障最多执行一次启停恢复，配置或命令缺失则给出精确修复信息；已恢复且没有遗留影响时静默结束。中断期间结果不确定的 delivery/action 永不自动重放。诊断 Event 只保存有界错误类别；完整子进程错误仍留在本机 daemon stderr。
+
+Connector 明确返回“尚未执行”的普通失败时，Outbox 按指数退避最多尝试 8 次。发送后置校验失败、ACK 丢失、进程中断或超时属于结果不确定，第一次失败就直接进入 dead letter，绝不自动重放；Manager 同时终止该 Connector，阻止本地动作继续晚到。Outbox 的默认 sending 租约为 180 秒，长于内置 Connector 允许的最长 120 秒投递超时；若 Daemon 崩溃使租约真的过期，恢复时同样按结果不确定直接 dead-letter，而不是把 `sending` 静默改回 `pending`。dead letter 会原子创建一个不含原始消息正文和 target 的本机 system fallback，提醒 owner 使用 `mimi daemon outbox` 检查；如果本机 system 通知也失败，不再递归创建告警。owner 可执行 `mimi daemon retry outbox <id>` 原 ID 重投，或执行 `mimi daemon archive outbox <id>` 标记已处置；显式重投仍是 at-least-once，远端已接收但 ACK 丢失时可能重复。
+
+## Connector → MimiAgent
+
+```json
+{"type":"event","externalId":"message-123","kind":"command","payload":{"text":"帮我总结"},"occurredAt":"2026-07-14T10:00:00Z","priority":80,"actor":{"id":"user-1","displayName":"Alice"},"conversation":{"id":"group-1"},"replyTarget":"group-1"}
+```
+
+- `externalId`：来源内稳定且唯一，用于去重，必填。
+- `kind`：`command | alert | ambient | webhook`；缺省为 `webhook`。
+- `payload`：原始事件正文或结构化数据，必填。
+- `occurredAt`：来源发生时间；无效或缺省时使用接收时间。
+- `priority`：0～100，默认 50。
+- `actor` / `conversation`：用于 provenance 与稳定 Session 路由。
+- `replyTarget`：存在时，Agent 结果通过同一 Connector 的 Outbox 回传。
+
+stdout 必须专用于协议消息；诊断日志写 stderr。单条未换行消息最大 1MB。
+
+需要以 cursor 消费上游事件的 Connector 必须先通过 status 声明
+`"eventAcknowledgement":true`。Daemon 只有在 Event 已写入持久 Inbox（重复
+`source + externalId` 也视为已持久化）后，才向 stdin 返回：
+
+```json
+{"type":"event_ack","externalId":"message-123","ok":true,"eventId":"host-event-id"}
+```
+
+写入失败返回 `ok:false` 和有界 `error`。Connector 必须等整批 Event 全部收到
+成功 ACK 后才推进上游 cursor；ACK 丢失或失败时保留原 cursor 并重读，由 Host
+去重。未声明该能力的旧 Connector 不会收到新消息类型。
+
+Connector 应在渠道状态变化时输出就绪度；这和子进程是否存活是两件事：
+
+```json
+{"type":"status","inbound":"ready","outbound":"ready","deliveryConfirmed":true,"eventAcknowledgement":true,"freshForMs":90000}
+```
+
+`inbound` / `outbound` 只能是 `ready | unavailable | unknown`。可选 `reasonCode` 使用稳定的小写故障码，让 Host 区分 owner binding 缺失、页面不可读等根因，而不是只显示笼统 unavailable。`deliveryConfirmed:false` 表示 UI 自动化等执行面只能确认动作已尝试，不能确认远端实际收到。`eventAcknowledgement:true` 表示 Connector 会等待 Inbox 持久化 ACK；未声明时 Host 保持旧协议兼容。轮询 Connector 可声明 1 秒到 7 天的 `freshForMs`，并在每次成功轮询后重发同一 status 作为 heartbeat；Host 以接收时间计算 `reportedAt` / `freshUntil`，过期后即使进程仍在线也标记 `stale`，从 readiness 计数中移除并进入统一 health 风险。不能持续报告 heartbeat 的 Connector 应省略该字段，不能伪造 freshness。未上报 status 的旧 Connector 保持 `unknown`；进程离线时两项统一为 `unavailable`。因此 `online` 只用于诊断子进程，不能再被解释为渠道已经可收发。
+
+Connector 声明 effect=`read` 的 `health_check` 后，Daemon 的确定性
+`readinessMonitor` 会在独立于模型 Run 的生命周期中定时探活。探活由同一 Connector
+子进程执行，因此可以使用渠道自己的安全恢复能力；连续失败达到
+`restartAfterFailures` 时只重启该 Connector，不重放 delivery、write/unknown action
+或任何结果不确定的外部事务。监测期间若存在投递或 action，会跳过本轮而不与业务动作
+并发。没有只读健康 action 的旧 Connector 不会被猜测调用。业务模型不得调用
+`health_check`、启停或 reload 来临时维修 Connector。
+
+
+## 通用本机 Webhook
+
+没有专用 stdio Bridge 时，可开启只绑定 `127.0.0.1` 的认证入口：
+
+```dotenv
+MIMI_WEBHOOK_PORT=7788
+MIMI_WEBHOOK_TOKEN=a-random-secret-at-least-24-characters
+```
+
+```bash
+curl -X POST http://127.0.0.1:7788/v1/events \
+  -H "Authorization: Bearer $MIMI_WEBHOOK_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"externalId":"weather-123","channel":"weather","kind":"alert","payload":{"text":"暴雨预警"},"priority":90}'
+```
+
+Webhook 来信固定为 `external`，请求体不能指定 trust；默认通过系统通知返回处理结果。`actor` 和 `conversation` 可保留人物与会话 provenance。官方回调 relay 还可声明严格的 Connector 回路：
+
+```json
+{
+  "externalId": "service-message-42",
+  "channel": "internal-service",
+  "kind": "command",
+  "payload": { "text": "请处理这项工作" },
+  "priority": 85,
+  "actor": { "id": "user-42", "displayName": "Alice" },
+  "conversation": { "id": "group-7", "threadId": "thread-9" },
+  "reply": { "connector": "internal-service", "target": "thread:thread-9" }
+}
+```
+
+`reply.connector` 只能是 1～100 字符的 Connector ID，`target` 最多 500 字符；Host 转换为 `connector:<id>` route。`reply` 存在时优先于 `notify`；没有 reply 时，`notify:true` 走 system，`notify:false` 明确不投递 Agent 结果，也不会继承 owner 默认 route。入口限制单体 1MB、每分钟 60 个已认证请求。它不会监听公网地址；需要接入云端或官方服务端回调时，应由已完成平台鉴权的窄 relay 转发到本机，不要直接暴露端口。
+
+## MimiAgent → Connector
+
+当 Outbox 需要回传时，Daemon 向 stdin 写入：
+
+```json
+{"type":"deliver","id":"outbox-uuid","target":"group-1","payload":{"text":"处理结果"},"deadlineAt":1784176000000}
+```
+
+Connector 完成远端发送后必须确认：
+
+```json
+{"type":"delivery_ack","id":"outbox-uuid","ok":true}
+```
+
+确认未执行、可以安全重试时返回 `{"type":"delivery_ack","id":"...","ok":false,"error":"rate limited"}`。动作可能已经发生但无法确认时必须返回 `{"type":"delivery_ack","id":"...","ok":false,"uncertain":true,"error":"send result is uncertain"}`；Daemon 会直接 dead-letter 而不自动重试。Connector 应使用 Outbox `id` 作为远端幂等键（渠道支持时）。
+
+## 主动事务 Action Bridge
+
+Agent 主动执行 Connector 事务时只调用模型目录中的业务 capability。Action 可用
+`modelVisible:false` 标记为 Host 内部动作，不会进入 Snapshot，也不能通过
+`invoke_capability` 直达。Daemon 在程序内完成唯一路线、就绪度、
+effect、幂等和失败分级；模型不接触 `operationRef`、探活、内部目标句柄或重放流程。
+普通 Run 只要存在 `started/uncertain` 外部动作，最终回执就固定为
+`completionDecision=uncertain`，Host 会把答案改写为“业务目标未确认完成”。
+精确声明的 `effect=read` 动作不进入副作用账本，可在明确失败后安全重试；write/unknown
+的业务操作身份由 Host 根据 Run 与 Tool Call 自动建立。相同 Host 调用已 confirmed
+时复用原回执，进入 `started/uncertain` 时禁止自动重试，只有 failed-safe 才能重新执行。
+
+个人消息的查看、读取和汇总只调用 `effect=read` 的目标目录与上下文动作。新消息 Event 由 Connector 自身的定时轮询采集；该内部同步不登记为模型 action，也不能作为普通消息读取的前置步骤。
+
+每个 Daemon Agent Run 只看到统一的 `inspect_capabilities`/`invoke_capability` deferred gateway。Connector query 直接读取 Manager 的 enabled/online、inbound/outbound readiness、`capability/effect/routeOwner` 与 action 目录，不通过另一个 Tool 转调。能力选择优先使用 `inspect_capabilities.capability` 精确过滤；`name` 专用于 deferred Tool，历史 `source=connector + name=<capability>` 输入会按精确 capability 兼容处理而不抛出笼统 Tool error。`query` 只检索展示元数据，业务词零命中时 `total=0` 但 `catalogTotal/catalogActions` 和 `availableCapabilities` 仍明确保留，不能据此声称没有 Connector 或切换到更宽权限路线。精确 ID 未注册会明确报错。输出最多包含 50 个 Connector、全局 100 个 action、单项 300 字符描述，并用 totals、`filterMatched` 与 `truncated` 明示过滤和截断。目录结果按 Run 与 semantic revision 缓存；readiness 或 action 目录变化立即失效，Manager 在真正发送前仍会再次校验。
+
+```json
+{"type":"action","id":"action-uuid","action":"send_message","target":"group:123","payload":{"text":"会议延后 10 分钟"},"deadlineAt":1784176000000}
+```
+
+Connector 执行完成后返回：
+
+```json
+{"type":"action_result","id":"action-uuid","ok":true,"result":{"sent":true}}
+```
+
+在执行前完成入参、目标或业务前置条件校验并明确拒绝时，返回 `ok:false` 和简短 `error`，不得设置 `uncertain:true`；Host 将其记为 `failed_safe`，保留原始错误文本，本轮不会冻结后续 ActionIntent。只有请求可能已经越过副作用提交点、但无法确认结果时，才返回 `ok:false,uncertain:true`。`target` 是主要事务对象，`payload` 是 Connector 自己定义的 JSON。`deadlineAt` 是 Daemon 给出的 Unix 毫秒绝对截止时间；新 Connector 应在截止时间前停止底层进程或请求并返回失败，旧 Connector 可忽略该兼容字段。外层 `deliveryTimeoutMs` / `actionTimeoutMs` 到达后，Manager 会终止并重启整个 Connector 子进程，防止已经向调用方报超时的本地动作继续晚到；子进程退出或 action 超时时仍把结果视为不确定并拒绝自动重放。Connector 应在上游支持时使用 action `id` 做幂等键。
+
+运行 `mimi daemon connectors` 可查看每个 Connector 的当前进程状态、双向就绪度和 action 目录，输出不包含凭证。恢复通知仍需要通过上述稳定窗口。
+
+## 信息雷达（RSS / Atom / 天气）
+
+`examples/connectors/radar-connector.mjs` 是一个零额外依赖的 HTTP 轮询 Connector。它从 `MIMI_RADAR_CONFIG` 指向的 JSON 读取多个 source，一个子进程即可同时处理 RSS 2.x、Atom 和 Open-Meteo 小时预报。起步配置见 `mimi.radar.example.json`。
+
+```bash
+mkdir -p ~/.mimi-agent/daemon
+cp mimi.radar.example.json ~/.mimi-agent/daemon/radar.json
+```
+
+在 `~/.mimi-agent/.env` 中设置：
+
+```dotenv
+MIMI_RADAR_CONFIG=/absolute/path/to/.mimi-agent/daemon/radar.json
+```
+
+再启用 `~/.mimi-agent/daemon/connectors.json` 中的 `radar` Connector 并执行 `mimi daemon connectors reload`。配置层级的 `pollIntervalMs`、`requestTimeoutMs` 和 `maxResponseBytes` 控制轮询与资源上限；`RADAR_POLL_INTERVAL_MS` 可临时覆盖轮询间隔，设为 `0` 关闭自动轮询但保留主动 action。
+
+Feed source 字段：
+
+- `id`、`type: "feed"`、`url` 必填。
+- `maxItems` 限制单次处理条数，默认 20；`priority` 默认 40。
+- `includeKeywords` / `excludeKeywords` 对标题和摘要执行不区分大小写的字面过滤。
+- 条目输出为 `ambient` Event，guid/id/link 优先作为稳定身份，通常由 Attention 进入早晚简报。
+
+Open-Meteo source 字段：
+
+- `id`、`type: "open-meteo"`、`latitude`、`longitude` 必填，`timezone` 默认 `auto`。
+- `horizonHours` 默认 24；Connector 只请求温度、降水概率、WMO weather code 和阵风四个字段。
+- `thresholds` 支持 `precipitationProbability`、`windGustKmh`、`temperatureHighC`、`temperatureLowC` 和 `weatherCodes`。
+- 命中阈值的时段输出为 `alert` Event，payload 保留原始数值和 `reasons`。这是个人阈值检测，不是政府气象预警。
+
+Agent 可以使用三个 action：
+
+- `refresh`：`target=all|<source-id>`，立即获取并输出新事件。
+- `weather_snapshot`：`target=all|<weather-source-id>`，返回小时快照和风险数，不额外输出 Event。
+- `sources`：`target=all|<source-id>`，返回已配置目录。
+
+每次 HTTP 请求都有超时和响应大小上限。RSS/Atom 只解析事件所需的有界字段，不执行 XML 外部实体。Open-Meteo 接口使用和限制以其[Forecast API 官方文档](https://open-meteo.com/en/docs) 为准。
+
+## File Activity Radar
+
+`examples/connectors/file-radar-connector.mjs` 是零依赖、跨平台的文件元数据轮询 Connector。它适合持续观察 Downloads、Desktop、共享落盘目录或其他自动化 inbox；起步配置见 `mimi.files.example.json`。配置路径使用 `MIMI_FILE_RADAR_CONFIG`。
+
+每个 watch 包含：
+
+- `id`、`path`：稳定标识和目录。`~` 展开为用户目录，相对路径相对配置文件解析。
+- `recursive`、`maxDepth`：是否递归及最大深度；默认不递归，深度上限 8。
+- `ignoreHidden`：默认忽略以 `.` 开头的路径项。
+- `extensions`：大小写不敏感的后缀 allowlist，空数组表示全部文件；不引入通用 glob DSL。
+- `kind`、`priority`：产生 `ambient`、`alert` 或 `command` Event 及其 Attention 优先级。
+
+配置顶层的 `pollIntervalMs`、`lookbackMinutes`、`maxEventsPerPoll` 和 `maxScanEntries` 分别限制轮询间隔、启动回看、单轮事件和单 watch 访问条目。`FILE_RADAR_POLL_INTERVAL_MS=0` 可关闭自动轮询但保留 actions。可用 actions：
+
+- `scan_now`：`target=<watch-id>|all`，立即扫描；同一路径的 size/mtime 连续两次扫描一致才产生 Event，结果返回 `emitted` 和 `pendingStability`。
+- `recent_files`：`target=<watch-id>|all`，payload 支持 `limit`（上限 200）和 `hours`（上限 720），只返回元数据。
+- `watches`：列出全部或指定 watch 的生效配置。
+
+Event 只包含绝对路径、相对路径、文件名、扩展名、大小、创建/修改时间和诚实的 `created_or_modified` 活动类型，不读取文件正文。Connector 不跟随文件或目录符号链接；文件必须以相同 size/mtime 连续出现两次才发出事件，避免 MimiAgent 读取尚在下载或复制的半成品。初次启动会在第一轮建立候选基线，随后由中心 Store 根据 `watchId + path + mtime + size` 跨重启去重。固定 `file-radar` 来源还会获得文件收件事务剧本：复核文件未变化后直接读取、提取、转换、重命名、移动、归档或关联现有事务，产物验证前不移走源文件。真正操作继续使用 Runtime 已有文件工具。
+
+## macOS 系统状态 Bridge
+
+`examples/connectors/macos-system-connector.mjs` 使用 Node 内置 `os`、`fs.statfs` 和 macOS 自带 `/usr/bin/pmset` 提供本机健康状态，不需要额外依赖或系统隐私权限。它不读取进程列表、Wi-Fi SSID、文件正文或浏览历史。
+
+Actions：
+
+- `system_snapshot`：`target=system|all`，返回电池、内存、1/5/15 分钟负载、逻辑 CPU 数、非 loopback 网络接口和默认文件系统容量。
+- `battery_status`：`target=battery|all`，返回供电来源、电量、充电状态和可用时的预计剩余分钟数；无电池的 Mac 返回 `available:false`。
+- `network_status`：`target=network|all`，返回当前在线状态和最多 64 个非 loopback IP 地址，不读取 SSID。
+- `storage_status`：`target=storage|default|<absolute-path>`，读取对应文件系统的总量、可用量和比例，不遍历目录。
+
+默认每 60 秒采样一次。首轮低/危急电量和低磁盘会立即产生 `alert`；网络首轮只建立基线，之后离线产生 priority 90 `alert`，恢复产生 priority 45 `ambient`。进程内只在状态 band 变化时输出，电池/磁盘 external ID 还包含本地日期和阈值 band，由中心 Store 跨重启去重。
+
+可配置：
+
+- `MACOS_SYSTEM_POLL_INTERVAL_MS`：默认 300000，`0` 关闭主动 Event 但保留 action。
+- `MACOS_SYSTEM_BATTERY_LOW_PERCENT` / `MACOS_SYSTEM_BATTERY_CRITICAL_PERCENT`：默认 20/10。
+- `MACOS_SYSTEM_DISK_MIN_PERCENT` / `MACOS_SYSTEM_DISK_MIN_GB`：默认剩余 10% 或 10GB 任一命中即告警，设为 `0` 可分别关闭阈值。
+- `MACOS_SYSTEM_DISK_PATH`：默认 `/`，必须是绝对路径。
+- `MACOS_SYSTEM_COMMAND_TIMEOUT_MS`：pmset 超时，默认 10000，上限 120000。
+
+所有系统命令都用固定 argv 调用且 stdout 上限 100KB。`pmset` 临时不可用时综合快照仍继续报告网络、内存和磁盘，只把电池标记为不可用；单独 `battery_status` 会返回明确 action 错误。
+
+## macOS 生活 Bridge
+
+`examples/connectors/macos-life-connector.mjs` 通过 macOS EventKit 原生后台接口接入 Calendar 和 Reminders，通过 Notification Center 发送通知，不需要额外 npm 依赖。读取、轮询和增删改不会启动、激活或控制 Calendar/Reminders App，也不会让它们常驻 Dock。开启实际配置 `~/.mimi-agent/daemon/connectors.json` 中的 `macos-life` 后，首次访问仍可能出现 macOS 自己的日历/提醒事项权限提示；这是系统授权窗口，不是对应 App 被启动，授权后访问保持静默。
+
+轮询会把临近日程、日程改期或删除、提醒变更、完成、删除和逾期转换为稳定可去重事件。一个权限为 `0600` 的有界快照只用于跨重启比较，默认位于 `~/.mimi-agent/daemon/macos-life.json`；`MACOS_LIFE_MAX_ITEMS` 控制最多跟踪 200 项，`MACOS_LIFE_STATE_FILE` 可覆盖路径。逾期提醒使用 `urgentPriority` 默认值 95，不会被普通静默时段阻塞。
+
+`calendar_upcoming` 额外携带按 `endAt + 5 分钟` 计算的 `suggestedFollowUpAt`。Daemon 只对固定的 `macos-life` 来源注入会议执行剧本：先完成冲突检查和可用材料准备，确有会议产出时再建立一次会后唤醒；外部来源伪造同名 payload type 不会获得这段可信指令。
+
+Actions：
+
+- `notify`：`target` 是通知标题，payload 支持 `text`、`subtitle`、`sound`。
+- `calendar_list`：`target` 是日历名或 `*`，payload 支持 ISO `from`、`to` 和 `limit`。
+- `calendar_create`：`target` 是日历名，payload 必填 `title`、`start`，可选 `end`、`location`、`notes`、`allDay`。
+- `calendar_update`：`target` 是稳定 event UID；payload 至少包含一个 `title`、`start`、`end`、`location`、`notes`、`allDay`，可用 `calendar` 缩小搜索范围。
+- `calendar_delete`：`target` 是稳定 event UID；payload 可用 `calendar` 缩小搜索范围。
+- `reminder_list`：`target` 是提醒列表名或 `*`，payload 支持 `completed` 和 `limit`。
+- `reminder_create`：`target` 是提醒列表名，payload 必填 `title`，可选 `dueAt`、`notes`、`priority`、`flagged`。
+- `reminder_complete`：`target` 是提醒 ID，payload 可用 `list` 缩小搜索范围。
+- `reminder_update`：`target` 是稳定 reminder ID；payload 至少包含一个 `title`、`dueAt`、`notes`、`priority`、`completed`、`flagged`，其中 `dueAt:null` 清除到期时间，可用 `list` 缩小范围。
+- `reminder_delete`：`target` 是稳定 reminder ID；payload 可用 `list` 缩小搜索范围。
+
+修改动作的标题上限 1000 字符、地点 5000、备注 40000，priority 必须是 0～9，日期必须可解析。空更新、无效字段类型和找不到稳定 ID 都明确失败，不按名称猜测对象。删除 recurring Calendar event 时只操作当前 occurrence，Connector 不引入 recurrence DSL。所有写操作继续使用 Action Bridge 的不确定结果不自动重放保护。
+
+默认每 5 分钟查询未来 30 分钟的日程和到期提醒，并输出 `alert` Event。Store 使用日程/提醒 ID 与时间去重，所以 Connector 重启不会反复执行同一事件。可配置：
+
+- `MACOS_POLL_INTERVAL_MS`：轮询间隔，`0` 关闭主动 Event。
+- `MACOS_LOOKAHEAD_MINUTES`：向前查看分钟数。
+- `MACOS_CALENDAR`：轮询指定日历名，默认 `*`。
+- `MACOS_REMINDER_LIST`：轮询指定提醒列表，默认 `*`。
+
+Connector 通过 argv 向本地 EventKit helper 传 JSON，不用 Shell 拼接日程标题或备注。helper 按源码摘要在 Daemon 数据目录中只编译缓存一次，后续轮询直接执行原生小程序，不会周期性重新编译。首次访问可能出现 macOS 自己的日历或提醒事项授权提示；接受授权后访问保持静默。
+
+## macOS Mail Bridge
+
+`examples/connectors/macos-mail-connector.mjs` 通过 Apple Mail 自带 JXA 字典接入用户已配置的邮件账号。账号密码仍由 Mail/Keychain 管理，Connector 无需获得 IMAP/SMTP 凭证，也没有额外 npm 依赖。
+
+启用实际配置 `~/.mimi-agent/daemon/connectors.json` 中的 `macos-mail` 后，Connector 会轮询 Apple Mail 统一收件箱的未读邮件，输出为 priority 75 的 `alert` Event。默认白天即时进入 Agent，静默时段、Snooze 或达到预算后仍由 Attention 合并进简报；无需动作时 Agent 可静默完成。邮件 message ID 用于稳定去重，发件人和去除 `Re:/Fwd:` 的 `threadSubject` 生成稳定 Session 会话键 `threadId`。正文预览会被截断，Event 只带附件数量，不在轮询阶段下载附件。
+
+Daemon 只对固定 `mail` 来源附加邮件事务剧本，但 event policy 始终优先，剧本不能解锁人物 context、Session、读取或写入工具。默认 external 入站只分析有界 Event；owner/system Run 在权限允许时可显式读取完整正文和附件、代办、回复、整理或建立 Watch。其他来源伪造 `unread_mail` 不会获得该来源剧本。
+
+内置配置把本机 Mail Connector provenance 固定为 `external`。邮件正文始终是不可信 user input；入站 Run 不注入 Standing Orders、人物 context 或既有 Session，也不会因为部署设为 `trusted` 就获得 `connector_action`。读取全文、发信或修改邮箱必须来自 Host 已认证的 `owner/system` 运行。
+
+可配置环境变量：
+
+- `MACOS_MAIL_POLL_INTERVAL_MS`：默认 120000，`0` 关闭主动轮询但保留 action。
+- `MACOS_MAIL_MAX_UNREAD`：单次最多处理未读数，默认 20，上限 100。
+- `MACOS_MAIL_BODY_CHARS`：预览和单封读取的正文字符上限，默认 4000，上限 50000。
+- `MACOS_MAIL_ACCOUNT`：只轮询指定 Mail 账号名，默认 `*` 表示统一收件箱。
+
+Actions：
+
+- `list_unread`：`target=<account-name>|*`，payload 支持 `limit` 和 `includeBody`。
+- `search_messages`：`target=<account-name>|*`，默认在统一收件箱按 sender/subject 的 `query`、可选 `read`/`flagged` 筛选；支持 `limit`（最大 100）和 `includeBody`。精确账号 target 可选传 `mailboxPath`。
+- `search_mailbox_messages`：显式历史邮箱搜索入口，必须使用精确账号 target 和 `mailboxPath:string[]`；与 `search_messages` 复用同一有界实现。该独立 catalog 名称让已有安装在升级时自动发现新能力。
+- `read_message`：`target=<message-id>`，返回正文和最多 50 项附件元数据；payload 可用 `markRead:true` 在读取时标记已读，历史邮件传 `source:{account,path}`。
+- `list_mailboxes`：`target=<account-name>|*`，递归返回最多 200 个 `{account,path,unreadCount}`，其中 path 是最多 20 段的名称数组。
+- `list_attachments`：`target=<message-id>`，只返回稳定 attachment ID、名称、MIME、大小和下载状态；历史邮件可传 `source`。
+- `save_attachment`：`target=<message-id>`，payload 必填 `attachmentId` 和绝对 `outputPath`，仅显式 `overwrite:true` 时覆盖现有文件；历史邮件可传 `source`。
+- `send_message`：`target=<primary-recipient>`，payload 必填 `subject`，支持 `body`、`to`、`cc`、`bcc`、`sender` 和 `attachments`。
+- `reply_message`：`target=<message-id>`，payload 必填 `body`，可用 `replyAll:true`、`attachments` 和历史邮件 `source`。
+- `mark_read`：`target=<message-id>`，payload 用 `read` 切换状态，默认 `true`；历史邮件可传 `source`。
+- `set_flagged`：`target=<message-id>`，payload 必填 `flagged`，可选 `color` 为 0～6；历史邮件可传 `source`。
+- `move_message`：`target=<message-id>`，payload 必填 `destinationAccount` 和从账号根目录开始的 `destinationPath:string[]`；历史邮件可传 `source`。
+- `delete_message`：`target=<message-id>`，删除指定邮件；历史邮件可传 `source`。
+- `create_draft`：收件人和 payload 与 `send_message` 相同，但仅保存草稿。
+
+邮件 Event 故意不设置 `replyTarget`：Agent 的普通处理结果不会被当作给发件人的回信。MimiAgent 需要主动选择 `reply_message` 才会发送。Connector 也支持显式 Outbox delivery，此时 target 必须是收件人邮箱。所有标题、正文、地址和路径均以 JSON argv 传入 `osascript`，不经 Shell。
+
+发件 `attachments` 最多 20 个绝对路径，只接受不跟随符号链接的普通文件，单个最大 25MB、合计最大 50MB。收件附件名称属于不可信元数据，不会用于推导落盘路径；`save_attachment` 先让 Mail 写入目标目录中的随机临时文件，验证后设为 `0600`，再以 no-clobber hard link 或显式覆盖时的 atomic rename 提交，并在所有终态清理临时文件。二进制内容不会进入 NDJSON。
+
+搜索默认只覆盖统一收件箱，不建立邮箱镜像或读取所有历史目录。历史查询必须先调用 `list_mailboxes`，再把返回的精确账号和完整 path 原样交给 `search_mailbox_messages`；单次只读取该邮箱且最多返回 100 条。结果中的 `account` 与 `mailboxPath` 可组成后续按 ID 动作的 `source:{account,path}`。邮箱名称可能本地化，因此 Connector 不猜测“Archive/归档”；路径逐层精确匹配，缺失或同层重名时明确失败。旗标、回复、移动和删除是真实外部事务，不增加逐次审批，并沿用 Action Bridge 的不确定结果不自动重放语义。
+
+首次运行时 macOS 会请求对 Mail 的自动化访问。这是操作系统隐私边界，MimiAgent 内部不叠加审批模型。邮件正文始终作为外部来源数据注入 Agent，不作为系统指令。
+
+## macOS Messages Bridge
+
+`examples/connectors/macos-messages-connector.mjs` 使用 Node 内置 `node:sqlite` 以只读模式打开 `~/Library/Messages/chat.db`，并用 Messages.app 的 JXA 字典发送消息，不需要第三方 npm 依赖。它不会写入 Apple 的私有数据库。
+
+启用实际配置 `~/.mimi-agent/daemon/connectors.json` 中的 `macos-messages` 前，需要给实际运行 Connector 的 Node、Terminal 或 LaunchAgent 对应可执行程序授予 macOS“隐私与安全性 → 完全磁盘访问权限”。发送消息时，系统还可能请求对 Messages 的自动化访问。MimiAgent 不在这两层系统权限之上增加审批流程。
+
+可配置环境变量：
+
+- `MACOS_MESSAGES_DB`：Messages 数据库路径，默认 `~/Library/Messages/chat.db`；主要用于测试或非默认用户目录。
+- `MACOS_MESSAGES_POLL_INTERVAL_MS`：默认 30000，`0` 关闭主动轮询但保留 action。
+- `MACOS_MESSAGES_MAX_EVENTS`：单次最多产生的来信事件数，默认 50，上限 200。
+- `MACOS_MESSAGES_LOOKBACK_HOURS`：轮询和默认历史查询回看窗口，默认 24 小时，上限 720 小时。
+
+Actions：
+
+- `list_chats`：列出最近活跃会话；payload 支持 `limit`。
+- `recent_messages`：`target=<chat-guid>|<handle>`，payload 支持 `limit`，结果按时间正序返回。
+- `list_attachments`：`target=<message-guid>|<local-id>`，payload 支持 `limit`（最大 50），返回稳定 ID、名称、MIME、声明/实际大小、传输状态、本地路径和 availability。
+- `save_attachment`：`target=<message-guid>|<local-id>`，payload 必填 `attachmentId` 和绝对 `outputPath`，仅显式 `overwrite:true` 时覆盖。
+- `send_message`：`target=<chat-guid>|<phone-or-address>`，payload 支持 `text` 和 `attachments`，至少提供一项。
+
+轮询到的来信输出为 priority 80 的 `alert` Event，发送者作为 actor，chat GUID 同时作为稳定 conversation 和 `replyTarget`。默认白天立即处理，静默时段、Snooze 或达到预算时进入简报。Daemon 只对固定 `messages` 来源注入即时消息事务剧本：需要答复时，Agent 的最终答案作为可直接发送的正文经可靠 Outbox 回复原会话；无需答复或已经显式调用 `send_message` 时安静完成，避免多余或重复回复。需要等待对方确认时可按 chatId、sender 和 receivedAt 建立 Watch。
+
+内置配置同样把本机 Messages Connector provenance 固定为 `external`，来信文字和附件都是不可信数据。当前 Event 仍可通过可靠 reply route 返回普通对话结果，但受限 Run 看不到 Standing Orders、人物 context 或历史，也不能调用 `recent_messages`、`send_message` 等 Connector action；查历史、发附件或跨 Connector 办事必须由 Host 已认证的 `owner/system` 运行发起。
+
+Messages 数据库属于 macOS 私有实现。Connector 启动时会验证核心消息表；附件 action 再按需验证 attachment 关联最小列，并对 MIME、声明大小和传输状态等版本可选列动态读取。富文本 `attributedBody` 不做不稳定的 typedstream 解码；没有普通文本的附件或富消息在 Event 中仍以占位文本和数量呈现，附件不会自动复制。
+
+`save_attachment` 不信任数据库 filename 作为输出名：owner/Agent 必须提供绝对路径，Connector 重新 `lstat` 本地源，只接受不跟随符号链接的普通文件，再通过同目录随机临时副本、`0600`、no-clobber hard link 或显式 atomic overwrite 提交。发件 `attachments` 最多 20 个绝对普通文件，单个 250MB、合计 500MB。文本和每个附件是连续的系统 send 事务；中途失败可能已有前序项成功，Action Bridge 不自动重放整组操作。读取始终使用只读连接，测试也只使用合成 fixture，不访问真实消息。
+
+## macOS Contacts Bridge
+
+`examples/connectors/macos-contacts-connector.mjs` 通过 Contacts.app 的 JXA 字典按需查询和维护系统通讯录，不需要额外 npm 依赖。它是 action-only Connector：不轮询联系人、不复制通讯录，也不会产生后台 Event。
+
+Actions：
+
+- `search_contacts`：`target=<query>|*`，按姓名、昵称、组织、邮箱或电话匹配；payload 支持 `limit`，默认 20，上限 100。
+- `get_contact`：`target=<contact-id>`，读取稳定 ID 对应的常用字段、邮箱、电话、分组和最多 4000 字符备注。
+- `create_contact`：`target=new`，payload 支持姓名、昵称、组织、部门、职位、备注、`company`、`emails` 和 `phones`。
+- `update_contact`：`target=<contact-id>`，可更新上述标量字段，并通过 `addEmails`、`addPhones` 追加联系方式。
+
+`emails`、`phones`、`addEmails` 和 `addPhones` 均为最多 20 项的 `{label, value}` 数组。搜索会返回全部有界候选而不在重名时自动选第一个；Agent 应先取得 contact ID，再把选定的邮箱或号码交给 Mail、Messages 等 Connector。
+
+首次使用时 macOS 会请求对 Contacts 的自动化/隐私访问。这是系统权限边界，MimiAgent 不叠加审批。Connector 不输出图片、二进制 vCard 或完整地址，所有输入使用 JSON argv 传入 `osascript`，不经 Shell。
+
+## macOS Notes Bridge
+
+`examples/connectors/macos-notes-connector.mjs` 通过 Notes.app JXA 接入现有本机/iCloud Notes 账号，不需要额外 npm 依赖。它是 action-only Connector：不轮询、不复制 Notes 私有数据库，也不会在写入后产生自触发 Event。
+
+Actions：
+
+- `list_folders`：`target=all|<account-name>|<account-id>`，列出账号和最多 200 个顶层文件夹及稳定 ID。
+- `search_notes`：`target=<query>|*`，搜索标题和纯文本预览；payload 支持 `folderId`、`limit`（上限 100）和 `scanLimit`（上限 5000），并报告 `truncated`。
+- `read_note`：`target=<note-id>`，payload 支持 `bodyFormat: plain|html` 和 `bodyChars`（上限 50000）。
+- `create_note`：`target=default|<folder-id>`，payload 必填 `title`，支持 `body`、`bodyFormat`。
+- `update_note`：`target=<note-id>`，更新标题或替换正文。
+- `append_note`：`target=<note-id>`，追加必填 `body`，可配置纯文本 `separator`。
+
+创建、更新和追加正文最多 40000 字符。默认 `bodyFormat` 是 `plain`，Connector 会在 JXA 内将 `& < >` 等字符转义为 HTML；只有显式指定 `html` 才按 HTML body 写入。读取密码保护笔记时不尝试解锁或返回正文，附件最多返回 20 项名称、ID、共享和时间元数据，不下载二进制内容。
+
+首次使用由 macOS 请求对 Notes 的自动化访问。MimiAgent 不叠加审批模型；所有参数通过 JSON argv 传入 `osascript`，不经 Shell。
+
+## macOS Shortcuts Bridge
+
+`examples/connectors/macos-shortcuts-connector.mjs` 直接调用 macOS 自带 `/usr/bin/shortcuts`，把用户已经在 Shortcuts app 中维护的流程作为 MimiAgent 通用能力。Connector action-only、无 npm 依赖，不读取或重新编排 Shortcut 内部步骤。
+
+Actions：
+
+- `list_shortcuts`：`target=all|<folder-name-or-id>`，payload 支持 `limit`（默认 500，上限 1000）；把 `--show-identifiers` 输出解析为有界 `{ id, name }` catalog，并只在 Connector 内存中保留最近一次实际返回的稳定 id。
+- `list_folders`：`target=all`，以 `{ id, name }` 列出快捷指令文件夹。
+- `run_shortcut`：`target=<shortcut-id>`，只接受最近一次 `list_shortcuts` 实际签发的稳定 id；名称或未列出的 id 失败关闭，运行后返回结构化结果。
+
+`run_shortcut` payload 支持：
+
+- `input`、`inputEncoding: text|base64`、`inputName`：最多 40000 字符且解码后最多 40000 字节的内联输入，与通用 Action Bridge 载荷上限对齐。Connector 写入权限为 `0600` 的临时文件，并在成功、失败或超时后删除；更大输入应使用 `inputPaths`。
+- `inputPaths`：最多 20 个现有绝对文件路径；支持 `~/` 展开。
+- `outputPath`：显式绝对输出路径。存在时不再把文件内容复制进 action result。
+- `outputType`：最多 200 字符的 Universal Type Identifier，例如 `public.utf8-plain-text`。
+- `outputEncoding: text|base64`：没有 `outputPath` 时的 stdout 编码。
+- `timeoutMs`：1 秒至 15 分钟，默认 2 分钟；`maxOutputBytes` 默认 100KB，上限 500KB，确保 base64 action result 仍小于单条 Connector 协议边界。
+
+所有命令使用参数数组，不经过 Shell。快捷指令可以执行文件、网络、应用控制和智能家居等真实副作用；MimiAgent 默认可以直接调用，不叠加审批。超时或子进程退出后的结果可能不确定，Action Bridge 不自动重放。
+
+## macOS Desktop Bridge
+
+`examples/connectors/macos-desktop-connector.mjs` 通过 macOS 自带 JXA/System Events 和 `/usr/bin/open` 提供通用桌面执行面，无额外 npm 依赖。它适合没有专用 Connector 的即时应用操作；复杂、重复和需要稳定步骤的流程仍优先封装为 Shortcut。
+
+Actions：
+
+- `desktop_context`：`target=all`，返回前台应用和最多 `windowLimit`（默认 20，上限 100）个窗口；显式设置 `includeClipboard:true` 时附带最多 `clipboardChars`（上限 20000）的文本剪贴板。
+- `frontmost_app`：`target=all`，返回应用名、bundle ID、PID、前台、可见和 background-only 状态。
+- `list_apps`：`target=all`，payload 支持 `limit`（默认 100，上限 500）和 `includeBackground`。
+- `list_windows`：`target=<app-name>|<bundle-id>|frontmost`，payload 支持 `limit`（默认 50，上限 100）。
+- `activate_app`：`target=<app-name-or-bundle-id>`，激活指定应用。
+- `open_item`：`target=<URL-or-absolute-path>`，支持 `~/` 展开；payload 可用不以 `-` 开头的 `application` 指定打开应用，避免 CLI option 注入。
+- `open_visible`：`target=<URL-or-absolute-path>`，payload 必须给出精确 `bundleId`，可选 `verificationTimeoutMs=250..10000`；只有目标应用已置前且存在可见窗口才返回 `outcome=confirmed`，验证超时返回 uncertain。
+- `clipboard_read`：`target=clipboard`，返回最多 `maxChars`（默认 40000，上限 100000）的文本、原始字符数和截断标记。
+- `clipboard_write`：`target=clipboard`，payload `text` 最多 100000 字符；空字符串表示清空文本剪贴板。
+- `clipboard_watch_status/start/stop`：读取、持久启用或停止剪贴板变化感知；`start` 可设置 `pollIntervalMs`（250ms～24h，省略时沿用有效的 `MACOS_DESKTOP_CLIPBOARD_POLL_MS`，否则为 2 秒）。选择原子保存到 `MACOS_DESKTOP_STATE_FILE`（默认 `~/.mimi-agent/daemon/desktop-clipboard.json`），跨 Connector/Daemon 重启恢复。
+- `keyboard_type`：`target=<app-name>|<bundle-id>|frontmost`，输入最多 20000 字符；`modifiers` 支持 `command`、`option`、`control`、`shift`、`function`。
+- `keyboard_key`：向指定应用发送 0～255 的 `keyCode` 和相同 modifiers。
+- `click_menu`：点击指定应用的一级 `menu` / `item`，名称各最多 500 字符。
+
+所有 JXA payload 都作为单个 JSON argv 传递，打开动作也只使用参数数组，不经 Shell。系统命令默认 20 秒超时，可通过 `MACOS_DESKTOP_COMMAND_TIMEOUT_MS` 调整到 100ms～120 秒；Host 的 `actionTimeoutMs` 应不小于它。菜单与键盘动作的结果若因超时或 Connector 断线而不确定，Action Bridge 不自动重放。
+
+设置 `MACOS_DESKTOP_CLIPBOARD_POLL_MS=250..86400000` 可持续监听文本剪贴板；默认 `0` 关闭。首次读取只建立基线，不把启动前内容当成新事件；外部变化产生 priority 45 的 `ambient` Event，正文默认最多 8000 字符，可用 `MACOS_DESKTOP_CLIPBOARD_EVENT_CHARS=100..40000` 调整。Connector 自己成功写入后同步更新 hash，不产生自触发事件；相同内容不重复输出。hash 只在进程内保存，不建立剪贴板历史库。
+
+首次执行窗口、菜单或键盘动作时，macOS 会请求 Accessibility/Automation 权限。该权限属于实际运行 Node/Terminal/LaunchAgent 的系统边界，MimiAgent 不叠加审批。剪贴板可能包含密码、令牌和私人内容，只有明确接受其进入模型上下文时才开启轮询。
+
+## Browser Connector
+
+`examples/connectors/browser-connector.mjs` 是唯一网页语义执行面，只支持 Google Chrome，并通过本机 OpenCLI daemon 与 Browser Bridge 扩展复用 Chrome profile、Cookie 和登录状态。MimiAgent 不再提供 Safari/JXA Browser 路径，也不允许 Agent 通过 `run_shell` 直接调用 OpenCLI、CDP 或浏览器自动化脚本。
+
+依赖：
+
+```bash
+npm install -g @jackwener/opencli
+opencli daemon status
+```
+
+`opencli daemon status` 必须显示 daemon 为 `running`、Chrome 扩展为 `connected`。Connector 启动时只执行这项无页面副作用的状态检查，不调用会创建 Browser session 的 `opencli doctor`；失败时进程保持在线但上报 `outbound=unavailable` 和 `reasonCode=opencli_unavailable`，不会把缺失依赖误报成浏览器可用。
+
+主 Agent 不直接调用本节低层 action，也不需要先查 Connector catalog。Runtime 的
+`browser_open / browser_observe / browser_act / browser_wait / browser_assert /
+browser_close` 由 Host-owned `BrowserRunManager` 映射到这里，内部 session ref 被剥离，
+单次结果限制为 16 KiB。标准 snapshot 固定 DOM；`<option>` 的非控件 ref 不向模型
+展示，表单动作优先 accessible label/role/name。click/check/uncheck 使用有界结构化
+DOM dispatch 并读取交互状态，fill/select 使用 OpenCLI 的精确控件定位；局部
+`verified=true` 只证明交互，业务完成仍在动作组末用 assert/wait/precise observe 验证。
+当前页 link click 还会在 Connector 内有界轮询 `get url`，回执以
+`navigationSettled` 区分已落稳导航；`target=_blank` 会在 DOM 分发 click 事件但取消
+backend 默认新窗导航，再由 Connector 建立逻辑标签并返回稳定 page ID，不让模型用
+旧页面的瞬时结果触发重复点击。
+OpenCLI 1.8.6 的单 session `tab new` 会让原页退出该 session，因此 Connector 不把
+这项 backend 行为直接暴露为多标签契约：每个逻辑标签使用独立后台 OpenCLI session，
+`list_tabs` 聚合为稳定 Connector page ID，`select_tab` 切换逻辑 active page，
+`close_tab` 关闭指定页或当前页并返回剩余 active page/URL。一个逻辑 Browser session
+最多 20 个标签，`close_session` 会有界释放全部标签。
+写动作失败只有明确未 dispatch 才可换路，accepted/uncertain 不自动重试。
+每个 Run 只创建一个 Host-owned session 生命周期；uncertain open 只允许进入 cleanup，
+close 投递至多一次。Dispatcher 在 Browser cleanup 成功后才提交 Task 完成；cleanup
+结果不确定会保留诊断并进入不可重试 dead letter，而不是用完成结果掩盖潜在 tab leak。
+Connector 默认先查找与当前 Node 可执行文件同目录的 `opencli`，以兼容 launchd 的最小 PATH；若 OpenCLI 安装在其他位置，通过 `OPENCLI_BIN` 提供绝对路径。
+
+会话动作：
+
+- `read_url`：通过 Chrome 当前 profile 和登录态在后台打开单个 URL，提取首个 Markdown 分块后自动释放临时会话；内网或需要 SSO 的只读页面优先使用这个单 action。
+- `open_session`：创建 Mimi 独占的 Chrome 会话，打开绝对 http/https URL；强制使用 `window=background`，显式 `foreground` 请求会被拒绝，返回不透明 `sessionRef`。
+- `bind_session`：绑定 owner 当前 Chrome 标签以复用人工完成的登录、SSO 或页面定位；绑定会话不会拥有或关闭用户标签。
+- `close_session`：独占会话执行 close，绑定会话只 unbind。Connector/Daemon 正常退出时也会尽力释放仍持有的会话。
+- `probe_tabs`：只返回 Connector 当前持有的会话/标签计数，供只读 canary 使用，不创建、绑定、激活或泄露页面内容。
+- `list_tabs/new_tab/select_tab/close_tab`：Connector 管理的逻辑标签动作；page ID 只能来自当前会话的 `list_tabs`，`close_tab` 省略 page 时关闭当前活动页。
+
+页面读取：
+
+- `snapshot`：读取 OpenCLI DOM 或 AX 状态，返回交互元素 ref 和新的 `observationId`。
+- `find`、`read_element`：支持 CSS，以及 role/name/label/text/testid 语义 locator；不开放 input value 或任意 JavaScript。
+- `read_page`：有界读取 HTML 或结构化 DOM 树。
+- `extract`：按 `next_start_char` 游标分块读取 Markdown 正文。
+- `frames`、`wait`：读取 iframe 目录，或有界等待 selector、text、XHR、download。
+- `network`：只返回响应 shape 目录；Connector 删除 URL query/hash，并递归裁剪 authorization、cookie、token、secret、password、body 等字段，不开放 raw body。
+
+页面写动作包括 `navigate/back/click/type/fill/select/check/uncheck/hover/focus/double_click/keys/scroll/upload/drag/dialog/execute_javascript`。它们不要求 `observationId`；读取动作仍可返回该字段用于关联日志和回执，但新的 snapshot/find/list_tabs 不会让旧 ID 变成错误门禁。Connector 先完成全部参数和本地前置条件校验，再投递一个结构化动作。写回执包含 `completionScope=interaction`、`businessOutcome=unverified` 和 `nextRead`；其中 `outcome=confirmed` 只证明这次浏览器交互已执行，不能证明网页业务事务成功。点击或双击后先 `list_tabs`，发现新 page 后按精确 page 读取；其他写操作后重新 snapshot 并核对结果。外部配置、环境、账号、权限、部署或任务变更还必须在提交前核对环境/对象/旧值，提交后回读新值。
+
+OpenCLI 命令使用固定 argv 数组启动，不拼接 Shell。Connector 为每个逻辑任务生成 `mimi-*` 内部 session 名，不能接管 owner 直接创建的 OpenCLI session；所有 action 串行执行。命令默认 30 秒超时，可用 `OPENCLI_BROWSER_COMMAND_TIMEOUT_MS=1000..300000` 调整；stdout 默认上限 1MB，可用 `OPENCLI_BROWSER_MAX_OUTPUT_BYTES=32000..8000000` 调整。Host 的 `actionTimeoutMs` 必须不小于命令超时。
+
+页面、DOM、AX、标签和网络元数据固定标记为 `untrusted:true`。`type/fill/dialog` 回执删除输入明文，`upload` 回执删除绝对路径；运行时的 owner ephemeral-sensitive redaction 仍负责对本轮敏感值做精确清理。写动作超时或输出溢出按 uncertain 返回，Action Bridge 和 Agent 都不得自动重放或改走 Desktop、Computer、Shell、MCP。Canvas、WebGL、浏览器原生权限框和验证码不属于 DOM 通用能力；只有结果明确未执行时才能按当前 Security 选择 Computer Use 或人工接管。
+
+## macOS Screen Bridge
+
+`examples/connectors/macos-screen-connector.mjs` 通过系统 `/usr/sbin/screencapture` 与 Swift Vision helper 为 MimiAgent 提供原生屏幕文字感知。它 action-only、零 npm 依赖，不持续录屏、不轮询屏幕、不保存截图历史，也不会把图片发送到外部 OCR 服务。
+
+Actions：
+
+- `capture_screen`：target 支持 `main`、`display:N`、`window:ID`、`rect:X,Y,W,H`；payload 必须提供显式绝对 `outputPath`，且以 `.png` 结尾。`includeCursor` 默认 false，window 的 `excludeShadow` 默认 true。
+- `ocr_image`：target 是现有图片的绝对路径，使用 Vision Framework 返回文字行、confidence 和 normalized bounding box。
+- `read_screen`：target 与 `capture_screen` 相同，在权限为 `0700` 的系统临时目录截图、OCR，并在成功、失败或超时后递归删除临时图片。
+
+OCR payload 支持 `recognitionLevel: accurate|fast`（默认 accurate）、最多 10 个 BCP-47 `languages`、`maxChars`（默认 40000，上限 200000）、`maxLines`（默认 500，上限 2000）和 `maxImageBytes`（默认 50MB，上限 100MB）。所有动作可用 `timeoutMs` 单独覆盖超时。结果包含完整字符/行计数与截断标记，并固定为 `untrusted:true`。命令默认 60 秒超时，可用 `MACOS_SCREEN_COMMAND_TIMEOUT_MS=100..300000` 调整；Host 的 `actionTimeoutMs` 应更长。
+
+首次截图时，macOS 会向实际运行 Node 的 Terminal 或 LaunchAgent 请求 Screen Recording 权限。OCR 对图标、遮挡、小字体和低对比度内容不保证完整；它提供可用于判断和后续桌面动作的文字证据，不是像素级 UI 状态证明。所有命令均使用参数数组，不经过 Shell。
+
+## macOS Voice Bridge
+
+`examples/connectors/macos-voice-connector.mjs` 使用 Swift Speech/AVFoundation helper 和系统 `/usr/bin/say` 提供双向语音交互，无 npm 依赖、云端语音 SDK、音频数据库或常驻模型音频流。它既可产生 Event，也提供 Action Bridge actions。
+
+持续监听默认关闭。`MACOS_VOICE_LISTEN` 只提供首次启动默认值；之后 `listener_start/stop/restart` 会把选择原子保存到本机 `0600` 状态文件，Connector 或 Daemon 重启后继续生效。helper 把麦克风按 2～30 秒的有界 segment 送入系统 Speech Framework；只有转写结果以 `MACOS_VOICE_WAKE_PHRASES` 中的短语开头才产生 priority 100 的 `external` command Event。默认短语是 `咪咪,Mimi,MimiAgent`；命令进入固定 `voice-owner` conversation，Agent 结果经可靠 Outbox 回到同一 Connector 并自动朗读；其他环境语音在 Connector 内丢弃，不启动 Agent。相同命令默认 30 秒内只产生一次 Event，可用 `MACOS_VOICE_DUPLICATE_WINDOW_MS=0..600000` 调整。唤醒短语不是说话人认证；只有另行完成身份校验或明确接受物理环境风险时，owner 才应在本机 Connector 配置中把 provenance 改为 `owner`。
+
+环境配置：
+
+- `MACOS_VOICE_LOCALE`：识别 locale，默认 `zh-CN`。
+- `MACOS_VOICE_ON_DEVICE`：默认 false；设为 true 时要求对应 locale 的本机识别模型，不允许 Speech Framework 把音频发送到网络。
+- `MACOS_VOICE_SEGMENT_SECONDS`：默认 6 秒，范围 2～30。
+- `MACOS_VOICE_MAX_CHARS`：单段最多 1～20000 字符，默认 2000。
+- `MACOS_VOICE_COMMAND_TIMEOUT_MS`：Action 默认超时 100ms～15 分钟，默认 2 分钟。
+- `MACOS_VOICE_REPLY_MAX_CHARS`：自动朗读回答的最大字符数，默认 80、上限 20000；完整回答仍保留在 Event/Session，更长内容只朗读有界前缀并说明省略。调高时应同步增加 Connector 的 `deliveryTimeoutMs`。
+- `MACOS_VOICE_REPLY_RATE`：自动朗读回答的语速，默认 220，范围 80～500。
+- `MACOS_VOICE_STATE_FILE`：监听启停状态文件，默认 `~/.mimi-agent/daemon/voice-listener.json`；必须是绝对路径。
+
+Actions：
+
+- `speak`：target 为 `default` 或系统 voice 名称；payload `text` 最多 20000 字符，`rate` 为 80～500 words/minute。若 listener 正在运行，朗读前停止、结束后恢复，避免 MimiAgent 自己唤醒自己。
+- `list_voices`：`target=all`，解析 `say -v ?` 的 voice、locale 和示例，最多返回 1000 项。
+- `transcribe_audio`：target 为现有音频绝对路径；支持 `locale`、`onDevice`、`maxChars`、`maxAudioBytes`（默认 200MB，上限 1GB）和 `timeoutMs`。
+- `listener_status/start/stop/restart`：`target=listener`，读取或持久管理 listener；启停选择跨 Connector/Daemon 重启恢复。
+
+所有文本、路径和选项都使用参数数组，不经过 Shell。listener 不写原始音频文件；转写和命令 payload 标记为 `untrusted:true`，示例 Connector 的 provenance 也固定为 `external`，因此默认只获得最小外部事件能力。首次使用需要向实际运行进程授予 macOS Microphone 与 Speech Recognition 权限。部分 locale 在 `onDevice:false` 时可能联网；需要严格本地时显式设为 true，并确保系统已安装对应语言模型。
+
+## 事件执行权限
+
+只有 `owner/system` 事件可在当前部署权限内直接工作。其余 provenance（包括 `trusted/external/public`）默认只开放当前 attempt 内的静默投递控制，不提供通用网络读取，避免来源内容借 `http_get` 探测 localhost、内网或云 metadata；它们也不可读取 Session 历史/归档/恢复点、Memory、本地文件或持久状态，不可使用 Shell、MCP、状态写入或外部事务。精确匹配 owner source policy 后，默认 `access=reply` 只开放当前人物 Session 的有界上下文和自动回复；只有显式 `access=work` 才开放静态工作工具。来源正文始终作为不可信 user input，不能提升档位或扩大工具范围；常驻执行契约仍由 Host 单独提供。
+
+Connector 仍是首层信任边界：只接入你愿意处理的来源，限制 IM 白名单，且只在 `envAllowlist` 中提供必要凭证。需要代 owner 执行本地或外部事务的控制入口必须在 Host 侧完成认证并明确配置为 `owner`；`trusted` 只记录 provenance，不会提权，事件正文也不能自行改变该标签。
+
+统一能力目录查询 Connector 时会直接调用 ConnectorManager 的结构化目录，按 action
+名称、描述和稳定 capability 检索。命中后返回匹配的 Connector action 以及
+`invoke_capability` 的真实调用 schema；因此 progressive disclosure 不能再把未直接
+展示的 action 误报成能力不存在。该桥接适用于所有模型可见 Connector 声明，不依赖
+owner 文本、业务关键词、具体应用或目标路径；Browser、Desktop 和 personal-* 仍是
+direct Host 工具的私有 backend，不进入该目录。
+
+## Capability owner 与跨路径防重
+
+每个本机 GUI/自动化入口只有一个 capability owner：
+
+| 路径 | 唯一 owner | 允许的用途 |
+| --- | --- | --- |
+| CuaDriver Computer actions | `extensions/computer` | 带 observation 的显式 UI 写动作 |
+| Connector 内 AppleScript/JXA | 对应 `macos-*` Connector | 目录中声明的有界 action |
+| `/usr/bin/shortcuts` | `macos-shortcuts` Connector | 列表和显式运行 Shortcut |
+| `/usr/bin/open` / 应用启动 | `macos-desktop` Connector | 目录声明的后台应用动作 |
+| 系统通知 `osascript` | `daemon/notifier` | 仅消费 durable Outbox 的本机通知 |
+| QQ 确定性 UI 脚本 | `qq-messenger-skill` | 该 Skill 的单一路径和可见结果验证 |
+
+Host Tool、通用 Shell、Browser 或 Computer 不得因为能力未命中、offline、timeout 或
+unknown 就自动接管同一业务动作。Security 在 dispatch 前一次完成授权，精确 target
+随后由执行面校验；Effect/Execution Ledger 只负责 confirmed 最多执行一次、uncertain
+禁止自动重试或换路、failed_safe 才能重新选择当前 Security 允许的路线。旧
+ActionIntent/一次性授权字段仅为账本读取兼容，不再参与新动作授权。
+
+owner 自由文本不参与 Tool 裁剪或授权。Darwin 上的 `run_shell` 无条件进入进程沙箱：
+拒绝 Apple Events、LaunchServices、Accessibility 相关服务，以及正式执行面登记的
+本机 Unix socket/loopback 控制端口，因此脚本语言或子进程也不能连接对应控制面；
+普通本地开发服务不会被一并裁掉。
+该限制由进程能力边界实施，不检查命令字符串。正式 Connector、Browser 与 Computer
+Tool 不经过此 Shell 沙箱，继续使用结构化 capability、精确 target 和统一账本。
+Terminal、Codex、VS Code、JetBrains 等控制面应用仍不能成为 Computer 写目标；
+Connector 的旧应用声明不再粗粒度封锁 Chrome 等完整应用。
+
+`invoke_capability` 或高层业务工具返回 `outcome=confirmed` 时，ExecutionLedger 会附加可验证的
+`execution:*` 回执；PersonalMessage/Computer ActionIntent 返回 `action-intent:*` 回执。
+普通 Plan 的外部事务步骤只有引用这些已落账的 confirmed receipt 才能标记 completed。
+`accepted`、timeout、uncertain、Shell exit code 或自然语言“已完成”都不能充当外部事务
+完成证据；completed step 的证据不能静默替换或重新打开。
+
+## M1 执行面与只读 Eval
+
+Browser、Screen、Shortcuts 和 Desktop action 必须在模板中声明稳定
+`capability` 与 `effect`，运行时 `routeOwner` 固定为精确 Connector ID。读取目录、
+bounded page/screen/OCR 和状态查询为 `read`；Shortcut 执行、截图显式落盘、导航、
+DOM 执行、应用/键盘/菜单/剪贴板变更为 `write`。缺失或旧配置中的 `unknown` 不能被
+解释为只读；初始化只会把同一 packaged action 的未知元数据升级为明确值。
+
+只读实机基线用 `npm run eval:m1:canary`。runner 不再直接启动 Connector 源码，也不把
+Doctor/readiness 当动作；它只调用认证的本机 `mimi daemon probe <profile>`，服务端
+固定映射 Browser tabs、Shortcuts catalog、后台 Computer window 和 Screen window
+四种 profile，不接受任意 action/payload。ConnectorManager 在 dispatch 前后复核
+enabled、online、catalog capability、`effect=read` 和 route owner。明确上报
+unavailable 的执行面直接拒绝；未上报或已过期的 readiness 只能由该正式只读动作的成功
+结果建立或刷新 15 分钟租约，动作失败不能标记 ready。write/unknown、未注册和漂移全部
+拒绝。Computer 仅观察 allowlist
+后台窗口，拒绝 Codex/Terminal/IDE、Connector-owned App 和 frontmost 目标，并在动作后
+重新验证精确 pid/window。IPC 只返回计数与正式 receipt，不返回标签、URL、Shortcut 名、
+AX/OCR 正文或图像。runner 本身不会启用 Connector、请求 TCC、激活应用或发送消息。
+
+Connector readiness 使用固定词义：`online` 只代表进程存活；`readiness` 表示渠道能否
+收/发；`freshness` 表示状态是否仍在有效期；`coverage` 说明完整、bounded、
+notification-only 或 metadata-only。旧 Connector 缺字段时显示 unknown，并由 Doctor
+分类为 startup grace 或 connector fix required，绝不默认 ready。

@@ -1,7 +1,12 @@
 import readline from 'node:readline';
 import type { ReadStream, WriteStream } from 'node:tty';
 import type { PlanStep } from './core/plan.js';
-import { renderUserInput } from './terminal.js';
+import {
+  formatRunDuration,
+  MIMI_TAIL_INTERVAL_MS,
+  renderMimiFrame,
+  renderUserInput,
+} from './terminal.js';
 
 export interface CompletionItem {
   value: string;
@@ -21,10 +26,37 @@ export interface RuntimeStatus {
   contextWindow: number;
 }
 
+export type InputSubmitIntent = 'enqueue' | 'steer';
+
+export interface QueuedInput {
+  text: string;
+  intent?: InputSubmitIntent;
+}
+
+interface InteractiveTerminalOptions {
+  inputRedrawDelayMs?: number;
+  singleLineInputViewport?: boolean;
+  imeSafeInput?: boolean;
+  idleBlinkIntervalMs?: number;
+  idleBlinkDurationMs?: number;
+}
+
 type Key = { name?: string; ctrl?: boolean; shift?: boolean; meta?: boolean; sequence?: string };
+type InputHandlers = {
+  onLine: (line: string, intent: InputSubmitIntent) => void;
+  onEscape: () => void;
+  onExit: () => void;
+  onModeCycle?: () => void;
+};
 
 const clearLine = '\r\x1b[2K';
 const selectionCursor = '\x1b[96m›\x1b[0m';
+const doubleEscapeWindowMs = 350;
+const maxVisibleInputRows = 10;
+const commandEnterSequences = new Set(['\x1b\r', '\x1b\n', '\x1b[13;9u', '\x1b[27;9;13~']);
+const shiftEnterSequences = new Set(['\x1b[13;2u', '\x1b[27;2;13~']);
+export const MIMI_IDLE_BLINK_INTERVAL_MS = 6_000;
+export const MIMI_IDLE_BLINK_DURATION_MS = 1_000;
 
 function displayWidth(value: string): number {
   const plain = value.replace(/\x1b\[[0-9;]*m/g, '');
@@ -33,6 +65,14 @@ function displayWidth(value: string): number {
     const wide = codePoint >= 0x1f300 || /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]/u.test(character);
     return width + (wide ? 2 : 1);
   }, 0);
+}
+
+function usableTerminalWidth(value: number | undefined): number {
+  return Number.isFinite(value) && value! >= 20 ? Math.floor(value!) : 80;
+}
+
+function isAppleTerminal(): boolean {
+  return process.platform === 'darwin' && process.env.TERM_PROGRAM === 'Apple_Terminal';
 }
 
 export class InteractiveTerminal {
@@ -44,11 +84,15 @@ export class InteractiveTerminal {
   private historyIndex = 0;
   private completionIndex = 0;
   private busy = false;
+  private busyStartedAt = 0;
+  private busyFrame = 0;
+  private busyTimer?: NodeJS.Timeout;
+  private idleBlink = false;
+  private idleBlinkTimer?: NodeJS.Timeout;
+  private idleBlinkResetTimer?: NodeJS.Timeout;
   private transient = '';
   private runtime: RuntimeStatus = { mode: '标准', model: '未配置', contextUsed: 0, contextWindow: 0 };
-  private statusFrame = 0;
-  private statusTimer?: NodeJS.Timeout;
-  private queued: string[] = [];
+  private queued: QueuedInput[] = [];
   private tasks: PlanStep[] = [];
   private outputOpen = false;
   private outputOpenWidth = 0;
@@ -56,8 +100,18 @@ export class InteractiveTerminal {
   private started = false;
   private closed = false;
   private bracketPaste = false;
+  private pastePending = '';
   private suppressPasteKeypress = false;
   private pasteDataListener?: (chunk: Buffer | string) => void;
+  private resizeListener?: () => void;
+  private escapeTimer?: NodeJS.Timeout;
+  private inputRedrawTimer?: NodeJS.Timeout;
+  private readonly inputRedrawDelayMs: number;
+  private readonly singleLineInputViewport: boolean;
+  private readonly imeSafeInput: boolean;
+  private readonly idleBlinkIntervalMs: number;
+  private readonly idleBlinkDurationMs: number;
+  private deferredWrites: Array<{ chunk: string; stream: WriteStream }> = [];
   private selectState?: {
     items: SelectItem[];
     index: number;
@@ -69,12 +123,24 @@ export class InteractiveTerminal {
     private readonly completions: CompletionItem[],
     private readonly input: ReadStream = process.stdin,
     private readonly output: WriteStream = process.stdout,
-  ) {}
+    options: InteractiveTerminalOptions = {},
+  ) {
+    const appleTerminal = isAppleTerminal();
+    this.inputRedrawDelayMs = options.inputRedrawDelayMs ?? (appleTerminal ? 24 : 0);
+    this.singleLineInputViewport = options.singleLineInputViewport ?? appleTerminal;
+    this.imeSafeInput = options.imeSafeInput ?? appleTerminal;
+    this.idleBlinkIntervalMs = options.idleBlinkIntervalMs ?? MIMI_IDLE_BLINK_INTERVAL_MS;
+    this.idleBlinkDurationMs = options.idleBlinkDurationMs ?? MIMI_IDLE_BLINK_DURATION_MS;
+  }
 
-  start(handlers: { onLine: (line: string) => void; onEscape: () => void; onExit: () => void; onModeCycle?: () => void }): void {
+  start(handlers: InputHandlers): void {
     this.started = true;
-    this.pasteDataListener = (chunk) => this.handlePasteData(chunk);
+    this.pasteDataListener = (chunk) => {
+      if (!this.handleModifiedEnterData(chunk, handlers)) this.handlePasteData(chunk);
+    };
     this.input.prependListener('data', this.pasteDataListener);
+    this.resizeListener = () => this.redraw();
+    this.output.on('resize', this.resizeListener);
     readline.emitKeypressEvents(this.input);
     if (this.input.isTTY) {
       this.input.setRawMode(true);
@@ -83,6 +149,10 @@ export class InteractiveTerminal {
     this.input.resume();
     this.input.on('keypress', (text: string, key: Key) => {
       if (this.suppressPasteKeypress || this.bracketPaste) return;
+      if (key.name !== 'escape' && this.escapeTimer) {
+        clearTimeout(this.escapeTimer);
+        this.escapeTimer = undefined;
+      }
       if (key.ctrl && (key.name === 'c' || key.name === 'd')) {
         handlers.onExit();
         return;
@@ -96,7 +166,25 @@ export class InteractiveTerminal {
         return;
       }
       if (key.name === 'escape') {
-        handlers.onEscape();
+        if (!this.buffer.length) {
+          handlers.onEscape();
+          return;
+        }
+        if (this.escapeTimer) {
+          clearTimeout(this.escapeTimer);
+          this.escapeTimer = undefined;
+          this.buffer = [];
+          this.cursor = 0;
+          this.completionIndex = 0;
+          this.cancelInputRedraw();
+          if (!this.flushDeferredWrites()) this.redrawAfterInput();
+          return;
+        }
+        this.escapeTimer = setTimeout(() => {
+          this.escapeTimer = undefined;
+          handlers.onEscape();
+        }, doubleEscapeWindowMs);
+        this.escapeTimer.unref();
         return;
       }
       const shiftedEnter = ((key.name === 'return' || key.name === 'enter') && key.shift)
@@ -106,19 +194,12 @@ export class InteractiveTerminal {
         return;
       }
       if (key.name === 'return' || key.name === 'enter') {
-        const line = (this.suggestions[this.completionIndex]?.value ?? this.buffer.join('')).trim();
-        this.eraseUi();
-        this.output.write('\n');
-        this.outputOpen = false;
-        this.buffer = [];
-        this.cursor = 0;
-        this.completionIndex = 0;
-        if (line) {
-          this.history.push(line);
-          this.historyIndex = this.history.length;
-        }
-        this.draw();
-        if (line) handlers.onLine(line);
+        const intent = key.meta
+          || key.sequence === '\x1b[13;9u'
+          || key.sequence === '\x1b[27;9;13~'
+          ? 'steer'
+          : 'enqueue';
+        this.submitInput(handlers, intent);
         return;
       }
       if (key.name === 'tab' && this.suggestions.length) {
@@ -128,7 +209,7 @@ export class InteractiveTerminal {
       if ((key.name === 'up' || key.name === 'down') && this.suggestions.length) {
         const direction = key.name === 'up' ? -1 : 1;
         this.completionIndex = (this.completionIndex + direction + this.suggestions.length) % this.suggestions.length;
-        this.redraw();
+        this.redrawAfterInput();
         return;
       }
       if ((key.name === 'up' || key.name === 'down') && this.buffer.includes('\n')) {
@@ -158,23 +239,32 @@ export class InteractiveTerminal {
         this.cursor += Array.from(text).length;
         this.completionIndex = 0;
       } else return;
-      this.redraw();
+      this.redrawAfterInput();
     });
     this.draw();
+    this.scheduleIdleBlink();
   }
 
   createWriter(stream: WriteStream): { isTTY: boolean; write: (chunk: string) => void } {
-    return { isTTY: Boolean(stream.isTTY), write: (chunk) => this.write(chunk, stream) };
+    return { isTTY: Boolean(this.output.isTTY), write: (chunk) => this.write(chunk, stream) };
   }
 
   write(chunk: string, stream: WriteStream = this.output): void {
     if (this.closed) return;
     if (chunk.startsWith(clearLine) && !chunk.includes('\n')) {
       const plain = chunk.slice(clearLine.length).replace(/\x1b\[[0-9;]*m/g, '').trim();
-      this.transient = chunk === clearLine ? '' : plain.replace(/^\S+\s*/, '');
-      this.redraw();
+      this.transient = chunk === clearLine ? '' : plain;
+      if (!this.imeSafeInput) this.redraw();
       return;
     }
+    if (this.imeSafeInput && this.buffer.length > 0) {
+      this.deferredWrites.push({ chunk, stream });
+      return;
+    }
+    this.writeNow(chunk, stream);
+  }
+
+  private writeNow(chunk: string, stream: WriteStream): void {
     this.eraseUi();
     const wasOpen = this.outputOpen;
     if (wasOpen) {
@@ -207,17 +297,16 @@ export class InteractiveTerminal {
   setBusy(value: boolean): void {
     if (this.busy === value) return;
     this.busy = value;
-    if (this.statusTimer) clearInterval(this.statusTimer);
-    this.statusTimer = undefined;
     if (value) {
-      this.statusTimer = setInterval(() => {
-        this.statusFrame += 1;
-        this.redraw();
-      }, 80);
-      this.statusTimer.unref();
+      this.stopIdleBlink();
+      this.busyStartedAt = Date.now();
+      this.busyFrame = 0;
+      this.scheduleBusyRedraw();
     } else {
+      if (this.busyTimer) clearTimeout(this.busyTimer);
+      this.busyTimer = undefined;
       this.transient = '';
-      this.statusFrame = 0;
+      this.scheduleIdleBlink();
     }
     this.redraw();
   }
@@ -236,11 +325,12 @@ export class InteractiveTerminal {
     this.buffer = [];
     this.cursor = 0;
     this.completionIndex = 0;
-    this.redraw();
+    this.cancelInputRedraw();
+    if (!this.flushDeferredWrites()) this.redraw();
   }
 
-  setQueue(items: string[]): void {
-    this.queued = [...items];
+  setQueue(items: QueuedInput[]): void {
+    this.queued = items.map((item) => ({ ...item }));
     this.redraw();
   }
 
@@ -250,6 +340,7 @@ export class InteractiveTerminal {
   }
 
   clearScreen(content = ''): void {
+    this.cancelInputRedraw();
     this.outputOpen = false;
     this.outputOpenWidth = 0;
     this.output.write('\x1b[2J\x1b[H');
@@ -257,24 +348,38 @@ export class InteractiveTerminal {
     this.draw();
   }
 
-  async select(items: SelectItem[], title = '选择'): Promise<string | undefined> {
+  async select(
+    items: SelectItem[],
+    title = '选择',
+    initialValue?: string,
+  ): Promise<string | undefined> {
     if (!items.length) return undefined;
+    this.cancelInputRedraw();
     this.eraseUi();
     return new Promise((resolve) => {
-      this.selectState = { items, index: 0, title, resolve };
+      const initialIndex = initialValue === undefined
+        ? -1
+        : items.findIndex((item) => item.value === initialValue);
+      this.selectState = { items, index: Math.max(0, initialIndex), title, resolve };
       this.draw();
     });
   }
 
   close(): void {
     if (this.closed) return;
-    if (this.statusTimer) clearInterval(this.statusTimer);
+    if (this.busyTimer) clearTimeout(this.busyTimer);
+    this.busyTimer = undefined;
+    this.stopIdleBlink();
+    if (this.escapeTimer) clearTimeout(this.escapeTimer);
+    this.escapeTimer = undefined;
+    this.cancelInputRedraw();
     this.eraseUi();
     const selection = this.selectState;
     this.selectState = undefined;
     selection?.resolve();
     this.closed = true;
     if (this.pasteDataListener) this.input.removeListener('data', this.pasteDataListener);
+    if (this.resizeListener) this.output.removeListener('resize', this.resizeListener);
     if (this.input.isTTY) this.output.write('\x1b[?2004l');
     this.output.write('\n');
     if (this.input.isTTY) this.input.setRawMode(false);
@@ -282,9 +387,14 @@ export class InteractiveTerminal {
   }
 
   private get suggestions(): CompletionItem[] {
+    if (this.browsingHistory) return [];
     const value = this.buffer.join('');
     if (!value.startsWith('/') || value.includes(' ')) return [];
     return this.completions.filter((item) => item.value.startsWith(value));
+  }
+
+  private get browsingHistory(): boolean {
+    return this.historyIndex < this.history.length;
   }
 
   private handleSelection(key: Key): void {
@@ -307,12 +417,12 @@ export class InteractiveTerminal {
     this.buffer = Array.from(value);
     this.cursor = this.buffer.length;
     this.completionIndex = 0;
-    this.redraw();
+    this.redrawAfterInput();
   }
 
   private insertText(value: string): void {
     this.insertRawText(value);
-    this.redraw();
+    this.redrawAfterInput();
   }
 
   private insertRawText(value: string): void {
@@ -324,7 +434,8 @@ export class InteractiveTerminal {
   }
 
   private handlePasteData(chunk: Buffer | string): void {
-    const value = chunk.toString();
+    const value = this.pastePending + chunk.toString();
+    this.pastePending = '';
     const startMarker = '\x1b[200~';
     const endMarker = '\x1b[201~';
     if (!this.bracketPaste && !value.includes(startMarker)) return;
@@ -348,17 +459,68 @@ export class InteractiveTerminal {
         offset = start + startMarker.length;
       } else {
         const end = value.indexOf(endMarker, offset);
-        const content = end < 0 ? value.slice(offset) : value.slice(offset, end);
+        if (end < 0) {
+          const remainder = value.slice(offset);
+          const pendingLength = this.markerPrefixLength(remainder, endMarker);
+          const content = remainder.slice(0, remainder.length - pendingLength);
+          this.pastePending = remainder.slice(remainder.length - pendingLength);
+          if (content) {
+            this.insertRawText(content);
+            changed = true;
+          }
+          break;
+        }
+        const content = value.slice(offset, end);
         if (content) {
           this.insertRawText(content);
           changed = true;
         }
-        if (end < 0) break;
         this.bracketPaste = false;
         offset = end + endMarker.length;
       }
     }
-    if (changed) this.redraw();
+    if (changed) this.redrawAfterInput();
+  }
+
+  private handleModifiedEnterData(chunk: Buffer | string, handlers: InputHandlers): boolean {
+    if (this.bracketPaste) return false;
+    const value = chunk.toString();
+    if (shiftEnterSequences.has(value)) {
+      this.suppressPasteKeypress = true;
+      queueMicrotask(() => { this.suppressPasteKeypress = false; });
+      this.insertText('\n');
+      return true;
+    }
+    if (!commandEnterSequences.has(value)) return false;
+    this.suppressPasteKeypress = true;
+    queueMicrotask(() => { this.suppressPasteKeypress = false; });
+    this.submitInput(handlers, 'steer');
+    return true;
+  }
+
+  private submitInput(handlers: InputHandlers, intent: InputSubmitIntent): void {
+    const line = (this.suggestions[this.completionIndex]?.value ?? this.buffer.join('')).trim();
+    this.cancelInputRedraw();
+    this.eraseUi();
+    this.output.write('\n');
+    this.outputOpen = false;
+    this.buffer = [];
+    this.cursor = 0;
+    this.completionIndex = 0;
+    if (line) {
+      this.history.push(line);
+      this.historyIndex = this.history.length;
+    }
+    if (!this.flushDeferredWrites()) this.draw();
+    if (line) handlers.onLine(line, intent);
+  }
+
+  private markerPrefixLength(value: string, marker: string): number {
+    const limit = Math.min(value.length, marker.length - 1);
+    for (let length = limit; length > 0; length -= 1) {
+      if (marker.startsWith(value.slice(-length))) return length;
+    }
+    return 0;
   }
 
   private lineStart(position: number): number {
@@ -387,13 +549,47 @@ export class InteractiveTerminal {
       const nextStart = end + 1;
       this.cursor = Math.min(nextStart + column, this.lineEnd(nextStart));
     }
-    this.redraw();
+    this.redrawAfterInput();
   }
 
-  private redraw(): void {
+  private redraw(inputSafePoint = false): void {
     if (this.closed || !this.started) return;
+    if (this.inputRedrawTimer) return;
+    if (this.imeSafeInput && this.buffer.length > 0 && !inputSafePoint) return;
     this.eraseUi();
     this.draw();
+  }
+
+  private redrawAfterInput(): void {
+    if (this.closed || !this.started) return;
+    if (this.imeSafeInput && this.buffer.length === 0 && this.deferredWrites.length > 0) {
+      this.cancelInputRedraw();
+      this.flushDeferredWrites();
+      return;
+    }
+    if (this.inputRedrawDelayMs <= 0) {
+      this.redraw(true);
+      return;
+    }
+    this.cancelInputRedraw();
+    this.inputRedrawTimer = setTimeout(() => {
+      this.inputRedrawTimer = undefined;
+      this.redraw(true);
+    }, this.inputRedrawDelayMs);
+    this.inputRedrawTimer.unref();
+  }
+
+  private cancelInputRedraw(): void {
+    if (this.inputRedrawTimer) clearTimeout(this.inputRedrawTimer);
+    this.inputRedrawTimer = undefined;
+  }
+
+  private flushDeferredWrites(): boolean {
+    if (!this.deferredWrites.length) return false;
+    const writes = this.deferredWrites;
+    this.deferredWrites = [];
+    for (const { chunk, stream } of writes) this.writeNow(chunk, stream);
+    return true;
   }
 
   private eraseUi(): void {
@@ -406,7 +602,9 @@ export class InteractiveTerminal {
   private draw(): void {
     if (this.closed || !this.started) return;
     const rows: string[] = [];
-    rows.push(...this.queued.map((item) => `\x1b[2m↳ 排队  ${this.compactQueueItem(item)}\x1b[0m`));
+    rows.push(...this.queued.map((item) => item.intent === 'steer'
+      ? `\x1b[93m↯ 引导  ${this.compactQueueItem(item.text)}\x1b[0m`
+      : `\x1b[2m↳ 排队  ${this.compactQueueItem(item.text)}\x1b[0m`));
 
     if (this.selectState) {
       const state = this.selectState;
@@ -450,37 +648,105 @@ export class InteractiveTerminal {
   }
 
   private inputBox(): { lines: string[]; cursorRow: number; cursorColumn: number } {
-    const width = Math.max(24, (this.output.columns ?? 80) - 1);
     const prefix = '┊> ';
-    const available = width - displayWidth(prefix);
+    const prefixWidth = displayWidth(prefix);
+    const terminalWidth = usableTerminalWidth(this.output.columns);
+    // Terminal.app 2.15 on macOS 26 can crash when IME marked text wraps. The
+    // marked text is owned by the terminal and is invisible to this editor, so
+    // keep enough blank columns after the cursor for an in-progress conversion.
+    const compositionMargin = Math.min(16, Math.max(4, terminalWidth - 8));
+    const width = terminalWidth - compositionMargin;
+    const available = Math.max(2, width - prefixWidth);
+    if (this.singleLineInputViewport) {
+      return this.singleLineInputBox(prefixWidth, available);
+    }
     const value = this.buffer.join('');
     const logicalLines = value.split('\n');
     const beforeCursor = this.buffer.slice(0, this.cursor).join('');
-    const cursorRow = beforeCursor.split('\n').length - 1;
+    const logicalCursorRow = beforeCursor.split('\n').length - 1;
     const cursorOffset = Array.from(beforeCursor.split('\n').at(-1) ?? '').length;
-    let cursorColumn = displayWidth(prefix);
-    const lines = logicalLines.map((line, index) => {
-      const linePrefix = index === 0 ? '\x1b[90m┊\x1b[0m> ' : '\x1b[90m┊\x1b[0m  ';
-      if (index !== cursorRow) return `${linePrefix}${this.truncateDisplay(line, available)}`;
+    let cursorRow = 0;
+    let cursorColumn = prefixWidth;
+    let cursorPlaced = false;
+    const allLines: string[] = [];
+    for (const [logicalRow, line] of logicalLines.entries()) {
       const characters = Array.from(line);
-      let start = cursorOffset;
-      while (start > 0 && displayWidth(characters.slice(start - 1, cursorOffset).join('')) <= available) start -= 1;
-      if (displayWidth(characters.slice(start, cursorOffset).join('')) > available) start += 1;
-      const visible: string[] = [];
+      const wrapped: Array<{ start: number; end: number; text: string }> = [];
+      let start = 0;
       let used = 0;
-      for (const character of characters.slice(start)) {
+      for (const [index, character] of characters.entries()) {
         const characterWidth = displayWidth(character);
-        if (used + characterWidth > available) break;
-        visible.push(character);
+        if (used > 0 && used + characterWidth > available) {
+          wrapped.push({ start, end: index, text: characters.slice(start, index).join('') });
+          start = index;
+          used = 0;
+        }
         used += characterWidth;
       }
-      cursorColumn = displayWidth(prefix) + displayWidth(characters.slice(start, cursorOffset).join(''));
-      return `${linePrefix}${visible.join('')}`;
-    });
+      wrapped.push({ start, end: characters.length, text: characters.slice(start).join('') });
+
+      for (const [wrappedRow, segment] of wrapped.entries()) {
+        const linePrefix = logicalRow === 0 && wrappedRow === 0
+          ? '\x1b[90m┊\x1b[0m> '
+          : '\x1b[90m┊\x1b[0m  ';
+        allLines.push(`${linePrefix}${segment.text}`);
+        if (
+          !cursorPlaced && logicalRow === logicalCursorRow &&
+          cursorOffset >= segment.start && cursorOffset <= segment.end
+        ) {
+          cursorRow = allLines.length - 1;
+          cursorColumn = prefixWidth + displayWidth(characters.slice(segment.start, cursorOffset).join(''));
+          cursorPlaced = true;
+        }
+      }
+    }
+    const start = Math.max(
+      0,
+      Math.min(cursorRow - Math.floor(maxVisibleInputRows / 2), allLines.length - maxVisibleInputRows),
+    );
+    const end = Math.min(allLines.length, start + maxVisibleInputRows);
+    const lines = allLines.slice(start, end);
+    if (start > 0) {
+      lines.unshift(`\x1b[90m┊\x1b[0m  \x1b[2m… 上方 ${start} 行已隐藏\x1b[0m`);
+    }
+    if (end < allLines.length) {
+      lines.push(`\x1b[90m┊\x1b[0m  \x1b[2m… 下方 ${allLines.length - end} 行已隐藏\x1b[0m`);
+    }
     return {
       lines,
-      cursorRow,
+      cursorRow: cursorRow - start + (start > 0 ? 1 : 0),
       cursorColumn,
+    };
+  }
+
+  private singleLineInputBox(
+    prefixWidth: number,
+    available: number,
+  ): { lines: string[]; cursorRow: number; cursorColumn: number } {
+    const lineStart = this.lineStart(this.cursor);
+    const lineEnd = this.lineEnd(this.cursor);
+    const characters = this.buffer.slice(lineStart, lineEnd);
+    const cursorOffset = this.cursor - lineStart;
+    let visibleStart = cursorOffset;
+    let usedBeforeCursor = 0;
+    while (visibleStart > 0) {
+      const characterWidth = displayWidth(characters[visibleStart - 1] ?? '');
+      if (usedBeforeCursor + characterWidth > available) break;
+      visibleStart -= 1;
+      usedBeforeCursor += characterWidth;
+    }
+    const visible: string[] = [];
+    let used = 0;
+    for (const character of characters.slice(visibleStart)) {
+      const characterWidth = displayWidth(character);
+      if (used + characterWidth > available) break;
+      visible.push(character);
+      used += characterWidth;
+    }
+    return {
+      lines: [`\x1b[90m┊\x1b[0m> ${visible.join('')}`],
+      cursorRow: 0,
+      cursorColumn: prefixWidth + usedBeforeCursor,
     };
   }
 
@@ -522,21 +788,63 @@ export class InteractiveTerminal {
   }
 
   private statusLine(): string {
-    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-    const icon = this.busy ? frames[this.statusFrame % frames.length] : '◇';
-    const state = this.busy ? (this.transient || '运行中') : '就绪';
+    const busyElapsed = Date.now() - this.busyStartedAt;
+    const fallbackFrame = renderMimiFrame('running', busyElapsed, this.busyFrame);
+    const fallbackElapsed = formatRunDuration(busyElapsed);
+    const state = this.busy
+      ? (this.transient || `${fallbackFrame} 运行中 · ${fallbackElapsed}`)
+      : this.idleBlink ? '^-.-^~' : '^._.^~';
     const model = this.truncateDisplay(this.runtime.model, 24);
-    const text = `${icon} ${state} · 模式 ${this.runtime.mode} · 模型 ${model} · 上下文 ${this.formatTokens(this.runtime.contextUsed)}/${this.formatTokens(this.runtime.contextWindow)}`;
+    const contextRatio = this.runtime.contextWindow > 0
+      ? Math.round((this.runtime.contextUsed / this.runtime.contextWindow) * 100)
+      : 0;
+    const text = `${state} · 模式 ${this.runtime.mode} · 模型 ${model} · 上下文 ${this.formatTokens(this.runtime.contextUsed)}/${this.formatTokens(this.runtime.contextWindow)}（${contextRatio}%）`;
     return `\x1b[90m${this.truncateDisplay(text, Math.max(24, (this.output.columns ?? 80) - 1))}\x1b[0m`;
+  }
+
+  private scheduleBusyRedraw(): void {
+    if (this.imeSafeInput) return;
+    this.busyTimer = setTimeout(() => {
+      if (!this.busy) return;
+      this.busyFrame += 1;
+      if (!this.transient) this.redraw();
+      this.scheduleBusyRedraw();
+    }, MIMI_TAIL_INTERVAL_MS);
+    this.busyTimer.unref();
+  }
+
+  private scheduleIdleBlink(): void {
+    if (this.imeSafeInput || this.busy || this.closed || this.idleBlinkTimer) return;
+    this.idleBlinkTimer = setTimeout(() => {
+      this.idleBlinkTimer = undefined;
+      if (this.busy || this.closed) return;
+      this.idleBlink = true;
+      this.redraw();
+      this.idleBlinkResetTimer = setTimeout(() => {
+        this.idleBlinkResetTimer = undefined;
+        if (this.busy || this.closed) return;
+        this.idleBlink = false;
+        this.redraw();
+        this.scheduleIdleBlink();
+      }, this.idleBlinkDurationMs);
+      this.idleBlinkResetTimer.unref();
+    }, this.idleBlinkIntervalMs);
+    this.idleBlinkTimer.unref();
+  }
+
+  private stopIdleBlink(): void {
+    if (this.idleBlinkTimer) clearTimeout(this.idleBlinkTimer);
+    if (this.idleBlinkResetTimer) clearTimeout(this.idleBlinkResetTimer);
+    this.idleBlinkTimer = undefined;
+    this.idleBlinkResetTimer = undefined;
+    this.idleBlink = false;
   }
 
   private taskRows(): string[] {
     if (!this.tasks.length) return [];
     const completed = this.tasks.filter((task) => task.status === 'completed').length;
     const width = Math.max(4, (this.output.columns ?? 80) - 1);
-    if (completed === this.tasks.length) {
-      return [`\x1b[92m${this.truncateDisplay(`✓ 任务 ${completed}/${this.tasks.length} · 已全部完成`, width)}\x1b[0m`];
-    }
+    if (completed === this.tasks.length) return [];
     const runningIndex = this.tasks.findIndex((task) => task.status === 'running');
     const pendingIndex = this.tasks.findIndex((task) => task.status !== 'completed');
     const activeIndex = runningIndex >= 0 ? runningIndex : Math.max(0, pendingIndex);
