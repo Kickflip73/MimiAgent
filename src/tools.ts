@@ -194,9 +194,21 @@ interface ShellCommandResult {
   exitCode: number;
   stdout: string;
   stderr: string;
+  executionEnvironment: {
+    kind: 'local-host';
+    performanceThrottled: false;
+  };
   executionBoundary?: {
     kind: 'darwin-sandbox';
+    purpose: 'capability-isolation';
+    performanceThrottled: false;
     unavailableCapabilities: ['gui-automation', 'launch-services', 'apple-events'];
+  };
+  termination?: {
+    reason: 'timeout' | 'aborted' | 'output-limit';
+    limitSeconds?: number;
+    stream?: 'stdout' | 'stderr';
+    limitBytes?: number;
   };
 }
 
@@ -1241,6 +1253,8 @@ export async function runShellCommand(
   const executionBoundary = process.platform === 'darwin'
     ? {
         kind: 'darwin-sandbox' as const,
+        purpose: 'capability-isolation' as const,
+        performanceThrottled: false as const,
         unavailableCapabilities: [
           'gui-automation',
           'launch-services',
@@ -1248,8 +1262,12 @@ export async function runShellCommand(
         ] as ['gui-automation', 'launch-services', 'apple-events'],
       }
     : undefined;
-  const result = (value: { exitCode: number; stdout: string; stderr: string }) => ({
+  const result = (value: Omit<ShellCommandResult, 'executionEnvironment' | 'executionBoundary'>) => ({
     ...value,
+    executionEnvironment: {
+      kind: 'local-host' as const,
+      performanceThrottled: false as const,
+    },
     ...(executionBoundary ? { executionBoundary } : {}),
   });
   if (/(?:^|[;&|()\s])(?:nohup|disown|setsid)(?:$|[;&|()\s])/u.test(command)
@@ -1303,7 +1321,12 @@ export async function runShellCommand(
 
   if (signal?.aborted) {
     const message = signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? '命令已取消');
-    return result({ exitCode: 1, stdout: '', stderr: message });
+    return result({
+      exitCode: 1,
+      stdout: '',
+      stderr: message,
+      termination: { reason: 'aborted' },
+    });
   }
 
   return new Promise((resolve) => {
@@ -1314,6 +1337,7 @@ export async function runShellCommand(
     let stderrBytes = 0;
     let terminating = false;
     let terminationMessage = '';
+    let termination: ShellCommandResult['termination'];
     let closed = false;
     let closeCode: number | null = null;
     let spawnError: Error | undefined;
@@ -1346,6 +1370,7 @@ export async function runShellCommand(
         exitCode: terminating || spawnError ? 1 : (closeCode ?? 1),
         stdout: truncate(stdout),
         stderr: truncate([stderr, terminationMessage, spawnError?.message].filter(Boolean).join('\n')),
+        ...(termination ? { termination } : {}),
       })));
     };
 
@@ -1364,10 +1389,11 @@ export async function runShellCommand(
         return false;
       }
     };
-    const terminate = (message: string): void => {
+    const terminate = (message: string, reason: NonNullable<ShellCommandResult['termination']>): void => {
       if (terminating) return;
       terminating = true;
       terminationMessage = message;
+      termination = reason;
       kill(false);
       hardKillTimer = setTimeout(() => {
         kill(true);
@@ -1377,9 +1403,13 @@ export async function runShellCommand(
     };
     const abort = (): void => terminate(
       signal?.reason instanceof Error ? signal.reason.message : String(signal?.reason ?? '命令已取消'),
+      { reason: 'aborted' },
     );
     const timeoutTimer = setTimeout(
-      () => terminate(`命令执行超过 ${timeoutSeconds} 秒，已终止`),
+      () => terminate(
+        `命令执行超过 ${timeoutSeconds} 秒，已终止；这是 run_shell 的调用超时，不是性能限速`,
+        { reason: 'timeout', limitSeconds: timeoutSeconds },
+      ),
       timeoutSeconds * 1_000,
     );
     timeoutTimer.unref();
@@ -1390,7 +1420,10 @@ export async function runShellCommand(
       else stderrBytes += chunk.length;
       const total = stream === 'stdout' ? stdoutBytes : stderrBytes;
       if (total <= outputLimit) target.push(chunk);
-      if (total > outputLimit) terminate(`${stream} 超过 ${outputLimit} 字节限制，已终止命令`);
+      if (total > outputLimit) terminate(
+        `${stream} 超过 ${outputLimit} 字节限制，已终止命令`,
+        { reason: 'output-limit', stream, limitBytes: outputLimit },
+      );
     };
     child.stdout.on('data', (chunk: Buffer) => capture(stdoutChunks, chunk, 'stdout'));
     child.stderr.on('data', (chunk: Buffer) => capture(stderrChunks, chunk, 'stderr'));
@@ -1655,7 +1688,7 @@ export function createTools(
   const shell = tool({
     name: 'run_shell',
     description:
-      '在本机系统 Shell 中执行工程命令。可用于搜索文件、Git、网络请求、安装依赖和运行代码；不提供 GUI 或系统自动化能力。',
+      '直接在用户本机 Shell 中执行工程命令，不经过虚拟机且不限制 CPU 或网络速度。macOS 安全边界只隔离 GUI、系统自动化、私有运行数据和控制通道；命令超时不表示沙箱限速。可用于搜索文件、Git、网络请求、安装依赖和运行代码。',
     parameters: z.object({
       command: z.string().min(1),
       timeoutSeconds: z.number().int().min(1).max(300).default(60),

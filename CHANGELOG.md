@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- identify Shell commands as unthrottled local-host execution, report timeout,
+  cancellation, and output-limit termination causes explicitly, and stop models
+  from misattributing a tool deadline to the macOS capability sandbox
 - accept and canonically migrate legacy versioned Connector configuration so an
   idle CLI/Daemon build upgrade cannot fail before replacing the old Daemon
 - return structured Context Artifact rejections instead of generic SDK tool

@@ -317,7 +317,13 @@ test('Darwin Shell sandbox blocks direct and interpreter-mediated system automat
   assert.notEqual(direct.exitCode, 0);
   assert.deepEqual(direct.executionBoundary, {
     kind: 'darwin-sandbox',
+    purpose: 'capability-isolation',
+    performanceThrottled: false,
     unavailableCapabilities: ['gui-automation', 'launch-services', 'apple-events'],
+  });
+  assert.deepEqual(direct.executionEnvironment, {
+    kind: 'local-host',
+    performanceThrottled: false,
   });
 
   const script = [
@@ -364,6 +370,24 @@ test('Shell propagates a failed pipeline stage instead of reporting empty succes
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-pipefail-'));
   const result = await runShellCommand(root, 'false | true', 5);
   assert.notEqual(result.exitCode, 0);
+});
+
+test('Shell reports its local host environment and attributes tool timeouts explicitly', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-timeout-'));
+  const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify('setInterval(() => {}, 1000)')}`;
+  const result = await runShellCommand(root, command, 1);
+
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(result.executionEnvironment, {
+    kind: 'local-host',
+    performanceThrottled: false,
+  });
+  assert.deepEqual(result.termination, { reason: 'timeout', limitSeconds: 1 });
+  assert.match(result.stderr, /调用超时，不是性能限速/u);
+  if (process.platform === 'darwin') {
+    assert.equal(result.executionBoundary?.purpose, 'capability-isolation');
+    assert.equal(result.executionBoundary?.performanceThrottled, false);
+  }
 });
 
 test('Darwin Shell sandbox blocks the registered Computer backend Unix socket through child interpreters', async () => {
