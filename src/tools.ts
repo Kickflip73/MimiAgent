@@ -1282,7 +1282,7 @@ export async function runShellCommand(
   });
   const localShell = process.platform === 'win32'
     ? (process.env.ComSpec ?? 'cmd.exe')
-    : process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh';
+    : process.platform === 'darwin' ? '/bin/zsh' : process.platform === 'linux' ? '/bin/bash' : '/bin/sh';
   const executable = process.platform === 'darwin' ? '/usr/bin/sandbox-exec' : localShell;
   const args = process.platform === 'darwin'
     ? [
@@ -1299,7 +1299,9 @@ export async function runShellCommand(
         '-lc',
         command,
       ]
-    : process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-lc', command];
+    : process.platform === 'win32'
+      ? ['/d', '/s', '/c', command]
+      : process.platform === 'linux' ? ['-o', 'pipefail', '-lc', command] : ['-lc', command];
 
   if (signal?.aborted) {
     const message = signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? '命令已取消');

@@ -50,7 +50,7 @@ test('initialization removes every retired WeChat, IM, and HTTP connector', asyn
       },
     })}\n`);
 
-    const result = await initializeMimi(config, { runtimeRoot: process.cwd() });
+    const result = await initializeMimi(config, { runtimeRoot: process.cwd(), platform: 'darwin' });
     const persisted = JSON.parse(
       await readFile(path.join(daemonDataRoot, 'connectors.json'), 'utf8'),
     ) as { connectors: Record<string, unknown> };

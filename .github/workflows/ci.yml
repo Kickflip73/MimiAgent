@@ -37,8 +37,10 @@ jobs:
           const output = readFileSync(process.env.LOG_FILE, 'utf8');
           const lines = output.split('\n');
           const failures = lines
-            .flatMap((line, index) => /^\s*not ok\b/.test(line) ? [lines.slice(index, index + 60).join('\n')] : []);
-          const detail = (failures.join('\n') || output.slice(-6000)).slice(-6000);
+            .flatMap((line, index) => /^\s*not ok\b/.test(line)
+              ? [lines.slice(index, index + 60).join('\n').slice(0, 2500)]
+              : []);
+          const detail = (failures.join('\n') || output.slice(-12000)).slice(0, 12000);
           const escaped = detail
             .replaceAll('%', '%25')
             .replaceAll('\r', '%0D')
