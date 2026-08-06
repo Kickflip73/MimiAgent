@@ -647,6 +647,7 @@ export class MimiAgent {
   }
 
   listSessionSummaries = () => FileSession.listSummaries(path.join(this.config.dataRoot, 'sessions'));
+  hasSession = (id: string) => FileSession.exists(path.join(this.config.dataRoot, 'sessions'), id);
   history = (): Promise<AgentInputItem[]> => this.session.getItems();
 
   async sessionSnapshot(sessionId = this.sessionId) {

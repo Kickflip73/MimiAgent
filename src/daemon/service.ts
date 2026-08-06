@@ -970,8 +970,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const params = object(rawParams);
         const draftSessionId = assertSessionId(requiredString(params.draftSessionId, 'draftSessionId'));
         const requestedWorkspaceRoot = optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot');
-        const draftExists = (await host!.listSessionSummaries())
-          .some((summary) => summary.id === draftSessionId);
+        const draftExists = await host!.hasSession(draftSessionId);
         const snapshot = await createMimiChatSnapshot(
           host!,
           draftExists ? draftSessionId : host!.currentSessionId,

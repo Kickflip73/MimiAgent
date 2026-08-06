@@ -324,6 +324,11 @@ export class MimiHost {
     return this.agent.listSessionSummaries();
   }
 
+  hasSession(id: string): Promise<boolean> {
+    this.assertOpen();
+    return this.agent.hasSession(id);
+  }
+
   workspaceRootFor(sessionId: string): string | undefined {
     return this.resolvedActors.get(sessionId)?.workspaceRoot;
   }

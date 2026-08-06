@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import { access, readdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { AgentInputItem, Session } from '@openai/agents';
@@ -993,6 +993,17 @@ export class FileSession implements Session {
       const active = right.updatedAt.localeCompare(left.updatedAt);
       return active || left.id.localeCompare(right.id);
     });
+  }
+
+  /** Fast O(1) existence check that avoids loading every session file. */
+  static async exists(directory: string, id: string): Promise<boolean> {
+    try {
+      await access(path.join(directory, `${assertSessionId(id)}.json`));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
   }
 
   private async load(): Promise<SessionFile> {
