@@ -9,8 +9,13 @@ export const sourceRefSchema = z.object({
   trust: z.enum(['owner', 'trusted', 'external', 'public', 'system']),
 }).strict();
 
-export const memoryPageMetadataSchema = z.object({
-  schemaVersion: z.literal(1),
+const memoryRefSchema = z.object({
+  scope: z.enum(['private', 'workspace']),
+  id: z.string().regex(/^mem_[a-zA-Z0-9_-]{8,100}$/),
+  profileId: z.string().min(1).max(100).optional(),
+}).strict();
+
+const memoryPageMetadataShape = {
   id: z.string().regex(/^mem_[a-zA-Z0-9_-]{8,100}$/),
   canonicalKey: z.string().trim().min(1).max(500).optional(),
   title: z.string().trim().min(1).max(200),
@@ -30,14 +35,61 @@ export const memoryPageMetadataSchema = z.object({
   supersedes: z.array(z.string()).max(30).default([]),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-}).strict().superRefine((value, context) => {
+};
+
+function validateScope(
+  value: { scope: 'private' | 'workspace'; profileId: string | null },
+  context: z.RefinementCtx,
+): void {
   if (value.scope === 'private' && !value.profileId) {
     context.addIssue({ code: 'custom', path: ['profileId'], message: 'private 页面必须绑定 profileId' });
   }
   if (value.scope === 'workspace' && value.profileId !== null) {
     context.addIssue({ code: 'custom', path: ['profileId'], message: 'workspace 页面不能绑定 profileId' });
   }
+}
+
+const legacyMemoryPageMetadataSchema = z.object({
+  schemaVersion: z.literal(1),
+  ...memoryPageMetadataShape,
+}).strict().superRefine(validateScope);
+
+const layeredMemoryPageMetadataSchema = z.object({
+  schemaVersion: z.literal(2),
+  ...memoryPageMetadataShape,
+  layer: z.enum(['L1', 'L2']),
+  facets: z.object({
+    kind: memoryPageMetadataShape.kind,
+    entities: z.array(z.string().trim().min(1).max(200)).max(50),
+    relations: z.array(z.object({
+      kind: z.string().trim().min(1).max(100),
+      target: memoryRefSchema,
+    }).strict()).max(50),
+    time: z.object({
+      occurredAt: z.string().datetime().nullable(),
+      validFrom: z.string().datetime().nullable(),
+      validUntil: z.string().datetime().nullable(),
+    }).strict(),
+    sources: z.array(z.string().trim().min(1).max(1_500)).min(1).max(50),
+  }).strict(),
+  derivedFrom: z.array(memoryRefSchema).max(50),
+}).strict().superRefine((value, context) => {
+  validateScope(value, context);
+  if (value.facets.kind !== value.kind) {
+    context.addIssue({ code: 'custom', path: ['facets', 'kind'], message: 'facet kind 必须与页面 kind 一致' });
+  }
+  if (value.layer === 'L1' && value.derivedFrom.length > 0) {
+    context.addIssue({ code: 'custom', path: ['derivedFrom'], message: 'L1 不能派生自其他结论' });
+  }
+  if (value.layer === 'L2' && value.derivedFrom.length === 0) {
+    context.addIssue({ code: 'custom', path: ['derivedFrom'], message: 'L2 必须引用至少一个下层结论' });
+  }
 });
+
+export const memoryPageMetadataSchema = z.union([
+  layeredMemoryPageMetadataSchema,
+  legacyMemoryPageMetadataSchema,
+]);
 
 export const wikiSchemaPolicySchema = z.object({
   schemaVersion: z.literal(1),

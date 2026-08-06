@@ -46,7 +46,7 @@ import { sessionStateSummary, recoverySummary } from '../session-state.js';
 import type { ActiveRun, MimiAgent, MimiRunOptions } from '../mimi-agent.js';
 import { renderEffectiveCapabilitySnapshot } from './capability-resolver.js';
 import { captureRunScope } from './run-scope.js';
-import { RunStateLoader } from './state-loader.js';
+import { loadPersonalContextCandidates, RunStateLoader } from './state-loader.js';
 import {
   HostCapabilityRegistry,
 } from './capability-registry.js';
@@ -256,12 +256,14 @@ export async function executeRunPipeline(
       );
     }
     const memoryContext = host.runContexts.forRun(run, options?.cause);
+    const personalContextOptions = { now: new Date(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
     const state = await new RunStateLoader({
       hotProfile: () => host.components.memory.hotProfile(memoryContext),
       searchMemories: (recallState) => host.components.memory.search(
         host.runContexts.memoryQuery(textInput, options?.cause, recallState),
         memoryContext,
       ),
+      loadPersonalContextCandidates: () => loadPersonalContextCandidates(host.components.memory, memoryContext, personalContextOptions),
       loadPlan: () => runPlans.get(),
       loadGoal: () => runPlans.getGoal(),
       loadTeamSummary: () => runTeam.summary(),
@@ -274,6 +276,7 @@ export async function executeRunPipeline(
     }).load(capabilities, {
       loadOwnerSoul: directOwnerRun,
       loadOwnerPreferences: directOwnerRun,
+      now: personalContextOptions.now, ownerTimeZone: personalContextOptions.timeZone,
     });
     const {
       storedGoal,

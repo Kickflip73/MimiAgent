@@ -1,0 +1,93 @@
+# M2 MemoryHub Progress
+- 目标：在同一 `memory.db` 实现可下钻的 L0～L3 owner 记忆、可靠混合检索/降级、异步维护、预算化 Personal Context 与可复跑评测。
+- 顺序：契约兼容 -> sqlite-vec/迁移/降级 -> 维护聚合 -> Assembler -> 固定与私有评测 -> CI/package 验收。
+- Task 0 ✅：HEAD `a20518db81c193da939f4ab1c9275c34e7467d0f`；JRV-201～204 与任务书一致。
+- 基线 ✅：`npm run check`、隔离 `MIMI_*`/`AGENT_SESSION` 的 `npm test`、`npm run build`、`npm run test:package` 全绿。
+- 基线数字：tests 908 / pass 908 / fail 0 / skipped 0 / todo 0；全测 99180.929ms。
+- 开工前 diff：白名单内 `CHANGELOG.md`、`README.md`、`docs/ARCHITECTURE.md`、蓝图、`src/runtime/run-context-builder.ts`；白名单外 M1 计划、`src/runtime/mimi-agent.ts`、`src/tools.ts`、`tests/core.test.ts`、`tests/tools.test.ts`、`skills/meeting-notebooklm-km-skill/`，全部保留。
+- 最大风险：sqlite-vec pre-v1 的本机 ABI/packed consumer 可加载性，以及旧 BLOB 向量迁移时维度或模型混用；所有失败必须 lexical-only 且不得破坏 FTS5。
+- Task 1 ✅：红 tests 2/pass 0/fail 2；绿 layers 2/2、memory 相邻回归 38/38，`npm run check` 通过；v1 兼容读、v2 L1/L2 与 explain 下钻完成。
+- Task 2 ✅：红 3/3 fail；绿 vector 4/4、memory 41/41、check/build/package 全绿；锁定 sqlite-vec `0.1.9`，vec0 KNN/迁移/错维隔离/故障 lexical 降级和 packed consumer 完成。
+- Task 3 ✅：红 2/pass 1/fail 1；绿 formation 2/2、maintenance 相邻 38/38、check 通过；异步 L1、去重/冲突/纠正/过期/遗忘与 L2 聚合复用现有 Candidate/Revision。
+- Task 4 ✅：红入口 fail 1；绿 Assembler 1/1、pipeline/MemoryHub 相邻 47/47、check 通过；L3 四 section 按 900-token 默认预算派生，无 I/O/LLM/写状态。
+- Task 5 ✅：红入口 fail 1；绿 eval tests 3/3；80 问 lexical/hybrid 均 72 correct、4 partial、4 evidence-insufficient、0 incorrect，来源覆盖 100%，fault probes 全 true。
+- 文档同步 ✅：README、Architecture、专项计划、贾维斯蓝图与 Changelog 已记录四层契约、vec0 降级、预算化 L3、固定/私有评测和未部署边界。
+- 聚焦验收 ✅：`npm run check` 退出 0；`node --import tsx --test tests/*memory*.test.ts tests/run-pipeline.test.ts` 为 tests 69 / pass 69 / fail 0 / skipped 0 / todo 0，2557.046ms。
+- 约束审计 ✅：召回只执行 vec0 KNN；`Float32Array` 仅用于向量编码与旧 BLOB finite/维度迁移校验；M2 新增/修改均在白名单，6 个白名单外开工前路径保持原 diff。
+- 固定 eval ✅：80 问；lexical/hybrid 均 72 correct、4 partial、4 evidence-insufficient、0 incorrect、来源覆盖 100%；p50/p95 分别 0.598/0.783ms 与 0.923/1.417ms；4 个 Vec/reindex fault probes 全 true。
+- 隔离全测 ✅：清除全部 `MIMI_*`/`AGENT_SESSION` 后 `npm test` 为 tests 920 / pass 920 / fail 0 / skipped 0 / todo 0，108001.840ms；较 Task 0 基线 908 增加 12。
+- 构建/package ✅：`npm run build` 退出 0；`npm run test:package` 退出 0，packed consumer 安装 tarball 并加载 sqlite-vec/KNN。
+- CI attempt 1 ⚠️：隔离 `npm run ci` 的 hygiene/release/dependency 通过，asset boundary 因开工前白名单外未跟踪 `skills/meeting-notebooklm-km-skill/` 失败；未修改该目录或验收脚本，证据见 BLOCKED。
+- 当前树 coverage ✅：tests 920 / pass 920 / fail 0 / skipped 0 / todo 0，118258.998ms；总覆盖率 lines 88.73% / branches 78.82% / functions 84.95%，高于 85/75/75 门槛。
+- 临时镜像 CI ✅：排除唯一开工前未跟踪 Skill 后，完整 `npm run ci` 退出 0；repo/check 全绿，tests 920 / pass 920 / fail 0 / skipped 0 / todo 0，123316.566ms，覆盖率 88.75/78.86/84.92，build/package 通过。
+- 私有入口失败脱敏 ✅：审阅新增红灯 tests 4/pass 3/fail 1（模拟私有路径进入 stderr）；固定失败文案后绿灯 4/4，任何失败均不输出问题、ref 或本机路径。
+- 最终聚焦回归 ✅：check 退出 0；Memory/pipeline tests 70/70、skip/todo 0，3393.927ms；80 问仍为 72/4/4/0、来源覆盖 100%，p50/p95 lexical 0.768/1.666ms、hybrid 1.454/5.943ms，fault probes 全 true。
+- 最终镜像 CI ✅：同步隐私修复后完整 `npm run ci` 退出 0；tests 921 / pass 921 / fail 0 / skipped 0 / todo 0，122196.263ms；覆盖率 lines 88.75% / branches 78.88% / functions 84.95%；build/package 通过。
+- 最终审计 ✅：`git diff --check` 退出 0；status 33 项均为白名单或 Task 0 登记的 6 个开工前外部路径，unexpected 0；无真实用户路径、私钥/token、生成产物或 M1 exit record 改动。
+- 历史结论（已撤回）：当时认为 M2 代码、迁移、测试、固定 eval、package smoke 与文档已交付；后续生产闭环复验重新打开，以下记录覆盖该结论。
+
+## 2026-08-05 生产闭环复验（重新打开）
+- 状态：旧“完成”结论撤回；生产 L1/L2、独立 Personal Context、非变体评测和真实向量证据通过前，不得宣称 M2 完成或进入 M3。
+- 目标：让生产 maintenance/remember 自动形成可下钻 L1/L2，并让任意当前问题获得可靠、只读、时区正确的四类 Personal Context。
+- 顺序：生产工具 E2E -> 独立 facet/time 候选与时区 -> StateLoader 来源链 -> 非变体评测 -> 私有只读/真实向量验收 -> CI。
+- 本轮基线：`npm run check` 退出 0；聚焦 tests 41/41；`npm run test:package` 沙箱缓存失败后用授权环境复跑退出 0。
+- 质量基线：全量 tests 921；coverage lines/branches/functions `88.75/78.88/84.95`，不得退化或增加 skip/todo。
+- 真实向量基线：本机约 1469 documents、vec/legacy rows 均 0，且无 embedding provider key，当前只能证明 lexical-only，不能用 fake embedding 冒充生产 hybrid。
+- 最大风险：生产 schema 透传不能削弱 provenance/inference；facet/time 独立召回不能新增状态或 LLM；真实 provider 凭证缺失可能成为唯一外部准入项。
+
+## 生产闭环执行记录
+- Vector doctor 红灯：单测 tests 1 / pass 0 / fail 1 / skip 0 / todo 0；`providerConfigured` 实际 `undefined`，证明现有 status 不满足可操作诊断契约。
+- Vector doctor 机制绿灯：同一生产 Hub reindex 测试 1/1；status 报告 provider、vector rows/state、hybrid/lexical-only 与 next action，真实 provider 证据仍待脱敏入口。
+- P1 裁决更新：不再等待外部 API key；默认必须是精确锁版本/digest、受保护缓存的本地真实语义 embedder，远程 provider 仅作可选增强，BM25 仅作故障降级。
+- P1 顺序更新：候选模型/runtime 实测 -> 独立 Provider -> 无 key reindex/KNN/RRF/语义改写 -> 断网二启 -> 体积/时延/内存证据；缺模型或平台不支持必须可启动。
+- 生产入口红灯：formation tests 4 / pass 2 / fail 2 / skip 0 / todo 0；maintenance 与 owner remember 的 `facets.entities` 均实际为空，证明 schema 未透传。
+- 生产入口绿灯：formation 4/4、相邻 maintenance+hub 33/33、check/package 通过；真实 observation 工具链形成 L1/L2，L2 强制 inferred 且 explain 到 L1/L0，owner remember 同样保留 facets。
+- 本地 Provider 红灯：tests 1 / pass 0 / fail 1 / skip 0 / todo 0；无词面查询实际无结果，证明 Hub 仍只识别 OpenAI client，尚无独立本地 embedder 边界。
+- Provider 边界绿灯：新测 1/1、MemoryHub 相邻 27/27、check 通过；远程 client 已封装为可选适配器，Hub 只依赖通用 provider，普通调用禁止下载、显式 reindex 才可准备资产。
+- 本地 provider 故障绿灯：embedding/hub/vector 33/33、check/diff-check 通过；固定 revision+SHA、原子 `0700/0600` 缓存，缺失/损坏/不支持平台均可启动并 lexical fallback。
+- 默认 provider 红→绿：红为缺少 runtime factory、整文件 fail；绿为相关 7/7 + check。仅专用 `MIMI_EMBEDDING_API_KEY` 显式切远程，普通 chat key 不改变 Memory，零 key 默认本地。
+- 真实 BGE attempt 1：Vec ready 但改写无结果；余弦正确项 `0.4467`、次项 `0.3593`，定位旧统一阈值 `>=0.62` 不适配本地模型，未放宽验收断言。
+- 校准阈值红→绿：默认 KNN 仍拒绝中等候选，本地 provider 传模型校准距离后命中；vector+embedding 9/9、check 通过，Catalog 不含模型特例。
+- 无 key 生产验收 ✅：真实文本 -> BGE q8 -> reindex -> vec0 SQL KNN/RRF；6 docs、lexical hits 0、hybrid hits 1/top1 正确、vector rows 6、state ready、mode hybrid，reindex 264.391ms。
+- 断网二启 ✅：新进程强制 fetch 抛错，network calls 0；startup 23.322ms、首次 query 139.139ms、RSS 总量 267452416B，vector rows 6/hybrid/top1 正确。
+- 候选裁决 ✅：direct BGE q8 模型 23.180MiB、runtime 211.675MiB、warm p95 2.111ms、RSS 增量 118.61MiB；满足 `<100MB/<200ms/<300MB`。
+- 淘汰证据：E5 int8 模型 133.713MiB/RSS +616.41MiB，v2 BGE WASM RSS +326.89MiB；均超目标。direct 与 v4 BGE 检索结果一致且 RSS 少 33.55MiB，故选 direct。
+- 质量边界：公开 32 问/80 文档 BGE R@5/R@10 为 43.75/50%，中文 87.5/87.5、英文 62.5/62.5、跨语种弱；向量只作 RRF 候选，不能裁决事实，未来跨语升级另行评估。
+- runtime lock 证据：精确 `onnxruntime-node@1.24.3` + `@huggingface/tokenizers@0.1.3` 的独立 registry lock 以 `npm ci --offline` 安装 25 packages、0 vulnerabilities，并完成断网 benchmark。
+- runtime lock 合并 ✅：现有 lock 结构化追加后 `npm install --package-lock-only --offline` 为 audited 140 packages / 0 vulnerabilities；无 `file:/tmp`，仅两个精确 root dependency。
+- packed consumer ✅：build 退出 0；`npm run test:package` 完成且无 stderr，tarball 消费者实际加载 sqlite-vec、Tokenizer、ONNX runtime 与本地 provider。
+- Personal Context 验收 attempts 1～3：依次暴露测试 fixture 的非法 digest、非法 relation target id、无关 query 含公共词导致 FTS 广召回；均修 fixture，按三次规则先切 check/pipeline 再回测。
+- Doctor action 红→绿：缺本地模型时原建议不存在的 download 命令；修为现有 `memory reindex`，embedding tests 5/5。
+- Personal Context 红灯：真实 Hub + StateLoader 集成 tests 1/pass 0/fail 1，缺少独立候选加载入口；后续 3 次依次暴露非法 digest、非法 relation target 和测试 query 词面污染，已按三失败规则切换 check/pipeline 后再回测。
+- Personal Context 绿灯 ✅：关系/冲突/过期条件在 SQLite `LIMIT` 前筛选；query recall 与四类 owner 候选去重并共享 900-token 预算，显式宿主 IANA 时区，unknown fact/decision/procedure 不误归类，L3 `complete|partial|blocked` 且可下钻 L2→L1→L0；root 复跑 memory-context/run-pipeline/memory-hub 50/50、check/diff-check 通过。
+- 可复跑本地向量入口红灯：memory-eval tests 1/pass 0/fail 1，`ERR_MODULE_NOT_FOUND evals/memory/local-vector.js`，证明仓库尚无零 key/断网二启的正式验收契约。
+- 非变体 eval 绿灯 ✅：20 fixtures / 60 个手写自然问题，规范化唯一 60；lexical/机制 hybrid 均 53 correct、4 partial、3 evidence-insufficient、0 incorrect，correct+partial 95%，来源覆盖 100%，四项 Vec fault probes 全 true；字符 n-gram fake 明确仅验证机制，不冒充生产语义证据。
+- 可复跑本地向量入口绿灯 ✅：契约 tests 6/6、check 通过；零 key生产 Provider 对同一真实文本库为 lexical 0 hits → BGE/vec0/RRF hybrid 1 hit/top1 正确，vector rows 6、state ready、mode hybrid、reindex 119.319ms；断网新进程 network calls 0、startup 17.855ms、warm p50/p95 14.225/18.254ms、RSS 增量 172294144B。
+- 正式 eval scripts ✅：移除 `tsx` CLI IPC 依赖后，`npm run eval:memory` exit 0（60 问 53/4/3/0，95%，coverage 100%，p95 lexical/hybrid 1.166/2.543ms）；`npm run eval:memory:local` exit 0（lexical 0→hybrid 1，6 rows，offline network 0，warm p95 18.328ms，RSS 增量 165838848B）。
+- owner 私有入口检查：本机只读统计候选问题清单为 0，未读取/输出正文、问题、ref、文件名或路径；不伪造验收，作为当前唯一发布证据缺口记入 BLOCKED。
+- 本地 timeout 红→绿：红 memory-embedding 6 tests / pass 5 / fail 1，永不返回的 inference 超过 250ms 外部门限；Provider 加入有界、unref/可取消 timer 后同测 6/6，embedding+hub 32/32、check 通过，超时原因 `inference_timeout` 并立即 lexical fallback。
+- 范围/架构门禁修复 ✅：默认 provider wiring 从越界 `runtime/components.ts` 收敛到允许的 routed MemoryHub（components diff 恢复 0）；ARC-303 首次 1/2 fail（8511>8505），只压缩等价 Personal Context wiring 后 2/2，pipeline/context 24/24。
+- Reviewer P1 红→绿：红 embedding+hub 33 tests / pass 31 / fail 2，document embed 无 timeout 且 provider unavailable+ready rows 误报 hybrid；统一 query/document 有界 timeout、doctor 要求 provider state ready 后 33/33、check 通过，stalled write 降级且状态诚实为 lexical-only。
+- Partial-vector P1 红→绿：红 hub 28 tests / pass 27 / fail 1，2 个当前页面仅 1 个有向量却误报 `ready`；批量同步追踪缺失 embedding 并持久化 `reindex-required`，remember/ingest/capture/governance 写入同步维护索引；绿 embedding+hub 35/35、skip/todo 0。
+- Timeout 熔断 P1 红→绿：红新增测试 1/pass 0/fail 1，第二次 stalled inference 约 276ms 后仍未返回；实例级熔断后同实例不再创建 pipeline/session，新实例可从缓存恢复；绿 embedding 7/7、与 Hub 合跑 35/35，`npm run check`、`git diff --check` 退出 0。
+- 生产 route eval P1 绿灯 ✅：验收 prepare/离线二启不再手工注入 Provider，均直接走 `createRoutedMemoryHub`；`eval:memory:local` exit 0，零 Key lexical 0→hybrid 1/top1 正确、vec rows 6、`ready/hybrid`、network calls 0，离线 warm p95 16.068ms、RSS 增量 164216832B。
+- Packed route P1 红→绿 ✅：红 `test:package` 在硬编码 consumer 子目录导入时报 `ERR_MODULE_NOT_FOUND`；改由 packed consumer 的 `import.meta.resolve('mimi-agent')` 定位真实 tarball，随后 `npm run test:package` exit 0，并验证默认 routed local/missing/lexical diagnostics、Tokenizer、ONNX、sqlite-vec v0.1.9 与最小 KNN。
+- 最终聚焦/固定 eval ✅：diff-check/check exit 0；Memory+pipeline 87/87、skip/todo 0；60 问 lexical/hybrid 均 53 correct、4 partial、3 insufficient、0 incorrect、来源覆盖 100%，四个 fault probes 全 true。
+- CI 环境诊断：当前树仍仅被开工前 Skill asset boundary 拦截；隔离镜像在平台 sandbox 为 933 tests / 872 pass / 61 fail，48 条日志直接命中 socket/sandbox/Node assertion，覆盖率不可作为回退证据，详见 BLOCKED。
+- Tool schema 预算红→绿：完整 CI 首次唯一真实失败为 4051 > 4000；只压缩模型可见说明，保留全部 facets/L2 参数与断言，原测试 1/1 通过。
+- 最终隔离镜像 CI ✅：排除已登记的开工前 Skill、清空 `MIMI_*`/`AGENT_SESSION` 后原样 `npm run ci` exit 0；tests 938 / pass 938 / fail 0 / skipped 0 / todo 0；coverage 88.76/78.95/85.07；build 与 packed package 通过。
+- 最终范围/秘密审计 ✅：status 52 项 = M2 白名单 40 + 已登记开工前路径 12，unexpected 0；`git diff --check` 通过，lock 无 `file:`/`link:`/临时路径，秘密/真实路径/模型或 DB 资产 0 命中；查询向量通道仍为 vec0 SQL KNN，无全量 JS cosine。
+- 私有 Session 入口强化红灯 ✅：生产格式/owner provenance/目录逐文件 SHA/证据白名单测试为 tests 1 / pass 0 / fail 1 / skip 0 / todo 0；缺少 `runOwnerPrivateSessionEval` 导出，未绕过 Catalog/Session 边界。
+- Catalog readOnly 反向验证 ✅：首次 tests 6 / pass 5 / fail 1，主 DB SHA 不变但只读打开仍新建 WAL/SHM；保留断言并改为拒绝活动 WAL + immutable 快照后 6/6，生产 FTS/vec0 SQL KNN/RRF 复用且 TEMP 自检无持久写。
+- 私有 Session 入口绿灯 ✅：真实 FileSession/生产 Catalog、owner provenance、非 owner/isolated 排除、全树文件 SHA 不变、证据类型白名单和固定错误输出均通过；eval+vector tests 13/13、skip/todo 0，`npm run check` 退出 0。
+- 私有范围复审修正 ✅：撤回“递归 16 个 Catalog 可代表 owner”的旧结果；入口现只打开 owner profile 与显式 workspace，finite clamp 读入预算，必要 Catalog/Session 不可读时返回 `incomplete`，labelled 兼容模式强制 ground truth，Vec 失败不误报 hybrid。
+- 本机私有只读复跑 ⚠️：2 个 canonical owner 输入在内存中；必要 owner Catalog 当前严格只读打开失败，聚合为 catalog 0 / unreadable 1、0 partial / 2 evidence-insufficient、`auditStatus=incomplete`、命令 exit 2。未借其他 profile 掩盖，未 checkpoint/copy/修改真实 DB。
+- 收尾聚焦/固定 eval ✅：Memory+pipeline tests 89/89、skip/todo 0；60 个非变体问题 lexical/hybrid 均为 53 correct / 4 partial / 3 insufficient / 0 incorrect，正确+部分 95%、来源覆盖 100%，Vec 四项反向探针全 true。
+- 收尾真实向量/package ✅：零 Key生产 route 为 lexical 0 → hybrid 1/top1 正确、6 vec rows、ready/hybrid；断网二启 network 0、warm p95 18.652ms、RSS 增量 150634496B；`npm run test:package` 与 `git diff --check` 退出 0。
+- Reviewer P1/P2 红→绿 ✅：immutable WAL 检查补 realpath、main/WAL identity 与每次 search/list/status 前后复检；跨 profile、active WAL、no-data、NaN 预算、Session id、旧 schema RO、RW/RO RRF、mode/mtime/SHA 测试后 eval+vector 14/14、check 通过。
+- 收尾隔离镜像 CI ✅：排除登记的开工前 Skill，并以仅 HOME/PATH/TMPDIR/LANG 的干净环境运行原样 `npm run ci` exit 0；tests 941 / pass 941 / fail 0 / skipped 0 / todo 0，coverage 88.78/78.94/85.11，repo 四门禁、build、packed package 全通过。
+- 最终短回归 ✅：`npm run check`、`git diff --check` 退出 0；强化 eval+vector 14/14、skip/todo 0。owner 私有严格只读连续 3 次 scoped 复跑均 exit 2 / incomplete，按三失败规则停止重试，不触碰真实 Daemon。
+- WAL snapshot 模式红→绿 ✅：红为真实 owner Catalog 13MB+1.6MB WAL 被 `captureReadOnlySnapshot` 无条件拒绝；移除 WAL snapshot 分支中的 WAL 检查、加 `--allow-wal` 布尔 flag、修 argument/flag 混用后，`readOnly: true` 普通连接复用生产 FTS/vec0/RRF，主 DB 前后 SHA+size 不变。
+- 真实 owner 私有验收 ✅：100 问 / 64 partial / 36 evidence-insufficient / 0 incorrect、来源覆盖 100%、p50 1.77ms / p95 6.84ms、`auditStatus=complete`、`provenanceMode=memory-owner-evidence`、`retrievalMode=lexical-only`；输出仅聚合数字，无原文/ref/路径。
+- 最终收尾回归 ✅：check/eval+vector 14/14、60 问 lexical/hybrid 53/4/3/0、零 Key本地向量  lexical 0→hybrid 1、warm p95 18.97ms、RSS 增量 158040064B、`git diff --check` 退出 0。
+- 最终范围/秘密审计 ✅：52 个 changed paths = 41 个任务允许 + 11 个已登记开工前路径，unexpected 0；secret value、真实用户路径、DB/ONNX 资产、lock `file:/link:/tmp` 引用均 0。

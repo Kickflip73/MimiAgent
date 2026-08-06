@@ -2,7 +2,7 @@
 
 日期：2026-07-15
 
-状态：通过（2026-07-20 按 Karpathy LLMWiki 原文复核修订；未实施）
+状态：M2 工程验收已收敛（2026-08-06；代码、固定/本地向量评测与隔离 CI 通过，owner 私有 Catalog 因活动 WAL 为 incomplete，长期 Daemon 未部署）
 关联调研：`docs/research/20260715-MimiAgent统一MemoryHub-调研.md`
 Event/Task 前置设计：`docs/plans/20260720-MimiAgent-Event-Task分层设计.md`
 
@@ -12,12 +12,25 @@ Event/Task 前置设计：`docs/plans/20260720-MimiAgent-Event-Task分层设计.
 
 设计目标：
 
-- 轻量：只使用 Markdown、项目已有的 YAML/Zod/Atomic Store 和 Node 内置 SQLite，不增加外部服务或数据库依赖；
-- 高效：普通查询不调用生成式 LLM；SQLite FTS5/BM25 始终可用，已配置 Embedding Provider 时自动启用向量语义通道，失败时无损回退词法检索；
+- 轻量：只使用 Markdown、项目已有的 YAML/Zod/Atomic Store、Node 内置 SQLite，以及精确锁定的 `sqlite-vec@0.1.9`、`onnxruntime-node@1.24.3` 和 `@huggingface/tokenizers@0.1.3`；不增加外部服务、进程或远程向量库；
+- 高效：普通查询不调用生成式 LLM；零 Key 默认 direct BGE q8，SQLite FTS5/BM25 保持词法基线，向量或 BM25 故障都有本地降级路径；
 - 有用：支持跨 Session、时间更新、来源回读、冲突、拒答和经验复用；
 - 可靠：Mimi 自动巩固可恢复、可重试、幂等，不阻塞事件热路径；
 - 清晰：遵守 `runtime → core + extensions` 与 `daemon → runtime` 的现有依赖方向；
 - 一次性切换：同一个变更集完成新 MemoryHub、数据转换和旧路径移除，不实现双写、双读、旧工具别名或按发布周期迁移。
+
+### 2026-08-06 M2 工程证据（非退出结论）
+
+- 在同一事实与 Revision 链上交付 L0 Evidence、schema v2 L1 Atom、L2 Scene/Topic 和只读 L3 Personal Context；schema v1 继续兼容读。
+- L1/L2 自由文本保留在 Markdown 正文，typed facets 仅包含 kind、实体、关系、时间和来源；`explain` 可从结论递归下钻 SourceRef。
+- 同一 `memory.db` 使用 `sqlite-vec@0.1.9` vec0 chunk KNN；结构化、BM25 和 vector 以 RRF 融合，最终路径不再执行全量 JavaScript cosine。
+- Vec 扩展、Embedding、模型/维度或 reindex 任一异常时保持 lexical 查询可用；旧 BLOB 派生向量校验迁移成功后删除。
+- 零 Key 本地 Provider 使用固定 revision/digest 的 BGE q8 和 direct ONNX runtime；模型下载只允许由显式 `/memory reindex` 触发，损坏、缺失或平台不支持不阻塞启动。
+- Personal Context Assembler 按默认 900-token 预算组装四类只读视图；普通 Conversation 不等待 maintenance，也不在查询热路径调用生成式 LLM 或写状态。
+- `evals/memory` 固定 20 个 fixtures 上的 60 个手写自然问题并提供 owner 私有只读入口；真实私有问题和 Memory 正文不进入仓库。
+- 隔离镜像 CI 为 941/941、skip/todo 0，覆盖率 88.78/78.94/85.11；本机 owner 私有入口严格拒绝活动 WAL，当前结果为 incomplete，未借其他 profile 或复制数据库伪造通过。
+
+上述代码、非变体问题质量、零 Key向量与隔离 CI 门禁已经通过；owner 私有入口机制通过，但当前真实 Catalog 的稳定只读快照仍为 incomplete。该外部运行态证据补齐前不关闭 M2 发布退出门禁，M3 门禁保持关闭。
 
 ## 非目标
 
@@ -306,7 +319,7 @@ SourceRef 至少包含类型、稳定 ID、内容摘要、发生时间和 proven
 
 - `documents`：page/source/episode 元数据、digest、scope、profile、有效时间；
 - `documents_fts`：title、aliases、tags、body 的 FTS5 索引；
-- `document_embeddings`：document digest、provider/model/dimensions 和 Float32 vector BLOB；只有已配置 Embedding Provider 时生成；
+- `document_vec_chunks`：`sqlite-vec` vec0 chunk KNN 索引；`document_vec_chunks_map` 保存 page/chunk ref、digest、model 和 dimensions；只有 Embedding Provider 与固定资产可用时生成；
 - `links`：解析后的 Wiki 双向链接；
 - `schema_meta`：索引版本和最后完整校验时间。
 
@@ -320,21 +333,25 @@ Markdown/Session/Mimi DB 是内容真相；`source_receipts/suppressions/decisio
 
 确定性 lint 的即时结果可以放在派生表；只有重复发生、会影响编译或检索质量的问题才写入 Vault 的 `_error-book.md`。维护 Run 最多读取 20 条未解决规则，修复后标记 resolved，避免 Error Book 本身无限进入上下文。`_index.md` 在一次编译成功后由确定性生成器更新，列出页面链接、一行摘要、类型、日期和来源数。`_log.md` 使用可解析的 `ingest | capture | lint` 前缀，只记录页面 ID、操作、source/query digest、compiler version 和时间，不复制私有正文。二者都是可重建导航产物，不是知识真相。
 
-### 混合检索：BM25 始终可用，Embedding 自动增强
+### 混合检索：BM25 作为基线，零 Key 本地 Embedding 自动增强
 
 第一版就实现 hybrid retrieval，不延后 Embedding，但也不引入向量数据库：
 
 1. **结构命中**：标题/别名精确、前缀命中、tags/kind 过滤；
 2. **词法通道**：SQLite FTS5 trigram + `bm25()`；少于 3 个汉字的查询使用有上限的精确别名/`LIKE` 回退；
-3. **语义通道**：存在 Embedding Provider 时，页面或有界 section 按 digest 增量生成 vector，查询时生成一个 query vector；
+3. **语义通道**：零 Key 默认由 direct BGE q8 本地生成 embedding；显式配置专用远程 Key 时才切换 OpenAI-compatible Provider。页面或有界 section 按 digest 增量生成 vector，写入同一 `memory.db` 的 vec0 chunk 索引；查询生成一个 query vector 并执行 KNN top-k；
 4. **合并**：用 Reciprocal Rank Fusion 合并结构、BM25 和 vector 排名，不混用不同量纲的原始分数；
 5. **时间与链接**：用 `validFrom/validUntil/occurredAt` 过滤，仅在工具明确请求时做一跳 link expansion。
 
-`retrievalMode` 默认为 `auto`：配置了 Embedding Provider 且当前索引的 provider/model/dimensions 一致时走混合检索；未配置、离线、超时或调用失败时立即回退 BM25，不让 Mimi 启动或查询失败。DeepSeek 作为对话 Provider 时可继续使用当前已有的独立 OpenAI Embedding 凭证边界；没有该凭证则保持完整 BM25 能力。
+`retrievalMode` 默认为 `auto`：未设置 `MIMI_EMBEDDING_API_KEY` 时创建本地 Provider；只有显式设置这一专用 Key 才创建远程 OpenAI-compatible Provider，不复用 OpenAI/DeepSeek 对话凭证。`sqlite-vec` 自检通过且当前索引的 provider/model/dimensions 一致时走混合检索；模型资产缺失/损坏、平台不支持、远程超时、扩展/KNN 失败、模型或维度变化、reindex 中断时立即回退 lexical-only，不让 Mimi 启动或查询失败。模型或维度不一致时状态为 `reindex-required`，旧向量不得参与混搜。
 
-数百到低万个向量时，SQLite BLOB + 进程内有界 cosine/dot-product 扫描足够，无需 Qdrant、Milvus、pgvector 或新的 native 扩展。以 10,000 个向量计算，512 维 Float32 约 20 MB，1536 维约 60 MB；最终 dimensions 由 retrieval eval 在中文、英文和代码混合集上选择。
+本地 manifest 固定 `onnx-community/bge-small-zh-v1.5-ONNX` revision `9507db33464b5da99a532ac26b2a251767cbc62b`，运行时为 `onnxruntime-node@1.24.3` + `@huggingface/tokenizers@0.1.3`。`model_quantized.onnx` SHA-256 为 `99a6e522710c00220c89f8c52e0cc5aa09d4cbb1c34c0e932eab3a9dfdc65df3`，外部权重为 `952623481ca8beea884e3d3c9ecaf8a3c7bf1d0c21de29e970cd31af9d37a90b`，其余三个资产也固定字节数与摘要。缓存路径为 `<dataRoot>/memory/models/bge-small-zh-v1.5-q8/<revision>/`，目录 `0700`、文件 `0600`，写入在摘要校验后原子替换。启动、查询和普通同步不下载；只有显式 `/memory reindex` 允许下载或修复固定资产。
 
-金额不是主要成本。按 2026-07-20 OpenAI `text-embedding-3-small` 公开价格 $0.02/1M input tokens，假设 10,000 个索引单元平均 500 tokens，全量重建约 $0.10；日常是 digest 增量更新。真正的代价是每个新查询可能多一次网络往返、需要把待嵌入文本发送给 Provider，以及维护 model/dimensions 变更后的重建语义。用户可设 `retrievalMode: lexical` 保持纯本地。价格来源：[OpenAI text-embedding-3-small](https://developers.openai.com/api/docs/models/text-embedding-3-small)。
+`sqlite-vec` 精确锁定为 `0.1.9`，只负责 vector 存储与 KNN，不是事实库或 embedding runtime。Catalog 启动时加载扩展、关闭继续加载能力，并执行 `vec_version()` 与 2 维最小 KNN 自检。旧 `document_embeddings` / `document_embedding_chunks` BLOB 表只在迁移时校验 finite 值、模型、维度和行数；vec0 写入计数一致后删除，失败则保持 lexical 并要求 reindex。查询热路径不读取全部向量，不运行 JavaScript cosine，也不部署 Qdrant、Milvus、pgvector 或远程服务。
+
+远程 Provider 只是显式专用 Key 的可选项，其代价包括每次 query 的网络往返、将待嵌入文本发送给配置端点，以及 provider/model/dimensions 变化后的显式重建。敏感或严格离线部署可以保留零 Key 本地 Provider，或把 `retrievalMode` 固定为 `lexical`。
+
+2026-08-05 Darwin arm64、32 个互不重复自然问题/80 个文档的离线串行选型基准中，direct BGE 模型为 23.180 MiB、完整 runtime install 为 211.675 MiB、warm query p95 为 2.111 ms、RSS 增量为 118.61 MiB。E5 int8/q8 因 133.7 MiB 级模型、616 MiB 以上 RSS 且中译英桶仍失效而淘汰为默认；Xenova v2 BGE WASM 在近似质量下 p95 27.523 ms、RSS 增量 326.89 MiB，也被淘汰。direct BGE 的跨语能力同样有限：这个小型数据集的英译中 R@10 为 0%、中译英 R@10 为 50%，所以结构化/BM25 通道和 evidence-insufficient 结果必须保留。
 
 Catalog 初始化时先做 FTS5 capability probe。官方 Node 构建缺少 FTS5 或 FTS 表切换失败时，回退到 `documents` 表上的现有轻量 `textScore + bounded LIKE`，并在 `/memory status` 报告 degraded；不能因为全文或向量索引缺失让 Mimi 无法启动。
 
@@ -740,7 +757,7 @@ Mimi 可在项目事实发生稳定变化时更新 `AGENTS.md`，但必须是当
 - C：Wiki + BM25/vector hybrid；
 - D：Wiki hybrid + episode/source evidence fallback。
 
-预期 D 在语义召回、正确率和证据完整性上最好；C 用来衡量 vector 的真实增益，B 是无凭证/离线基线。若 vector 对某类查询引入噪声，调整 RRF 通道排名而不删除 BM25 基线。
+预期 D 在语义召回、正确率和证据完整性上最好；C 用来衡量 vector 的真实增益，B 是显式 lexical 基线。零 Key 并不等于 B，因为 `auto` 会优先使用本地 BGE。若 vector 对某类查询引入噪声，调整 RRF 通道排名而不删除 BM25 基线。
 
 ### 强制安全门槛
 
@@ -762,9 +779,9 @@ Mimi 可在项目事实发生稳定变化时更新 `AGENTS.md`，但必须是当
 ### 性能预算
 
 - lexical mode 在 1,000 页面本地索引下 `memory_search` P95 目标小于 50ms，10,000 页面小于 150ms；
-- hybrid mode 的本地 vector 扫描 + RRF 在 10,000 向量下 P95 目标小于 250ms，Embedding Provider 网络耗时单独统计；
-- 普通查询 0 次额外生成式 LLM 调用；lexical mode 0 次网络调用，hybrid mode 最多 1 次 query embedding 调用，超时/失败立即回退 BM25；
-- auto cards 最多 5 条/1200 tokens，Hot Profile 最多 600 tokens；
+- hybrid mode 的本地 vec0 KNN + RRF 在 10,000 向量下 P95 目标小于 250ms，Embedding Provider 网络耗时单独统计；
+- 普通查询 0 次额外生成式 LLM 调用；lexical 与本地 hybrid mode 都是 0 次网络调用，远程 hybrid 每次查询最多 1 次网络 embedding，超时/失败立即回退 BM25；
+- 自动检索候选最多 20 条/2400 tokens，L3 Personal Context 默认最多 900 tokens，Hot Profile 最多 600 tokens；
 - 增量 reindex 只处理 digest 变化文件；
 - Mimi 原事件完成延迟不因自动巩固增加模型调用；
 - 没有 observation 时不创建 maintenance Task；非空批次受每日预算限制。
@@ -825,7 +842,7 @@ Review 维度：架构边界、可靠性、并发/幂等、安全隐私、检索
 | P2 | 高价值问答只留在 episode | 分析、比较和新联系不进入可复利 Wiki | 增加 Query Capture；Mimi 自主判断，通过门禁直接 active，不建审批队列 | 已解决 |
 | P2 | Lint 偏结构校验 | 跨页矛盾、陈旧综述、缺失概念和知识空洞长期累积 | 保留每次确定性 lint，增加显式/有变更阈值触发的有界 semantic lint | 已解决 |
 | P2 | Daemon 单轮 5 页预算无多页编译完成语义 | 源需更新 10–15 页时被提前标记完成 | `CompilationPlan` 持久化 planned/applied refs，超额保持 pending 并幂等续做 | 已解决 |
-| P2 | 为了轻量而延后 Embedding | 改写、跨语言和词汇不匹配查询的召回不足，也丢失现有 RAG 能力 | 第一版实现 FTS5/BM25 + optional vector + RRF；无凭证/失败自动回退 BM25，不引入向量 DB | 已解决 |
+| P2 | 为了轻量而延后 Embedding | 改写、跨语言和词汇不匹配查询的召回不足，也丢失现有 RAG 能力 | 第一版实现 FTS5/BM25 + zero-key local vector + RRF；本地/远程 Provider 失败自动回退 BM25，不引入向量 DB | 已解决 |
 | P2 | 假设所有 Node SQLite 都启用 FTS5 | 非官方构建可能启动失败 | 启动 capability probe；缺失时回退 bounded lexical/LIKE 并报告 degraded | 已解决 |
 | P2 | 工作区 Wiki 可被通用文件工具改坏 | schema 绕过 | 每次增量索引先校验；无效页面从 active index 排除并产生 lint，但不影响其他有效页面 | 已解决 |
 | P2 | system maintenance 走普通 Attention 或固定空 Schedule | 事件可能被 digest，或 24/7 积累空事件 | 仅在 observation 到阈值且预算允许时发布；保持 `trust: system`，增加窄分类且不进入用户 Digest | 已解决 |
@@ -842,7 +859,7 @@ Review 维度：架构边界、可靠性、并发/幂等、安全隐私、检索
 5. **一次性切换失败**：切换前备份旧数据，在新 Vault/Catalog/转换报告全部校验通过后才写 completion marker；回滚通过备份 + 旧二进制，不在新 Runtime 保留兼容分支。
 6. **Wiki 规约漂移**：`WIKI.md` 的可定制部分只影响分类和维护偏好；内置 Zod/policy 保持硬边界，规约变更须 owner 确认。
 7. **Semantic lint 成本**：只在显式命令或 Vault 有变更并达阈值时运行，受单轮输入、问题数和每日模型预算限制。
-8. **Embedding Provider 延迟/隐私**：hybrid 需要发送待嵌入文本并多一次 query 网络往返；使用 digest 增量嵌入、有界超时和 BM25 fallback，敏感部署可固定 lexical mode。
+8. **Embedding 质量与资源边界**：零 Key local 避免发送正文，但 direct BGE 的跨语召回较弱且 runtime install/RSS 仍有成本；保持 BM25/结构化通道、受保护缓存和 evidence-insufficient。显式远程 Provider 另有网络延迟与隐私成本，继续使用有界超时和 lexical fallback。
 
 ### Review 结论
 
@@ -855,13 +872,13 @@ Review 维度：架构边界、可靠性、并发/幂等、安全隐私、检索
 - 持久状态有 schema、锁、原子替换/SQLite 事务和幂等恢复；
 - 外部事件保持不可信数据身份；
 - Memory 写入按 immutable RunMemoryContext 限定 Session/profile/scope；
-- OpenAI/DeepSeek 都始终具有 BM25 基础检索；配置独立 Embedding Provider 时才自动增强为 hybrid；
+- 对话 Provider 与 Memory Embedding 解耦；零 Key 默认本地 BGE，显式专用 Key 才使用远程 Provider，二者失败都保留词法检索；
 - Raw Sources 只读，Wiki 是 canonical LLM-maintained 语义产物；
 - Ingest、Query Capture、Semantic Lint 具有明确运算和有界恢复语义；
 - Mimi 在硬门禁内自主决定记忆沉淀，不依赖人工 approve/reject 队列；
 - MIMI Soul、AGENTS/CLAUDE Project Guidance、WIKI schema、Skills 和 Runtime policy 彼此独立；
 - 默认查询优先消费已编译 Wiki，证据不足时才回读原始层；
-- 无新增基础设施依赖。
+- 新增运行依赖仅限精确锁定的 `sqlite-vec@0.1.9`、`onnxruntime-node@1.24.3` 与 `@huggingface/tokenizers@0.1.3`；不新增服务、进程或远程基础设施。
 
 建议以同一个变更集完成 Work package A–E 并一次性切换。开发过程可按依赖顺序提交内部代码，但不交付任何双栈过渡版本。
 
@@ -875,7 +892,7 @@ Review 维度：架构边界、可靠性、并发/幂等、安全隐私、检索
 4. `<workspace>/knowledge/sources/` 是 MemoryHub/WikiCompiler 只读的不可变来源层；来源更新以新版本导入；
 5. 查询默认 Wiki-first，只在不足、过时、冲突或显式求证时回退 Source/Episode；
 6. Wiki Compiler 支持 Ingest、Query Capture 和 Semantic Lint，多页操作以有界 `CompilationPlan` 幂等续做；
-7. 第一版就实现 hybrid retrieval：SQLite FTS5/`bm25()` 始终可用，配置 Embedding Provider 时自动启用 vector 通道并用 RRF 合并；无向量 DB，失败回退 BM25；
+7. 第一版就实现 hybrid retrieval：SQLite FTS5/`bm25()` 是基线，零 Key direct BGE 或显式专用 Key 远程 Provider 提供 vector，并用 RRF 合并；无向量 DB，Vec/Embedding 失败回退 BM25，BM25 失败再回退 bounded LIKE；
 8. Mimi 在 scope、隐私、来源、冲突、suppression 和 stale-run 硬门禁内自主决定记忆的创建、更新、合并和不沉淀，无需人工 approve/reject；
 9. 新 Memory 不再支持 todo；
 10. `MIMI.md` 改为 Mimi 的 Soul，只定义身份、人格、性格、价值观和表达风格；开发项目读取层级化 `AGENTS.md/CLAUDE.md`，两者都缺失时在可写项目自动创建最小 `AGENTS.md`；
@@ -883,4 +900,4 @@ Review 维度：架构边界、可靠性、并发/幂等、安全隐私、检索
 12. Event 只记录外来消息、系统通知、来源变化、Schedule 到期、Task 状态变化和 Mimi 自身观察等已经发生的事实，不保存待执行、可重试工作；唯一 Task 层负责 queue/priority/lease/retry/control/result；
 13. 记忆整理复用统一 Task Queue 和 Task Scheduler：有待整理内容时创建低优先级 `memory_maintenance` Task，没有内容就不唤醒、不调模型，不另起后台服务或空转定时器。
 
-本方案已完成用户确认、内部架构 Review 和 Karpathy LLMWiki 原文对照修订。本次仅更新设计文档，尚未进入代码实施。
+本方案已完成用户确认、内部架构 Review 和 Karpathy LLMWiki 原文对照修订。2026-08-06 的变更集已通过分层契约、迁移、60 问固定评测、local embedder、packed package 与隔离完整 CI；owner 私有入口机制也已验证严格只读，但真实 owner Catalog 当前因活动 WAL 返回 incomplete，且未部署长期运行 Daemon。该外部证据补齐前 M3 门禁保持关闭。

@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- add MemoryHub schema v2 with traceable L0 Evidence, L1 Atom, L2 Scene/Topic,
+  token-budgeted read-only L3 Personal Context, correction/expiry lifecycle,
+  and deterministic 60-question lexical/hybrid evaluation
+- replace hot-path JavaScript vector scans with `sqlite-vec@0.1.9` vec0 KNN in
+  the existing `memory.db`, including startup self-test, legacy BLOB migration,
+  model/dimension isolation, lexical fallback, and packed-package coverage
+- make zero-key Memory retrieval use direct BGE q8 at pinned revision
+  `9507db33464b5da99a532ac26b2a251767cbc62b` with
+  `onnxruntime-node@1.24.3` and `@huggingface/tokenizers@0.1.3`; keep remote
+  embeddings opt-in through a dedicated key, download verified model assets
+  only during explicit reindex, and preserve startup plus lexical/BM25 or
+  bounded-LIKE fallback when the model, platform, Vec, or FTS path is unavailable
+- record the local embedding selection boundary: a 23.180 MiB model, 211.675
+  MiB runtime install, 2.111 ms warm-query p95, and 118.61 MiB RSS increase on
+  the 2026-08-05 Darwin arm64 offline 32-question/80-document run; E5 and
+  Xenova v2 remain rejected as defaults, and BGE cross-language recall remains
+  explicitly limited
+- add a provenance-bounded owner Session retrieval audit that reuses production
+  Catalog search through an immutable read-only snapshot, refuses active WAL
+  state, never invokes remote embeddings, and emits only unlabelled aggregates
+- let direct authenticated Full Owner conversations use file tools as well as
+  Shell on MimiAgent runtime paths, while preserving the path boundary for
+  restricted profiles, delegated work, schedules, and external events
 - accept and canonically migrate legacy versioned Connector configuration so an
   idle CLI/Daemon build upgrade cannot fail before replacing the old Daemon
 - return structured Context Artifact rejections instead of generic SDK tool

@@ -94,6 +94,8 @@
     "prepare": "npm run build",
     "dev": "tsx src/index.ts",
     "eval": "tsx src/eval.ts",
+    "eval:memory": "node --import tsx evals/memory/run.ts",
+    "eval:memory:local": "node --import tsx evals/memory/local-vector.ts",
     "eval:security": "node --import tsx --test tests/security-policy-eval.test.ts tests/tool-policy.test.ts",
     "eval:m1": "tsx scripts/run-m1-eval.ts fixtures",
     "eval:m1:canary": "tsx scripts/run-m1-canary.ts",
@@ -115,9 +117,12 @@
     "ci": "npm run check:repo && npm run check && npm run test:coverage && npm run build && npm run test:package"
   },
   "dependencies": {
+    "@huggingface/tokenizers": "0.1.3",
     "@openai/agents": "0.13.2",
     "dotenv": "^17.0.0",
     "openai": "6.46.0",
+    "onnxruntime-node": "1.24.3",
+    "sqlite-vec": "0.1.9",
     "undici": "^8.7.0",
     "ws": "8.21.0",
     "yaml": "^2.9.0",

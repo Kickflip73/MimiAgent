@@ -2,7 +2,7 @@
 
 日期：2026-07-27
 
-状态：可实施基线 v1.3（2026-07-31 单 Owner 能力优先规划）
+状态：可实施基线 v1.5（2026-08-05 M2 工程收敛中，多模态阶段尚未开放）
 
 目标：把 MimiAgent 从“很强的本地执行 Agent”建设成一个长期在线、真正了解
 owner、默认使用当前 OS 用户已配置完整能力、可靠托管电脑/工作/生活事务的个人 AI 助手。
@@ -87,7 +87,7 @@ MimiAgent 已经有了正确且经过较多可靠性验证的运行内核，不�
 
 当前版本只面向一个本机 owner，以“尽量完成 owner 的明确目标”为默认。
 已有 Safe、Workstation、Full Owner、外部输入隔离和敏感数据治理实现可以保留，
-但当前规划不继续扩建、不为它们新增阶段，也不把它们作为 M0～M5 的退出条件。
+但当前规划不继续扩建、不为它们新增阶段，也不把它们作为 M0～M6 的退出条件。
 
 活跃产品规则简化为：
 
@@ -125,8 +125,8 @@ flowchart LR
 |---|---|
 | Daemon Event/Task/Run/Outbox | 可靠接收、执行、恢复和投递 |
 | Connector | 对接外部渠道、账号状态和平台协议 |
-| MemoryHub | 长期事实、偏好、经验、来源和遗忘 |
-| People | 跨渠道人物身份映射 |
+| MemoryHub | L0～L3 分层记忆、来源、修订、检索和遗忘 |
+| People | 跨渠道人物身份与精确操作目标映射，不保存人物语义档案 |
 | Goal/Plan/Checkpoint | 当前长期目标、阶段和恢复 |
 | Schedule/Routine/Watch | 定时工作和持续跟踪 |
 | Attention/Standing Orders | 是否打扰、是否代办和如何判断 |
@@ -140,8 +140,8 @@ flowchart LR
   readiness 为输入，它不是独立服务，也不拥有持久状态。
 - **Effective Capability Snapshot**：把上述最终结果以只读、有版本、有时效的方式提供
   给模型、`/status`、Doctor、Skill availability 和控制面，避免出现多份能力真相。
-- **Personal Context Assembler**：把现有 Memory、People、Goal、Event 和 Schedule
-  组装成带来源的当前视图；它只生成投影，不拥有事实正文和任务状态。
+- **Personal Context Assembler**：按当前问题从 MemoryHub 的 L1/L2/L3、People 身份映射、
+  Goal、Event 和 Schedule 组装带来源的当前视图；它只生成投影，不拥有事实正文和任务状态。
 - **Owner Capability Runtime**：本机 owner 默认使用 Full Owner 工具集；已有 Safe/
   Workstation 仅作为 owner 主动选择的兼容开关，不进入蓝图依赖图和验收门禁。
 - **Effect Ledger**：给同一业务动作跨 Connector、Browser、Computer 和 Provider
@@ -157,12 +157,12 @@ flowchart LR
 |---|---|---|---|
 | 有效能力 | Runtime pipeline + 实际 readiness | 纯计算 + bounded snapshot | 独立 Broker 服务或第二份能力库 |
 | 外部渠道状态 | Connector Manager | Adapter readiness/cursor/action catalog | Runtime 复制 cursor 或自行实现渠道协议 |
-| 个人事实 | MemoryHub + 原始 Evidence | typed semantic page + 可重建索引 | 第二套人物/项目/承诺数据库 |
+| 个人事实 | MemoryHub + 原始 Evidence | 分层语义记忆 + 通用 typed facets + 可重建索引 | 第二套人物/项目/承诺数据库 |
 | 当前执行 | Goal/Plan/Task/Schedule | 现有状态扩展和引用 | 新 Todo/Workflow 引擎 |
 | 副作用 | Execution Ledger | effect key + 结构化 receipt | 按 Tool 名各自重试或跨路径重复执行 |
 | 闭环完成 | Completion + Event correlation | expected state + terminal evidence | 模型自行宣布完成 |
 
-## 5. 七条建设主线
+## 5. 八条建设主线
 
 ### 5.1 主线 A：运行可靠性
 
@@ -283,69 +283,157 @@ Connector 试错。推荐路径优先级是：
 - 只有能产生 `confirmed` 业务回执的渠道才允许报告发送完成；只能返回
   `observed/accepted` 的渠道必须继续核对业务结果，不得冒充完成。
 
-### 5.4 主线 D：个人上下文与世界模型
+### 5.4 主线 D：分层记忆与个人上下文
 
-目标：Mimi 不只记住聊天内容，还能理解 owner 当前的真实处境。
+目标：把 MemoryHub 建设成 Mimi 理解 owner 的唯一长期记忆系统；保持自然语言记忆的
+灵活性，同时用少量通用字段支持稳定的实体、时间、关系和来源查询。
 
-Personal Context Assembler 从现有数据生成当前视图：
+设计借鉴 [TencentDB Agent Memory](https://github.com/TencentCloud/TencentDB-Agent-Memory)
+的分层记忆、渐进披露和原始证据下钻，以及 [Mem0](https://github.com/mem0ai/mem0)
+的实体关联、时间检索和多信号召回；
+只吸收设计，不引入它们的 Gateway、JSONL/SQLite 双写链路或第二套 Memory Store。
+
+| 外部设计 | MimiAgent 借鉴方式 | 不照搬的部分 |
+|---|---|---|
+| L0 对话 → L1 Atom → L2 Scene → L3 Persona | 扩展为 Evidence → Atom → Scene/Topic → Personal Context | 不把 Persona 变成唯一真相 |
+| 上层摘要逐层下钻原始内容 | 每个 L3/L2/L1 结论保留到 L0 的稳定引用 | 不做不可逆摘要 |
+| 自动 capture/extract/dedup | 复用现有 Candidate、Compilation、Revision 和 maintenance Task | 不增加独立 Gateway、队列或第二套捕获链路 |
+| persona/episodic/instruction 三类 Atom | 保留通用 `kind`，增加 commitment/decision/relation 等必要语义 | 不把全部个人世界压成三个固定枚举 |
+| BM25 + vector 混合检索 | FTS5/BM25 + sqlite-vec + RRF，失败回退 lexical | 不部署远程向量数据库服务 |
+
+MemoryHub 固定采用四层：
 
 ```text
-Owner
-├── People：人物、关系、渠道身份、协作背景
-├── Projects：项目、角色、目标、状态、风险
-├── Commitments：谁答应谁、内容、截止时间、证据
-├── Decisions：决定、原因、影响范围、是否仍有效
-├── Waiting：等待别人、等待条件、下次跟进时间
-├── Routines：固定习惯、简报、复盘和生活安排
-└── Preferences：表达、工具、时间和风险偏好
+L0 Evidence
+  Session / Event / Document / Image / Audio / Video 原始证据，只追加或按来源策略删除
+    ↓ 异步提取，可重新执行
+L1 Memory Atom
+  fact / preference / event / commitment / decision / instruction / relation
+    ↓ 去重、冲突检测、主题聚合
+L2 Scene / Topic Page
+  某个人、项目、生活主题或工作场景的可读语义页面
+    ↓ 按当前问题和时间生成有界视图
+L3 Personal Context
+  owner 稳定画像 + 当前重点、近期承诺、等待事项和项目风险
 ```
 
-实现原则：
+层级职责：
 
-- 不新增第二套 Todo：当前行动仍使用 Goal、Plan、Task、Schedule。
-- 稳定事实进入 MemoryHub；原始证据留在 Session/Event/来源文档。
-- Goal 只表示一个 Session 的当前长期执行目标，不能承载 owner 的全部承诺。
-- Project、Commitment、Decision 和 Waiting 以 typed semantic page 表达；其索引是
-  可从 MemoryHub 和 Evidence 重建的投影，不是第二套权威数据库。
-- “承诺视图”组合 typed Memory、Event correlation 和 Goal/Schedule 引用，不另建
-  工作流。
-- 每条事实记录来源、发生时间、最后验证时间和置信度。
-- 推断不能伪装成事实。
-- 信息冲突时保留双方证据并请求 owner 解决。
-- 过期信息自动降权，但不静默改写历史。
+- L0 是证据真相，完整 Session、Event 和来源文件不复制成伪对话或伪 Memory。
+- L1 是最小可独立理解的记忆单元，每项都能回到一个或多个 `sourceRefs`。
+- L2 是可读、可修订的聚合页，不丢失 L1/L0 引用，也不成为新的业务表。
+- L3 是按 revision 和查询生成的短上下文，可缓存但可完全重建，不能反向覆盖事实。
+- 日常召回先使用 L3/L2；需要精确日期、原话或冲突判断时再下钻 L1/L0。
 
-最小投影契约：
+人物、项目和承诺不建立独立权威数据库。现有 People 只保存跨渠道身份、账号指纹和精确
+操作目标；“这个人是谁、和 owner 什么关系、参与什么项目”属于 MemoryHub。Goal、Plan、
+Task 和 Schedule 继续拥有执行状态；Memory 中的 commitment 只描述事实，并可选引用现有
+执行对象。
+
+L1/L2 共用一组轻量字段，不为每个业务领域建 schema：
 
 ```text
-entityRef + entityType
-relation + value
+memoryRef + kind
+subjectRef? + relation? + objectRef?/value?
 sourceRefs[]
-occurredAt + validFrom + validUntil
-verifiedAt + confidence
-status: asserted | inferred | disputed | superseded
+occurredAt? + validFrom? + validUntil? + verifiedAt?
+status: asserted | inferred | disputed | superseded | expired
+confidence + revision + supersedes[]
 linkedGoalId? + linkedScheduleId? + correlationId?
 ```
 
-Assembler 每次读取固定时点的 revision，并输出 `complete | partial | blocked`；
-不得在查询热路径偷偷写 Memory、创建 Goal 或推进 Schedule。
+自由文本仍是记忆正文；typed facets 只负责稳定过滤、关联、时间判断和派生视图。新增健康、
+旅行、家庭或设备主题时优先增加 `kind/relation` 值和 Memory 页面，不新增专用数据库。
+
+记忆形成使用现有 Run/Memory maintenance 生命周期：
+
+```text
+捕获 L0 Evidence
+→ 生成可审计 MemoryCandidate
+→ 后台批量提取 L1 Atom
+→ 确定性 canonical topic + 语义去重/冲突判断
+→ 编译 L2 页面和 revision
+→ 更新可重建检索索引
+```
+
+- 普通回答不等待 L1/L2/L3 维护完成；维护失败不会让 Conversation 失败。
+- 不新增常驻 Memory Gateway、第二个队列或独立定时系统，继续复用现有 maintenance Task。
+- owner 明确纠正优先于自动推断；推断默认保持 `inferred`，不能伪装成 owner 确认事实。
+- 相互冲突且无法裁决的内容并存为 `disputed`，不能用最后写入覆盖历史。
+
+#### 轻量 SQLite + Vec 检索
+
+MemoryHub 继续使用同一个 `<dataRoot>/memory/state/.../memory.db`：
+
+- FTS5/BM25 是离线词法基线，负责关键词、编号、姓名和代码标识符检索；BM25 建表或查询失败时继续用有界 `LIKE` 并报告 degraded。
+- 引入固定版本的 [`sqlite-vec`](https://github.com/asg017/sqlite-vec)，在同一 SQLite 中建立
+  `vec0` chunk 索引；它只存储 vector 和执行 KNN，不生成 embedding、不拥有事实，也不部署向量数据库服务或增加进程。
+- `auto` 的零 Key 默认是 direct BGE q8 本地 Provider；只有显式设置专用 `MIMI_EMBEDDING_API_KEY` 才切换远程 OpenAI-compatible Provider，不复用对话 Key。资产缺失/损坏、平台不支持、网络失败、模型变化、扩展加载失败或索引重建时，立即降级为 `lexical-only`，Mimi 仍可启动和查询。
+- 索引记录 page/chunk ref、digest、embedding provider/model/dimensions；任一项变化就从
+  Memory 页面重建，禁止混搜不同维度或不同模型的向量。
+- 查询并行取得结构化匹配、BM25 和 vector top-k，以 RRF 合并，再用相关性、时间和多样性
+  做有界选择；不直接相加不同量纲的原始分数。
+- `sqlite-vec` 当前为 pre-v1，精确锁定 `0.1.9`，启动时执行 `vec_version()` 和最小 KNN 自检，并在 CI/package smoke 覆盖支持的平台。
+
+本地模型固定为 `onnx-community/bge-small-zh-v1.5-ONNX` revision `9507db33464b5da99a532ac26b2a251767cbc62b`，runtime 精确锁定 `onnxruntime-node@1.24.3` + `@huggingface/tokenizers@0.1.3`。ONNX 主文件 SHA-256 为 `99a6e522710c00220c89f8c52e0cc5aa09d4cbb1c34c0e932eab3a9dfdc65df3`，外部权重为 `952623481ca8beea884e3d3c9ecaf8a3c7bf1d0c21de29e970cd31af9d37a90b`，其余资产也由 manifest 固定大小与摘要。缓存位于 `<dataRoot>/memory/models/bge-small-zh-v1.5-q8/<revision>/`，目录 `0700`、文件 `0600`；只有显式 `/memory reindex` 可以下载或修复并在校验后原子替换，启动和查询不隐式下载。
+
+2026-08-05 Darwin arm64、32 个互不重复自然问题/80 个文档的离线串行选型证据为：direct BGE 模型 23.180 MiB、完整 runtime install 211.675 MiB、warm query p95 2.111 ms、RSS 增量 118.61 MiB。E5 int8/q8 因 133.7 MiB 级模型、616 MiB 以上 RSS 且中译英桶仍失效而不作为默认；Xenova v2 BGE WASM 的质量近似但 p95 27.523 ms、RSS 增量 326.89 MiB，也被淘汰。direct BGE 的英译中 R@10 为 0%、中译英 R@10 为 50%，说明本地向量不能替代 BM25、结构化匹配或证据不足判断。
+
+旧的全量 JavaScript cosine 查询路径已经删除；迁移只校验旧 BLOB 向量的模型、维度、finite
+值和行数，不计算召回。迁移期间 FTS5 始终在线；新 Vec 索引校验通过后再删除旧派生向量
+行，不双写两份权威状态。
+
+Personal Context Assembler 每次读取固定 revision，按 token 预算而不是固定卡片数量组装 L3、
+相关 L2 和必要 L1 摘要，并输出 `complete | partial | blocked`。查询热路径只读，不偷偷写
+Memory、创建 Goal 或推进 Schedule，普通召回不调用生成式 LLM。
 
 完成标准：
 
-Mimi 可以带来源回答：
+- Mimi 能带来源回答“今天重点”“最近承诺”“等待别人”“项目风险”和“明天会议准备”。
+- 至少 50 个真实历史问题分层人工验收，人物、项目、承诺、时间和来源分别报告正确率。
+- 关键结论 100% 可下钻到 L0/L1 证据；没有可靠证据时返回 `partial/blocked`。
+- owner 纠正后下一次查询生效，旧结论保留为 `superseded/disputed` revision。
+- 纠正、冲突、过期、来源删除、embedding 变化、Vec 不可用和全量 reindex 测试通过。
+- lexical-only 与 hybrid 使用同一查询契约；Vec 故障不能阻塞启动或普通 Memory 查询。
 
-- “我今天最应该处理什么？”
-- “我最近答应了谁什么？”
-- “哪些事情在等别人？”
-- “这个项目当前最大的风险是什么？”
-- “明天的会议需要提前准备什么？”
+### 5.5 主线 E：多模态交互
 
-除答案正确外，还要求：
+目标：让图片、实时语音、音频和视频成为与文本同等的一等输入输出，同时继续共享同一
+Session、Memory、Capability 和任务状态，不建立第二个“语音 Agent”或“视频 Agent”。
 
-- 相同 Evidence revision 下重复查询得到稳定实体引用。
-- owner 纠正后旧结论进入 `superseded/disputed`，新结论保留对旧 revision 的引用。
-- 缺少可靠证据时返回 `partial/blocked`，不靠模型常识补成 owner 事实。
+按复杂度逐步交付：
 
-### 5.5 主线 E：工作闭环
+1. 图片对话：多图输入、局部引用、截图/文档理解，并把原图作为 L0 Evidence 保存引用。
+2. 实时语音：流式 ASR、低延迟回复、TTS、turn detection、打断和文字 transcript 对齐。
+3. 音频文件：转写、说话人/时间片引用、会议或语音内容提取 MemoryCandidate。
+4. 视频文件：先做音轨转写、关键帧和时间片检索，再做有界视频模型理解。
+5. 实时摄像头/屏幕流：最后建设，只在 owner 明确开启的 Session 中运行。
+
+所有媒体统一使用 `MediaEvidence`：
+
+```text
+mediaRef + mimeType + sha256 + sourceRef
+occurredAt + duration?
+transcriptSegments[]? + keyframes[]? + timeRanges[]?
+modelBinding + derivedArtifactRefs[]
+```
+
+二进制文件保留在现有受控 artifact/附件存储，Session/Event/Memory 只保存摘要、引用和内容
+哈希。媒体分析结果是派生 Evidence；未经确认的识别结果不能直接成为高置信 owner 事实。
+
+实时语音使用同一 Session actor 的独立 transport adapter：音频帧不写 transcript，稳定的用户
+转写、assistant 文本和必要的媒体引用才进入 canonical Session。打断必须停止尚未播放的输出，
+已经开始的外部 Tool 不因语音打断而重放或假装取消。
+
+完成标准：
+
+- 文字、图片、语音和视频入口继续同一 Session/事项时状态一致，不创建重复 Task 或动作。
+- 实时语音支持自然轮次、打断、失败回退到文字和明确的麦克风状态。
+- 图片结论能定位原图，音频/视频结论能定位时间片或关键帧。
+- 媒体模型不支持所需能力时明确降级，不把文件名、转写或单帧冒充完整视频理解。
+- 关闭麦克风/摄像头后立即停止采集；M3 不建设后台常开录音录像或自治观察。
+
+### 5.6 主线 F：工作闭环
 
 目标：让 Mimi 从“通知转发器”变成真正的工作助理。
 
@@ -422,7 +510,7 @@ Closed-loop Coordinator 只负责创建和解析这些引用，不拥有队列�
 业务状态被验证、明确取消或进入需要 owner 决定的 `blocked/uncertain` 终态后才闭环。
 “已发送”“已提交”“Tool exitCode=0”都不能自动等价于业务完成。
 
-### 5.6 主线 F：生活闭环
+### 5.7 主线 G：生活闭环
 
 目标：帮助 owner 管理生活，主动使用本机已配置能力完成真实事务。
 
@@ -435,21 +523,21 @@ Closed-loop Coordinator 只负责创建和解析这些引用，不拥有队列�
 - 快递、下载文件和票据归档；
 - Shortcuts 驱动的本机或智能家居自动化；
 - 天气、设备、电池、网络和存储风险；
-- 语音查询、记录和提醒。
+- 通过 M3 已验证的文字、图片或语音入口查询、记录和提醒。
 
 owner 的明确请求直接执行。如果输入缺少精确目标、范围或最终参数，只补齐完成任务
 所必需的信息，不按业务类别增加审批或权限分支。
 
-### 5.7 主线 G：交互、人格与多设备
+### 5.8 主线 H：人格与多设备连续性
 
 目标：让 Mimi 感觉是一个连续存在的个人助理。
 
 需要实现：
 
-- CLI、微信、语音和桌面使用同一 owner profile。
+- CLI、消息、实时语音、图片/视频和桌面使用同一 owner profile。
 - 各入口默认保留独立 Session；继续同一事项时通过 `caseRef/goalRef` 加载有界上下文，
   不合并全部 transcript。
-- 支持语音唤醒、打断、简短朗读和长内容转手机/桌面查看。
+- 复用 M3 的语音打断和媒体引用，支持长内容转手机/桌面查看。
 - 支持“不要打扰”“只提醒紧急事项”“今天先别自动回复”等临时状态。
 - 回复风格由 Soul 控制，事实和完成证据不由 Soul 决定。
 - 后续增加轻量控制面，展示：
@@ -502,20 +590,28 @@ owner 的明确请求直接执行。如果输入缺少精确目标、范围或�
 
 ```text
 M0 可用运行基线 → M1 可靠眼睛和双手
-                 └──────→ M2 个人上下文
-M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 持续运行
+                 └──────→ M2 分层记忆与个人上下文
+M1 + M2 → M3 多模态交互 → M4 工作闭环 → M5 生活助理 → M6 持续运行
 ```
 
 ### 当前阶段：M1 收口，同时修复 M0 运行健康
 
 当前阶段的唯一实施计划为：
 [MimiAgent M1 架构收敛重构计划](20260731-MimiAgent-M1架构收敛重构计划.md)。
-该计划完成 7 天真实运行门槛前，不进入 M2，不新增产品能力。
+M2 的独立设计和开发可以按 owner 裁决并行，但合并到长期运行主线或部署前仍需满足
+M1 计划规定的 ARC-503 门禁；24h/72h/7d/30d 长期窗口继续作为发布质量信号。
+
+M2 独立工作树已经形成 L0～L3 契约、`sqlite-vec@0.1.9` vec0/RRF、local embedder、
+lexical 降级、异步形成和预算化 Personal Context，并通过 60 个非变体问题、零 Key本地向量、
+packed package 与 941/941 隔离 CI。owner 私有入口机制已通过严格只读测试，但真实必要 Catalog
+当前因活动 WAL 返回 incomplete；M2 发布退出门禁尚未关闭，且未部署到长期运行 Daemon，
+也不替代 ARC-503；M3 门禁保持关闭。
 
 按 `PROGRESS.md` 和 `BLOCKED.md` 截至 2026-07-30 的最后证据：M0 代码与发布基线曾经
-完成全绿，M1 的代表性实机动作数量和成功率门槛也已经达到，因此当前不回退到 M-1
-或重新从安全治理起步。当前工作定位为 **M1 收口**：继续完成 24 小时稳定运行、
-大象真实闭环以及 QQ/微信真实接入。
+完成全绿，M1 的历史代表性实机动作也已提供能力证据，因此当前不回退到 M-1 或重新
+从安全治理起步。当前工作定位为 **M1 收口**：在同一 clean build 完成五个正式能力族的
+短 live matrix、大象真实闭环、有界恢复演练和不可覆盖退出记录；QQ 默认关闭且不进入
+M1 分母，微信永久退役。
 
 当前 Doctor 非 ready、Digest/dead letter backlog、Connector readiness 和运行构建漂移
 作为 M0 可靠性的 P0 修复并行处理；它们阻塞相应能力报告 ready，但不改变产品阶段，
@@ -524,7 +620,7 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 持续运行
 ### 暂停项：隐私、安全与权限治理
 
 原 M-1 不再是产品阶段。凭证生命周期、流式内容脱敏、Prompt Injection、三档 Security、
-外部来源 Scope 和权限矩阵全部进入暂停列表。已有代码保留，新发现不阻塞 M0～M5；
+外部来源 Scope 和权限矩阵全部进入暂停列表。已有代码保留，新发现不阻塞 M0～M6；
 只有当产品扩展到多用户、远程入口、公共服务或 owner 明确要求时才重启该主线。
 
 ### M0：恢复可用运行基线
@@ -574,28 +670,60 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 持续运行
 - 读取渠道完成 24h soak；进入发送的渠道完成 72h soak。
 - 只返回 `observed/accepted` 的路线不得报告业务完成。
 
-### M2：真正理解 owner
+### M2：分层记忆与个人上下文
 
-参考周期：4～8 周。
+参考周期：6～10 周。
+
+实施状态（2026-08-06）：代码、迁移、60 问确定性评测、Vec 故障探针、local embedder、
+package smoke 与完整隔离 CI 已通过。真实 owner 本机入口只输出聚合并严格拒绝活动 WAL，
+当前 auditStatus 为 incomplete；仓库不保存或伪造私有问题集。M2 暂不部署到长期运行 Daemon，
+该外部运行态证据补齐前 M3 门禁保持关闭。
 
 交付：
 
-- Personal Context Assembler。
-- 第一批只交付 People、Project、Commitment，稳定后再增加 Waiting 和 Decision。
-- typed semantic page、实体引用、关系、revision 和可重建索引。
-- Memory 来源、时效、冲突和置信度展示。
-- “今天重点”“最近承诺”“等待别人”“项目风险”查询。
-- owner 纠正后自动更新并保留修订历史。
+- MemoryHub L0 Evidence、L1 Atom、L2 Scene/Topic、L3 Personal Context 四层契约。
+- 基于现有 Candidate/Compilation/Revision 的异步记忆提取、去重、冲突和聚合。
+- 同一 `memory.db` 内的 FTS5/BM25 + `sqlite-vec` + RRF 混合检索；Vec 不可用时
+  自动回退 lexical-only。
+- 零 Key direct BGE q8、本地受保护模型缓存和显式 reindex 下载；专用远程 Key 仅作为可选 Provider。
+- 通用 typed facets、稳定实体引用、时间有效性、关系和可回读来源，不建立人物、项目、
+  承诺专用数据库。
+- Personal Context Assembler，以及“今天重点”“最近承诺”“等待别人”“项目风险”查询。
+- owner 的查看、解释、纠正、遗忘和 reindex 入口。
 
 退出条件：
 
-- 关键结论都有可回读来源。
-- 不把推断写成事实。
-- 对至少 50 个真实历史问题进行分层人工验收，记录正确、部分、证据不足和错误。
-- 纠正、冲突、过期、来源删除和索引重建测试通过。
+- 关键结论都能按 L3 → L2 → L1 → L0 下钻到可回读来源，不把推断写成事实。
+- 对至少 50 个互不变体的固定自然问题分层验收，记录正确、部分、证据不足和错误；真实 owner 历史另走不落原文的本机无标签只读审计，不把命中冒充正确率。
+- 纠正、冲突、过期、来源删除、实体误合并、embedding 变化和索引重建测试通过。
+- `sqlite-vec` KNN 自检、lexical fallback、package smoke 和固定个人规模语料性能报告通过；
+  M2 最终路径不再把全部向量加载到 JavaScript 扫描。
+- 普通 Memory 查询不调用生成式 LLM；后台形成记忆有预算、可暂停且不阻塞 Conversation。
 - Goal 仍保持每 Session 当前目标语义，没有被改造成全局承诺库。
 
-### M3：工作助理闭环
+### M3：多模态交互
+
+参考周期：4～8 周，按模型、设备和实时 transport 可用性调整。
+
+交付：
+
+- 多图片对话、截图/文档视觉理解和基于原图引用的回答。
+- 实时语音会话：流式 ASR、TTS、turn detection、打断、文字 transcript 和降级到文本。
+- 音频文件的时间片转写、会议/语音理解和 MemoryCandidate 提取。
+- 视频文件的音轨、关键帧、时间片检索和有界视频理解；实时摄像头/屏幕流作为最后一项。
+- 统一 `MediaEvidence`、模型能力路由、媒体附件生命周期和 Session/事项连续性。
+
+退出条件：
+
+- 至少 50 个确定性媒体 fixture 和 30 个真实分层会话通过，覆盖图片、实时语音、音频和视频。
+- 实时语音至少 100 个真实轮次，转写、回复和播放闭环成功率不低于 95%；打断停止播放
+  p95 不高于 750ms，并报告首个可听回复 p50/p95。
+- 图片结论 100% 可定位原图；音频/视频关键结论 100% 可定位时间片或关键帧。
+- 文本、语音和媒体入口继续同一事项时不重复创建 Task、Memory 或外部动作。
+- 麦克风、摄像头和实时屏幕状态明确可见且可立即关闭；M3 没有后台常开录音录像。
+- 不支持完整视频理解的模型明确返回降级 coverage，不用转写或单帧冒充完整视频。
+
+### M4：工作助理闭环
 
 参考周期：首批两个闭环 6～10 周，其余按同一模板迭代。
 
@@ -616,14 +744,14 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 持续运行
 - 连续 30 天没有事项静默消失；每个未完成事项都能定位为 active、waiting、
   blocked、uncertain、cancelled 或 completed。
 
-### M4：生活助理与多模态
+### M5：生活助理
 
 参考周期：6～10 周，按设备和渠道可用性调整。
 
 交付：
 
 - 日历、提醒、Notes、Contacts、Shortcuts 生活闭环。
-- 语音 listener、TTS 和打断。
+- 复用 M3 已通过验收的图片、语音和音视频交互能力，不在生活阶段重建媒体 Runtime。
 - 手机或独立 companion 入口。
 - 天气、位置、出行和设备状态按需接入。
 - 所有入口共享 owner profile、事项引用和当前可用能力。
@@ -635,7 +763,7 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 持续运行
 - 语音和消息入口不产生重复任务。
 - 手机、语音和 CLI 对同一事项的状态一致，不产生重复动作。
 
-### M5：持续运行的个人贾维斯
+### M6：持续运行的个人贾维斯
 
 参考周期：持续迭代。
 
@@ -656,8 +784,8 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 持续运行
 - 离线或降级模式能够继续执行确定性健康检查、提醒和本地检索，不伪装成完整
   Agent 能力。
 
-整体周期不以各阶段参考时间简单相加作承诺。单人持续建设时，M0～M3 的可信版本
-通常需要约 4～7 个月；包含生活、多入口和有限自治通常需要 6～12 个月。真实的
+整体周期不以各阶段参考时间简单相加作承诺。单人持续建设时，M0～M4 的可信版本
+通常需要约 4～7 个月；包含生活、多入口和有限自治的 M5～M6 通常需要 6～12 个月。真实的
 30/90 天 soak 是日历门禁，不能通过并行开发压缩。
 
 ## 8. 首批实施任务与代码落点
@@ -673,11 +801,16 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 持续运行
 | JRV-008 | P0 | 成本与资源 SLO | activity、health、diagnostics | 每日 Run/Token/费用/CPU/内存/磁盘趋势可查看并有预算告警 |
 | JRV-101 | P1 | Computer 白名单实机矩阵 | `extensions/computer`、App adapters、fixtures | 100 个分层实机动作达到门槛，无严重错误 |
 | JRV-102 | P1 | 首个个人消息闭环 | PersonalMessageHub + 大象 Adapter | 历史读取、目标绑定、发送、真实回执和 72h soak |
-| JRV-103 | P1 | QQ/微信真实接入 | QQ CUA、微信 Adapter | 不使用占位能力；读取和发送经过真实账号验证 |
-| JRV-201 | P1 | Personal Context typed schema | Memory V2、Assembler、可重建索引 | People/Project/Commitment 稳定引用、来源、修订、冲突和过期可查询 |
-| JRV-202 | P1 | Commitment/Waiting 投影 | Memory + Event correlation + Schedule refs | 多承诺并存，不覆盖 Session Goal；每项能定位证据和下一次跟进 |
-| JRV-301 | P1 | Jarvis Eval 事件与报告 | WorkUnit/Trace/Eval scripts | 有固定 dataset、版本、分母、严重度、人工判定和 30/90 天报告 |
-| JRV-302 | P1 | 首批两个工作闭环 | Skill/Connector/Attention/Schedule/Completion | 两个闭环分别通过 fixture、shadow 和真实 E2E 门禁 |
+| JRV-103 | P1 | 实验通道收口 | Connector config/Doctor/negative gates | QQ 默认关闭且 fail-closed；微信运行 route 永久为 0 |
+| JRV-201 | P1 | L0～L3 分层记忆契约 | `core/memory`、Wiki/Compiler/Revision | Evidence、Atom、Scene/Topic、Personal Context 可逐层下钻且旧状态兼容 |
+| JRV-202 | P1 | SQLite + Vec 混合检索 | `extensions/memory/sqlite-catalog.ts`、reindex/package | FTS5 + sqlite-vec + RRF；不全量 JS cosine；Vec 失败无损回退 lexical |
+| JRV-203 | P1 | 自动记忆形成与 Assembler | Memory maintenance、StateLoader/ContextAssembler | 异步提取、去重、冲突、聚合和按预算召回，不阻塞 Conversation |
+| JRV-204 | P1 | M2 真实问题验收 | `evals/memory`、Memory diagnostics | ≥50 个历史问题；来源、时间、纠正、冲突、遗忘和性能分层报告 |
+| JRV-301 | P1 | 实时语音 Runtime | Realtime transport、Session adapter、audio I/O | ≥100 真实轮次，支持打断、文本降级、状态一致且不重复动作 |
+| JRV-302 | P1 | 图片/音频/视频理解 | Media Runtime、model routing、artifact tools | 多图、音频时间片、视频关键帧/时间片均可引用和诚实降级 |
+| JRV-303 | P1 | MediaEvidence 与跨入口连续性 | core media contracts、Session/Event/Memory refs | 二进制不进状态库；媒体入口复用同一 Session/事项且不重复 Task/Memory |
+| JRV-401 | P1 | Jarvis Eval 事件与报告 | WorkUnit/Trace/Eval scripts | 有固定 dataset、版本、分母、严重度、人工判定和 30/90 天报告 |
+| JRV-402 | P1 | 首批两个工作闭环 | Skill/Connector/Attention/Schedule/Completion | 两个闭环分别通过 fixture、shadow 和真实 E2E 门禁 |
 
 依赖顺序：
 
@@ -685,7 +818,9 @@ M1 + M2 → M3 工作闭环 → M4 生活与多模态 → M5 持续运行
 JRV-002/003/004/005/006/007/008
 → JRV-101/102/103
 → JRV-201/202
-→ JRV-301/302
+→ JRV-203/204
+→ JRV-301/302/303
+→ JRV-401/402
 ```
 
 原 JRV-001 以及 JRV-003/JRV-007 中的权限、隐私、Prompt Injection 部分转入暂停列表，
@@ -719,7 +854,7 @@ JRV-002/003/004/005/006/007/008
 Manager/Tool policy 并收到动作结果；soak 另行累计时间窗。readiness、direct worker、
 预期 blocked 和 uncertain 不得作为 live_action 计入 100 次。
 
-需要持续维护六类真实评测：
+需要持续维护七类真实评测：
 
 ### 9.1 能力真实性
 
@@ -747,13 +882,23 @@ Manager/Tool policy 并收到动作结果；soak 另行累计时间窗。readine
 
 ### 9.4 个人理解
 
-- 能否正确关联人物、项目、承诺和截止时间。
+- L3 结论能否逐层下钻到 L2/L1/L0，而不是只有不可解释的向量相似度。
+- 能否正确关联人物、项目、承诺和截止时间；People 操作身份与人物语义记忆不能混淆。
 - 能否识别过期和冲突信息。
 - 能否根据 owner 纠正更新未来判断。
 - 事实、推断、冲突和证据不足分别统计准确率。
 - 实体合并错误、错误归属项目和已过期承诺继续提醒单独计为严重理解错误。
+- lexical-only、hybrid、Vec 重建中三种状态使用同一问题集报告正确率、p50/p95 和降级原因。
 
-### 9.5 注意力质量
+### 9.5 多模态交互
+
+- 图片回答是否引用正确原图，音频/视频回答是否引用正确时间片或关键帧。
+- 实时语音分别报告首个可听回复延迟、转写准确率、打断生效延迟和文本降级率。
+- 同一内容从文字、语音或媒体入口继续时是否复用正确 Session、事项和 Memory revision。
+- 不支持所需 modality 的模型是否明确 degraded/blocked，而不是伪造完整理解。
+- 麦克风、摄像头和屏幕流关闭后是否立即停止输入并释放资源。
+
+### 9.6 注意力质量
 
 - 重要事项是否漏报。
 - 普通事项是否过度打扰。
@@ -762,7 +907,7 @@ Manager/Tool policy 并收到动作结果；soak 另行累计时间窗。readine
 - 用重要事项 recall、提醒 precision、每日打扰次数和 owner dismiss/accept 反馈衡量，
   不能只统计发送了多少简报。
 
-### 9.6 长期运行
+### 9.7 长期运行
 
 - 24 小时、72 小时、7 天和 30 天 soak。
 - Provider、Connector、网络和 Daemon 故障注入。
@@ -783,7 +928,10 @@ Mimi 可以被称为“个人贾维斯”前，至少满足：
 - 所有启用能力都能展示当前 readiness、freshness、coverage、执行路径和 snapshot
   时间。
 - 重要结论、所有副作用和所有“已完成”结论都有可回读证据。
-- 能持续维护人物、项目、承诺、等待项和截止时间。
+- 能通过 L0～L3 分层记忆持续维护人物、项目、承诺、等待项和截止时间，Vec 不可用时
+  仍可完成基础查询。
+- 图片、音频和视频关键结论可定位原图、时间片或关键帧；实时语音可打断、可降级且
+  不产生第二份 Session 或重复动作。
 - owner 的明确请求能直接使用当前已配置能力，不被权限分档或审计流程阻塞。
 - owner 可以一键暂停未来自治、取消可取消的任务和导出运行状态。
 - Mimi 在没有重要事情时保持安静。
@@ -799,6 +947,8 @@ Mimi 可以被称为“个人贾维斯”前，至少满足：
 - 不把多 Agent 数量当作智能水平。
 - 不在可靠性未达标时扩大长期自动任务范围。
 - 不先建设独立 Capability Broker、权限审批平台、个人关系数据库或工作流引擎。
+- 不部署独立向量数据库服务，不把 sqlite-vec 索引或单一 Persona 摘要当成事实真相。
+- 不在图片、音频文件和实时语音稳定前建设后台常开摄像头、录音或连续视频理解。
 - 不优先做隐私治理、凭证生命周期、Prompt Injection、多用户隔离或新的 Security 档位。
 - 不为了追求 coverage 把不稳定逆向、持续录屏或高频轮询包装成生产能力。
 
@@ -815,6 +965,10 @@ Mimi 可以被称为“个人贾维斯”前，至少满足：
 → owner 配置少量长期任务
 → 30 天质量复审
 ```
+
+Memory 功能还必须经过 `lexical-only → hybrid → Vec 故障回退 → reindex`；多模态功能按
+`文件输入 → 单轮真实会话 → 连续会话 → 打断/断网/模型降级` 晋升，不能用单次模型 Demo
+替代 Session、Evidence 和资源释放验收。
 
 每次迭代只扩大一个明确能力边界，并回答：
 
@@ -835,7 +989,8 @@ fixture、真实动作、soak 和质量复审。
 完成本蓝图后，Mimi 的日常表现应当是：
 
 > 早上主动告诉 owner 今天最重要的三件事和需要提前准备的会议；工作中持续整理
-> 邮件、消息、代码任务和告警，只在需要决定时打扰；能直接使用当前已配置能力，
+> 邮件、消息、代码任务和告警，只在需要决定时打扰；可以通过文字、图片、实时语音和
+> 音视频文件继续同一事项；能直接使用当前已配置能力，
 > 并验证结果；会后跟踪承诺和等待项；晚上总结完成情况和明日风险；所有判断都有来源，
 > 所有行动都能解释；未来自治可暂停，任务可在明确可取消点终止，本地修改可撤销，外部动作
 > 在系统支持时可补偿。
@@ -848,7 +1003,7 @@ fixture、真实动作、soak 和质量复审。
 
 > 历史说明：第 14～16 节保留当时的提交、测试和运行证据，其中权限、隐私、
 > 一次性授权、`guarded`和 Security 门禁都属于当时的实施背景。2026-07-31 起它们不再
-> 决定当前阶段，也不阻塞 M0～M5。Ledger、目标校验和回执继续作为执行正确性机制。
+> 决定当前阶段，也不阻塞 M0～M6。Ledger、目标校验和回执继续作为执行正确性机制。
 
 本轮按 JRV-001～JRV-008 建成代码地基，但不伪造外部账号、实机次数或日历 soak：
 

@@ -38,11 +38,11 @@ MimiAgent 不是一次性工具调用样例，也不想变成重量级工作流�
 - 用户级 `MIMI.md` Soul、`PREFERENCES.md` 行为偏好与层级化 `AGENTS.md` / `CLAUDE.md` 项目开发指令，分层加载且不授予权限
 - CLI 与 Agent 共用运行时控制：模型、模式、输出、Session、MCP 和退出均可由对话触发
 - 按 Token Budget 裁剪历史、结构化压缩旧上下文和动态上下文组装
-- 统一 MemoryHub：private/workspace 双 Wiki、来源回读、冲突、遗忘 suppression 与 profile 隔离
+- 统一 MemoryHub：L0 Evidence、L1 Atom、L2 Scene/Topic、只读 L3 Personal Context，支持来源下钻、纠正、冲突、过期与遗忘
 - 兼容 Agent Skills 开放规范的发现、激活、资源读取与热重载
 - Agents SDK 原生 MCP Client，支持 stdio 与 Streamable HTTP
 - MCP 工具、Resources、连接容错、状态检查与热重载
-- SQLite FTS5/BM25 与可选 Embedding/RRF 混合检索；无 Key 或失败时自动回退词法通道
+- SQLite FTS5/BM25 + `sqlite-vec` vec0 + RRF 混合检索；Vec、Embedding 或 reindex 异常时自动回退词法通道
 - 多步骤 Plan，以及跨重启 Goal、Checkpoint 与 `/resume`
 - 所有执行型任务的 Completion Contract 与 Host 终态门控，按真实工具回执、产物、测试和 Plan 状态验收
 - 通用 / Plan / Ultra Team 三种有真实工具边界的运行模式
@@ -386,10 +386,10 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_RUNTIME_HTTP_TOKEN` | 未设置 | Runtime HTTP Bearer Token，启用时至少 32 字节 |
 | `MIMI_SKILLS_DIR` | 未设置 | 最高优先级额外 Skill 根目录；不再替换标准发现位置 |
 | `MIMI_MCP_CONFIG` | `<workspace>/mcp.json` | MCP Server 配置文件 |
-| `MIMI_EMBEDDING_API_KEY` | 回退 `OPENAI_API_KEY` | 独立 OpenAI-compatible Embedding 凭证；不会自动复用 DeepSeek 对话凭证 |
-| `MIMI_EMBEDDING_BASE_URL` | OpenAI 默认端点 | 独立 OpenAI-compatible Embedding API 根地址 |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | MemoryHub Embedding 模型 |
-| `MIMI_MEMORY_RETRIEVAL_MODE` | `auto` | `auto` 使用可用 Embedding；`lexical` 固定纯本地 FTS/BM25 |
+| `MIMI_EMBEDDING_API_KEY` | 未设置 | 可选的专用 OpenAI-compatible Embedding 凭证；只有显式设置才改用远程 Provider，不复用对话 Provider Key |
+| `MIMI_EMBEDDING_BASE_URL` | OpenAI 默认端点 | 仅远程 Embedding Provider 使用的 API 根地址 |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | 仅远程 Embedding Provider 使用的模型；本地模型由固定 manifest 标识 |
+| `MIMI_MEMORY_RETRIEVAL_MODE` | `auto` | `auto` 零 Key 使用本地 BGE，并在可用时启用 hybrid；`lexical` 固定纯本地 FTS/BM25 |
 | `MIMI_ENV_FILE` | 自动选择 | 显式指定统一环境配置文件 |
 
 通用 `AGENT_*`、模型与 MCP 变量仍按明确白名单作为后备别名。`MIMI_CONFIG_VERSION>=2` 用于区分显式 `workspace` 限制与早期模板默认值。
@@ -593,6 +593,8 @@ CLI 斜杠命令和模型工具调用复用相同的 MimiAgent 运行时方法�
 
 Session/Event/Document 是证据真相，LLMWiki Markdown 是持续编译的 semantic memory，SQLite 只是可重建索引与不可随 reindex 删除的 receipt/suppression 控制账本。owner 私有 Obsidian Vault 位于 `<dataRoot>/memory/vaults/owner/`，其中 `raw/` 保存内容寻址的不可变证据快照，`wiki/` 保存编译知识，`WIKI.md` 是机器可校验且人类可读的维护 Schema；内部 SQLite 位于 `<dataRoot>/memory/state/profiles/<hash>/memory.db`。workspace 继续使用 `knowledge/sources/`、`knowledge/wiki/` 与 `knowledge/WIKI.md`，禁止私人 provenance，Sources 对 MemoryHub 只读。
 
+Memory schema v2 在同一套页面和 revision 上增加 L1 Atom 与 L2 Scene/Topic；旧 schema v1 页面继续兼容读取。自由文本始终留在正文，typed facets 只承载 kind、实体、关系、时间和来源。L2 通过 `derivedFrom` 指向 L1/L2，`memory_read`/解释路径可以继续下钻到 L0 SourceRef；L3 Personal Context 是只读派生视图，按 900-token 默认预算轮询组装“今天重点”“最近承诺”“等待别人”“项目风险”，不拥有事实，也不写 Goal、Schedule 或 Memory。
+
 - `memory_search`：默认 Wiki-first 相关性搜索；owner 明确询问最近做过什么时可用 `order=recent` 按时间返回有界 Session round
 - `memory_read` / `memory_links`：按 ref 渐进读取正文与一跳关系
 - `remember`：保存稳定偏好、事实、决策或经验（不保存 todo）
@@ -672,7 +674,13 @@ Memory 编译与查询流程：
 读取来源 → 校验 SourceRef/digest → 持久化多页 CompilationPlan → 逐页原子提交 → Lint/index/log → Wiki-first 召回
 ```
 
-默认使用 FTS5/BM25；配置 `MIMI_EMBEDDING_API_KEY`（可配 `MIMI_EMBEDDING_BASE_URL`）时使用独立 OpenAI-compatible Embedding 服务，未配置时向后兼容复用 `OPENAI_API_KEY`。DeepSeek 对话凭证不会被假定支持 Embeddings。向量与词法结果通过 RRF 合并，Embedding 失败立即回退词法检索；Wiki 和 owner 历史 episode 也统一融合，避免弱相关 Wiki 填满结果上限。`/memory reindex` 只重建页面、向量和 links 等派生数据，不清空 suppression 与 compilation receipt。缺少 FTS5 的 Node 构建会回退 bounded LIKE 并在 status 中标记 degraded。
+`auto` 模式的零 Key 默认是 direct BGE q8：`onnx-community/bge-small-zh-v1.5-ONNX` 固定 revision `9507db33464b5da99a532ac26b2a251767cbc62b`，直接使用 `onnxruntime-node@1.24.3` 和 `@huggingface/tokenizers@0.1.3`，不经过生成式模型或远程服务。模型 manifest 固定五个资产的大小与 SHA-256，其中 `model_quantized.onnx` 为 `99a6e522710c00220c89f8c52e0cc5aa09d4cbb1c34c0e932eab3a9dfdc65df3`，外部权重为 `952623481ca8beea884e3d3c9ecaf8a3c7bf1d0c21de29e970cd31af9d37a90b`。缓存位于 `<dataRoot>/memory/models/bge-small-zh-v1.5-q8/<revision>/`，目录使用 `0700`、文件使用 `0600`，下载先校验字节数与摘要再原子替换。
+
+启动、普通查询和增量同步都不会隐式下载模型；只有 owner 显式执行 `/memory reindex` 才允许从固定 revision 下载或修复资产。模型缺失/损坏、下载失败，或当前平台不是 Darwin/Linux 的 arm64/x64 时，MimiAgent 仍可启动并报告原因，Memory 查询保持 lexical-only。显式设置专用 `MIMI_EMBEDDING_API_KEY`（可配 `MIMI_EMBEDDING_BASE_URL` 和 `EMBEDDING_MODEL`）才切换到远程 OpenAI-compatible Provider；对话用的 OpenAI/DeepSeek Key 不会被自动复用。
+
+FTS5/BM25 是词法基线；`sqlite-vec@0.1.9` 只负责在同一 `memory.db` 存储 chunk vector 并执行 vec0 KNN，不拥有 Memory 正文，也不负责生成 embedding。启动会执行 `vec_version()` 和最小 KNN 自检；结构化、BM25 与 vec0 top-k 通过 RRF 合并，查询热路径不会把全部向量加载到 JavaScript。Vec、Embedding、模型/维度或 reindex 异常时回退 lexical-only；FTS5/BM25 建表或查询失败时再回退有界 `LIKE`，并在 status 标记 degraded。错误模型或维度绝不混搜。旧 BLOB 派生向量只在迁移校验期间读取，vec0 校验通过后删除；`/memory reindex` 只重建页面、向量和 links 等派生数据，不清空 suppression 与 compilation receipt。
+
+2026-08-05 本机 Darwin arm64、32 个互不重复自然问题/80 个文档的离线串行基准中，direct BGE 模型为 23.180 MiB，完整 runtime install 为 211.675 MiB，warm query p95 为 2.111 ms，RSS 增量为 118.61 MiB。E5 int8/q8 因 133.7 MiB 级模型、616 MiB 以上 RSS 且中译英桶仍失效，没有成为默认；Xenova v2 BGE WASM 的质量近似但 warm p95 为 27.523 ms、RSS 增量为 326.89 MiB，同样淘汰。该小型基准也暴露 direct BGE 跨语限制：英译中桶 R@10 为 0%，中译英桶 R@10 为 50%；因此产品仍保留 BM25/结构化通道和可选远程 Provider，不能把本地向量相似度当成跨语正确性保证。
 
 每个已完成的 Session round 都会作为 private episode 增量索引；owner 的普通 Memory 检索默认同时搜索已编译 Wiki 和全部历史 episode，因此新 Session 可以直接回忆其他 Session 的相关信息。private episode 不向外部来源或 SubAgent/Team 开放。Daemon 在普通 Task 终态事务中登记 observation，达到 10 条或最老等待 10 分钟后才创建低优先级 `memory_maintenance` Task；连续 50 个页面变化，或有变化且 7 天未 lint 时，把 semantic lint 合并进下一维护 Task。维护 Run 每批最多读取 20 条/8KB 证据、写 5 页，只能使用 Memory 工具；单条 external/public 断言不能直接成为 active 事实。`/memory maintain` 可显式触发无网络的有界 semantic lint。
 
@@ -695,11 +703,17 @@ ownership、单层递归和 Codex 单 Attempt 约束保持不变。
 npm run check
 npm test
 npm run eval
+npm run eval:memory
+npm run eval:memory:local
 npm run eval:security
 npm run bench:capacity
 npm run test:provider-contract
 npm run test:api-contract
 ```
+
+`npm run eval:memory` 使用临时目录复跑 20 个 fixtures 上的 60 个手写自然问题，分别报告 lexical/hybrid 的 correct、partial、evidence-insufficient、incorrect、来源覆盖率和 p50/p95，并执行 Vec 故障、错误维度、embedding 变化与 reindex 反向探针。真实 owner 问题只允许通过 [`evals/memory/README.md`](evals/memory/README.md) 的本机只读入口评测；入口只打开 owner profile 和显式当前 workspace，从 owner-trusted Memory provenance 定界 Session，复用生产 Catalog 检索，活动/变化 WAL 失败关闭并报告 incomplete，只输出无标签脱敏聚合，不保存问题、Memory 正文、ref 或私有路径，也不把命中冒充正确率。
+
+`npm run eval:memory:local` 则使用零 Key 生产 LocalEmbeddingProvider 和合成临时文本，证明 lexical miss 经 ONNX BGE、vec0 SQL KNN 与 RRF 成为正确命中，再以禁止网络的新进程验证离线缓存启动；输出仅含模型身份、行数、状态、时延、内存和布尔结果。
 
 容量基准不调用模型或读取用户状态；参数、隔离规则和结果解释见
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
@@ -738,7 +752,7 @@ Provider canary 对 OpenAI/DeepSeek 各执行一个固定、低成本、Safe 档
 | OpenAI 托管 | `code_interpreter`，以及 Provider 支持时的托管能力 |
 | MCP | Server Tools、`list_mcp_resources`、`read_mcp_resource` |
 
-文件工具保持小而可组合：`list_directory` 支持有界递归和 glob；`read_file` 保持默认全文字符串兼容，并在分段读取或显式请求元数据时返回 SHA-256；`search_files` 优先使用 ripgrep，并支持纯路径清单、正则、glob、大小写和上下文行，不可用时回退内置搜索；`edit_file` 负责精确局部替换；`apply_patch` 在校验全部 unified-diff hunk 与可选旧文件摘要后写入，当前不处理删除，重命名继续使用 `move_file`；`inspect_changes` 只读返回有界 Git status、diffstat 和 diff，并排除 MimiAgent 私有运行数据。`inspect_processes` 是一个窄例外：macOS 的 `ps`/`top` 不能从通用 Shell 沙箱可靠启动，它用固定 argv 返回有界 CPU/内存进程快照，不读取命令行参数，也不能控制进程。更复杂的 Git、数据库或业务能力应优先通过 Skill、MCP 或现有 Shell 工具组合，而不是继续堆内置工具。
+文件工具保持小而可组合：`list_directory` 支持有界递归和 glob；`read_file` 保持默认全文字符串兼容，并在分段读取或显式请求元数据时返回 SHA-256；`search_files` 优先使用 ripgrep，并支持纯路径清单、正则、glob、大小写和上下文行，不可用时回退内置搜索；`edit_file` 负责精确局部替换；`apply_patch` 在校验全部 unified-diff hunk 与可选旧文件摘要后写入，当前不处理删除，重命名继续使用 `move_file`；`inspect_changes` 只读返回有界 Git status、diffstat 和 diff。Full Owner 的直接本机 CLI 或认证 Runtime HTTP 对话可通过这些文件工具访问 MimiAgent 运行数据；Safe、Workstation、后台/Team worker 和外部来源仍拒绝这些路径。`inspect_processes` 是一个窄例外：macOS 的 `ps`/`top` 不能从通用 Shell 沙箱可靠启动，它用固定 argv 返回有界 CPU/内存进程快照，不读取命令行参数，也不能控制进程。更复杂的 Git、数据库或业务能力应优先通过 Skill、MCP 或现有 Shell 工具组合，而不是继续堆内置工具。
 
 ## 有意保留的边界
 

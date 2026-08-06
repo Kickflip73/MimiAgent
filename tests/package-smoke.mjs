@@ -194,6 +194,62 @@ try {
     assert.equal(typeof orchestration.createTeamTools, 'function');
     assert.equal(typeof orchestration.runTeamWave, 'function');
   `], { cwd: temporary, maxBuffer: 10_000_000 });
+
+  const consumerRoot = path.join(temporary, 'consumer');
+  await mkdir(consumerRoot);
+  await execFileAsync('npm', [
+    'install',
+    '--ignore-scripts',
+    '--no-audit',
+    '--no-fund',
+    path.join(temporary, archiveName),
+  ], { cwd: consumerRoot, maxBuffer: 10_000_000 });
+  await execFileAsync(process.execPath, ['--input-type=module', '--eval', `
+    import assert from 'node:assert/strict';
+    import { DatabaseSync } from 'node:sqlite';
+    import { mkdir } from 'node:fs/promises';
+    import path from 'node:path';
+    import { fileURLToPath, pathToFileURL } from 'node:url';
+    import { Tokenizer } from '@huggingface/tokenizers';
+    import * as onnxRuntime from 'onnxruntime-node';
+    import * as sqliteVec from 'sqlite-vec';
+    await import('mimi-agent');
+    const packageEntry = fileURLToPath(import.meta.resolve('mimi-agent'));
+    const installedPackageRoot = path.resolve(path.dirname(packageEntry), '..');
+    const { createRoutedMemoryHub } = await import(pathToFileURL(
+      path.join(installedPackageRoot, 'dist', 'extensions', 'memory', 'hub.js'),
+    ).href);
+    assert.equal(typeof Tokenizer, 'function');
+    assert.equal(typeof onnxRuntime.InferenceSession.create, 'function');
+    const workspaceRoot = ${JSON.stringify(path.join(consumerRoot, 'workspace'))};
+    const dataRoot = ${JSON.stringify(path.join(consumerRoot, 'data'))};
+    await mkdir(workspaceRoot, { recursive: true });
+    const memory = createRoutedMemoryHub({ workspaceRoot, dataRoot, retrievalMode: 'auto' });
+    const memoryStatus = await memory.status({
+      profileId: 'package-smoke-owner',
+      workspaceRoot,
+      sessionId: 'package-smoke',
+      runId: 'package-smoke-run',
+      cause: { trust: 'owner', source: 'package-smoke' },
+    });
+    assert.equal(memoryStatus.embeddingProvider, 'local');
+    assert.equal(memoryStatus.embeddingState, 'missing');
+    assert.equal(memoryStatus.retrievalMode, 'lexical-only');
+    assert.equal(memoryStatus.nextAction, 'run-reindex');
+    const database = new DatabaseSync(':memory:', { allowExtension: true });
+    sqliteVec.load(database);
+    database.enableLoadExtension(false);
+    assert.equal(database.prepare('SELECT vec_version() AS version').get().version, 'v0.1.9');
+    database.exec('CREATE VIRTUAL TABLE smoke_vec USING vec0(embedding float[2] distance_metric=cosine)');
+    database.prepare('INSERT INTO smoke_vec(rowid, embedding) VALUES (?, ?)')
+      .run(1n, new Uint8Array(new Float32Array([1, 0]).buffer));
+    const hit = database.prepare(
+      'SELECT rowid, distance FROM smoke_vec WHERE embedding MATCH ? AND k=1',
+    ).get(new Uint8Array(new Float32Array([1, 0]).buffer));
+    assert.equal(Number(hit.rowid), 1);
+    assert.equal(Number(hit.distance), 0);
+    database.close();
+  `], { cwd: consumerRoot, maxBuffer: 10_000_000 });
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }

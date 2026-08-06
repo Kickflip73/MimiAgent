@@ -227,6 +227,54 @@ test('blocks canonical aliases of a symlinked private runtime directory', async 
   assert.doesNotMatch(result, /SECRET_SENTINEL/);
 });
 
+test('re-evaluates protected file access for each tool call', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-protected-file-access-'));
+  const runtime = path.join(root, '.mimi-agent');
+  const privateFile = path.join(runtime, 'private.txt');
+  await mkdir(runtime);
+  await writeFile(privateFile, 'PRIVATE_BEFORE\n');
+  assert.equal((await runShellCommand(root, 'git init -q', 5)).exitCode, 0);
+  assert.equal((await runShellCommand(root, 'git add -f .mimi-agent/private.txt', 5)).exitCode, 0);
+
+  let allowed = false;
+  const tools = createTools(root, false, [runtime], {
+    allowProtectedPathFileAccess: () => allowed,
+    postWriteDiagnostics: false,
+  });
+  const invoke = async (name: string, input: object): Promise<string> => {
+    const selected = tools.find((item) => item.name === name);
+    if (!selected || !('invoke' in selected)) throw new Error(`工具不可调用：${name}`);
+    return JSON.stringify(await selected.invoke(new RunContext({}), JSON.stringify(input)));
+  };
+
+  assert.match(
+    await invoke('read_file', { path: '.mimi-agent/private.txt' }),
+    /MimiAgent 私有运行数据（含旧目录）/,
+  );
+
+  allowed = true;
+  await invoke('write_file', { path: '.mimi-agent/private.txt', content: 'PRIVATE_AFTER\n' });
+  assert.equal(await readFile(privateFile, 'utf8'), 'PRIVATE_AFTER\n');
+  assert.match(
+    await invoke('list_directory', { path: '.', includeHidden: true, depth: 2 }),
+    /\.mimi-agent\/private\.txt/u,
+  );
+  assert.match(
+    await invoke('search_files', { query: 'PRIVATE_AFTER', path: '.mimi-agent' }),
+    /\.mimi-agent\/private\.txt/u,
+  );
+  assert.match(
+    await invoke('inspect_changes', { paths: ['.mimi-agent/private.txt'] }),
+    /PRIVATE_(?:BEFORE|AFTER)/u,
+  );
+
+  allowed = false;
+  assert.match(
+    await invoke('list_directory', { path: '.mimi-agent' }),
+    /MimiAgent 私有运行数据（含旧目录）/,
+  );
+});
+
 test('opens the full shell boundary only after an explicit trusted opt-in', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-trusted-shell-'));
   const runtime = path.join(root, PRE_MIMI_DATA_DIRECTORY);

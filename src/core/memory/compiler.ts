@@ -1,4 +1,14 @@
-import type { MemoryConfidence, MemoryKind, MemoryRef, MemoryStatus, RunMemoryContext, SourceRef, WikiLintReport } from './types.js';
+import type {
+  MemoryConfidence,
+  MemoryFacetInput,
+  MemoryKind,
+  MemoryPageLayer,
+  MemoryRef,
+  MemoryStatus,
+  RunMemoryContext,
+  SourceRef,
+  WikiLintReport,
+} from './types.js';
 
 export type CompilationOperation = 'ingest' | 'capture' | 'lint';
 export type CompilationStatus = 'pending' | 'applied' | 'rejected';
@@ -36,6 +46,9 @@ export interface CaptureInput {
   targetRef?: MemoryRef;
   canonicalKey?: string;
   rawEvidence?: Array<{ sourceRef: SourceRef; content: string }>;
+  layer?: MemoryPageLayer;
+  facets?: MemoryFacetInput;
+  derivedFrom?: MemoryRef[];
 }
 
 export interface WikiCompiler {

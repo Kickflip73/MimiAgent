@@ -80,7 +80,7 @@ import type { ModelsConfig } from './model-config.js';
 import { ModelGateway } from './model-gateway.js';
 import { CompletionCoordinator } from './completion-coordinator.js';
 import { restrictedShellEnvironment } from './shell-environment.js';
-import { RunContextBuilder } from './run-context-builder.js';
+import { canAccessRuntimePaths, RunContextBuilder } from './run-context-builder.js';
 import { RuntimeActionCoordinator } from './runtime-action-coordinator.js';
 import { RuntimeControlCoordinator } from './runtime-control-coordinator.js';
 import { createPlanTools } from './plan-tools.js';
@@ -360,7 +360,8 @@ export class MimiAgent {
         mutationObserver: this.fileChanges,
       } : {
         ...(createOptions.restrictReadsToWorkspace ? { readablePaths: ['.'] } : {}),
-        allowProtectedPathShellAccess: createOptions.protectRuntimePathsFromShell !== true,
+        allowProtectedPathFileAccess: () => canAccessRuntimePaths(this.activeRun),
+        allowProtectedPathShellAccess: createOptions.protectRuntimePathsFromShell !== true && (() => canAccessRuntimePaths(this.activeRun)),
         allowShell: true,
         shellEnvironment: () => ({
           ...baseShellEnvironment,

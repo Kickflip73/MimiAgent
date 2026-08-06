@@ -41,6 +41,19 @@ const memoryRefSchema = z.object({
   profileId: z.string().trim().min(1).max(100).optional(),
 });
 
+const memoryFacetsSchema = z.object({
+  entities: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
+  relations: z.array(z.object({
+    kind: z.string().trim().min(1).max(100),
+    target: memoryRefSchema,
+  })).max(50).optional(),
+  time: z.object({
+    occurredAt: z.string().datetime().nullable().optional(),
+    validFrom: z.string().datetime().nullable().optional(),
+    validUntil: z.string().datetime().nullable().optional(),
+  }).optional(),
+});
+
 function boundedEvidence(value: unknown, limit: number): string {
   const serialized = JSON.stringify(value ?? null);
   return serialized.length <= limit ? serialized : `${serialized.slice(0, limit)}…`;
@@ -80,7 +93,7 @@ export function createMemoryMaintenanceTools(
     }),
     tool({
       name: 'upsert_memory_page',
-      description: '根据 observation 来源创建/更新一页 private Wiki，或记录不沉淀决定；每次最多处理 20 个来源和一页。',
+      description: '根据 observation 来源创建/更新一页 private Wiki，或记录不沉淀决定；L1 是证据原子，L2 必须用 derivedFrom 引用下层结论且保持 inferred；每次最多处理 20 个来源和一页。',
       parameters: z.object({
         sourceKeys: z.array(z.string().min(1)).min(1).max(20),
         action: z.enum(['upsert', 'reject']),
@@ -92,10 +105,14 @@ export function createMemoryMaintenanceTools(
         aliases: z.array(z.string().trim().min(1).max(200)).max(30).default([]),
         tags: z.array(z.string().trim().min(1).max(100)).max(30).default([]),
         links: z.array(z.string().trim().min(1).max(200)).max(30).default([]),
+        layer: z.enum(['L1', 'L2']).optional(),
+        facets: memoryFacetsSchema.optional(),
+        derivedFrom: z.array(memoryRefSchema).max(50).optional(),
         reasonCode: z.string().trim().min(1).max(200),
       }),
       execute: async ({
-        sourceKeys, action, title, content, kind, status, targetRef, aliases, tags, links, reasonCode,
+        sourceKeys, action, title, content, kind, status, targetRef, aliases, tags, links,
+        layer, facets, derivedFrom, reasonCode,
       }) => {
         const byKey = new Map(observations().map((item) => [item.sourceKey, item]));
         const selected = sourceKeys.map((sourceKey) => {
@@ -116,7 +133,7 @@ export function createMemoryMaintenanceTools(
           ? await runtime.reject(sourceRefs, reasonCode, task.profileId)
           : await runtime.capture({
               title: title ?? '', content: content ?? '', sourceRefs, scope: 'private',
-              kind, status, reasonCode, targetRef, aliases, tags, links,
+              kind, status, reasonCode, targetRef, aliases, tags, links, layer, facets, derivedFrom,
               rawEvidence: selected.map((item) => ({
                 sourceRef: item.sourceRef,
                 content: boundedEvidence({
@@ -125,7 +142,9 @@ export function createMemoryMaintenanceTools(
                   error: item.error,
                 }, 8_000),
               })),
-              confidence: sourceRefs.some((source) => source.trust === 'external' || source.trust === 'public')
+              confidence: layer === 'L2'
+                ? 'inferred'
+                : sourceRefs.some((source) => source.trust === 'external' || source.trust === 'public')
                 ? 'inferred' : 'source-grounded',
             }, task.profileId);
         if (receipt.status !== 'applied' && receipt.status !== 'rejected') {

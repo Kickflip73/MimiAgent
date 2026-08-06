@@ -148,6 +148,64 @@ test('daemon read probes must pass runtime policy and cannot invent an unregiste
   }
 });
 
+test('only direct Full Owner conversations can use file tools on runtime paths', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-direct-owner-runtime-files-'));
+  const dataRoot = path.join(root, '.mimi-agent');
+  const agent = await MimiAgent.create({
+    provider: 'openai',
+    workspaceRoot: root,
+    dataRoot,
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: 20,
+    permissionMode: 'trusted',
+    securityProfile: 'full-owner',
+  });
+  const runtimeAgent = agent as unknown as {
+    activeRun?: {
+      scope: {
+        cause?: {
+          eventId: string;
+          source: string;
+          trust: 'owner' | 'external';
+        };
+      };
+      options?: { scenario?: string };
+    };
+  };
+  try {
+    await writeFile(path.join(dataRoot, 'owner-visible.txt'), 'OWNER_RUNTIME_SENTINEL');
+    const read = agent.registeredTools().find((tool) => tool.name === 'read_file');
+    assert.ok(read && 'invoke' in read);
+    const invoke = async (): Promise<string> => String(await read.invoke(
+      new RunContext({}),
+      JSON.stringify({ path: '.mimi-agent/owner-visible.txt' }),
+    ));
+
+    runtimeAgent.activeRun = {
+      scope: { cause: { eventId: 'owner-cli', source: 'local-cli', trust: 'owner' } },
+      options: { scenario: 'conversation.default' },
+    };
+    assert.match(await invoke(), /OWNER_RUNTIME_SENTINEL/u);
+
+    runtimeAgent.activeRun = {
+      scope: { cause: { eventId: 'owner-background', source: 'local-cli', trust: 'owner' } },
+      options: { scenario: 'background.default' },
+    };
+    assert.match(await invoke(), /MimiAgent 私有运行数据（含旧目录）/);
+
+    runtimeAgent.activeRun = {
+      scope: { cause: { eventId: 'external-work', source: 'connector:test', trust: 'external' } },
+      options: { scenario: 'conversation.default' },
+    };
+    assert.match(await invoke(), /MimiAgent 私有运行数据（含旧目录）/);
+  } finally {
+    runtimeAgent.activeRun = undefined;
+    await agent.close();
+  }
+});
+
 test('persists sessions and returns the latest items', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-'));
   const session = new FileSession(root, 'demo');
