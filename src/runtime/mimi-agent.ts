@@ -654,16 +654,15 @@ export class MimiAgent {
     if (!this.activeRun) await this.refreshModelConfiguration();
     const session = this.components.state.sessions.open(sessionId);
     await session.ensure();
-    const [items, checkpoint, preferences, summaries, plan] = await Promise.all([
+    const [items, checkpoint, preferences, summary, plan] = await Promise.all([
       session.getItems(),
       session.getCheckpoint(),
       session.getPreferences(),
-      FileSession.listSummaries(path.join(this.config.dataRoot, 'sessions')),
+      session.summary(),
       this.components.state.goalsAndPlans.open(sessionId).get(),
     ]);
     const runtime = this.sessionRuntime(preferences);
     const permissionMode = this.runtimeSecurity.permissionMode;
-    const summary = summaries.find((item) => item.id === sessionId);
     if (!summary) throw new Error(`Session ${sessionId} 不存在`);
 
     return {
