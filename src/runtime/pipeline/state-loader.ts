@@ -1,6 +1,18 @@
 import type { AgentInputItem } from '@openai/agents';
+import { estimateTokens } from '../../core/context.js';
 import type { GuidanceSnapshot } from '../../core/guidance.js';
-import type { MemoryCard } from '../../core/memory.js';
+import type {
+  MemoryCard,
+  MemoryHub,
+  MemoryRef,
+  PersonalContext,
+  PersonalContextItem,
+  RunMemoryContext,
+} from '../../core/memory.js';
+import {
+  personalContextSection,
+  PersonalContextAssembler,
+} from '../../extensions/memory/personal-context-assembler.js';
 import type { Goal, PlanStep } from '../../core/plan.js';
 import type { ActivatedSkill, ContextArchive } from '../../core/session.js';
 import type { ResolvedCapabilities } from './capability-resolver.js';
@@ -11,6 +23,7 @@ export interface RunStateLoaderDependencies {
     goal?: Readonly<Goal>;
     history: readonly AgentInputItem[];
   }) => Promise<MemoryCard[]>;
+  loadPersonalContextCandidates: () => Promise<MemoryCard[]>;
   loadPlan: () => Promise<PlanStep[]>;
   loadGoal: () => Promise<Goal | undefined>;
   loadTeamSummary: () => Promise<string>;
@@ -24,6 +37,10 @@ export interface RunStateLoaderDependencies {
 
 export interface RunStateSnapshot {
   readonly memories: readonly MemoryCard[];
+  readonly personalContext: Readonly<Omit<PersonalContext, 'items' | 'derivedFrom'>> & {
+    readonly items: readonly PersonalContextItem[];
+    readonly derivedFrom: readonly MemoryRef[];
+  };
   readonly plan: readonly PlanStep[];
   readonly storedGoal?: Readonly<Goal>;
   readonly teamSummary: string;
@@ -37,12 +54,86 @@ export interface RunStateSnapshot {
 
 const EMPTY_GUIDANCE: GuidanceSnapshot = Object.freeze({ instructions: '', files: [] });
 
+export interface PersonalContextCandidateOptions {
+  now?: Date;
+  timeZone: string;
+  limit?: number;
+}
+
+function memoryKey(card: MemoryCard): string {
+  return `${card.ref.scope}:${card.ref.profileId ?? ''}:${card.ref.id}`;
+}
+
+function uniqueCards(cards: readonly MemoryCard[]): MemoryCard[] {
+  const seen = new Set<string>();
+  return cards.filter((card) => {
+    const key = memoryKey(card);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export async function loadPersonalContextCandidates(
+  hub: Pick<MemoryHub, 'list'>,
+  context: RunMemoryContext,
+  options: PersonalContextCandidateOptions,
+): Promise<MemoryCard[]> {
+  const now = options.now ?? new Date();
+  // Validate the injected IANA zone before using it to classify owner-local dates.
+  new Intl.DateTimeFormat('en-US', { timeZone: options.timeZone }).format(now);
+  const limit = Math.min(200, Math.max(4, Math.trunc(options.limit ?? 96)));
+  const [related, conflicted, stale] = await Promise.all([
+    hub.list(context, {
+      status: 'active',
+      order: 'recent',
+      relationKinds: [
+        'today-focus',
+        'focus',
+        'commitment',
+        'committed-to',
+        'waiting-on',
+        'blocked-by',
+        'project-risk',
+        'risk',
+      ],
+      limit,
+    }),
+    hub.list(context, { status: 'conflicted', order: 'recent', limit: Math.min(32, limit) }),
+    hub.list(context, { status: 'active', stale: true, order: 'recent', limit: Math.min(32, limit) }),
+  ]);
+  return uniqueCards([...related, ...conflicted, ...stale])
+    .filter((card) => personalContextSection(card, { now, timeZone: options.timeZone }) !== undefined)
+    .slice(0, limit);
+}
+
+function takeCardsWithinBudget(cards: readonly MemoryCard[], tokenBudget: number): {
+  cards: MemoryCard[];
+  estimatedTokens: number;
+} {
+  const selected: MemoryCard[] = [];
+  let estimatedTokens = 0;
+  for (const card of cards) {
+    const tokens = estimateTokens(`${card.title}\n${card.summary}`);
+    if (estimatedTokens + tokens > tokenBudget) continue;
+    selected.push(card);
+    estimatedTokens += tokens;
+  }
+  return { cards: selected, estimatedTokens };
+}
+
 export class RunStateLoader {
   constructor(private readonly dependencies: RunStateLoaderDependencies) {}
 
   async load(
     capabilities: ResolvedCapabilities,
-    options: { loadOwnerSoul?: boolean; loadOwnerPreferences?: boolean } = {},
+    options: {
+      loadOwnerSoul?: boolean;
+      loadOwnerPreferences?: boolean;
+      memoryTokenBudget?: number;
+      now?: Date;
+      ownerTimeZone?: string;
+    } = {},
   ): Promise<RunStateSnapshot> {
     const [
       plan,
@@ -71,16 +162,44 @@ export class RunStateLoader {
       capabilities.canReadSessionContext ? this.dependencies.loadArchive() : Promise.resolve(undefined),
       capabilities.canReadSessionContext ? this.dependencies.loadActiveSkills() : Promise.resolve([]),
     ]);
-    const memoryCards = capabilities.canReadMemory
-      ? await this.dependencies.searchMemories({ goal: storedGoal, history })
-      : [];
-    const memories = memoryCards
-      .filter((memory, index, all) => all.findIndex((candidate) => (
-        candidate.ref.scope === memory.ref.scope && candidate.ref.id === memory.ref.id
-      )) === index)
-      .slice(0, 3);
+    const [memoryCards, personalContextCandidates] = capabilities.canReadMemory
+      ? await Promise.all([
+        this.dependencies.searchMemories({ goal: storedGoal, history }),
+        this.dependencies.loadPersonalContextCandidates(),
+      ])
+      : [[], []];
+    const uniqueMemories = uniqueCards(memoryCards);
+    const tokenBudget = Math.max(0, Math.trunc(options.memoryTokenBudget ?? 900));
+    const now = options.now ?? new Date();
+    const ownerTimeZone = options.ownerTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const personalBudget = uniqueMemories.length === 0
+      ? tokenBudget
+      : Math.min(tokenBudget, Math.max(360, Math.floor(tokenBudget * 0.6)));
+    const assembledPersonalContext = new PersonalContextAssembler().assemble(personalContextCandidates, {
+      tokenBudget: personalBudget,
+      now,
+      timeZone: ownerTimeZone,
+    });
+    const personalRefs = new Set(assembledPersonalContext.items.map((item) => memoryKey(item.card)));
+    const querySelection = takeCardsWithinBudget(
+      uniqueMemories.filter((card) => !personalRefs.has(memoryKey(card))),
+      Math.max(0, tokenBudget - assembledPersonalContext.estimatedTokens),
+    );
+    const personalContext = {
+      ...assembledPersonalContext,
+      estimatedTokens: assembledPersonalContext.estimatedTokens + querySelection.estimatedTokens,
+    };
+    const memories = [...querySelection.cards, ...personalContext.items.map((item) => ({
+      ...item.card,
+      summary: `[${item.section}] ${item.card.summary}`,
+    }))];
     return Object.freeze({
       memories: Object.freeze(memories),
+      personalContext: Object.freeze({
+        ...personalContext,
+        items: Object.freeze(personalContext.items),
+        derivedFrom: Object.freeze(personalContext.derivedFrom),
+      }),
       plan: Object.freeze(plan),
       storedGoal: storedGoal ? Object.freeze({ ...storedGoal }) : undefined,
       teamSummary,

@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { RunContext } from '@openai/agents';
 import type OpenAI from 'openai';
+import * as sqliteVec from 'sqlite-vec';
 import { createMemoryHub } from '../src/extensions/memory/hub.js';
 import { privateMemoryLayout } from '../src/extensions/memory/layout.js';
 import { WikiVault } from '../src/extensions/memory/wiki-vault.js';
@@ -312,16 +313,24 @@ test('hybrid recall uses chunked fake embeddings, rejects unrelated queries and 
 
   const database = new DatabaseSync(privateMemoryLayout(path.join(root, 'data'), 'owner').databaseFile, {
     readOnly: true,
+    allowExtension: true,
   });
+  sqliteVec.load(database);
+  database.enableLoadExtension(false);
   const chunkCount = Number((database.prepare(
-    'SELECT COUNT(*) AS count FROM document_embedding_chunks',
+    'SELECT COUNT(*) AS count FROM document_vec_chunks',
   ).get() as { count: number }).count);
-  const legacyVectorCount = Number((database.prepare(
-    'SELECT COUNT(*) AS count FROM document_embeddings',
+  const mappedChunkCount = Number((database.prepare(
+    'SELECT COUNT(*) AS count FROM document_vec_chunks_map',
   ).get() as { count: number }).count);
+  const legacyVectorTableCount = Number((database.prepare(`
+    SELECT COUNT(*) AS count FROM sqlite_master
+    WHERE type='table' AND name IN ('document_embeddings', 'document_embedding_chunks')
+  `).get() as { count: number }).count);
   database.close();
   assert.ok(chunkCount > 1);
-  assert.equal(legacyVectorCount, 0);
+  assert.equal(mappedChunkCount, chunkCount);
+  assert.equal(legacyVectorTableCount, 0);
 
   const lexical = await createMemoryHub({
     workspaceRoot: root,
@@ -334,7 +343,122 @@ test('hybrid recall uses chunked fake embeddings, rejects unrelated queries and 
   );
 });
 
-test('automatic recall returns at most one near-duplicate and no more than three cards', async () => {
+test('memory status is an actionable vector doctor across provider setup and reindex', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-vector-doctor-'));
+  const dataRoot = path.join(root, 'data');
+  const ctx = context(root);
+  const lexical = await createMemoryHub({ workspaceRoot: root, dataRoot, profileId: 'owner' });
+  await lexical.remember({
+    title: 'Quarterly planning notes',
+    content: 'The roadmap review happens before the next planning cycle.',
+    kind: 'fact',
+  }, ctx);
+
+  const lexicalStatus = await lexical.status(ctx) as unknown as {
+    providerConfigured: boolean;
+    vectorRows: number;
+    retrievalMode: string;
+    nextAction: string;
+  };
+  assert.equal(lexicalStatus.providerConfigured, false);
+  assert.equal(lexicalStatus.vectorRows, 0);
+  assert.equal(lexicalStatus.retrievalMode, 'lexical-only');
+  assert.equal(lexicalStatus.nextAction, 'configure-embedding-provider');
+
+  const embeddingClient = {
+    embeddings: {
+      create: async (request: { input: string | string[] }) => ({
+        data: (Array.isArray(request.input) ? request.input : [request.input])
+          .map(() => ({ embedding: [0.8, 0.2, 0.1] })),
+      }),
+    },
+  } as unknown as OpenAI;
+  const hybrid = await createMemoryHub({
+    workspaceRoot: root,
+    dataRoot,
+    profileId: 'owner',
+    embeddingClient,
+  });
+  const status = await hybrid.reindex(ctx) as unknown as {
+    providerConfigured: boolean;
+    vectorRows: number;
+    vectorState: string;
+    retrievalMode: string;
+    nextAction: string;
+  };
+  assert.equal(status.providerConfigured, true);
+  assert.ok(status.vectorRows > 0);
+  assert.equal(status.vectorState, 'ready');
+  assert.equal(status.retrievalMode, 'hybrid');
+  assert.equal(status.nextAction, 'none');
+});
+
+test('memory status reports lexical-only when the provider is unavailable despite ready vec rows', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-vector-provider-failure-'));
+  let providerState: 'ready' | 'unavailable' = 'ready';
+  const embeddingProvider = {
+    kind: 'local' as const,
+    model: 'local-fixture@1',
+    embed: async (inputs: string[]) => inputs.map(() => [1, 0, 0]),
+    diagnostics: async () => ({
+      kind: 'local' as const,
+      state: providerState,
+      model: 'local-fixture@1',
+    }),
+  };
+  const hub = await createMemoryHub({
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    profileId: 'owner',
+    embeddingProvider,
+  });
+  const ctx = context(root);
+  await hub.remember({ title: 'Vector state', content: 'A durable vector row.', kind: 'fact' }, ctx);
+  assert.equal((await hub.status(ctx)).retrievalMode, 'hybrid');
+  providerState = 'unavailable';
+  const unavailable = await hub.status(ctx);
+  assert.ok((unavailable.vectorRows ?? 0) > 0);
+  assert.equal(unavailable.vectorState, 'ready');
+  assert.equal(unavailable.embeddingState, 'unavailable');
+  assert.equal(unavailable.retrievalMode, 'lexical-only');
+  assert.equal(unavailable.nextAction, 'use-remote-or-lexical');
+});
+
+test('memory status disables hybrid when any current document embedding is missing', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-partial-vector-'));
+  const dataRoot = path.join(root, 'data');
+  const ctx = context(root);
+  const lexical = await createMemoryHub({
+    workspaceRoot: root, dataRoot, profileId: 'owner', retrievalMode: 'lexical',
+  });
+  await lexical.remember({ title: 'Complete vector', content: 'This page can be embedded.', kind: 'fact' }, ctx);
+  await lexical.remember({ title: 'Missing vector', content: 'This page cannot be embedded.', kind: 'fact' }, ctx);
+  const embeddingProvider = {
+    kind: 'local' as const,
+    model: 'partial-fixture@1',
+    embed: async (inputs: string[], options: { purpose: 'query' | 'document' }) => (
+      options.purpose === 'query'
+        ? inputs.map(() => [1, 0, 0])
+        : inputs[0]?.includes('Missing vector') ? undefined : inputs.map(() => [1, 0, 0])
+    ),
+    diagnostics: async () => ({
+      kind: 'local' as const,
+      state: 'ready' as const,
+      model: 'partial-fixture@1',
+    }),
+  };
+  const hybrid = await createMemoryHub({
+    workspaceRoot: root, dataRoot, profileId: 'owner', embeddingProvider,
+  });
+  const status = await hybrid.status(ctx);
+  assert.equal(status.pages, 2);
+  assert.equal(status.vectorRows, 1);
+  assert.equal(status.vectorState, 'reindex-required');
+  assert.equal(status.retrievalMode, 'lexical-only');
+  assert.equal(status.nextAction, 'run-reindex');
+});
+
+test('automatic recall returns exactly one representative for near-duplicate episodes', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-mmr-'));
   const hub = await createMemoryHub({
     workspaceRoot: root,
@@ -352,7 +476,7 @@ test('automatic recall returns at most one near-duplicate and no more than three
     }, { ...ctx, runId: `run-duplicate-${index}` });
   }
   const hits = await hub.search('Cobalt release process', ctx);
-  assert.ok(hits.length <= 3);
+  assert.equal(hits.length, 1);
   assert.equal(hits.filter((hit) => /same verified release checklist/.test(hit.summary)).length, 1);
 });
 

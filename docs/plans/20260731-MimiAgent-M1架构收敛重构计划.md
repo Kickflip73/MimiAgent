@@ -14,8 +14,9 @@ Owner 里程碑裁决（2026-08-03）：M2 不再等待 24h/72h/7d 日历窗口�
 上的 30 次短 live matrix 和一次有界恢复演练决定是否进入 M2；这只改变产品里程碑范围，
 不允许用 fixture/readiness 冒充 live action，也不放宽错目标、重复副作用或 uncertain no-replay。
 
-定位：完整 M1 收口的唯一执行计划；完成并通过最终冻结构建的真实运行验收前，不进入
-M2 产品实现，不新增 M2～M5 产品能力。
+定位：完整 M1 收口的唯一执行计划；M2 可按蓝图在独立分支开发和验证，但本计划不实现
+M2 产品能力。最终冻结构建通过真实运行验收前，不得把 M2 合并到长期运行主线或部署，
+也不开始 M3～M6 产品开发。
 
 关联文档：
 
@@ -73,7 +74,7 @@ Run 提交路径，因此不能替代最终冻结构建的 30 次短矩阵，也
 - 24h/72h/7d/30d 质量窗口不阻塞 M2 开工，但应在 M2 开发期间继续累计；若出现 S0/S1、重复副作用、
   系统性 dead letter、静默漏收或连续 Doctor 非 ready，立即冻结 M2 合并/部署，回到 M1 修复
   并从修复后的新 build 重新建立受影响的质量窗口。
-- M2 只能从 Personal Context 开始；不得把任何 M1 未完成项改名后带入 M2。
+- M2 只能从分层 MemoryHub 与 Personal Context 开始；不得把任何 M1 未完成项改名后带入 M2。
 
 ## 2. 当前基线与问题证据
 
@@ -171,7 +172,7 @@ Connector health 周期检查不断追加相同告警，而不是只记录状态
 - 不为每个 Connector、App 或 Tool 建独立 manager/service/repository 层。
 - 不通过拆文件制造“模块化”：只移动代码但不删除职责不算完成。
 - 不把历史兼容分支永久留在主热路径；兼容只能位于读取/迁移边界。
-- 不在本轮增加 M2 Memory schema、M3 工作流、M4 多模态或 M5 自治功能。
+- 不在本轮增加 M2 分层记忆、M3 多模态交互、M4 工作闭环、M5 生活助理或 M6 自治功能。
 
 ### 3.3 复杂度硬预算
 
@@ -325,8 +326,9 @@ ARC 依赖图是唯一实施顺序；同一热路径严格串行，互不依赖�
 
 实施：
 
-1. 停止 M2～M5 和所有新增能力开发；当前 Browser/Computer/Context/Model 改动只允许完成
-   已开始的 M1 契约、修复回归或被隔离到独立分支，不得继续扩面。
+1. 停止把 M2～M6 或其他新增能力混入 M1 基线；M2 只允许在独立分支按蓝图开发验证，
+   M3～M6 暂停。当前 Browser/Computer/Context/Model 改动只允许完成已开始的 M1 契约、
+   修复回归或被隔离到独立分支，不得继续扩面。
 2. 重新记录当前 HEAD、tracked/untracked diff、Daemon build、Doctor、Task/Digest/Connector、
    最近 24 小时按来源 Run/Token 和当前完整测试数字。
 3. 为真实 `~/.mimi-agent` 创建并验证备份；后续数据迁移先在备份副本演练。
@@ -767,8 +769,9 @@ dataset revision、CI/coverage/skip 数字、迁移与恢复摘要、30 次完�
 6. owner/external prerequisite 为 0 个 unresolved；若客观无法解除，decision 必须是 `NO-GO`，
    由 owner 明确修改蓝图里程碑后才能改变产品范围，实施者不得自行降级。
 
-`GO` 后可以创建 M2 开发分支并从 Personal Context 开工；M1 exit record 和 30 天监控继续
-作为 M2 的发布门禁输入，而不是复制成第二套运行系统。
+M2 开发分支可在 `GO` 前按第 1.2 节独立创建和验证；只有 `GO` 后才可合并到长期运行主线
+或部署。M1 exit record 和 30 天监控继续作为 M2 的发布门禁输入，而不是复制成第二套
+运行系统。
 
 ## 6. 实施任务与依赖
 
@@ -823,7 +826,7 @@ ARC-104 + ARC-202/203/204/205 + ARC-303/401 → ARC-402 → ARC-501 → ARC-502 
 - Team/SubAgent 的业务能力和并发模型；
 - 新 Provider adapter、模型路由功能和媒体 Runtime；
 - CLI/TUI 视觉重做；
-- M1 五个正式能力族之外的新 Connector、Skill、MCP 集成和 M2～M5 产品能力。
+- M1 五个正式能力族之外的新 Connector、Skill、MCP 集成和 M2～M6 产品能力。
 
 若某项必须越过默认范围，先证明当前范围内无法完成，并把新增范围、删除项和额外验收写入
 本计划；不能在实现提交里临时扩面。

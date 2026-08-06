@@ -19,6 +19,20 @@ export interface MemoryRunIdentity {
   runId: string;
 }
 
+interface RuntimePathAccessRun {
+  scope: { cause?: RunContextCause };
+  options?: { scenario?: string };
+}
+
+export function canAccessRuntimePaths(run: RuntimePathAccessRun | undefined): boolean {
+  if (!run || (run.options?.scenario ?? 'conversation.default') !== 'conversation.default') return false;
+  const cause = run.scope.cause;
+  return cause === undefined || (
+    cause.trust === 'owner'
+    && (cause.source === 'local-cli' || cause.source === 'runtime-http')
+  );
+}
+
 export class RunContextBuilder {
   constructor(
     private readonly workspaceRoot: string,

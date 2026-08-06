@@ -22,9 +22,13 @@ const MAX_HTTP_BYTES = 200_000;
 const MAX_HTTP_REDIRECTS = 5;
 const MAX_PROCESS_SNAPSHOT_BYTES = 1_000_000;
 const PROCESS_SNAPSHOT_TIMEOUT_MS = 10_000;
-const SKIPPED_DIRECTORIES = new Set([
-  '.git', '.mimi-agent', PRE_MIMI_DATA_DIRECTORY, 'node_modules', 'dist',
-]);
+const ALWAYS_SKIPPED_DIRECTORIES = new Set(['.git', 'node_modules', 'dist']);
+const PRIVATE_RUNTIME_DIRECTORIES = new Set(['.mimi-agent', PRE_MIMI_DATA_DIRECTORY]);
+
+function shouldSkipDirectory(name: string, includePrivateRuntimePaths = false): boolean {
+  return ALWAYS_SKIPPED_DIRECTORIES.has(name)
+    || (!includePrivateRuntimePaths && PRIVATE_RUNTIME_DIRECTORIES.has(name));
+}
 
 function resolvePath(workspaceRoot: string, requestedPath: string): string {
   return path.isAbsolute(requestedPath)
@@ -78,7 +82,8 @@ export interface ToolAccessPolicy {
   writablePaths?: string[];
   allowWrite?: boolean;
   allowShell?: boolean;
-  allowProtectedPathShellAccess?: boolean;
+  allowProtectedPathFileAccess?: boolean | (() => boolean);
+  allowProtectedPathShellAccess?: boolean | (() => boolean);
   shellEnvironment?: NodeJS.ProcessEnv | (() => NodeJS.ProcessEnv);
   shellSensitiveValues?: () => readonly string[];
   shellDetachedProcessGroup?: boolean;
@@ -86,6 +91,10 @@ export interface ToolAccessPolicy {
   blockedLocalTcpPorts?: number[];
   postWriteDiagnostics?: boolean;
   mutationObserver?: FileMutationObserver;
+}
+
+function accessEnabled(value: boolean | (() => boolean) | undefined): boolean {
+  return typeof value === 'function' ? value() : value === true;
 }
 
 async function assertScopedPath(
@@ -737,6 +746,7 @@ export interface FileSearchLimits {
   contextLines?: number;
   excludedPaths?: string[];
   pathsOnly?: boolean;
+  includePrivateRuntimePaths?: boolean;
 }
 
 function globPattern(pattern: string): RegExp {
@@ -791,7 +801,10 @@ export async function searchLocalFiles(
     }
     if (info.isSymbolicLink()) return;
     if (info.isDirectory()) {
-      if (target !== root && SKIPPED_DIRECTORIES.has(path.basename(target))) return;
+      if (target !== root && shouldSkipDirectory(
+        path.basename(target),
+        limits.includePrivateRuntimePaths,
+      )) return;
       for (const entry of await readdir(target)) {
         await visit(path.join(target, entry), depth + 1);
         if (results.length >= maxResults) break;
@@ -911,8 +924,10 @@ function ripgrepBaseArgs(workspaceRoot: string, options: FileSearchLimits): stri
   const args = [
     '--hidden', '--max-filesize', '200K',
     '--glob', '!.git/**',
-    '--glob', '!.mimi-agent/**',
-    '--glob', `!${PRE_MIMI_DATA_DIRECTORY}/**`,
+    ...(options.includePrivateRuntimePaths ? [] : [
+      '--glob', '!.mimi-agent/**',
+      '--glob', `!${PRE_MIMI_DATA_DIRECTORY}/**`,
+    ]),
     '--glob', '!node_modules/**',
     '--glob', '!dist/**',
   ];
@@ -1025,9 +1040,11 @@ export async function inspectWorkspaceChanges(
   includeDiff = true,
   signal?: AbortSignal,
   excludedPaths: string[] = [],
+  includePrivateRuntimePaths = false,
 ): Promise<WorkspaceChanges> {
   const exclusions = [...new Set([
-    '.mimi-agent', PRE_MIMI_DATA_DIRECTORY, ...excludedPaths,
+    ...(includePrivateRuntimePaths ? [] : ['.mimi-agent', PRE_MIMI_DATA_DIRECTORY]),
+    ...excludedPaths,
   ].map((value) => value.split(path.sep).join('/')).filter((value) => value && value !== '.'))];
   const pathspec = [
     '--', ...(paths.length ? paths : ['.']),
@@ -1460,6 +1477,13 @@ export function createTools(
   protectedPaths: string[] = [],
   access: ToolAccessPolicy = {},
 ) {
+  const filePathAccess = () => {
+    const allowed = accessEnabled(access.allowProtectedPathFileAccess);
+    return {
+      allowed,
+      protectedPaths: allowed ? [] : protectedPaths,
+    };
+  };
   const currentTime = tool({
     name: 'current_time',
     description: '获取当前日期、时间和时区。',
@@ -1483,8 +1507,9 @@ export function createTools(
     }),
     execute: async ({ path: requestedPath, startLine, endLine, maxLines, includeMetadata }, _context, details) => {
       const target = resolvePath(workspaceRoot, requestedPath);
+      const pathAccess = filePathAccess();
       await Promise.all([
-        assertPathAllowed(target, protectedPaths),
+        assertPathAllowed(target, pathAccess.protectedPaths),
         assertReadablePath(workspaceRoot, target, access.readablePaths),
       ]);
       if (!includeMetadata && startLine === undefined && endLine === undefined && maxLines === undefined) {
@@ -1503,8 +1528,9 @@ export function createTools(
     }),
     execute: async ({ path: requestedPath, content }) => {
       const target = resolvePath(workspaceRoot, requestedPath);
+      const pathAccess = filePathAccess();
       const result = await writeLocalFile(workspaceRoot, requestedPath, content, async () => Promise.all([
-        assertPathAllowed(target, protectedPaths),
+        assertPathAllowed(target, pathAccess.protectedPaths),
         assertWritablePath(workspaceRoot, target, access.writablePaths),
       ]).then(() => undefined), access.mutationObserver);
       if (access.postWriteDiagnostics === false) return result;
@@ -1523,8 +1549,9 @@ export function createTools(
     }),
     execute: async ({ path: requestedPath, oldText, newText, replaceAll }) => {
       const target = resolvePath(workspaceRoot, requestedPath);
+      const pathAccess = filePathAccess();
       const result = await editLocalFile(workspaceRoot, requestedPath, oldText, newText, replaceAll, async () => Promise.all([
-        assertPathAllowed(target, protectedPaths),
+        assertPathAllowed(target, pathAccess.protectedPaths),
         assertWritablePath(workspaceRoot, target, access.writablePaths),
       ]).then(() => undefined), access.mutationObserver);
       if (access.postWriteDiagnostics === false) return result;
@@ -1543,12 +1570,13 @@ export function createTools(
       })).max(100).default([]),
     }),
     execute: async ({ patch, expectedFiles }) => {
+      const pathAccess = filePathAccess();
       const result = await applyLocalPatch(
         workspaceRoot,
         patch,
         expectedFiles,
         async (target) => Promise.all([
-          assertPathAllowed(target, protectedPaths),
+          assertPathAllowed(target, pathAccess.protectedPaths),
           assertWritablePath(workspaceRoot, target, access.writablePaths ?? ['.']),
         ]).then(() => undefined),
         access.mutationObserver,
@@ -1572,9 +1600,10 @@ export function createTools(
     execute: async ({ source, destination, overwrite }) => {
       const sourceTarget = resolvePath(workspaceRoot, source);
       const destinationTarget = resolvePath(workspaceRoot, destination);
+      const pathAccess = filePathAccess();
       const result = await moveLocalFile(workspaceRoot, source, destination, overwrite, async () => Promise.all([
-        assertPathAllowed(sourceTarget, protectedPaths),
-        assertPathAllowed(destinationTarget, protectedPaths),
+        assertPathAllowed(sourceTarget, pathAccess.protectedPaths),
+        assertPathAllowed(destinationTarget, pathAccess.protectedPaths),
         assertWritablePath(workspaceRoot, sourceTarget, access.writablePaths),
         assertWritablePath(workspaceRoot, destinationTarget, access.writablePaths),
       ]).then(() => undefined), access.mutationObserver);
@@ -1598,8 +1627,9 @@ export function createTools(
     }),
     execute: async ({ path: requestedPath, includeHidden, depth, maxEntries, globs }, _context, details) => {
       const target = resolvePath(workspaceRoot, requestedPath);
+      const pathAccess = filePathAccess();
       await Promise.all([
-        assertPathAllowed(target, protectedPaths),
+        assertPathAllowed(target, pathAccess.protectedPaths),
         assertReadablePath(workspaceRoot, target, access.readablePaths),
       ]);
       const matchers = globs.map(globPattern);
@@ -1610,11 +1640,14 @@ export function createTools(
           if (results.length >= maxEntries) return;
           if (!includeHidden && entry.name.startsWith('.')) continue;
           const entryPath = path.join(directory, entry.name);
-          if (protectedPaths.some((protectedPath) => containsPath(resolvePath(workspaceRoot, protectedPath), entryPath))) continue;
+          if (pathAccess.protectedPaths.some((protectedPath) => (
+            containsPath(resolvePath(workspaceRoot, protectedPath), entryPath)
+          ))) continue;
           const name = path.relative(target, entryPath).split(path.sep).join('/');
           const type = entry.isDirectory() ? 'directory' : entry.isSymbolicLink() ? 'symlink' : 'file';
           if (!matchers.length || matchers.some((matcher) => matcher.test(name))) results.push({ name, type });
-          if (entry.isDirectory() && currentDepth < depth && !SKIPPED_DIRECTORIES.has(entry.name)) {
+          if (entry.isDirectory() && currentDepth < depth
+            && !shouldSkipDirectory(entry.name, pathAccess.allowed)) {
             await visit(entryPath, currentDepth + 1);
           }
         }
@@ -1641,12 +1674,19 @@ export function createTools(
     execute: async ({ query, path: requestedPath, regex, caseSensitive, globs, contextLines, pathsOnly, maxResults }, _context, details) => {
       if (!pathsOnly && !query) throw new Error('搜索文件内容时 query 不能为空');
       const target = resolvePath(workspaceRoot, requestedPath);
+      const pathAccess = filePathAccess();
       await Promise.all([
-        assertPathAllowed(target, protectedPaths),
+        assertPathAllowed(target, pathAccess.protectedPaths),
         assertReadablePath(workspaceRoot, target, access.readablePaths),
       ]);
       return searchWorkspaceFiles(workspaceRoot, query, requestedPath, maxResults, details?.signal, {
-        regex, caseSensitive, globs, contextLines, pathsOnly, excludedPaths: protectedPaths,
+        regex,
+        caseSensitive,
+        globs,
+        contextLines,
+        pathsOnly,
+        excludedPaths: pathAccess.protectedPaths,
+        includePrivateRuntimePaths: pathAccess.allowed,
       });
     },
   });
@@ -1659,18 +1699,26 @@ export function createTools(
       includeDiff: z.boolean().default(true),
     }),
     execute: async ({ paths, includeDiff }, _context, details) => {
+      const pathAccess = filePathAccess();
       const relativePaths = await Promise.all(paths.map(async (requestedPath) => {
         const target = resolvePath(workspaceRoot, requestedPath);
         await Promise.all([
-          assertPathAllowed(target, protectedPaths),
+          assertPathAllowed(target, pathAccess.protectedPaths),
           assertReadablePath(workspaceRoot, target, access.readablePaths),
         ]);
         return path.relative(workspaceRoot, target);
       }));
-      const excludedPaths = protectedPaths
+      const excludedPaths = pathAccess.protectedPaths
         .map((protectedPath) => path.relative(workspaceRoot, protectedPath))
         .filter((relative) => relative && !relative.startsWith('..') && !path.isAbsolute(relative));
-      return inspectWorkspaceChanges(workspaceRoot, relativePaths, includeDiff, details?.signal, excludedPaths);
+      return inspectWorkspaceChanges(
+        workspaceRoot,
+        relativePaths,
+        includeDiff,
+        details?.signal,
+        excludedPaths,
+        pathAccess.allowed,
+      );
     },
   });
 
@@ -1699,7 +1747,7 @@ export function createTools(
         command,
         timeoutSeconds,
         details?.signal,
-        access.allowProtectedPathShellAccess ? [] : protectedPaths,
+        accessEnabled(access.allowProtectedPathShellAccess) ? [] : protectedPaths,
         typeof access.shellEnvironment === 'function'
           ? access.shellEnvironment()
           : access.shellEnvironment,

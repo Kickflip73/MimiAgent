@@ -841,6 +841,7 @@ test('state loader skips every unauthorized source', async () => {
   const loader = new RunStateLoader({
     hotProfile: denied,
     searchMemories: denied,
+    loadPersonalContextCandidates: denied,
     loadPlan: denied,
     loadGoal: denied,
     loadTeamSummary: denied,
@@ -877,6 +878,7 @@ test('state loader can inject direct-owner Soul and preferences without granting
   const loader = new RunStateLoader({
     hotProfile: denied,
     searchMemories: denied,
+    loadPersonalContextCandidates: denied,
     loadPlan: denied,
     loadGoal: denied,
     loadTeamSummary: denied,
@@ -900,8 +902,9 @@ test('state loader can inject direct-owner Soul and preferences without granting
   assert.equal(state.projectGuidance.instructions, '');
 });
 
-test('state loader never injects hot profiles and caps automatic recall at three cards', async () => {
+test('state loader never injects hot profiles and budgets Personal Context instead of fixing card count', async () => {
   let hotProfileCalls = 0;
+  const relations = ['today-focus', 'commitment', 'waiting-on', 'project-risk'] as const;
   const memories = Array.from({ length: 4 }, (_, index) => ({
     ref: { scope: 'private' as const, profileId: 'owner', id: `memory-${index}` },
     title: `memory-${index}`,
@@ -912,13 +915,32 @@ test('state loader never injects hot profiles and caps automatic recall at three
     score: 1,
     sourceRefs: [],
     documentType: 'wiki' as const,
+    layer: 'L1' as const,
+    facets: {
+      kind: 'fact' as const,
+      entities: [],
+      relations: [{
+        kind: relations[index]!,
+        target: { scope: 'private' as const, profileId: 'owner', id: `target-${index}` },
+      }],
+      time: { occurredAt: new Date().toISOString(), validFrom: null, validUntil: null },
+      sources: [],
+    },
+    derivedFrom: [],
   }));
+  const queryOnlyMemory = {
+    ...memories[0]!,
+    ref: { scope: 'private' as const, profileId: 'owner', id: 'query-only' },
+    title: 'query-only',
+    summary: 'A directly relevant query result.',
+  };
   const loader = new RunStateLoader({
     hotProfile: async () => {
       hotProfileCalls += 1;
       throw new Error('hot profiles must not be loaded');
     },
-    searchMemories: async () => memories,
+    searchMemories: async () => [memories[1]!, queryOnlyMemory],
+    loadPersonalContextCandidates: async () => memories,
     loadPlan: async () => [],
     loadGoal: async () => undefined,
     loadTeamSummary: async () => '',
@@ -938,7 +960,15 @@ test('state loader never injects hot profiles and caps automatic recall at three
     computerAccess: 'none',
   });
   assert.equal(hotProfileCalls, 0);
-  assert.equal(state.memories.length, 3);
+  assert.equal(state.memories.length, 5);
+  assert.equal(state.memories.filter((item) => item.ref.id === 'memory-1').length, 1);
+  assert.equal(state.memories[0]?.ref.id, 'query-only');
+  assert.equal(state.memories[0]?.summary, 'A directly relevant query result.');
+  assert.equal(state.personalContext.layer, 'L3');
+  assert.equal(state.personalContext.complete, true);
+  assert.equal(state.personalContext.status, 'complete');
+  assert.ok(state.personalContext.estimatedTokens <= 900);
+  assert.match(state.memories.find((item) => item.ref.id === 'memory-0')!.summary, /^\[today-focus\]/);
 });
 
 test('request factory freezes the model-facing tool order and output cap', () => {

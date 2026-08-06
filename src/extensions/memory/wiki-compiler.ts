@@ -11,7 +11,7 @@ import type {
   WikiCompiler,
   WikiLintReport,
 } from '../../core/memory.js';
-import { contentDigest, sourceDigest } from '../../core/memory.js';
+import { contentDigest, layeredMemoryFields, sourceDigest } from '../../core/memory.js';
 import { DocumentSource } from './document-source.js';
 import { SqliteMemoryCatalog } from './sqlite-catalog.js';
 import { lintWiki } from './wiki-lint.js';
@@ -119,7 +119,8 @@ export class DefaultWikiCompiler implements WikiCompiler {
         && existing?.metadata.sourceRefs.some((candidate) => sourceDigest(candidate) === sourceDigest(source));
       if (alreadyApplied) continue;
       const metadata: MemoryPageMetadata = {
-        schemaVersion: 1, id: unit.ref.id,
+        ...layeredMemoryFields({ kind: unit.kind, sourceRefs: [source] }),
+        id: unit.ref.id,
         canonicalKey: existing?.metadata.canonicalKey ?? canonicalTopicKey('workspace', unit.title),
         title: unit.title, kind: unit.kind, scope: 'workspace', profileId: null,
         status: 'active', confidence: 'source-grounded', aliases: [], tags: ['source'], sourceRefs: [source],
@@ -189,6 +190,9 @@ export class DefaultWikiCompiler implements WikiCompiler {
       targetRef: input.targetRef,
       canonicalKey: input.canonicalKey,
       supersedes: [...input.supersedes ?? []].sort(),
+      layer: input.layer,
+      facets: input.facets,
+      derivedFrom: input.derivedFrom,
     }));
     const previous = catalog.getReceipt(digest, 'capture');
     if (previous?.status === 'applied') return previous;
@@ -230,9 +234,25 @@ export class DefaultWikiCompiler implements WikiCompiler {
       && independentSources < 2
       ? 'proposed'
       : requestedStatus;
+    const kind = input.kind ?? existing?.metadata.kind ?? 'synthesis';
+    const existingFacets = existing?.metadata.schemaVersion === 2 ? {
+      entities: existing.metadata.facets.entities,
+      relations: existing.metadata.facets.relations,
+      time: existing.metadata.facets.time,
+    } : undefined;
     const metadata: MemoryPageMetadata = {
-      schemaVersion: 1, id: ref.id, canonicalKey: resolution.canonicalKey,
-      title: input.title.trim(), kind: input.kind ?? existing?.metadata.kind ?? 'synthesis', scope,
+      ...layeredMemoryFields({
+        layer: input.layer ?? (existing?.metadata.schemaVersion === 2 ? existing.metadata.layer : 'L1'),
+        kind,
+        sourceRefs,
+        facets: input.facets ?? existingFacets,
+        derivedFrom: input.derivedFrom
+          ?? (existing?.metadata.schemaVersion === 2 ? existing.metadata.derivedFrom : []),
+        validFrom: existing?.metadata.validFrom ?? (input.supersedes?.length ? timestamp : null),
+        validUntil: null,
+      }),
+      id: ref.id, canonicalKey: resolution.canonicalKey,
+      title: input.title.trim(), kind, scope,
       profileId: scope === 'private' ? context.profileId : null,
       status,
       confidence,

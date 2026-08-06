@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "datasetRevision": "m2-memory-2026-08-05.3",
+  "questionCount": 60,
+  "modes": {
+    "lexical": {
+      "correct": 53,
+      "partial": 4,
+      "evidenceInsufficient": 3,
+      "incorrect": 0,
+      "sourceCoverage": 1,
+      "p50Ms": 0.972041,
+      "p95Ms": 1.699042
+    },
+    "hybrid": {
+      "correct": 53,
+      "partial": 4,
+      "evidenceInsufficient": 3,
+      "incorrect": 0,
+      "sourceCoverage": 1,
+      "p50Ms": 2.352084,
+      "p95Ms": 3.112542
+    }
+  },
+  "faults": {
+    "vecUnavailableLexicalSucceeded": true,
+    "wrongDimensionIsolated": true,
+    "embeddingChangeRequiresReindex": true,
+    "reindexRecovered": true
+  }
+}

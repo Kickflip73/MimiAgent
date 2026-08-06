@@ -10,6 +10,7 @@ import type {
   MemoryGovernanceReceipt,
   MemoryHit,
   MemoryHub,
+  MemoryExplanation,
   MemoryLink,
   MemoryPage,
   MemoryPageMetadata,
@@ -25,6 +26,8 @@ import {
   assertRefVisible,
   assertRememberAllowed,
   contentDigest,
+  evidenceFromSource,
+  layeredMemoryFields,
   reciprocalRankFusion,
   stableDirectoryId,
   validateRunMemoryContext,
@@ -46,6 +49,12 @@ import {
   type PrivateMemoryLayout,
 } from './layout.js';
 import { RawEvidenceStore } from './raw-evidence-store.js';
+import {
+  OpenAIEmbeddingProvider,
+  type EmbeddingProvider,
+  type EmbeddingProviderDiagnostics,
+} from './embedding-provider.js';
+import { LocalEmbeddingProvider } from './local-embedding-provider.js';
 
 const AUTOMATIC_EMBEDDING_TIMEOUT_MS = 1_500;
 
@@ -53,6 +62,7 @@ export interface MemoryHubOptions {
   workspaceRoot: string;
   dataRoot: string;
   profileId: string;
+  embeddingProvider?: EmbeddingProvider;
   embeddingClient?: OpenAI;
   embeddingModel?: string;
   retrievalMode?: 'auto' | 'lexical';
@@ -75,6 +85,9 @@ function sourceFor(input: RememberInput, context: RunMemoryContext): SourceRef {
 }
 
 function mergeStatus(privateStatus: MemoryStatusSnapshot, workspaceStatus: MemoryStatusSnapshot): MemoryStatusSnapshot {
+  const vectorStates = [privateStatus.vectorState, workspaceStatus.vectorState];
+  const vectorState = (['unavailable', 'reindexing', 'reindex-required', 'ready', 'empty'] as const)
+    .find((candidate) => vectorStates.includes(candidate)) ?? 'unavailable';
   return {
     pages: privateStatus.pages + workspaceStatus.pages,
     privatePages: privateStatus.privatePages,
@@ -94,7 +107,32 @@ function mergeStatus(privateStatus: MemoryStatusSnapshot, workspaceStatus: Memor
     pendingCompilations: (privateStatus.pendingCompilations ?? 0) + (workspaceStatus.pendingCompilations ?? 0),
     uncertainCompilations: (privateStatus.uncertainCompilations ?? 0)
       + (workspaceStatus.uncertainCompilations ?? 0),
+    vectorAvailable: Boolean(privateStatus.vectorAvailable && workspaceStatus.vectorAvailable),
+    vectorVersion: privateStatus.vectorVersion ?? workspaceStatus.vectorVersion,
+    vectorState,
+    vectorReason: vectorState === privateStatus.vectorState
+      ? privateStatus.vectorReason
+      : workspaceStatus.vectorReason,
+    vectorRows: (privateStatus.vectorRows ?? 0) + (workspaceStatus.vectorRows ?? 0),
   };
+}
+
+function vectorNextAction(
+  status: MemoryStatusSnapshot,
+  provider: EmbeddingProviderDiagnostics | undefined,
+  hybridEnabled: boolean,
+): NonNullable<MemoryStatusSnapshot['nextAction']> {
+  if (!provider) return 'configure-embedding-provider';
+  if (!hybridEnabled) return 'enable-hybrid';
+  if (provider.state === 'missing' || provider.state === 'corrupt') return 'run-reindex';
+  if (provider.state === 'unsupported' || provider.state === 'unavailable') {
+    return 'use-remote-or-lexical';
+  }
+  if (status.vectorState === 'unavailable') return 'repair-vector';
+  if (status.vectorState === 'reindexing') return 'wait-for-reindex';
+  if (status.vectorState === 'reindex-required'
+    || (status.pages > 0 && (status.vectorRows ?? 0) === 0)) return 'run-reindex';
+  return 'none';
 }
 
 function estimatedTokens(value: string): number {
@@ -200,6 +238,7 @@ class DefaultMemoryHub implements MemoryHub {
   private readonly rawEvidence: RawEvidenceStore;
   private readonly privateCompilation: MemoryCompilationCoordinator;
   private readonly workspaceCompilation: MemoryCompilationCoordinator;
+  private readonly embeddingProvider: EmbeddingProvider | undefined;
   private readonly embeddingModel: string;
   private readonly evidence = new Map<string, Awaited<ReturnType<DocumentSource['read']>>>();
 
@@ -246,7 +285,12 @@ class DefaultMemoryHub implements MemoryHub {
       this.documents,
       workspaceId,
     );
-    this.embeddingModel = options.embeddingModel ?? process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small';
+    const configuredModel = options.embeddingModel ?? process.env.EMBEDDING_MODEL ?? 'text-embedding-3-small';
+    this.embeddingProvider = options.embeddingProvider
+      ?? (options.embeddingClient
+        ? new OpenAIEmbeddingProvider(options.embeddingClient, configuredModel)
+        : undefined);
+    this.embeddingModel = this.embeddingProvider?.model ?? configuredModel;
   }
 
   async initialize(): Promise<void> {
@@ -271,30 +315,37 @@ class DefaultMemoryHub implements MemoryHub {
     this.validate(context);
     const normalized = query.trim();
     if (!normalized) throw new Error('Memory query 不能为空');
-    const limit = Math.min(20, Math.max(1, options.limit ?? 5));
+    const limit = Math.min(20, Math.max(1, options.limit ?? 20));
     const automatic = Object.keys(options).length === 0;
     const finish = (hits: MemoryHit[]) => automatic
-      ? boundCards(diversify(hits, normalized, 3), 900, 3)
+      ? boundCards(diversify(hits, normalized, limit), 2_400, limit)
       : hits;
-    const queryVector = await this.embed(normalized, automatic);
+    const queryVector = await this.embed(normalized);
+    const queryEmbedding = queryVector ? {
+      model: this.embeddingModel,
+      vector: queryVector,
+      ...(this.embeddingProvider?.vectorSearchMaxDistance === undefined
+        ? {}
+        : { maxDistance: this.embeddingProvider.vectorSearchMaxDistance }),
+    } : undefined;
     const wikiChannels: Array<Array<{ item: MemoryHit; key: string }>> = [];
     const episodeChannels: Array<Array<{ item: MemoryHit; key: string }>> = [];
     if (!options.scope || options.scope === 'all' || options.scope === 'private') {
       const wikiHits = this.privateCatalog.search(normalized, {
         ...options, documentTypes: ['wiki'], limit,
-      }, queryVector);
+      }, queryEmbedding);
       wikiChannels.push(wikiHits.map((item) => ({ item, key: `private:${item.ref.id}` })));
       if ((context.cause?.trust ?? 'owner') === 'owner') {
         const episodeHits = this.privateCatalog.search(normalized, {
           ...options, documentTypes: ['episode'], limit,
-        }, queryVector);
+        }, queryEmbedding);
         episodeChannels.push(episodeHits.map((item) => ({ item, key: `episode:${item.ref.id}` })));
       }
     }
     if (!options.scope || options.scope === 'all' || options.scope === 'workspace') {
       const hits = this.workspaceCatalog.search(normalized, {
         ...options, documentTypes: ['wiki'], limit,
-      }, queryVector);
+      }, queryEmbedding);
       wikiChannels.push(hits.map((item) => ({ item, key: `workspace:${item.ref.id}` })));
     }
     const wikiHits = reciprocalRankFusion(wikiChannels.filter((channel) => channel.length), limit);
@@ -352,6 +403,46 @@ class DefaultMemoryHub implements MemoryHub {
       return episode;
     }
     return ref.scope === 'private' ? this.privateVault.read(ref) : this.workspaceVault.read(ref);
+  }
+
+  async explain(ref: MemoryRef, context: RunMemoryContext): Promise<MemoryExplanation> {
+    this.validate(context);
+    assertRefVisible(ref.scope, ref.profileId, context);
+    const queue: MemoryRef[] = [{ ...ref }];
+    const visited = new Set<string>();
+    const conclusions: MemoryExplanation['conclusions'] = [];
+    const evidence = new Map<string, MemoryExplanation['evidence'][number]>();
+    let complete = true;
+    while (queue.length > 0 && visited.size < 50) {
+      const current = queue.shift()!;
+      const key = `${current.scope}:${current.profileId ?? ''}:${current.id}`;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      try {
+        const page = await this.read(current, context);
+        const derivedFrom = page.metadata.schemaVersion === 2 ? page.metadata.derivedFrom : [];
+        conclusions.push({
+          ref: page.ref,
+          layer: page.metadata.schemaVersion === 2 ? page.metadata.layer : 'L1',
+          title: page.metadata.title,
+          body: page.body,
+          derivedFrom,
+        });
+        const catalog = current.scope === 'private' ? this.privateCatalog : this.workspaceCatalog;
+        const revisionEvidence = catalog.currentRevision(current.id)?.evidenceRefs;
+        const refs = revisionEvidence ?? page.metadata.sourceRefs.map((source) =>
+          evidenceFromSource(source, context.profileId, stableDirectoryId(context.workspaceRoot)));
+        for (const item of refs) evidence.set(item.id, item);
+        for (const child of derivedFrom) {
+          assertRefVisible(child.scope, child.profileId, context);
+          queue.push({ ...child });
+        }
+      } catch {
+        complete = false;
+      }
+    }
+    if (queue.length > 0) complete = false;
+    return { root: { ...ref }, conclusions, evidence: [...evidence.values()], complete };
   }
 
   async links(ref: MemoryRef, context: RunMemoryContext): Promise<MemoryLink[]> {
@@ -418,6 +509,17 @@ class DefaultMemoryHub implements MemoryHub {
       }
     }
     const sources = mergeSourceRefs(existing?.metadata.sourceRefs ?? [], incomingSources);
+    const layer = normalized.layer ?? (existing?.metadata.schemaVersion === 2 ? existing.metadata.layer : 'L1');
+    const derivedFrom = normalized.derivedFrom
+      ?? (existing?.metadata.schemaVersion === 2 ? existing.metadata.derivedFrom : []);
+    const facets = normalized.facets ?? (existing?.metadata.schemaVersion === 2 ? {
+      entities: existing.metadata.facets.entities,
+      relations: existing.metadata.facets.relations,
+      time: existing.metadata.facets.time,
+    } : undefined);
+    if (layer === 'L2') {
+      for (const sourceRef of derivedFrom) await this.read(sourceRef, context);
+    }
     const aliases = [...new Set([
       ...existing?.metadata.aliases ?? [],
       ...(existing && existing.metadata.title !== normalized.title ? [existing.metadata.title] : []),
@@ -431,7 +533,15 @@ class DefaultMemoryHub implements MemoryHub {
       links: [...new Set([...wikiLinks(existing?.body ?? ''), ...normalized.links ?? []])],
     });
     const metadata: MemoryPageMetadata = {
-      schemaVersion: 1,
+      ...layeredMemoryFields({
+        layer,
+        kind: normalized.kind,
+        sourceRefs: sources,
+        facets,
+        derivedFrom,
+        validFrom: normalized.supersedes?.length ? timestamp : null,
+        validUntil: null,
+      }),
       id: ref.id,
       canonicalKey: resolution.canonicalKey,
       title: normalized.title,
@@ -488,6 +598,7 @@ class DefaultMemoryHub implements MemoryHub {
     }
     try {
       coordinator.commit(prepared, page, embedding);
+      if (!embedding) this.markEmbeddingIncomplete(catalog);
     } catch (error) {
       coordinator.fail(prepared, error, true);
       throw error;
@@ -565,6 +676,7 @@ class DefaultMemoryHub implements MemoryHub {
       const page = await this.workspaceVault.read(ref);
       const embedding = await this.embedDocument(`${page.metadata.title}\n${page.body}`);
       this.workspaceCatalog.index(page, embedding);
+      if (!embedding) this.markEmbeddingIncomplete(this.workspaceCatalog);
     }
     return receipt;
   }
@@ -594,7 +706,17 @@ class DefaultMemoryHub implements MemoryHub {
         await this.rawEvidence.preserve(evidence.sourceRef, evidence.content);
       }
     }
-    return this.compiler.capture(input, context);
+    const receipt = await this.compiler.capture(input, context);
+    if (this.options.retrievalMode !== 'lexical' && this.embeddingProvider) {
+      for (const ref of receipt.pageRefs) {
+        const page = await this.read(ref, context);
+        const catalog = ref.scope === 'private' ? this.privateCatalog : this.workspaceCatalog;
+        const embedding = await this.embedDocument(`${page.metadata.title}\n${page.body}`);
+        catalog.index(page, embedding);
+        if (!embedding) this.markEmbeddingIncomplete(catalog);
+      }
+    }
+    return receipt;
   }
 
   async merge(
@@ -658,10 +780,20 @@ class DefaultMemoryHub implements MemoryHub {
       canonicalKey: target.metadata.canonicalKey,
       supersedes: merged.map((page) => page.ref.id),
       reasonCode: input.reasonCode,
+      ...(target.metadata.schemaVersion === 2 ? {
+        layer: target.metadata.layer,
+        facets: {
+          entities: target.metadata.facets.entities,
+          relations: target.metadata.facets.relations,
+          time: target.metadata.facets.time,
+        },
+        derivedFrom: target.metadata.derivedFrom,
+      } : {}),
     }, context);
     for (const page of merged) {
       await this.setPageLifecycle(page.ref, 'superseded', input.reasonCode, context, target.ref.id);
     }
+    await this.syncIndexes();
     const timestamp = new Date().toISOString();
     return {
       action: 'merge',
@@ -693,6 +825,24 @@ class DefaultMemoryHub implements MemoryHub {
     };
   }
 
+  async expire(
+    ref: MemoryRef,
+    reasonCode: string,
+    context: RunMemoryContext,
+  ): Promise<MemoryGovernanceReceipt> {
+    this.validate(context);
+    assertRefVisible(ref.scope, ref.profileId, context);
+    const trust = context.cause?.trust ?? 'owner';
+    if (trust !== 'owner' && trust !== 'system') throw new Error('只有 owner/system 能过期 Memory');
+    await this.setPageLifecycle(ref, 'expired', reasonCode, context);
+    return {
+      action: 'expire',
+      targetRef: ref,
+      affectedRefs: [ref],
+      timestamp: new Date().toISOString(),
+    };
+  }
+
   async addLinks(
     ref: MemoryRef,
     links: string[],
@@ -717,7 +867,17 @@ class DefaultMemoryHub implements MemoryHub {
       targetRef: page.ref,
       canonicalKey: page.metadata.canonicalKey,
       reasonCode,
+      ...(page.metadata.schemaVersion === 2 ? {
+        layer: page.metadata.layer,
+        facets: {
+          entities: page.metadata.facets.entities,
+          relations: page.metadata.facets.relations,
+          time: page.metadata.facets.time,
+        },
+        derivedFrom: page.metadata.derivedFrom,
+      } : {}),
     }, context);
+    await this.syncIndexes();
     return {
       action: 'link',
       targetRef: page.ref,
@@ -757,10 +917,20 @@ class DefaultMemoryHub implements MemoryHub {
       tags: page.metadata.tags,
       links: wikiLinks(page.body),
       reasonCode,
+      ...(page.metadata.schemaVersion === 2 ? {
+        layer: page.metadata.layer,
+        facets: {
+          entities: page.metadata.facets.entities,
+          relations: page.metadata.facets.relations,
+          time: page.metadata.facets.time,
+        },
+        derivedFrom: page.metadata.derivedFrom,
+      } : {}),
     }, context);
     const targetRef = receipt.pageRefs[0];
     if (!targetRef) throw new Error('Memory move 未产生目标页面');
     await this.setPageLifecycle(page.ref, 'superseded', reasonCode, context, targetRef.id);
+    await this.syncIndexes();
     return {
       action: 'move',
       targetRef,
@@ -787,6 +957,7 @@ class DefaultMemoryHub implements MemoryHub {
       const current = await this.documents.read(sourcePath);
       receipts.push(await this.compiler.ingest(current.sourceRef, context));
     }
+    await this.syncIndexes();
     return receipts;
   }
 
@@ -854,7 +1025,9 @@ class DefaultMemoryHub implements MemoryHub {
 
   async lint(context: RunMemoryContext): Promise<WikiLintReport> {
     this.validate(context);
-    return this.compiler.lint(context);
+    const report = await this.compiler.lint(context);
+    await this.syncIndexes();
+    return report;
   }
 
   async reindex(context: RunMemoryContext): Promise<MemoryStatusSnapshot> {
@@ -866,11 +1039,26 @@ class DefaultMemoryHub implements MemoryHub {
   async status(context: RunMemoryContext): Promise<MemoryStatusSnapshot> {
     this.validate(context);
     const status = mergeStatus(this.privateCatalog.status(), this.workspaceCatalog.status());
+    const provider = await this.embeddingProvider?.diagnostics();
+    const providerConfigured = Boolean(provider);
+    const providerReady = provider?.state === 'ready';
+    const hybridEnabled = this.options.retrievalMode !== 'lexical';
     return {
       ...status,
-      retrievalMode: this.options.retrievalMode !== 'lexical' && this.options.embeddingClient
+      providerConfigured,
+      retrievalMode: hybridEnabled && providerReady
+        && status.vectorState === 'ready'
         ? 'hybrid'
         : 'lexical-only',
+      nextAction: vectorNextAction(status, provider, hybridEnabled),
+      ...(provider ? {
+        embeddingProvider: provider.kind,
+        embeddingState: provider.state,
+        configuredEmbeddingModel: provider.model,
+        ...(provider.revision ? { embeddingRevision: provider.revision } : {}),
+        ...(provider.modelBytes === undefined ? {} : { embeddingModelBytes: provider.modelBytes }),
+        ...(provider.runtime ? { embeddingRuntime: provider.runtime } : {}),
+      } : {}),
     };
   }
 
@@ -937,14 +1125,14 @@ class DefaultMemoryHub implements MemoryHub {
     const [privatePages, workspacePages] = await this.loadPages();
     this.privateCatalog.rebuild(privatePages, this.embeddingModel);
     this.workspaceCatalog.rebuild(workspacePages, this.embeddingModel);
-    await this.ensureEmbeddings(privatePages, workspacePages);
+    await this.ensureEmbeddings(privatePages, workspacePages, true);
   }
 
   private async syncIndexes(): Promise<void> {
     const [privatePages, workspacePages] = await this.loadPages();
     this.privateCatalog.sync(privatePages);
     this.workspaceCatalog.sync(workspacePages);
-    await this.ensureEmbeddings(privatePages, workspacePages);
+    await this.ensureEmbeddings(privatePages, workspacePages, false);
   }
 
   private async loadPages(): Promise<[MemoryDocument[], MemoryDocument[]]> {
@@ -962,16 +1150,35 @@ class DefaultMemoryHub implements MemoryHub {
     return [privatePages, workspacePages];
   }
 
-  private async ensureEmbeddings(privatePages: MemoryDocument[], workspacePages: MemoryDocument[]): Promise<void> {
-    if (this.options.retrievalMode !== 'lexical' && this.options.embeddingClient) {
-      for (const page of privatePages) {
-        if (!this.privateCatalog.needsEmbedding(page, this.embeddingModel)) continue;
-        this.privateCatalog.index(page, await this.embedDocument(`${page.metadata.title}\n${page.body}`));
-      }
-      for (const page of workspacePages) {
-        if (!this.workspaceCatalog.needsEmbedding(page, this.embeddingModel)) continue;
-        this.workspaceCatalog.index(page, await this.embedDocument(`${page.metadata.title}\n${page.body}`));
-      }
+  private async ensureEmbeddings(
+    privatePages: MemoryDocument[],
+    workspacePages: MemoryDocument[],
+    allowDownload: boolean,
+  ): Promise<void> {
+    if (this.options.retrievalMode !== 'lexical' && this.embeddingProvider) {
+      await this.ensureCatalogEmbeddings(this.privateCatalog, privatePages, allowDownload);
+      await this.ensureCatalogEmbeddings(this.workspaceCatalog, workspacePages, allowDownload);
+    }
+  }
+
+  private async ensureCatalogEmbeddings(
+    catalog: SqliteMemoryCatalog,
+    pages: MemoryDocument[],
+    allowDownload: boolean,
+  ): Promise<void> {
+    let incomplete = false;
+    for (const page of pages) {
+      if (!catalog.needsEmbedding(page, this.embeddingModel)) continue;
+      const embedding = await this.embedDocument(`${page.metadata.title}\n${page.body}`, allowDownload);
+      if (embedding) catalog.index(page, embedding);
+      else incomplete = true;
+    }
+    if (incomplete) catalog.markVectorIncomplete();
+  }
+
+  private markEmbeddingIncomplete(catalog: SqliteMemoryCatalog): void {
+    if (this.options.retrievalMode !== 'lexical' && this.embeddingProvider) {
+      catalog.markVectorIncomplete();
     }
   }
 
@@ -979,28 +1186,31 @@ class DefaultMemoryHub implements MemoryHub {
     validateRunMemoryContext(context, this.workspaceRoot, this.profileId);
   }
 
-  private async embed(query: string, automatic = false): Promise<number[] | undefined> {
-    if (this.options.retrievalMode === 'lexical' || !this.options.embeddingClient) return undefined;
+  private async embed(query: string): Promise<number[] | undefined> {
+    if (this.options.retrievalMode === 'lexical' || !this.embeddingProvider) return undefined;
     try {
-      const response = await this.options.embeddingClient.embeddings.create(
-        { model: this.embeddingModel, input: query },
-        automatic ? { maxRetries: 0, timeout: AUTOMATIC_EMBEDDING_TIMEOUT_MS } : undefined,
-      );
-      return response.data[0]?.embedding;
+      return (await this.embeddingProvider.embed([query], {
+        purpose: 'query',
+        allowDownload: false,
+        timeoutMs: AUTOMATIC_EMBEDDING_TIMEOUT_MS,
+      }))?.[0];
     } catch {
       return undefined;
     }
   }
 
-  private async embedDocument(content: string): Promise<DocumentChunkEmbedding | undefined> {
-    if (this.options.retrievalMode === 'lexical' || !this.options.embeddingClient) return undefined;
+  private async embedDocument(
+    content: string,
+    allowDownload = false,
+  ): Promise<DocumentChunkEmbedding | undefined> {
+    if (this.options.retrievalMode === 'lexical' || !this.embeddingProvider) return undefined;
     const chunks = this.embeddingChunks(content);
     try {
-      const response = await this.options.embeddingClient.embeddings.create({
-        model: this.embeddingModel,
-        input: chunks,
-      });
-      const vectors = response.data.map((item) => item.embedding).filter((vector) => vector.length > 0);
+      const vectors = (await this.embeddingProvider.embed(chunks, {
+        purpose: 'document',
+        allowDownload,
+        timeoutMs: AUTOMATIC_EMBEDDING_TIMEOUT_MS,
+      }))?.filter((vector) => vector.length > 0) ?? [];
       const dimensions = vectors[0]?.length ?? 0;
       if (vectors.length !== chunks.length
         || !dimensions
@@ -1064,6 +1274,7 @@ class RoutedMemoryHub implements MemoryHub {
   hotProfile(context: RunMemoryContext) { return this.forContext(context).then((hub) => hub.hotProfile(context)); }
   search(query: string, context: RunMemoryContext, options?: MemorySearchOptions) { return this.forContext(context).then((hub) => hub.search(query, context, options)); }
   read(ref: MemoryRef, context: RunMemoryContext) { return this.forContext(context).then((hub) => hub.read(ref, context)); }
+  explain(ref: MemoryRef, context: RunMemoryContext) { return this.forContext(context).then((hub) => hub.explain(ref, context)); }
   links(ref: MemoryRef, context: RunMemoryContext) { return this.forContext(context).then((hub) => hub.links(ref, context)); }
   remember(input: RememberInput, context: RunMemoryContext) { return this.forContext(context).then((hub) => hub.remember(input, context)); }
   forget(ref: MemoryRef, context: RunMemoryContext) { return this.forContext(context).then((hub) => hub.forget(ref, context)); }
@@ -1074,6 +1285,9 @@ class RoutedMemoryHub implements MemoryHub {
   }
   supersede(ref: MemoryRef, replacementRef: MemoryRef | undefined, reasonCode: string, context: RunMemoryContext) {
     return this.forContext(context).then((hub) => hub.supersede(ref, replacementRef, reasonCode, context));
+  }
+  expire(ref: MemoryRef, reasonCode: string, context: RunMemoryContext) {
+    return this.forContext(context).then((hub) => hub.expire(ref, reasonCode, context));
   }
   addLinks(ref: MemoryRef, links: string[], reasonCode: string, context: RunMemoryContext) {
     return this.forContext(context).then((hub) => hub.addLinks(ref, links, reasonCode, context));
@@ -1104,5 +1318,24 @@ class RoutedMemoryHub implements MemoryHub {
 }
 
 export function createRoutedMemoryHub(options: Omit<MemoryHubOptions, 'profileId' | 'cutover'>): MemoryHub {
-  return new RoutedMemoryHub(options);
+  return new RoutedMemoryHub({
+    ...options,
+    embeddingProvider: routedMemoryEmbeddingProvider(options),
+  });
+}
+
+export function routedMemoryEmbeddingProvider(
+  options: Pick<MemoryHubOptions, 'dataRoot' | 'embeddingProvider' | 'embeddingClient' | 'embeddingModel'>,
+  environment: NodeJS.ProcessEnv = process.env,
+): EmbeddingProvider {
+  if (options.embeddingProvider) return options.embeddingProvider;
+  if (environment.MIMI_EMBEDDING_API_KEY?.trim() && options.embeddingClient) {
+    return new OpenAIEmbeddingProvider(
+      options.embeddingClient,
+      options.embeddingModel?.trim()
+        || environment.EMBEDDING_MODEL?.trim()
+        || 'text-embedding-3-small',
+    );
+  }
+  return new LocalEmbeddingProvider({ dataRoot: options.dataRoot });
 }

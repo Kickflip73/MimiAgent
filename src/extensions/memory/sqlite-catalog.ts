@@ -1,7 +1,9 @@
-import { chmodSync, existsSync, mkdirSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import * as sqliteVec from 'sqlite-vec';
 import type {
   CompilationPlan,
   CompilationReceipt,
@@ -24,6 +26,19 @@ import { evidenceFromSource, reciprocalRankFusion } from '../../core/memory.js';
 
 type Row = Record<string, string | number | bigint | Uint8Array | null | undefined>;
 
+interface ReadOnlyFileIdentity {
+  device: bigint;
+  inode: bigint;
+  size: bigint;
+  modifiedAt: bigint;
+  changedAt: bigint;
+}
+
+interface ReadOnlyFileSnapshot {
+  main: ReadOnlyFileIdentity;
+  wal?: ReadOnlyFileIdentity;
+}
+
 export interface DocumentChunkEmbedding {
   model: string;
   chunks: Array<{
@@ -31,6 +46,18 @@ export interface DocumentChunkEmbedding {
     digest: string;
     vector: number[];
   }>;
+}
+
+export interface QueryEmbedding {
+  model: string;
+  vector: number[];
+  maxDistance?: number;
+}
+
+export interface SqliteMemoryCatalogOptions {
+  loadVectorExtension?: (database: DatabaseSync) => void;
+  readOnly?: boolean;
+  readOnlySnapshotWal?: boolean;
 }
 
 function json<T>(value: string | number | bigint | Uint8Array | null | undefined): T {
@@ -56,6 +83,7 @@ export interface PersistedLintIssue {
 }
 
 function hitFromRow(row: Row, score = 0): MemoryHit {
+  const layer = row.layer === 'L1' || row.layer === 'L2' ? row.layer : undefined;
   return {
     ref: {
       scope: String(row.scope) as MemoryScope,
@@ -71,6 +99,13 @@ function hitFromRow(row: Row, score = 0): MemoryHit {
     sourceRefs: json(row.source_refs_json),
     documentType: String(row.document_type) as MemoryHit['documentType'],
     stale: Number(row.stale) === 1 || undefined,
+    ...(layer ? { layer } : {}),
+    ...(typeof row.facets_json === 'string'
+      ? { facets: json<NonNullable<MemoryHit['facets']>>(row.facets_json) }
+      : {}),
+    ...(typeof row.derived_from_json === 'string'
+      ? { derivedFrom: json<NonNullable<MemoryHit['derivedFrom']>>(row.derived_from_json) }
+      : {}),
   };
 }
 
@@ -103,39 +138,115 @@ function ftsQueryFor(input: string): string {
     .join(' OR ');
 }
 
-function cosine(left: number[], right: number[]): number {
-  if (!left.length || left.length !== right.length) return -1;
-  let dot = 0;
-  let aa = 0;
-  let bb = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    dot += left[index]! * right[index]!;
-    aa += left[index]! ** 2;
-    bb += right[index]! ** 2;
-  }
-  return dot / (Math.sqrt(aa) * Math.sqrt(bb) || 1);
-}
-
 function encodeVector(vector: number[]): Uint8Array {
   return new Uint8Array(new Float32Array(vector).buffer);
 }
 
-function decodeVector(value: Uint8Array): number[] {
-  const bytes = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
-  return [...new Float32Array(bytes)];
+function readOnlyFileIdentity(file: string): ReadOnlyFileIdentity | undefined {
+  try {
+    const value = statSync(file, { bigint: true });
+    if (!value.isFile()) throw new Error('not_regular');
+    return {
+      device: value.dev,
+      inode: value.ino,
+      size: value.size,
+      modifiedAt: value.mtimeNs,
+      changedAt: value.ctimeNs,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new Error('Memory catalog read-only source is unavailable');
+  }
+}
+
+function captureReadOnlySnapshot(file: string): ReadOnlyFileSnapshot {
+  const main = readOnlyFileIdentity(file);
+  if (!main) throw new Error('Memory catalog read-only source is unavailable');
+  const wal = readOnlyFileIdentity(`${file}-wal`);
+  if (wal && wal.size > 0n) throw new Error('Memory catalog has an active WAL and cannot be audited read-only');
+  return { main, ...(wal ? { wal } : {}) };
+}
+
+function sameFileIdentity(left: ReadOnlyFileIdentity | undefined, right: ReadOnlyFileIdentity | undefined): boolean {
+  return left === undefined && right === undefined || Boolean(left && right
+    && left.device === right.device
+    && left.inode === right.inode
+    && left.size === right.size
+    && left.modifiedAt === right.modifiedAt
+    && left.changedAt === right.changedAt);
 }
 
 export class SqliteMemoryCatalog {
   private readonly database: DatabaseSync;
+  private readonly readOnly: boolean;
+  private readonly readOnlyFile?: string;
+  private readonly readOnlySnapshot?: ReadOnlyFileSnapshot;
+  private readonly readOnlySnapshotWal: boolean;
   private fts5 = false;
+  private vectorAvailable = false;
+  private vectorVersion: string | undefined;
+  private vectorState: NonNullable<MemoryStatusSnapshot['vectorState']> = 'unavailable';
+  private vectorReason = 'extension_not_loaded';
+  private vectorModel: string | undefined;
+  private vectorDimensions: number | undefined;
 
-  constructor(readonly file: string, readonly scope: MemoryScope, readonly profileId?: string) {
-    mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    this.database = new DatabaseSync(file);
-    chmodSync(file, 0o600);
-    this.database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-    this.backupV1IfNeeded();
-    this.initialize();
+  constructor(
+    readonly file: string,
+    readonly scope: MemoryScope,
+    readonly profileId?: string,
+    private readonly options: SqliteMemoryCatalogOptions = {},
+  ) {
+    this.readOnly = options.readOnly === true;
+    this.readOnlySnapshotWal = options.readOnlySnapshotWal === true;
+    if (this.readOnly && options.readOnlySnapshotWal) {
+      try {
+        this.readOnlyFile = realpathSync(file);
+      } catch {
+        throw new Error('Memory catalog read-only source is unavailable');
+      }
+      const main = readOnlyFileIdentity(this.readOnlyFile);
+      if (!main) throw new Error('Memory catalog read-only source is unavailable');
+      const wal = readOnlyFileIdentity(`${this.readOnlyFile}-wal`);
+      this.readOnlySnapshot = { main, ...(wal ? { wal } : {}) };
+      this.database = new DatabaseSync(this.readOnlyFile, {
+        allowExtension: true,
+        readOnly: true,
+        timeout: 5_000,
+      });
+      try {
+        this.initializeReadOnly();
+      } catch (error) {
+        this.database.close();
+        throw error;
+      }
+    } else if (this.readOnly) {
+      try {
+        this.readOnlyFile = realpathSync(file);
+      } catch {
+        throw new Error('Memory catalog read-only source is unavailable');
+      }
+      this.readOnlySnapshot = captureReadOnlySnapshot(this.readOnlyFile);
+      const databaseUrl = `${pathToFileURL(this.readOnlyFile).href}?mode=ro&immutable=1`;
+      this.database = new DatabaseSync(databaseUrl, {
+        allowExtension: true,
+        readOnly: true,
+        timeout: 5_000,
+      });
+      try {
+        this.initializeReadOnly();
+        this.assertReadOnlySnapshotStable();
+      } catch (error) {
+        this.database.close();
+        throw error;
+      }
+    } else {
+      mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+      this.database = new DatabaseSync(file, { allowExtension: true });
+      chmodSync(file, 0o600);
+      this.database.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+      this.backupV1IfNeeded();
+      this.initialize();
+    }
   }
 
   close(): void {
@@ -147,6 +258,7 @@ export class SqliteMemoryCatalog {
     embedding?: DocumentChunkEmbedding,
     documentType: MemoryHit['documentType'] = 'wiki',
   ): void {
+    this.assertWritable();
     const key = refKey(page.ref);
     const occurredAt = page.metadata.sourceRefs.map((source) => source.occurredAt).sort().at(-1) ?? page.metadata.updatedAt;
     this.database.exec('BEGIN IMMEDIATE');
@@ -155,21 +267,26 @@ export class SqliteMemoryCatalog {
         INSERT INTO documents (
           ref_key, id, scope, profile_id, title, aliases_json, tags_json, kind, status,
           confidence, body, summary, digest, source_refs_json, occurred_at, valid_from,
-          valid_until, document_type, stale, path, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          valid_until, document_type, stale, path, updated_at, layer, facets_json, derived_from_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(ref_key) DO UPDATE SET
           title=excluded.title, aliases_json=excluded.aliases_json, tags_json=excluded.tags_json,
           kind=excluded.kind, status=excluded.status, confidence=excluded.confidence,
           body=excluded.body, summary=excluded.summary, digest=excluded.digest,
           source_refs_json=excluded.source_refs_json, occurred_at=excluded.occurred_at,
           valid_from=excluded.valid_from, valid_until=excluded.valid_until, stale=excluded.stale,
-          document_type=excluded.document_type, path=excluded.path, updated_at=excluded.updated_at
+          document_type=excluded.document_type, path=excluded.path, updated_at=excluded.updated_at,
+          layer=excluded.layer, facets_json=excluded.facets_json,
+          derived_from_json=excluded.derived_from_json
       `).run(
         key, page.ref.id, page.ref.scope, page.ref.profileId ?? null, page.metadata.title,
         JSON.stringify(page.metadata.aliases), JSON.stringify(page.metadata.tags), page.metadata.kind,
         page.metadata.status, page.metadata.confidence, page.body, summary(page.body), page.digest,
         JSON.stringify(page.metadata.sourceRefs), occurredAt, page.metadata.validFrom,
         page.metadata.validUntil, documentType, page.stale ? 1 : 0, page.path ?? null, page.metadata.updatedAt,
+        page.metadata.schemaVersion === 2 ? page.metadata.layer : null,
+        page.metadata.schemaVersion === 2 ? JSON.stringify(page.metadata.facets) : null,
+        page.metadata.schemaVersion === 2 ? JSON.stringify(page.metadata.derivedFrom) : null,
       );
       this.database.prepare('DELETE FROM links WHERE source_ref = ?').run(key);
       const links = [...page.body.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]+)?\]\]/g)].map((match) => match[1]!.trim());
@@ -180,26 +297,8 @@ export class SqliteMemoryCatalog {
         this.database.prepare('INSERT INTO documents_fts (ref_key, title, aliases, tags, body) VALUES (?, ?, ?, ?, ?)')
           .run(key, page.metadata.title, page.metadata.aliases.join(' '), page.metadata.tags.join(' '), page.body);
       }
-      this.database.prepare('DELETE FROM document_embeddings WHERE ref_key = ?').run(key);
-      this.database.prepare('DELETE FROM document_embedding_chunks WHERE ref_key = ?').run(key);
-      if (embedding) {
-        const insertChunk = this.database.prepare(`
-          INSERT INTO document_embedding_chunks (
-            ref_key, digest, chunk_index, chunk_digest, provider, model, dimensions, vector
-          ) VALUES (?, ?, ?, ?, 'openai', ?, ?, ?)
-        `);
-        for (const chunk of embedding.chunks) {
-          insertChunk.run(
-            key,
-            page.digest,
-            chunk.index,
-            chunk.digest,
-            embedding.model,
-            chunk.vector.length,
-            encodeVector(chunk.vector),
-          );
-        }
-      }
+      this.deleteVectorRows(key);
+      if (embedding) this.storeEmbedding(key, page.digest, embedding);
       this.database.exec('COMMIT');
     } catch (error) {
       this.database.exec('ROLLBACK');
@@ -208,10 +307,12 @@ export class SqliteMemoryCatalog {
   }
 
   remove(ref: MemoryRef): void {
+    this.assertWritable();
     const key = refKey(ref);
     this.database.exec('BEGIN IMMEDIATE');
     try {
       if (this.fts5) this.database.prepare('DELETE FROM documents_fts WHERE ref_key = ?').run(key);
+      this.deleteVectorRows(key);
       this.database.prepare('DELETE FROM documents WHERE ref_key = ?').run(key);
       this.database.exec('COMMIT');
     } catch (error) {
@@ -221,6 +322,7 @@ export class SqliteMemoryCatalog {
   }
 
   pruneEpisodes(maxUnreferenced = 10_000): number {
+    this.assertWritable();
     const limit = Math.max(0, Math.trunc(maxUnreferenced));
     const episodeRows = this.database.prepare(`
       SELECT * FROM documents WHERE document_type = 'episode'
@@ -249,7 +351,8 @@ export class SqliteMemoryCatalog {
     return removed;
   }
 
-  search(query: string, options: MemorySearchOptions = {}, queryVector?: number[]): MemoryHit[] {
+  search(query: string, options: MemorySearchOptions = {}, queryEmbedding?: QueryEmbedding): MemoryHit[] {
+    this.assertReadOnlySnapshotStable();
     const limit = Math.min(20, Math.max(1, options.limit ?? 5));
     const where = this.filters(options);
     const parameters = where.parameters;
@@ -283,18 +386,23 @@ export class SqliteMemoryCatalog {
       `).all(...parameters, `%${query}%`, limit * 3) as Row[];
     }
 
-    const vectorRows = queryVector ? this.vectorRows(queryVector, where.sql, parameters, limit * 3) : [];
+    const vectorRows = queryEmbedding ? this.vectorRows(queryEmbedding, where.sql, parameters, limit * 3) : [];
     const channels = [structureRows, lexicalRows, vectorRows].filter((rows) => rows.length).map((rows) => (
       rows.map((row) => ({ item: hitFromRow(row), key: String(row.ref_key) }))
     ));
-    return reciprocalRankFusion(channels, limit);
+    const result = reciprocalRankFusion(channels, limit);
+    this.assertReadOnlySnapshotStable();
+    return result;
   }
 
   list(options: MemorySearchOptions = {}): MemoryHit[] {
+    this.assertReadOnlySnapshotStable();
     const limit = Math.min(1_000, Math.max(1, options.limit ?? 100));
     const where = this.filters(options);
-    return (this.database.prepare(`SELECT * FROM documents WHERE ${where.sql} ORDER BY updated_at DESC LIMIT ?`)
+    const result = (this.database.prepare(`SELECT * FROM documents WHERE ${where.sql} ORDER BY updated_at DESC LIMIT ?`)
       .all(...where.parameters, limit) as Row[]).map((row) => hitFromRow(row));
+    this.assertReadOnlySnapshotStable();
+    return result;
   }
 
   staleDocuments(limit = 20): MemoryDocument[] {
@@ -364,6 +472,7 @@ export class SqliteMemoryCatalog {
   }
 
   suppress(digest: string, timestamp: string): void {
+    this.assertWritable();
     this.database.prepare('INSERT OR IGNORE INTO suppressions (digest, scope, created_at) VALUES (?, ?, ?)')
       .run(digest, this.scope, timestamp);
   }
@@ -373,6 +482,7 @@ export class SqliteMemoryCatalog {
   }
 
   clearSuppression(digest: string): void {
+    this.assertWritable();
     this.database.prepare('DELETE FROM suppressions WHERE digest = ?').run(digest);
   }
 
@@ -392,6 +502,7 @@ export class SqliteMemoryCatalog {
   }
 
   saveReceipt(receipt: CompilationReceipt, plan: CompilationPlan): void {
+    this.assertWritable();
     this.database.prepare(`
       INSERT INTO source_receipts (id, digest, operation, status, reason_code, compiler_version, plan_json, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -402,6 +513,7 @@ export class SqliteMemoryCatalog {
   }
 
   saveCandidate(candidate: MemoryCandidate): void {
+    this.assertWritable();
     this.database.prepare(`
       INSERT INTO memory_candidates (
         id, profile_id, workspace_id, scope, proposed_kind, title, content,
@@ -439,6 +551,7 @@ export class SqliteMemoryCatalog {
   }
 
   saveJob(job: CompilationJob): void {
+    this.assertWritable();
     this.database.prepare(`
       INSERT INTO compilation_jobs (
         id, candidate_id, operation, compiler_version, expected_revisions_json,
@@ -476,6 +589,7 @@ export class SqliteMemoryCatalog {
     job: CompilationJob,
     receipt: CompilationReceiptV2,
   ): void {
+    this.assertWritable();
     this.database.exec('BEGIN IMMEDIATE');
     try {
       this.insertRevision(revision);
@@ -503,6 +617,7 @@ export class SqliteMemoryCatalog {
   }
 
   saveRevision(revision: MemoryPageRevision, job: CompilationJob): void {
+    this.assertWritable();
     this.database.exec('BEGIN IMMEDIATE');
     try {
       this.insertRevision(revision);
@@ -517,6 +632,7 @@ export class SqliteMemoryCatalog {
   }
 
   saveReceiptV2(job: CompilationJob, receipt: CompilationReceiptV2): void {
+    this.assertWritable();
     this.database.exec('BEGIN IMMEDIATE');
     try {
       this.database.prepare(`
@@ -586,6 +702,7 @@ export class SqliteMemoryCatalog {
   }
 
   recordDecision(operation: string, reasonCode: string, refId?: string): number {
+    this.assertWritable();
     const result = this.database.prepare(`
       INSERT INTO decision_events (operation, reason_code, ref_id, created_at) VALUES (?, ?, ?, ?)
     `).run(operation.slice(0, 80), reasonCode.slice(0, 200), refId ?? null, new Date().toISOString());
@@ -607,6 +724,7 @@ export class SqliteMemoryCatalog {
   }
 
   recordLintIssues(issues: readonly WikiLintIssue[]): PersistedLintIssue[] {
+    this.assertWritable();
     const timestamp = new Date().toISOString();
     const keys = issues.map((issue) => `${issue.code}\0${issue.ref ? refKey(issue.ref) : '-'}\0${issue.message}`);
     this.database.exec('BEGIN IMMEDIATE');
@@ -638,35 +756,14 @@ export class SqliteMemoryCatalog {
     }));
   }
 
-  rebuild(pages: MemoryDocument[], embeddingModel?: string): void {
-    const embeddings = new Map<string, DocumentChunkEmbedding>();
-    const previous = this.database.prepare(`
-      SELECT d.ref_key, d.digest, e.model, e.chunk_index, e.chunk_digest, e.dimensions, e.vector
-      FROM documents d JOIN document_embedding_chunks e ON e.ref_key=d.ref_key
-      WHERE d.document_type = 'wiki'
-      ORDER BY d.ref_key, e.chunk_index
-    `).all() as Row[];
-    for (const row of previous) {
-      if (embeddingModel && row.model !== embeddingModel) continue;
-      const key = `${String(row.ref_key)}:${String(row.digest)}`;
-      const embedding = embeddings.get(key) ?? { model: String(row.model), chunks: [] };
-      embedding.chunks.push({
-        index: Number(row.chunk_index),
-        digest: String(row.chunk_digest),
-        vector: decodeVector(row.vector as Uint8Array),
-      });
-      embeddings.set(key, embedding);
-    }
+  rebuild(pages: MemoryDocument[], _embeddingModel?: string): void {
+    this.assertWritable();
+    this.setVectorState('reindexing', 'explicit_reindex');
+    this.clearVectorIndex();
     this.database.exec('BEGIN IMMEDIATE');
     try {
       this.database.exec(`
         DELETE FROM links;
-        DELETE FROM document_embeddings WHERE ref_key IN (
-          SELECT ref_key FROM documents WHERE document_type = 'wiki'
-        );
-        DELETE FROM document_embedding_chunks WHERE ref_key IN (
-          SELECT ref_key FROM documents WHERE document_type = 'wiki'
-        );
       `);
       if (this.fts5) this.database.exec(`
         DELETE FROM documents_fts WHERE ref_key IN (
@@ -679,10 +776,13 @@ export class SqliteMemoryCatalog {
       this.database.exec('ROLLBACK');
       throw error;
     }
-    pages.forEach((page) => this.index(page, embeddings.get(`${refKey(page.ref)}:${page.digest}`)));
+    this.dropLegacyVectorTables();
+    pages.forEach((page) => this.index(page));
+    this.setVectorState('empty', 'reindex_waiting_for_embeddings');
   }
 
   sync(pages: MemoryDocument[]): void {
+    this.assertWritable();
     const existing = this.database.prepare("SELECT ref_key, digest, stale FROM documents WHERE document_type = 'wiki'").all() as Row[];
     const currentKeys = new Set(pages.map((page) => refKey(page.ref)));
     for (const row of existing) {
@@ -700,13 +800,30 @@ export class SqliteMemoryCatalog {
   }
 
   needsEmbedding(page: MemoryDocument, model: string): boolean {
+    if (!this.vectorAvailable
+      || !this.tableExists('document_vec_chunks_map')
+      || this.vectorState === 'reindex-required'
+      || this.vectorModel !== model) return true;
     const row = this.database.prepare(`
-      SELECT 1 FROM document_embedding_chunks WHERE ref_key=? AND digest=? AND model=? LIMIT 1
+      SELECT 1 FROM document_vec_chunks_map WHERE ref_key=? AND digest=? AND model=? LIMIT 1
     `).get(refKey(page.ref), page.digest, model);
     return !row;
   }
 
+  markVectorIncomplete(reason = 'document_embedding_incomplete'): void {
+    this.assertWritable();
+    if (!this.vectorAvailable || this.vectorState === 'unavailable') return;
+    this.setVectorState('reindex-required', reason);
+  }
+
   status(): MemoryStatusSnapshot {
+    this.assertReadOnlySnapshotStable();
+    const hasVectorMap = this.tableExists('document_vec_chunks_map');
+    const count = (table: string, where = ''): number => {
+      if (!this.tableExists(table)) return 0;
+      const row = this.database.prepare(`SELECT COUNT(*) AS count FROM ${table}${where}`).get() as Row;
+      return Number(row.count ?? 0);
+    };
     const totals = this.database.prepare(`
       SELECT SUM(CASE WHEN document_type='wiki' THEN 1 ELSE 0 END) AS pages,
         SUM(CASE WHEN document_type='wiki' AND scope='private' THEN 1 ELSE 0 END) AS private_pages,
@@ -715,36 +832,41 @@ export class SqliteMemoryCatalog {
         SUM(CASE WHEN document_type='wiki' THEN stale ELSE 0 END) AS stale,
         SUM(CASE WHEN document_type='episode' THEN 1 ELSE 0 END) AS episodes FROM documents
     `).get() as Row;
-    const embedding = this.database.prepare(
-      'SELECT model, dimensions FROM document_embedding_chunks LIMIT 1',
-    ).get() as Row | undefined;
-    const controls = this.database.prepare(`
-      SELECT
-        (SELECT COUNT(*) FROM source_receipts WHERE status = 'pending') AS pending_receipts,
-        (SELECT COUNT(*) FROM decision_events) AS decisions,
-        (SELECT COUNT(*) FROM memory_candidates) AS candidates,
-        (SELECT COUNT(*) FROM memory_page_revisions) AS revisions,
-        (SELECT COUNT(*) FROM compilation_jobs WHERE status IN ('pending', 'applying')) AS pending_compilations,
-        (SELECT COUNT(*) FROM compilation_jobs WHERE status='uncertain') AS uncertain_compilations
-    `).get() as Row;
-    return {
+    const embedding = hasVectorMap ? this.database.prepare(
+      'SELECT model, dimensions FROM document_vec_chunks_map LIMIT 1',
+    ).get() as Row | undefined : undefined;
+    const pendingReceipts = count('source_receipts', " WHERE status='pending'");
+    const decisions = count('decision_events');
+    const candidates = count('memory_candidates');
+    const revisions = count('memory_page_revisions');
+    const pendingCompilations = count('compilation_jobs', " WHERE status IN ('pending', 'applying')");
+    const uncertainCompilations = count('compilation_jobs', " WHERE status='uncertain'");
+    const vectorRows = count('document_vec_chunks_map');
+    const result: MemoryStatusSnapshot = {
       pages: Number(totals.pages),
       privatePages: Number(totals.private_pages ?? 0),
       workspacePages: Number(totals.workspace_pages ?? 0),
       conflicted: Number(totals.conflicted ?? 0),
       stale: Number(totals.stale ?? 0),
       fts5: this.fts5,
-      degraded: !this.fts5,
-      pendingReceipts: Number(controls.pending_receipts),
-      decisions: Number(controls.decisions),
+      degraded: !this.fts5 || this.vectorState === 'reindex-required' || this.vectorState === 'reindexing',
+      pendingReceipts,
+      decisions,
       pageLimitReached: Number(totals.pages) >= 10_000,
       episodes: Number(totals.episodes ?? 0),
-      candidates: Number(controls.candidates),
-      revisions: Number(controls.revisions),
-      pendingCompilations: Number(controls.pending_compilations),
-      uncertainCompilations: Number(controls.uncertain_compilations),
+      candidates,
+      revisions,
+      pendingCompilations,
+      uncertainCompilations,
       ...(embedding ? { embeddingModel: String(embedding.model), embeddingDimensions: Number(embedding.dimensions) } : {}),
+      vectorAvailable: this.vectorAvailable,
+      ...(this.vectorVersion ? { vectorVersion: this.vectorVersion } : {}),
+      vectorState: this.vectorState,
+      vectorReason: this.vectorReason,
+      vectorRows,
     };
+    this.assertReadOnlySnapshotStable();
+    return result;
   }
 
   private filters(options: MemorySearchOptions): { sql: string; parameters: Array<string | number> } {
@@ -756,36 +878,362 @@ export class SqliteMemoryCatalog {
     if (options.kind) { clauses.push('kind = ?'); parameters.push(options.kind); }
     if (options.status && options.status !== 'all') { clauses.push('status = ?'); parameters.push(options.status); }
     else if (options.status !== 'all') clauses.push("status IN ('active', 'conflicted')");
+    const relationKinds = [...new Set(options.relationKinds?.map((kind) => kind.trim().toLowerCase()).filter(Boolean) ?? [])];
+    if (relationKinds.length > 0) {
+      if (!this.columnExists('documents', 'facets_json')) {
+        clauses.push('0');
+      } else {
+        clauses.push(`EXISTS (
+          SELECT 1 FROM json_each(facets_json, '$.relations') AS relation
+          WHERE lower(json_extract(relation.value, '$.kind')) IN (${relationKinds.map(() => '?').join(', ')})
+        )`);
+        parameters.push(...relationKinds);
+      }
+    }
+    if (options.stale !== undefined) { clauses.push('stale = ?'); parameters.push(options.stale ? 1 : 0); }
     if (options.from) { clauses.push('occurred_at >= ?'); parameters.push(options.from); }
     if (options.to) { clauses.push('occurred_at <= ?'); parameters.push(options.to); }
     return { sql: clauses.join(' AND '), parameters };
   }
 
-  private vectorRows(vector: number[], filterSql: string, parameters: Array<string | number>, limit: number): Row[] {
-    const rows = this.database.prepare(`
-      SELECT d.*, e.vector, e.dimensions, e.chunk_index FROM document_embedding_chunks e
-      JOIN documents d ON d.ref_key=e.ref_key WHERE ${filterSql}
-    `).all(...parameters) as Row[];
-    const scored = rows.filter((row) => Number(row.dimensions) === vector.length)
-      .map((row) => ({ row, score: cosine(vector, decodeVector(row.vector as Uint8Array)) }))
-      .filter(({ score }) => score >= 0.62)
-      .sort((left, right) => right.score - left.score);
-    const pageScores = new Map<string, { row: Row; scores: number[] }>();
-    for (const candidate of scored) {
-      const key = String(candidate.row.ref_key);
-      const aggregate = pageScores.get(key) ?? { row: candidate.row, scores: [] };
-      aggregate.scores.push(candidate.score);
-      pageScores.set(key, aggregate);
+  private vectorRows(
+    embedding: QueryEmbedding,
+    filterSql: string,
+    parameters: Array<string | number>,
+    limit: number,
+  ): Row[] {
+    if (!this.vectorAvailable
+      || this.vectorState !== 'ready'
+      || embedding.model !== this.vectorModel
+      || embedding.vector.length !== this.vectorDimensions) return [];
+    const k = BigInt(Math.min(2_000, Math.max(100, limit * 20)));
+    const maxDistance = embedding.maxDistance !== undefined
+      && Number.isFinite(embedding.maxDistance)
+      && embedding.maxDistance >= 0
+      && embedding.maxDistance <= 2
+      ? embedding.maxDistance
+      : 0.38;
+    try {
+      return this.database.prepare(`
+        WITH knn AS (
+          SELECT rowid, distance FROM document_vec_chunks
+          WHERE embedding MATCH ? AND k = ?
+        )
+        SELECT d.*, MIN(knn.distance) AS vector_distance
+        FROM knn
+        JOIN document_vec_chunks_map m ON m.rowid=knn.rowid
+        JOIN documents d ON d.ref_key=m.ref_key
+        WHERE ${filterSql} AND knn.distance <= ?
+        GROUP BY d.ref_key
+        ORDER BY vector_distance, d.updated_at DESC LIMIT ?
+      `).all(encodeVector(embedding.vector), k, ...parameters, maxDistance, limit) as Row[];
+    } catch {
+      this.vectorState = 'unavailable';
+      this.vectorReason = 'knn_query_failed';
+      return [];
     }
-    return [...pageScores.values()]
-      .map(({ row, scores }) => ({
-        row,
-        score: scores.slice(0, 3).reduce((total, score) => total + score, 0)
-          / Math.min(3, scores.length),
-      }))
-      .sort((left, right) => right.score - left.score)
-      .slice(0, limit)
-      .map(({ row }) => row);
+  }
+
+  private initializeVector(): void {
+    try {
+      (this.options.loadVectorExtension ?? sqliteVec.load)(this.database);
+      this.database.enableLoadExtension(false);
+      const version = this.database.prepare('SELECT vec_version() AS version').get() as Row;
+      this.vectorVersion = String(version.version);
+      try {
+        this.database.exec(`
+          DROP TABLE IF EXISTS temp.__memory_vec_selftest;
+          CREATE VIRTUAL TABLE temp.__memory_vec_selftest USING vec0(
+            embedding float[2] distance_metric=cosine
+          );
+        `);
+        this.database.prepare('INSERT INTO temp.__memory_vec_selftest(rowid, embedding) VALUES (?, ?)')
+          .run(1n, encodeVector([1, 0]));
+        const result = this.database.prepare(`
+          SELECT rowid, distance FROM temp.__memory_vec_selftest
+          WHERE embedding MATCH ? AND k = 1
+        `).get(encodeVector([1, 0])) as Row | undefined;
+        if (Number(result?.rowid) !== 1 || Number(result?.distance) !== 0) {
+          throw new Error('sqlite-vec KNN self-test returned an unexpected result');
+        }
+      } finally {
+        try { this.database.exec('DROP TABLE IF EXISTS temp.__memory_vec_selftest;'); } catch { /* temporary */ }
+      }
+      this.vectorAvailable = true;
+      if (this.readOnly) {
+        this.restoreVectorMetadataReadOnly();
+      } else {
+        this.restoreVectorMetadata();
+        this.migrateLegacyVectors();
+      }
+    } catch (error) {
+      try { this.database.enableLoadExtension(false); } catch { /* already unavailable */ }
+      this.vectorAvailable = false;
+      this.vectorState = 'unavailable';
+      this.vectorReason = error instanceof Error ? error.message.slice(0, 200) : 'extension_load_failed';
+      this.vectorModel = undefined;
+      this.vectorDimensions = undefined;
+    }
+  }
+
+  private restoreVectorMetadataReadOnly(): void {
+    if (!this.tableExists('schema_meta')) {
+      this.vectorState = 'empty';
+      this.vectorReason = 'no_embeddings';
+      return;
+    }
+    const values = new Map((this.database.prepare(`
+      SELECT key, value FROM schema_meta WHERE key LIKE 'vector_%'
+    `).all() as Row[]).map((row) => [String(row.key), String(row.value)]));
+    const model = values.get('vector_model');
+    const dimensions = Number(values.get('vector_dimensions') ?? 0);
+    const persistedState = values.get('vector_state');
+    const hasVectorTable = this.tableExists('document_vec_chunks');
+    const hasVectorMap = this.tableExists('document_vec_chunks_map');
+    const vectorRows = hasVectorMap
+      ? Number((this.database.prepare('SELECT COUNT(*) AS count FROM document_vec_chunks_map').get() as Row).count ?? 0)
+      : 0;
+    this.vectorModel = model || undefined;
+    this.vectorDimensions = dimensions > 0 ? dimensions : undefined;
+    if (persistedState === 'reindexing') {
+      this.vectorState = 'reindex-required';
+      this.vectorReason = 'interrupted_reindex';
+    } else if (hasVectorTable && hasVectorMap && this.vectorModel && this.vectorDimensions && vectorRows > 0) {
+      this.vectorState = persistedState === 'ready' ? 'ready' : 'reindex-required';
+      this.vectorReason = values.get('vector_reason') ?? (this.vectorState === 'ready' ? 'ready' : 'metadata_incomplete');
+    } else if (hasVectorTable || vectorRows > 0 || this.vectorModel || this.vectorDimensions) {
+      this.vectorState = 'reindex-required';
+      this.vectorReason = 'vector_schema_incomplete';
+    } else {
+      this.vectorState = 'empty';
+      this.vectorReason = 'no_embeddings';
+    }
+  }
+
+  private restoreVectorMetadata(): void {
+    const values = new Map((this.database.prepare(`
+      SELECT key, value FROM schema_meta WHERE key LIKE 'vector_%'
+    `).all() as Row[]).map((row) => [String(row.key), String(row.value)]));
+    const model = values.get('vector_model');
+    const dimensions = Number(values.get('vector_dimensions') ?? 0);
+    const persistedState = values.get('vector_state');
+    const hasTable = this.tableExists('document_vec_chunks');
+    this.vectorModel = model || undefined;
+    this.vectorDimensions = dimensions > 0 ? dimensions : undefined;
+    if (persistedState === 'reindexing') {
+      this.setVectorState('reindex-required', 'interrupted_reindex');
+    } else if (hasTable && this.vectorModel && this.vectorDimensions) {
+      this.vectorState = persistedState === 'ready' ? 'ready' : 'reindex-required';
+      this.vectorReason = values.get('vector_reason') ?? (this.vectorState === 'ready' ? 'ready' : 'metadata_incomplete');
+    } else if (hasTable || this.vectorModel || this.vectorDimensions) {
+      this.setVectorState('reindex-required', 'vector_schema_incomplete');
+    } else {
+      this.setVectorState('empty', 'no_embeddings');
+    }
+  }
+
+  private setVectorState(
+    state: NonNullable<MemoryStatusSnapshot['vectorState']>,
+    reason: string,
+  ): void {
+    this.assertWritable();
+    this.vectorState = state;
+    this.vectorReason = reason.slice(0, 200);
+    this.database.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('vector_state', ?)`).run(state);
+    this.database.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('vector_reason', ?)`).run(this.vectorReason);
+    if (this.vectorVersion) {
+      this.database.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('vector_version', ?)`).run(this.vectorVersion);
+    }
+  }
+
+  private configureVector(model: string, dimensions: number): void {
+    if (!this.vectorAvailable || !model.trim() || dimensions < 1 || dimensions > 16_384) {
+      throw new Error('invalid vector configuration');
+    }
+    this.database.exec('DROP TABLE IF EXISTS document_vec_chunks;');
+    this.database.prepare('DELETE FROM document_vec_chunks_map').run();
+    this.database.exec(`CREATE VIRTUAL TABLE document_vec_chunks USING vec0(
+      embedding float[${dimensions}] distance_metric=cosine
+    );`);
+    this.vectorModel = model;
+    this.vectorDimensions = dimensions;
+    this.database.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('vector_model', ?)`).run(model);
+    this.database.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('vector_dimensions', ?)`).run(String(dimensions));
+    this.setVectorState('ready', 'ready');
+  }
+
+  private storeEmbedding(ref: string, digest: string, embedding: DocumentChunkEmbedding): void {
+    if (!this.vectorAvailable || this.vectorState === 'reindex-required' || this.vectorState === 'reindexing') return;
+    const dimensions = embedding.chunks[0]?.vector.length ?? 0;
+    const valid = Boolean(embedding.model.trim())
+      && dimensions > 0
+      && embedding.chunks.length > 0
+      && new Set(embedding.chunks.map((chunk) => chunk.index)).size === embedding.chunks.length
+      && embedding.chunks.every((chunk) => (
+        chunk.vector.length === dimensions
+        && chunk.vector.every(Number.isFinite)
+      ));
+    if (!valid) {
+      this.setVectorState('reindex-required', 'invalid_embedding_payload');
+      return;
+    }
+    if (this.vectorState === 'empty') {
+      try {
+        this.configureVector(embedding.model, dimensions);
+      } catch {
+        this.vectorState = 'unavailable';
+        this.vectorReason = 'vector_configuration_failed';
+        return;
+      }
+    }
+    if (this.vectorModel !== embedding.model || this.vectorDimensions !== dimensions) {
+      this.setVectorState('reindex-required', 'embedding_model_or_dimensions_changed');
+      return;
+    }
+    try {
+      const insertMap = this.database.prepare(`
+        INSERT INTO document_vec_chunks_map (
+          ref_key, digest, chunk_index, chunk_digest, model, dimensions
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      const insertVector = this.database.prepare(
+        'INSERT INTO document_vec_chunks(rowid, embedding) VALUES (?, ?)',
+      );
+      for (const chunk of embedding.chunks) {
+        const result = insertMap.run(
+          ref, digest, chunk.index, chunk.digest, embedding.model, dimensions,
+        );
+        insertVector.run(BigInt(result.lastInsertRowid), encodeVector(chunk.vector));
+      }
+      this.setVectorState('ready', 'ready');
+    } catch {
+      this.deleteVectorRows(ref);
+      this.vectorState = 'unavailable';
+      this.vectorReason = 'vector_index_write_failed';
+    }
+  }
+
+  private deleteVectorRows(ref: string): void {
+    const rows = this.database.prepare('SELECT rowid FROM document_vec_chunks_map WHERE ref_key=?')
+      .all(ref) as Row[];
+    if (this.vectorAvailable && this.tableExists('document_vec_chunks')) {
+      try {
+        const remove = this.database.prepare('DELETE FROM document_vec_chunks WHERE rowid=?');
+        for (const row of rows) remove.run(BigInt(row.rowid as number | bigint));
+      } catch {
+        this.vectorState = 'unavailable';
+        this.vectorReason = 'vector_delete_failed';
+      }
+    }
+    this.database.prepare('DELETE FROM document_vec_chunks_map WHERE ref_key=?').run(ref);
+  }
+
+  private clearVectorIndex(): void {
+    if (this.vectorAvailable) this.database.exec('DROP TABLE IF EXISTS document_vec_chunks;');
+    this.database.prepare('DELETE FROM document_vec_chunks_map').run();
+    this.database.prepare(`DELETE FROM schema_meta WHERE key IN ('vector_model', 'vector_dimensions')`).run();
+    this.vectorModel = undefined;
+    this.vectorDimensions = undefined;
+  }
+
+  private migrateLegacyVectors(): void {
+    const chunksExist = this.tableExists('document_embedding_chunks');
+    const documentsExist = this.tableExists('document_embeddings');
+    if (!chunksExist && !documentsExist) return;
+    const chunkRows = chunksExist ? this.database.prepare(`
+      SELECT ref_key, digest, chunk_index, chunk_digest, model, dimensions, vector
+      FROM document_embedding_chunks ORDER BY ref_key, chunk_index
+    `).all() as Row[] : [];
+    const rows = chunkRows.length > 0 ? chunkRows : documentsExist ? this.database.prepare(`
+      SELECT ref_key, digest, 0 AS chunk_index, digest AS chunk_digest, model, dimensions, vector
+      FROM document_embeddings ORDER BY ref_key
+    `).all() as Row[] : [];
+    if (rows.length === 0) {
+      this.dropLegacyVectorTables();
+      return;
+    }
+    try {
+      const model = String(rows[0]!.model);
+      const dimensions = Number(rows[0]!.dimensions);
+      for (const row of rows) {
+        const vector = row.vector;
+        const document = this.database.prepare('SELECT digest FROM documents WHERE ref_key=?')
+          .get(String(row.ref_key)) as Row | undefined;
+        if (!(vector instanceof Uint8Array)
+          || vector.byteLength !== dimensions * Float32Array.BYTES_PER_ELEMENT
+          || String(row.model) !== model
+          || Number(row.dimensions) !== dimensions
+          || String(document?.digest ?? '') !== String(row.digest)) {
+          throw new Error('legacy vector validation failed');
+        }
+        const bytes = vector.buffer.slice(vector.byteOffset, vector.byteOffset + vector.byteLength);
+        if (![...new Float32Array(bytes)].every(Number.isFinite)) throw new Error('legacy vector contains non-finite values');
+      }
+      this.configureVector(model, dimensions);
+      const insertMap = this.database.prepare(`
+        INSERT INTO document_vec_chunks_map (
+          ref_key, digest, chunk_index, chunk_digest, model, dimensions
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      const insertVector = this.database.prepare('INSERT INTO document_vec_chunks(rowid, embedding) VALUES (?, ?)');
+      for (const row of rows) {
+        const mapped = insertMap.run(
+          String(row.ref_key), String(row.digest), Number(row.chunk_index), String(row.chunk_digest),
+          model, dimensions,
+        );
+        insertVector.run(BigInt(mapped.lastInsertRowid), row.vector as Uint8Array);
+      }
+      const mapCount = Number((this.database.prepare('SELECT COUNT(*) AS count FROM document_vec_chunks_map').get() as Row).count);
+      const vectorCount = Number((this.database.prepare('SELECT COUNT(*) AS count FROM document_vec_chunks').get() as Row).count);
+      if (mapCount !== rows.length || vectorCount !== rows.length) throw new Error('legacy vector count mismatch');
+      this.dropLegacyVectorTables();
+      this.setVectorState('ready', 'legacy_vectors_migrated');
+    } catch {
+      this.clearVectorIndex();
+      this.setVectorState('reindex-required', 'legacy_vector_validation_failed');
+    }
+  }
+
+  private dropLegacyVectorTables(): void {
+    this.database.exec('DROP TABLE IF EXISTS document_embedding_chunks; DROP TABLE IF EXISTS document_embeddings;');
+  }
+
+  private tableExists(name: string): boolean {
+    return Boolean(this.database.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=?`).get(name));
+  }
+
+  private columnExists(table: string, column: string): boolean {
+    return (this.database.prepare(`PRAGMA table_info(${table})`).all() as Row[])
+      .some((row) => row.name === column);
+  }
+
+  private assertWritable(): void {
+    if (this.readOnly) throw new Error('Memory catalog is read-only');
+  }
+
+  private assertReadOnlySnapshotStable(): void {
+    if (!this.readOnlyFile || !this.readOnlySnapshot) return;
+    const currentMain = readOnlyFileIdentity(this.readOnlyFile);
+    if (!sameFileIdentity(currentMain, this.readOnlySnapshot.main)) {
+      throw new Error('Memory catalog changed during read-only audit');
+    }
+    if (this.readOnlySnapshotWal) return;
+    const currentWal = readOnlyFileIdentity(`${this.readOnlyFile}-wal`);
+    if (!sameFileIdentity(currentWal, this.readOnlySnapshot.wal)) {
+      throw new Error('Memory catalog changed during read-only audit');
+    }
+  }
+
+  private initializeReadOnly(): void {
+    if (!this.tableExists('documents')) throw new Error('Memory catalog schema is unavailable');
+    this.fts5 = this.tableExists('documents_fts');
+    this.initializeVector();
+  }
+
+  private ensureDocumentColumn(name: string): void {
+    const columns = this.database.prepare('PRAGMA table_info(documents)').all() as Row[];
+    if (columns.some((column) => column.name === name)) return;
+    this.database.exec(`ALTER TABLE documents ADD COLUMN ${name} TEXT`);
   }
 
   private initialize(): void {
@@ -797,19 +1245,14 @@ export class SqliteMemoryCatalog {
         status TEXT NOT NULL, confidence TEXT NOT NULL, body TEXT NOT NULL, summary TEXT NOT NULL,
         digest TEXT NOT NULL, source_refs_json TEXT NOT NULL, occurred_at TEXT NOT NULL,
         valid_from TEXT, valid_until TEXT, document_type TEXT NOT NULL, stale INTEGER NOT NULL DEFAULT 0,
-        path TEXT, updated_at TEXT NOT NULL
+        path TEXT, updated_at TEXT NOT NULL, layer TEXT, facets_json TEXT, derived_from_json TEXT
       );
-      CREATE TABLE IF NOT EXISTS document_embeddings (
-        ref_key TEXT PRIMARY KEY REFERENCES documents(ref_key) ON DELETE CASCADE,
-        digest TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
-        dimensions INTEGER NOT NULL, vector BLOB NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS document_embedding_chunks (
+      CREATE TABLE IF NOT EXISTS document_vec_chunks_map (
+        rowid INTEGER PRIMARY KEY AUTOINCREMENT,
         ref_key TEXT NOT NULL REFERENCES documents(ref_key) ON DELETE CASCADE,
         digest TEXT NOT NULL, chunk_index INTEGER NOT NULL, chunk_digest TEXT NOT NULL,
-        provider TEXT NOT NULL, model TEXT NOT NULL,
-        dimensions INTEGER NOT NULL, vector BLOB NOT NULL,
-        PRIMARY KEY(ref_key, chunk_index)
+        model TEXT NOT NULL, dimensions INTEGER NOT NULL,
+        UNIQUE(ref_key, chunk_index)
       );
       CREATE TABLE IF NOT EXISTS links (
         source_ref TEXT NOT NULL REFERENCES documents(ref_key) ON DELETE CASCADE,
@@ -860,6 +1303,9 @@ export class SqliteMemoryCatalog {
         page_revisions_json TEXT NOT NULL, reason_code TEXT, completed_at TEXT NOT NULL
       );
     `);
+    this.ensureDocumentColumn('layer');
+    this.ensureDocumentColumn('facets_json');
+    this.ensureDocumentColumn('derived_from_json');
     try {
       this.database.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
         ref_key UNINDEXED, title, aliases, tags, body, tokenize='trigram'
@@ -875,8 +1321,9 @@ export class SqliteMemoryCatalog {
         this.fts5 = false;
       }
     }
+    this.initializeVector();
     this.migrateExistingPagesToV2();
-    this.database.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '2')`).run();
+    this.database.prepare(`INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', '3')`).run();
   }
 
   private backupV1IfNeeded(): void {
