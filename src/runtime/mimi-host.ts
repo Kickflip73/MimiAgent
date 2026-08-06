@@ -126,6 +126,7 @@ export class MimiHost {
   private readonly slots: Semaphore;
   private readonly pending = new Map<string, PendingExecution>();
   private closing = false;
+  private summaryCache: { summaries: import('../core/session.js').SessionSummary[]; until: number } | undefined;
 
   constructor(
     private readonly agent: MimiAgent,
@@ -239,7 +240,10 @@ export class MimiHost {
       }, request.sessionId).finally(() => {
         actor.activeRuns = Math.max(0, actor.activeRuns - 1);
       });
-    }).finally(() => this.pending.delete(executionId));
+    }).finally(() => {
+        this.invalidateSummaryCache(request.sessionId);
+        this.pending.delete(executionId);
+      });
   }
 
   mutate<T>(
@@ -255,7 +259,9 @@ export class MimiHost {
       await this.selectSession(actor.agent, sessionId);
       signal?.throwIfAborted();
       return operation(actor.agent);
-    }, sessionId));
+    }, sessionId)).finally(() => {
+      this.invalidateSummaryCache(sessionId);
+    });
   }
 
   prepareQqPersonalMessageScope(
@@ -321,7 +327,18 @@ export class MimiHost {
 
   listSessionSummaries(): Promise<SessionSummary[]> {
     this.assertOpen();
-    return this.agent.listSessionSummaries();
+    const now = Date.now();
+    if (this.summaryCache && this.summaryCache.until > now) {
+      return Promise.resolve(this.summaryCache.summaries);
+    }
+    return this.agent.listSessionSummaries().then((summaries) => {
+      this.summaryCache = { summaries, until: now + 30_000 };
+      return summaries;
+    });
+  }
+
+  private invalidateSummaryCache(_sessionId: string): void {
+    this.summaryCache = undefined;
   }
 
   hasSession(id: string): Promise<boolean> {
