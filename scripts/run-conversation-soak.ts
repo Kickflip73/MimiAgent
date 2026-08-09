@@ -37,11 +37,19 @@ import {
 import {
   cleanupEphemeralCredentialFile,
   createEphemeralCredentialFile,
-  durableAppend,
-  durableReplace,
   durableWriteExclusive,
+  DurableJournalWriter,
+  MonotonicCheckpointWriter,
+  recoverEphemeralCredentialFiles,
   type EphemeralCredentialFile,
+  type EphemeralCredentialRecoveryResult,
 } from './conversation-durable-io.js';
+import { projectConversationProviderConfigJson } from './conversation-provider-config.js';
+import {
+  assertRuntimeDependencySnapshot,
+  snapshotRuntimeDependencyTree,
+  type RuntimeDependencySnapshot,
+} from './conversation-runtime-integrity.js';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -49,6 +57,8 @@ const mimiEntry = path.join(repositoryRoot, 'dist', 'index.js');
 const ptyHelper = path.join(repositoryRoot, 'scripts', 'run-conversation-pty.py');
 const contractFile = path.join(repositoryRoot, 'scripts', 'conversation-soak-contract.ts');
 const durableIoFile = path.join(repositoryRoot, 'scripts', 'conversation-durable-io.ts');
+const providerConfigFile = path.join(repositoryRoot, 'scripts', 'conversation-provider-config.ts');
+const runtimeIntegrityFile = path.join(repositoryRoot, 'scripts', 'conversation-runtime-integrity.ts');
 const runnerFile = path.join(repositoryRoot, 'scripts', 'run-conversation-soak.ts');
 const defaultManifest = path.join(repositoryRoot, 'evals', 'conversation', 'manifest.v1.json');
 const terminalTaskStates = new Set(['completed', 'failed', 'cancelled', 'dead_letter', 'paused', 'blocked']);
@@ -126,7 +136,12 @@ interface RunContext {
   outputRoot: string;
   journalFile: string;
   checkpointFile: string;
+  journalWriter: DurableJournalWriter;
+  checkpointWriter: MonotonicCheckpointWriter;
+  checkpointSequence: number;
+  checkpointWriteTail: Promise<void>;
   buildDigest: string;
+  runtimeDependencies?: RuntimeDependencySnapshot;
   sourceSnapshot: SourceSnapshot;
   startedAt: number;
   aggregate: AggregateUsage;
@@ -144,6 +159,11 @@ interface EvidenceArtifact {
   path: string;
   sha256: string;
   bytes: number;
+}
+
+interface RuntimeClosureIdentity {
+  digest: string;
+  dependencies: RuntimeDependencySnapshot;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -255,15 +275,16 @@ async function writeEvidenceJson(
   };
 }
 
-async function appendJournal(file: string, value: ConversationJournalRecord): Promise<void> {
-  const operation = journalWriteQueue.then(async () => {
-    await durableAppend(file, `${JSON.stringify(value)}\n`);
-  });
-  journalWriteQueue = operation.then(() => undefined, () => undefined);
-  await operation;
+async function appendJournal(context: RunContext, value: ConversationJournalRecord): Promise<void> {
+  try {
+    await context.journalWriter.append(`${JSON.stringify(value)}\n`);
+  } catch (error) {
+    context.globalStopReason = `P0 journal durability failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    throw error;
+  }
 }
-
-let journalWriteQueue: Promise<void> = Promise.resolve();
 
 async function readJournal(file: string): Promise<ConversationJournalRecord[]> {
   if (!await exists(file)) return [];
@@ -277,15 +298,31 @@ async function readJournal(file: string): Promise<ConversationJournalRecord[]> {
 }
 
 async function writeCheckpoint(context: RunContext): Promise<void> {
+  const sequence = context.checkpointSequence + 1;
+  context.checkpointSequence = sequence;
   const checkpoint = {
     schemaVersion: 1,
+    generation: 1,
+    sequence,
     updatedAt: new Date().toISOString(),
     manifestDigest: context.manifestDigest,
     buildDigest: context.buildDigest,
     aggregate: context.aggregate,
     globalStopReason: context.globalStopReason,
   };
-  await durableReplace(context.checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`);
+  const operation = context.checkpointWriteTail.then(() => context.checkpointWriter.write(
+    { generation: 1, sequence },
+    `${JSON.stringify(checkpoint, null, 2)}\n`,
+  ));
+  context.checkpointWriteTail = operation;
+  try {
+    await operation;
+  } catch (error) {
+    context.globalStopReason = `P0 checkpoint durability failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    throw error;
+  }
 }
 
 async function hashRepositoryPath(relative: string): Promise<string> {
@@ -321,6 +358,30 @@ async function captureSourceSnapshot(): Promise<SourceSnapshot> {
   return { schemaVersion: 1, digest: sha256(JSON.stringify(files)), files };
 }
 
+async function assertCleanRepository(): Promise<void> {
+  const { stdout } = await execFileAsync(
+    'git',
+    ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+    { cwd: repositoryRoot, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 },
+  );
+  if (stdout.length > 0) {
+    const entries = stdout.split('\0').filter(Boolean).slice(0, 20)
+      .map((entry) => entry.slice(3));
+    throw new Error(`real calibration requires a clean repository: ${entries.join(', ')}`);
+  }
+}
+
+async function repositoryHead(): Promise<string> {
+  const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    maxBuffer: 1_000_000,
+  });
+  const head = stdout.trim();
+  if (!/^[0-9a-f]{40}$/u.test(head)) throw new Error('repository HEAD is unavailable');
+  return head;
+}
+
 function changedSourcePaths(expected: SourceSnapshot, actual: SourceSnapshot): string[] {
   const paths = new Set([...Object.keys(expected.files), ...Object.keys(actual.files)]);
   return [...paths].filter((name) => expected.files[name] !== actual.files[name]).sort();
@@ -352,11 +413,17 @@ async function digestTree(root: string): Promise<string> {
   return digest.digest('hex');
 }
 
-async function runtimeClosureDigest(distDigest: string, manifestFile: string): Promise<string> {
+async function runtimeClosureDigest(
+  distDigest: string,
+  manifestFile: string,
+  dependencies: RuntimeDependencySnapshot,
+): Promise<string> {
   const files = [
     runnerFile,
     contractFile,
     durableIoFile,
+    providerConfigFile,
+    runtimeIntegrityFile,
     ptyHelper,
     manifestFile,
     path.join(repositoryRoot, 'package.json'),
@@ -366,7 +433,49 @@ async function runtimeClosureDigest(distDigest: string, manifestFile: string): P
     file: path.relative(repositoryRoot, file),
     sha256: sha256(await readFile(file)),
   })));
-  return sha256(JSON.stringify({ distDigest, closure }));
+  const runtimeExecutable = {
+    version: process.version,
+    platform: process.platform,
+    architecture: process.arch,
+    sha256: sha256(await readFile(process.execPath)),
+  };
+  return sha256(JSON.stringify({
+    repositoryHead: await repositoryHead(),
+    distDigest,
+    dependencies,
+    runtimeExecutable,
+    closure,
+  }));
+}
+
+async function captureRuntimeClosure(manifestFile: string): Promise<RuntimeClosureIdentity> {
+  const [distDigest, dependencies] = await Promise.all([
+    digestTree(path.join(repositoryRoot, 'dist')),
+    snapshotRuntimeDependencyTree(path.join(repositoryRoot, 'node_modules')),
+  ]);
+  return {
+    digest: await runtimeClosureDigest(distDigest, manifestFile, dependencies),
+    dependencies,
+  };
+}
+
+async function assertRuntimeClosure(context: RunContext): Promise<void> {
+  const expected = context.runtimeDependencies;
+  if (!expected) throw new Error('runtime dependency snapshot is unavailable');
+  const current = await captureRuntimeClosure(context.options.manifestFile);
+  assertRuntimeDependencySnapshot(expected, current.dependencies);
+  if (current.digest !== context.buildDigest) throw new Error('runtime closure digest changed');
+}
+
+async function enforceRuntimeClosure(context: RunContext, phaseName: string): Promise<void> {
+  try {
+    await assertRuntimeClosure(context);
+  } catch (error) {
+    context.globalStopReason = `P0 runtime closure changed ${phaseName}: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    throw error;
+  }
 }
 
 function boundedBuildEnvironment(): NodeJS.ProcessEnv {
@@ -374,7 +483,7 @@ function boundedBuildEnvironment(): NodeJS.ProcessEnv {
   return Object.fromEntries(names.flatMap((name) => process.env[name] ? [[name, process.env[name]!]] : []));
 }
 
-async function cleanBuild(outputRoot: string, manifestFile: string): Promise<string> {
+async function cleanBuild(outputRoot: string, manifestFile: string): Promise<RuntimeClosureIdentity> {
   const buildLog = path.join(outputRoot, 'build.log');
   const result = await execFileAsync('npm', ['run', 'build'], {
     cwd: repositoryRoot,
@@ -392,7 +501,7 @@ async function cleanBuild(outputRoot: string, manifestFile: string): Promise<str
   const sanitized = redactTerminalSecrets(result.output, []).text;
   await writeExclusive(buildLog, sanitized);
   if (result.code !== 0) throw new Error(`clean build failed; see ${buildLog}`);
-  return runtimeClosureDigest(await digestTree(path.join(repositoryRoot, 'dist')), manifestFile);
+  return captureRuntimeClosure(manifestFile);
 }
 
 async function isolatedProviderEnvironment(configRoot: string, reuse: boolean): Promise<{
@@ -412,33 +521,9 @@ async function isolatedProviderEnvironment(configRoot: string, reuse: boolean): 
     throw new Error('MIMI_CONVERSATION_PROVIDER_ENV_ALLOWLIST is forbidden; select exactly one Provider key');
   }
   const source = path.resolve(modelsSource);
-  const parsed = record(await readJson(source));
-  const routing = record(parsed?.routing);
-  const target = record(routing?.globalDefault);
-  const providerId = typeof target?.providerId === 'string' ? target.providerId : undefined;
-  const modelId = typeof target?.modelId === 'string' ? target.modelId : undefined;
-  const providers = Array.isArray(parsed?.providers) ? parsed.providers.map(record).filter(Boolean) : [];
-  const provider = providers.find((item) => item?.id === providerId);
-  const models = Array.isArray(provider?.models) ? provider.models.map(record).filter(Boolean) : [];
-  const selectedModel = models.find((item) => {
-    const selectedTarget = record(item?.target);
-    return selectedTarget?.providerId === providerId && selectedTarget?.modelId === modelId;
-  });
-  if (!provider || !selectedModel || typeof provider.apiKeyEnv !== 'string'
-    || !/^[A-Z][A-Z0-9_]*$/u.test(provider.apiKeyEnv)
-    || !providerId || !modelId) {
-    throw new Error('isolated models config must expose one valid global-default Provider/Model target');
-  }
-  const projected = {
-    version: 1,
-    routeVersion: typeof parsed?.routeVersion === 'number' ? parsed.routeVersion : 1,
-    providers: [{ ...provider, models: [selectedModel] }],
-    routing: {
-      globalDefault: { providerId, modelId },
-      scenarios: {},
-    },
-  };
-  const projectedContents = `${JSON.stringify(projected, null, 2)}\n`;
+  const projection = projectConversationProviderConfigJson(await readFile(source, 'utf8'));
+  const { providerId, modelId, apiKeyEnv: secretName } = projection;
+  const projectedContents = projection.contents;
   if (reuse) {
     if (!await exists(modelsFile)) throw new Error('resume runtime bundle is missing models.json');
     if (sha256(projectedContents) !== sha256(await readFile(modelsFile))) {
@@ -456,7 +541,6 @@ async function isolatedProviderEnvironment(configRoot: string, reuse: boolean): 
   const credentialValues = await exists(credentialSource)
     ? parseDotenv(await readFile(credentialSource, 'utf8'))
     : {};
-  const secretName = provider.apiKeyEnv;
   const secretValue = process.env[secretName] ?? credentialValues[secretName];
   if (!secretValue || secretValue.includes('\0') || /[\r\n]/u.test(secretValue)) {
     throw new Error(`selected Provider credential ${secretName} is not configured as one bounded line`);
@@ -465,11 +549,7 @@ async function isolatedProviderEnvironment(configRoot: string, reuse: boolean): 
   if (parseDotenv(environmentContents)[secretName] !== secretValue) {
     throw new Error(`selected Provider credential ${secretName} cannot be safely serialized`);
   }
-  const nonSecret = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR'];
   const values: NodeJS.ProcessEnv = {};
-  for (const name of nonSecret) {
-    if (process.env[name]) values[name] = process.env[name];
-  }
   return {
     values,
     secretNames: [secretName],
@@ -491,6 +571,13 @@ function securityFor(lane: ConversationLane): { profile: string; permission: str
 }
 
 async function startIsolatedRuntime(context: RunContext, scenario: ConversationScenario): Promise<IsolatedRuntime> {
+  await enforceRuntimeClosure(context, 'before Daemon startup');
+  const currentSourceSnapshot = await captureSourceSnapshot();
+  const changedBeforeDaemon = changedSourcePaths(context.sourceSnapshot, currentSourceSnapshot);
+  if (changedBeforeDaemon.length) {
+    context.globalStopReason = `P0 source changed before Daemon startup: ${changedBeforeDaemon.slice(0, 20).join(', ')}`;
+    throw new Error(context.globalStopReason);
+  }
   const bundlesRoot = path.join(context.outputRoot, 'runtime-bundles');
   await mkdir(bundlesRoot, { recursive: true, mode: 0o700 });
   await chmod(bundlesRoot, 0o700);
@@ -912,12 +999,13 @@ async function runHeadlessTurn(
     context.globalStopReason = `P0 source changed before dispatch: ${changedBeforeDispatch.slice(0, 20).join(', ')}`;
     throw new Error(context.globalStopReason);
   }
+  await enforceRuntimeClosure(context, `before dispatch ${turn.key}`);
   const beforeSession = await sessionSnapshot(runtime, sessionId);
   const beforeItems = protocolItems(beforeSession);
   const beforeTrace = await traceSnapshot(runtime, sessionId);
   const beforeRuns = await listRuns(runtime);
   const beforeRunIds = new Set(beforeRuns.map((item) => item.id).filter((id): id is string => Boolean(id)));
-  await appendJournal(context.journalFile, {
+  await appendJournal(context, {
     kind: 'turn_dispatch_started',
     occurredAt: new Date().toISOString(),
     scenarioId: scenario.scenarioId,
@@ -928,7 +1016,7 @@ async function runHeadlessTurn(
     denominatorEligible: false,
   });
   let cancellationError: string | undefined;
-  const capture = await captureCliTurn(
+  const capture = await context.journalWriter.dispatchBarrier(() => captureCliTurn(
     runtime,
     turn.prompt,
     sessionId,
@@ -940,7 +1028,7 @@ async function runHeadlessTurn(
         cancellationError = error instanceof Error ? error.message : String(error);
       }
     },
-  );
+  ));
   const redacted = redactTerminalSecrets(capture.output.toString('utf8'), runtime.secrets);
   const normalized = stripTerminalControl(redacted.text);
   const turnDirectory = path.join(context.outputRoot, 'turns', scenario.scenarioId);
@@ -976,6 +1064,15 @@ async function runHeadlessTurn(
   const sourceTreeChanged = changedPaths.length > 0;
   if (sourceTreeChanged) {
     context.globalStopReason = `P0 source path content changed outside the temporary root during ${turn.key}: ${changedPaths.slice(0, 20).join(', ')}`;
+  }
+  let runtimeClosureChanged = false;
+  try {
+    await assertRuntimeClosure(context);
+  } catch (error) {
+    runtimeClosureChanged = true;
+    context.globalStopReason = `P0 runtime closure changed after ${turn.key}: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
   }
   const pendingTask = !terminalTaskStates.has(String(task?.status));
   const pendingOutbox = summary?.taskId ? await activeOutboxForTask(runtime, summary.taskId) : true;
@@ -1025,7 +1122,7 @@ async function runHeadlessTurn(
       pendingTask,
       pendingOutbox,
       activeSessionRun: activeSessionRun(afterSession),
-      sourceTreeChanged,
+      sourceTreeChanged: sourceTreeChanged || runtimeClosureChanged,
     },
   };
   const audit = await auditConversationTurnEvidence(evidence);
@@ -1035,7 +1132,7 @@ async function runHeadlessTurn(
   context.aggregate.estimatedUsd = estimatedCost(context.options, context.aggregate);
   if (audit.proven) context.aggregate.provenTurns += 1;
   else context.aggregate.unprovenTurns += 1;
-  await appendJournal(context.journalFile, {
+  await appendJournal(context, {
     kind: audit.proven ? 'turn_proof' : 'turn_unproven',
     occurredAt: new Date().toISOString(),
     scenarioId: scenario.scenarioId,
@@ -1108,7 +1205,7 @@ async function runScenarioCalibration(context: RunContext, scenario: Conversatio
     const journal = await readJournal(context.journalFile);
     const resume = deriveConversationResumeState(planned, journal);
     for (const uncertain of resume.uncertain) {
-      await appendJournal(context.journalFile, {
+      await appendJournal(context, {
         kind: 'turn_quarantined',
         occurredAt: new Date().toISOString(),
         scenarioId: scenario.scenarioId,
@@ -1129,7 +1226,7 @@ async function runScenarioCalibration(context: RunContext, scenario: Conversatio
         const message = error instanceof Error ? error.message : String(error);
         if (/timed out/iu.test(message)) consecutiveTimeouts += 1;
         if (consecutiveTimeouts >= 2) {
-          await appendJournal(context.journalFile, {
+          await appendJournal(context, {
             kind: 'scenario_quarantined',
             occurredAt: new Date().toISOString(),
             scenarioId: scenario.scenarioId,
@@ -1143,7 +1240,7 @@ async function runScenarioCalibration(context: RunContext, scenario: Conversatio
     if (failed) throw new Error(`scenario ${scenario.scenarioId} has one or more unproven calibration turns`);
   } finally {
     await stopIsolatedRuntime(runtime, true);
-    await appendJournal(context.journalFile, {
+    await appendJournal(context, {
       kind: 'runtime_retained',
       occurredAt: new Date().toISOString(),
       scenarioId: scenario.scenarioId,
@@ -1197,6 +1294,11 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       ...turns.map((turn) => ({
         kind: 'model_turn',
         text: turn.prompt,
+        scenarioId: scenario.scenarioId,
+        turn: turn.turn,
+        nonce: turn.nonce,
+        sessionId,
+        evidenceKind: scenario.evidenceKind,
         timeoutMs: context.options.turnTimeoutMs,
       })),
       {
@@ -1213,6 +1315,7 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       '--actions', actions,
       '--transcript', rawFile,
       '--result', resultFile,
+      '--journal', context.journalFile,
       '--startup-timeout-ms', '30000',
       '--', process.execPath, mimiEntry,
     ], {
@@ -1224,6 +1327,22 @@ async function runPtySmoke(context: RunContext): Promise<void> {
     }).then(() => ({ exitCode: 0 }), (error: unknown) => ({
       exitCode: Number((error as { code?: number }).code ?? 1),
     }));
+    const afterSourceSnapshot = await captureSourceSnapshot();
+    const changedSourcePathsAfterPty = changedSourcePaths(context.sourceSnapshot, afterSourceSnapshot);
+    let runtimeClosureChanged = false;
+    try {
+      await assertRuntimeClosure(context);
+    } catch (error) {
+      runtimeClosureChanged = true;
+      context.globalStopReason = `P0 runtime closure changed during PTY smoke: ${
+        error instanceof Error ? error.message : String(error)
+      }`;
+    }
+    if (changedSourcePathsAfterPty.length) {
+      context.globalStopReason = `P0 source changed during PTY smoke: ${
+        changedSourcePathsAfterPty.slice(0, 20).join(', ')
+      }`;
+    }
     const helper = record(await readJson(resultFile));
     const rawBytes = await readFile(rawFile);
     const raw = rawBytes.toString('utf8');
@@ -1295,8 +1414,10 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       && usageProven
       && modelActions.every((item) => runs.some((run) => run.id === record(item?.modelRun)?.daemonRunId))
       && secretHits === 0
+      && changedSourcePathsAfterPty.length === 0
+      && !runtimeClosureChanged
       && !activeSessionRun(session);
-    await appendJournal(context.journalFile, {
+    await appendJournal(context, {
       kind: 'pty_smoke',
       occurredAt: new Date().toISOString(),
       scenarioId: scenario.scenarioId,
@@ -1320,6 +1441,8 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       noncesInTerminal,
       activeSessionRun: activeSessionRun(session),
       secretHits,
+      sourceTreeChanged: changedSourcePathsAfterPty.length > 0,
+      runtimeClosureChanged,
       rawTerminal: {
         path: path.relative(context.outputRoot, rawFile),
         sha256: sha256(rawBytes),
@@ -1343,6 +1466,8 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       assistantOutputVisibleAfterInputEcho: assistantVisible,
       exitCode: child.exitCode,
       turns: turns.length,
+      sourceTreeChanged: changedSourcePathsAfterPty.length > 0,
+      runtimeClosureChanged,
       generatedAt: new Date().toISOString(),
     });
     if (!passed) throw new Error('persistent PTY smoke did not satisfy its proof contract');
@@ -1371,6 +1496,11 @@ async function initializeRun(
   const manifestDigest = sha256(manifestRaw);
   const runName = `mimi-conversation-${new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-')}-${manifestDigest.slice(0, 8)}`;
   const outputRoot = options.output ?? path.join(os.tmpdir(), runName);
+  const outputRelative = path.relative(repositoryRoot, outputRoot);
+  if (outputRelative === '' || (!outputRelative.startsWith(`..${path.sep}`)
+    && outputRelative !== '..' && !path.isAbsolute(outputRelative))) {
+    throw new Error('conversation evidence output must stay outside the repository');
+  }
   const journalFile = path.join(outputRoot, 'evidence.jsonl');
   const checkpointFile = path.join(outputRoot, 'checkpoint.json');
   if (!options.resume) {
@@ -1382,6 +1512,12 @@ async function initializeRun(
     if (metadata?.manifestDigest !== manifestDigest) throw new Error('resume manifest digest does not match');
   }
   let buildDigest = 'not-built';
+  let runtimeDependencies: RuntimeDependencySnapshot | undefined;
+  let credentialRecovery: EphemeralCredentialRecoveryResult = {
+    scanned: 0,
+    recovered: 0,
+    preserved: 0,
+  };
   if (options.mode !== 'validate') {
     if (process.env.MIMI_CONVERSATION_CONFIRM_REAL_PROVIDER !== 'YES') {
       throw new Error('real Provider execution requires MIMI_CONVERSATION_CONFIRM_REAL_PROVIDER=YES');
@@ -1394,14 +1530,16 @@ async function initializeRun(
         'an estimated USD cap, and explicit input/output USD-per-million ceiling rates',
       ].join(' '));
     }
-    if (!options.skipBuild) buildDigest = await cleanBuild(outputRoot, options.manifestFile);
+    await assertCleanRepository();
+    credentialRecovery = await recoverEphemeralCredentialFiles({ temporaryRoot: os.tmpdir() });
+    let identity: RuntimeClosureIdentity;
+    if (!options.skipBuild) identity = await cleanBuild(outputRoot, options.manifestFile);
     else {
       if (!await exists(mimiEntry)) throw new Error('--skip-build requires dist/index.js');
-      buildDigest = await runtimeClosureDigest(
-        await digestTree(path.join(repositoryRoot, 'dist')),
-        options.manifestFile,
-      );
+      identity = await captureRuntimeClosure(options.manifestFile);
     }
+    buildDigest = identity.digest;
+    runtimeDependencies = identity.dependencies;
   }
   const sourceSnapshot = await captureSourceSnapshot();
   const context: RunContext = {
@@ -1411,7 +1549,12 @@ async function initializeRun(
     outputRoot,
     journalFile,
     checkpointFile,
+    journalWriter: new DurableJournalWriter(journalFile),
+    checkpointWriter: new MonotonicCheckpointWriter(checkpointFile),
+    checkpointSequence: 0,
+    checkpointWriteTail: Promise.resolve(),
     buildDigest,
+    runtimeDependencies,
     sourceSnapshot,
     startedAt: Date.now(),
     aggregate: { inputTokens: 0, outputTokens: 0, provenTurns: 0, unprovenTurns: 0 },
@@ -1421,8 +1564,16 @@ async function initializeRun(
       schemaVersion: 1,
       kind: 'mimi-real-terminal-conversation-benchmark',
       mode: options.mode,
+      repositoryHead: await repositoryHead(),
       manifestDigest,
       buildDigest,
+      runtimeDependencies,
+      credentialRecovery,
+      sourceSnapshot: {
+        schemaVersion: sourceSnapshot.schemaVersion,
+        digest: sourceSnapshot.digest,
+        fileCount: Object.keys(sourceSnapshot.files).length,
+      },
       seed: manifest.seed,
       startedAt: new Date(context.startedAt).toISOString(),
       requestedConcurrency: options.concurrency,
@@ -1436,7 +1587,7 @@ async function initializeRun(
       denominatorEligible: false,
       note: 'validate/calibration/PTY-smoke skeleton; no turn is counted toward the formal 3000-turn denominator',
     });
-    await appendJournal(journalFile, {
+    await appendJournal(context, {
       kind: 'run_started',
       occurredAt: new Date().toISOString(),
       mode: options.mode,
@@ -1467,6 +1618,9 @@ async function main(): Promise<void> {
       formalExecutionGate: 'NO-GO: fixture/action/oracle execution and resumable 100x30 proof remain incomplete',
     }, null, 2)}\n`);
     return;
+  }
+  if (options.skipBuild) {
+    throw new Error('real Provider modes require a clean build; --skip-build is forbidden');
   }
   if (options.mode === 'soak') {
     throw new Error([
@@ -1499,7 +1653,7 @@ async function main(): Promise<void> {
     } else {
       await verifyPtyPrerequisite(context);
     }
-    await appendJournal(context.journalFile, {
+    await appendJournal(context, {
       kind: 'run_finished',
       occurredAt: new Date().toISOString(),
       aggregate: context.aggregate,

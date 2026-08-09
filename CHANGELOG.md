@@ -50,11 +50,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - commit a successful Daemon Task terminal state in SQLite before best-effort
   execution-ledger cleanup, preventing cleanup failure from reopening the Task or
   repeating the Provider call
-- harden the formal conversation runner with synced headless dispatch journals,
-  durable no-clobber evidence/checkpoints and an external private secret root; keep
-  persistent-PTY pre-dispatch journaling, journal fail-stop, monotonic concurrent
-  checkpoints, full resume, executable per-scenario oracles and formal Tool policies
-  as explicit blockers, with the 100-by-30 denominator still zero
+- harden the formal conversation runner so headless and persistent-PTY model turns
+  fsync a pre-input dispatch record, the journal permanently poisons on its first I/O
+  failure, and single-writer generation/sequence checkpoints cannot regress; recover
+  SIGKILL-abandoned external credentials by owner process identity without following
+  hardlinks or symlinks, project one production-schema Provider/model over HTTPS with
+  no URL userinfo and one key, make the PTY read that exact key only from the private
+  external env file for in-memory redaction, forbid stale `--skip-build`, and bind
+  runtime identity to clean HEAD, all `dist`
+  bytes, the Node executable, resolved `node_modules`, helpers, and manifest. PTY
+  closure verification is still whole-smoke rather than per-turn; full resume,
+  executable scenario actions/fixtures/oracles and W/F Tool policies remain explicit
+  blockers, no new real-Provider calibration was run for this tranche, and the formal
+  100-by-30 denominator remains zero
 - add an authenticated local-only no-tools calibration policy with an exact empty
   SDK Tool surface, a synchronous pre-provider Trace receipt, single-provider
   credential isolation, content-bound runtime identity, and byte-verified

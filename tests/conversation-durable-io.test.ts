@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
   chmod,
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -9,6 +10,9 @@ import {
   readdir,
   rm,
   stat,
+  symlink,
+  unlink,
+  writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +24,9 @@ import {
   durableAppend,
   durableReplace,
   durableWriteExclusive,
+  DurableJournalWriter,
+  MonotonicCheckpointWriter,
+  recoverEphemeralCredentialFiles,
 } from '../scripts/conversation-durable-io.js';
 
 const repositoryRoot = path.resolve(import.meta.dirname, '..');
@@ -122,7 +129,104 @@ test('durable append completes file and directory sync before dispatch and a fai
   }
 });
 
-test('Provider credential files live outside retained evidence and a SIGKILL cannot copy the secret into the bundle', async () => {
+test('journal writer serializes concurrent appends and remains poisoned after its first durability fault', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-conversation-journal-writer-'));
+  try {
+    const journal = path.join(root, 'evidence.jsonl');
+    const writer = new DurableJournalWriter(journal);
+    const phases: string[] = [];
+    let unblockFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => { unblockFirst = resolve; });
+    let firstReachedWrite!: () => void;
+    const firstWritten = new Promise<void>((resolve) => { firstReachedWrite = resolve; });
+
+    const first = writer.append('first\n', {
+      onPhase: async (current) => {
+        phases.push(`first:${current}`);
+        if (current === 'append-written') {
+          firstReachedWrite();
+          await firstBlocked;
+        }
+        if (current === 'append-synced') throw new Error('synthetic-journal-fsync-fault');
+      },
+    });
+    const firstFailure = assert.rejects(first, /synthetic-journal-fsync-fault/u);
+    await firstWritten;
+
+    const second = writer.append('second\n', {
+      onPhase: (current) => { phases.push(`second:${current}`); },
+    });
+    const secondFailure = assert.rejects(second, /synthetic-journal-fsync-fault/u);
+    let providerCalls = 0;
+    const dispatch = writer.dispatchBarrier(() => {
+      providerCalls += 1;
+    });
+    const dispatchFailure = assert.rejects(dispatch, /synthetic-journal-fsync-fault/u);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(phases, ['first:append-written']);
+
+    unblockFirst();
+    await Promise.all([firstFailure, secondFailure, dispatchFailure]);
+    assert.equal(providerCalls, 0);
+    assert.deepEqual(phases, ['first:append-written', 'first:append-synced']);
+    assert.equal(await readFile(journal, 'utf8'), 'first\n');
+
+    await assert.rejects(writer.append('third\n'), /synthetic-journal-fsync-fault/u);
+    await assert.rejects(writer.dispatchBarrier(() => {
+      providerCalls += 1;
+    }), /synthetic-journal-fsync-fault/u);
+    assert.equal(providerCalls, 0);
+    assert.equal(await readFile(journal, 'utf8'), 'first\n');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('monotonic checkpoint writer rejects an old generation that completes after a newer snapshot', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-conversation-checkpoint-writer-'));
+  try {
+    const checkpoint = path.join(root, 'checkpoint.json');
+    const writer = new MonotonicCheckpointWriter(checkpoint);
+    await writer.write({ generation: 1, sequence: 0 }, 'initial\n');
+
+    let unblockOld!: () => void;
+    const oldBlocked = new Promise<void>((resolve) => { unblockOld = resolve; });
+    let oldReachedTemporarySync!: () => void;
+    const oldTemporarySynced = new Promise<void>((resolve) => {
+      oldReachedTemporarySync = resolve;
+    });
+    const oldWrite = writer.write({ generation: 1, sequence: 1 }, 'old-late\n', {
+      onPhase: async (current) => {
+        if (current !== 'temporary-synced') return;
+        oldReachedTemporarySync();
+        await oldBlocked;
+      },
+    });
+    const oldFailure = assert.rejects(oldWrite, /stale checkpoint version/iu);
+    await oldTemporarySynced;
+
+    await writer.write({ generation: 1, sequence: 2 }, 'newer\n');
+    assert.equal(await readFile(checkpoint, 'utf8'), 'newer\n');
+    unblockOld();
+    await oldFailure;
+    assert.equal(await readFile(checkpoint, 'utf8'), 'newer\n');
+
+    await assert.rejects(
+      writer.write({ generation: 1, sequence: 2 }, 'duplicate\n'),
+      /stale checkpoint version/iu,
+    );
+    await assert.rejects(
+      writer.write({ generation: 0, sequence: 999 }, 'old-generation\n'),
+      /stale checkpoint version/iu,
+    );
+    assert.equal(await readFile(checkpoint, 'utf8'), 'newer\n');
+    assert.deepEqual((await readdir(root)).filter((name) => name.includes('.tmp-')), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('startup recovery overwrites and removes a Provider credential abandoned by SIGKILL', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-conversation-secret-evidence-'));
   const evidenceRoot = path.join(root, 'evidence');
   const privateTemporaryRoot = path.join(root, 'private-tmp');
@@ -156,6 +260,7 @@ test('Provider credential files live outside retained evidence and a SIGKILL can
     assert.equal(path.resolve(credential.root).startsWith(`${path.resolve(evidenceRoot)}${path.sep}`), false);
     assert.equal(await mode(credential.root), 0o700);
     assert.equal(await mode(credential.file), 0o600);
+    assert.equal(await mode(path.join(credential.root, '.owner')), 0o600);
     assert.equal(await readFile(credential.file, 'utf8'), `ONLY_KEY=${secret}\n`);
 
     child.kill('SIGKILL');
@@ -168,13 +273,29 @@ test('Provider credential files live outside retained evidence and a SIGKILL can
     for (const file of retainedFiles) {
       assert.doesNotMatch(await readFile(path.join(evidenceRoot, file), 'utf8'), new RegExp(secret, 'u'));
     }
+    const recovery = await recoverEphemeralCredentialFiles({
+      temporaryRoot: privateTemporaryRoot,
+    });
+    assert.deepEqual(recovery, { scanned: 1, recovered: 1, preserved: 0 });
+    await assert.rejects(lstat(credential.root), /ENOENT/u);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
+test('normal Provider credential cleanup overwrites the secret and durably removes its owner root', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'mimi-conversation-secret-cleanup-'));
+  const credential = await createEphemeralCredentialFile('ONLY_KEY=normal-cleanup-secret\n', {
+    temporaryRoot,
+  });
+  try {
     const cleanupPhases: string[] = [];
     await cleanupEphemeralCredentialFile(credential, {
       onPhase: async (phase) => {
         cleanupPhases.push(phase);
         if (phase === 'credential-overwritten') {
-          assert.ok((await readFile(credential!.file)).every((byte) => byte === 0));
+          assert.ok((await readFile(credential.file)).every((byte) => byte === 0));
         }
       },
     });
@@ -185,8 +306,101 @@ test('Provider credential files live outside retained evidence and a SIGKILL can
     ]);
     await assert.rejects(lstat(credential.root), /ENOENT/u);
   } finally {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    if (credential) await cleanupEphemeralCredentialFile(credential).catch(() => undefined);
-    await rm(root, { recursive: true, force: true });
+    await cleanupEphemeralCredentialFile(credential).catch(() => undefined);
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('credential recovery preserves the live owner and reclaims a reused PID identity', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'mimi-conversation-secret-owner-'));
+  const credential = await createEphemeralCredentialFile('ONLY_KEY=owner-identity-secret\n', {
+    temporaryRoot,
+  });
+  try {
+    assert.deepEqual(
+      await recoverEphemeralCredentialFiles({ temporaryRoot, graceMs: 0 }),
+      { scanned: 1, recovered: 0, preserved: 1 },
+    );
+    assert.equal(await readFile(credential.file, 'utf8'), 'ONLY_KEY=owner-identity-secret\n');
+
+    const ownerFile = path.join(credential.root, '.owner');
+    const owner = JSON.parse(await readFile(ownerFile, 'utf8')) as {
+      processStartIdentity: string;
+    };
+    owner.processStartIdentity = `${owner.processStartIdentity}:pid-reused`;
+    await writeFile(ownerFile, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
+
+    assert.deepEqual(
+      await recoverEphemeralCredentialFiles({ temporaryRoot }),
+      { scanned: 1, recovered: 1, preserved: 0 },
+    );
+    await assert.rejects(lstat(credential.root), /ENOENT/u);
+  } finally {
+    await cleanupEphemeralCredentialFile(credential).catch(() => undefined);
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('credential recovery gives malformed owners grace and never follows a credential symlink', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'mimi-conversation-secret-guard-'));
+  const malformedRoot = path.join(temporaryRoot, 'mimi-conversation-secret-ABC123');
+  const externalFile = path.join(temporaryRoot, 'external.env');
+  await mkdir(malformedRoot, { mode: 0o700 });
+  await Promise.all([
+    writeFile(path.join(malformedRoot, '.owner'), '{malformed', { mode: 0o600 }),
+    writeFile(path.join(malformedRoot, '.env'), 'MALFORMED_OWNER_SECRET=1\n', { mode: 0o600 }),
+    writeFile(externalFile, 'EXTERNAL_SENTINEL=untouched\n', { mode: 0o600 }),
+  ]);
+  const symlinkCredential = await createEphemeralCredentialFile('ONLY_KEY=replace-me\n', {
+    temporaryRoot,
+  });
+  try {
+    const ownerFile = path.join(symlinkCredential.root, '.owner');
+    const owner = JSON.parse(await readFile(ownerFile, 'utf8')) as {
+      processStartIdentity: string;
+    };
+    owner.processStartIdentity = `${owner.processStartIdentity}:pid-reused`;
+    await writeFile(ownerFile, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
+    await unlink(symlinkCredential.file);
+    await symlink(externalFile, symlinkCredential.file);
+
+    const recovery = await recoverEphemeralCredentialFiles({
+      temporaryRoot,
+      graceMs: 60 * 60 * 1_000,
+    });
+    assert.deepEqual(recovery, { scanned: 2, recovered: 0, preserved: 2 });
+    assert.equal(await readFile(path.join(malformedRoot, '.env'), 'utf8'), 'MALFORMED_OWNER_SECRET=1\n');
+    assert.equal(await readFile(externalFile, 'utf8'), 'EXTERNAL_SENTINEL=untouched\n');
+    assert.equal((await lstat(symlinkCredential.file)).isSymbolicLink(), true);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('credential recovery never overwrites a hard-linked external file', async () => {
+  const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'mimi-conversation-secret-hardlink-'));
+  const externalFile = path.join(temporaryRoot, 'external.env');
+  await writeFile(externalFile, 'EXTERNAL_HARDLINK_SENTINEL=untouched\n', { mode: 0o600 });
+  const credential = await createEphemeralCredentialFile('ONLY_KEY=replace-me\n', {
+    temporaryRoot,
+  });
+  try {
+    const ownerFile = path.join(credential.root, '.owner');
+    const owner = JSON.parse(await readFile(ownerFile, 'utf8')) as {
+      processStartIdentity: string;
+    };
+    owner.processStartIdentity = `${owner.processStartIdentity}:pid-reused`;
+    await writeFile(ownerFile, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
+    await unlink(credential.file);
+    await link(externalFile, credential.file);
+
+    assert.deepEqual(
+      await recoverEphemeralCredentialFiles({ temporaryRoot, graceMs: 0 }),
+      { scanned: 1, recovered: 0, preserved: 1 },
+    );
+    assert.equal(await readFile(externalFile, 'utf8'), 'EXTERNAL_HARDLINK_SENTINEL=untouched\n');
+    assert.equal((await stat(externalFile)).nlink, 2);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true });
   }
 });

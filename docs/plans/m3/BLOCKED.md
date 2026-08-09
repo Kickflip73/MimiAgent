@@ -65,12 +65,18 @@
   完整 resume 与正式 100×30 soak 仍保持 Provider 前 `NO-GO`。
   `realProviderTurnsExecuted=0`、正式分母为 0，直到
   正式场景证据通过审计后才可更新前者；现有校准轮次不计入正式分母。
-- formal runner 的 headless `turn_dispatch_started` journal、checkpoint 和 no-clobber evidence
-  publish 已具备 file/dir durable sync，真实 Provider `.env` 已移到可保留 evidence bundle 外的
-  私有临时根并在正常退出时覆盖删除。但持久 PTY 尚无逐轮 pre-dispatch journal；journal I/O
-  失败仍须全局 fail-stop；并发 checkpoint 需证明单调；SIGKILL secret recovery、完整 resume、
-  逐场景 fixture/oracle 和 W/F 正式 Tool policy 仍未闭环。正式 100×30 soak 在这些边界完成前
-  继续 `NO-GO`，不因 durability tranche 或既有 calibration 计数。
+- formal runner 的 headless 与持久 PTY model-turn 均已在输入前 durable `fsync`
+  `turn_dispatch_started`；journal 首错永久 poison 并通过 dispatch barrier fail-stop，checkpoint
+  由 single-writer `generation + sequence` 保证单调。SIGKILL 外置 credential owner/recovery、
+  live 保留、PID reuse 回收及 hardlink/symlink fail-safe 已有确定性回归；models 仅投影严格生产
+  schema 的单 Provider/单 Model、HTTPS 无 userinfo 配置，并只复制一个 key；PTY 仅从私有
+  env 文件读取该声明 key 用于内存脱敏，异常在输入前拒绝。真实模式禁止 `--skip-build`；runtime closure
+  绑定 clean HEAD、`dist/**`、Node executable、实际 `node_modules` 字节、runner helpers 和
+  manifest，在启动前与 headless 每轮前后复核；PTY 当前仅在整体前后复核 closure，逐轮只有
+  dispatch journal，不能扩大为逐轮 runtime identity 证据。
+- 完整 resume、逐场景 action/fixture/oracle 的真实执行与 W/F 强制 Tool policy 仍未闭环，因而
+  正式 100×30 soak 继续 `NO-GO`。本轮 WIP 没有运行新的真实 Provider calibration；既有
+  calibration-only 证据不计正式轮次，`realProviderTurnsExecuted=0`、正式分母仍为 0。
 - CAS owner/ref/GC 已进入 production attachment path，并通过完整单测/coverage CI 以及进程
   终止、锁恢复、并发 owner、启动 reconcile 等确定性 fault-injection；真实掉电与长期配额/GC
   soak 仍未形成 promotion 证据。发生不确定恢复状态时必须保留 ref 并失败关闭，不能用 unit

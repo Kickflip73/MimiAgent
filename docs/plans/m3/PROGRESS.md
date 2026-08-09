@@ -176,11 +176,25 @@
   与 CLI→Event→Task→Dispatcher→真实 pipeline 回归。没有请求真实 Speech 权限，没有读取真实
   用户音频，也没有 live Provider、设备或延迟 soak；因此这只证明工程路径可达，不计 live 媒体
   会话或实时语音轮次。
-- conversation runner 已为 headless 派发增加同步 `turn_dispatch_started` journal、durable
-  checkpoint/no-clobber evidence publish，并把单 Provider secret 放到 evidence bundle 外的私有
-  临时根，正常退出时覆盖删除。持久 PTY 的逐轮 pre-dispatch journal、journal I/O 全局 fail-stop、
-  并发 checkpoint 单调性、SIGKILL secret recovery、完整 resume、逐场景 fixture/oracle 与 W/F
-  正式 Tool policy 仍未闭环；没有启动新的 formal soak，正式分母保持 0。
+- conversation runner 的 headless 与持久 PTY model-turn 现在都在输入前同步、`fsync` 写入
+  `turn_dispatch_started`；PTY 只有该 journal 是逐轮的，runtime closure 仍只在整个 PTY smoke
+  前后复核。`DurableJournalWriter` 在首次 I/O 错误后永久 poison，dispatch barrier 会阻止本轮
+  输入及后续派发；checkpoint 通过 single-writer `generation + sequence` 拒绝迟到或回退写入。
+- 单 Provider credential 根位于 evidence bundle 外，使用已同步的 owner identity 支持 SIGKILL
+  恢复：仍存活的 owner 保留，PID reuse/dead owner 回收，hardlink/symlink 或不可信 owner 状态
+  失败关闭。Provider models 配置只从生产 schema 投影为单 Provider/单 Model，要求 HTTPS 且
+  URL 无 userinfo，只把一个选中的 key 写入 `0600` 临时 env；PTY helper 从该文件同 fd 有界
+  读取声明的唯一 key 做内存脱敏，权限、owner、hardlink/symlink 或记录不一致均在输入前拒绝。
+- runtime closure 身份覆盖 clean HEAD、完整 `dist/**`、Node 可执行文件、实际解析的
+  `node_modules` 文件字节、runner helpers、contract、manifest 与 lockfile；启动前、headless
+  每轮前后和 PTY 整体前后均重新计算并比较，真实模式不允许用 `--skip-build` 绑定陈旧产物。
+  最终文件集的相关 focused tests 32/32、
+  `npm run check` 与 `npm test` 1110/1110 均通过；完整 `npm run ci` 也退出 0，coverage
+  line/branch/function 分别为 89.37% / 79.26% / 85.82%，随后 clean build 与 packed-package
+  smoke 通过。完整测试耗时约 122.7 秒；这些仍是工程/fixture 证据，不计真实 Provider 轮次。
+- 完整 resume、逐场景 action/fixture/oracle 执行与 W/F 强制 Tool policy 仍未闭环；本轮没有
+  发起新的真实 Provider calibration 或 formal soak，`realProviderTurnsExecuted=0`、正式分母
+  保持 0。
 
 ## M3 能力审计
 

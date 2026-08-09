@@ -135,10 +135,22 @@ CLI -> Daemon -> Provider 路径的自动化终端基准，不能混称 PTY。
 回执或 secret 命中会全局停止派发且不重试。
 
 当前 manifest 含 103 个场景、每场景 30 个声明轮次（3090 declared turns，其中 100 个 core
-场景对应目标分母 3000，3 个为 supplemental）。runner 已为 headless lane 增加 durable dispatch
-journal/checkpoint/evidence publish，并把 Provider secret 移出可保留 evidence bundle；持久 PTY
-逐轮 pre-dispatch、journal fail-stop、checkpoint 单调性、完整 resume、逐场景 fixture/oracle 与
-正式 Tool policy 仍未闭环。runner 在这些门禁就绪前保持正式 Provider soak `NO-GO`；因此
-`realProviderTurnsExecuted=0`、正式分母为 0，manifest 校验和 PTY helper 均不计入真实轮次。
+场景对应目标分母 3000，3 个为 supplemental）。runner 的 headless 和持久 PTY model-turn 均在
+输入前同步、`fsync` 写入 `turn_dispatch_started`；`DurableJournalWriter` 首次 I/O 错误后永久
+poison 并由 dispatch barrier 停止后续派发，checkpoint 由 single-writer
+`generation + sequence` 保证单调。Provider 凭据位于 evidence bundle 外的 owner-bound 私有根，
+SIGKILL 后按 PID start identity 恢复，live owner 保留、PID reuse 回收，hardlink/symlink 异常
+失败关闭。models 配置只接受严格生产 schema 投影出的单 Provider/单 Model、HTTPS 且无
+userinfo，并只复制一个选中的 key；PTY 只从外置 `0600` env 文件读取该声明 key 用于内存
+脱敏，缺失、权限或 link 异常在输入前失败关闭。真实模式禁止 `--skip-build`，runtime closure
+绑定 clean HEAD、完整 `dist/**`、Node
+可执行文件、实际 `node_modules` 文件字节、runner helpers 与 manifest，并在启动前、headless
+每轮前后及 PTY 整体前后复核。PTY 当前只有逐轮 durable journal，closure 仍是整个 PTY smoke
+前后复核，不应写成逐轮 closure 证明。
+
+完整 resume、逐场景 action/fixture/oracle 执行和 W/F 强制 Tool policy 仍未闭环；正式
+Provider soak 因此保持 `NO-GO`。本轮 durability WIP 未发起新的真实 Provider calibration，
+`realProviderTurnsExecuted=0`、正式分母为 0；manifest 校验、PTY helper 和既有 calibration-only
+证据均不计入正式轮次。
 
 进度与客观阻断分别记录在 [PROGRESS.md](PROGRESS.md) 和 [BLOCKED.md](BLOCKED.md)。

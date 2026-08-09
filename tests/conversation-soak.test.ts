@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -399,25 +399,60 @@ test('runner uses only the built CLI boundary and Python stdlib PTY helper', asy
   assert.match(pty, /os\.isatty\(0\)/u);
   assert.match(pty, /write_all\(master_fd, BRACKETED_PASTE_START\)[\s\S]+write_all\(master_fd, BRACKETED_PASTE_END\)[\s\S]+time\.sleep\(0\.05\)[\s\S]+write_all\(master_fd, b"\\r"\)/u);
   assert.match(pty, /def write_all\(descriptor, value\):/u);
+  assert.match(pty, /def dispatch_action\(master_fd, action, args\):[\s\S]+append_dispatch_started\(args\.journal, action\)[\s\S]+submit_action\(master_fd, action\)/u);
+  assert.match(pty, /os\.O_WRONLY \| os\.O_CREAT \| os\.O_APPEND/u);
+  assert.match(pty, /os\.fsync\(descriptor\)[\s\S]+os\.fsync\(directory\)/u);
   assert.match(runner, /MIMI_CONVERSATION_RUN_POLICY: 'benchmark-no-tools-v1'/u);
   assert.match(runner, /MIMI_MEMORY_RETRIEVAL_MODE: 'lexical'/u);
   assert.match(runner, /MIMI_CONVERSATION_PROVIDER_ENV_ALLOWLIST is forbidden/u);
-  assert.match(runner, /durableAppend/u);
+  assert.match(runner, /new DurableJournalWriter\(journalFile\)/u);
+  assert.match(runner, /new MonotonicCheckpointWriter\(checkpointFile\)/u);
+  assert.match(runner, /journalWriter\.dispatchBarrier\(\(\) => captureCliTurn/u);
   assert.match(runner, /createEphemeralCredentialFile/u);
+  assert.match(runner, /projectConversationProviderConfigJson/u);
+  assert.match(runner, /const values: NodeJS\.ProcessEnv = \{\};/u);
   assert.doesNotMatch(runner, /path\.join\(configRoot, '\.env'\)/u);
-  assert.match(runner, /kind: 'turn_dispatch_started',[\s\S]{0,800}await captureCliTurn/u);
+  assert.match(runner, /kind: 'turn_dispatch_started',[\s\S]{0,900}dispatchBarrier\(\(\) => captureCliTurn/u);
   assert.match(runner, /calibration proof mismatch/u);
   assert.match(runner, /formalDenominatorTurns: 0/u);
   assert.match(runner, /digestTree\(path\.join\(repositoryRoot, 'dist'\)\)/u);
   assert.match(runner, /durableIoFile/u);
+  assert.match(runner, /providerConfigFile/u);
+  assert.match(runner, /runtimeIntegrityFile/u);
+  assert.match(runner, /snapshotRuntimeDependencyTree/u);
+  assert.match(runner, /assertRuntimeDependencySnapshot/u);
+  assert.match(runner, /P0 runtime closure changed/u);
+  assert.match(runner, /real Provider modes require a clean build; --skip-build is forbidden/u);
   assert.doesNotMatch(runner, /streamCandidateObserved/u);
   assert.match(pty, /transportChunksObserved/u);
+});
+
+test('real Provider runner modes reject --skip-build before credentials or dispatch', async () => {
+  const runner = path.join(repositoryRoot, 'scripts', 'run-conversation-soak.ts');
+  await assert.rejects(
+    execFileAsync(process.execPath, [
+      '--import', 'tsx', runner,
+      '--mode', 'calibrate',
+      '--skip-build',
+    ], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        TMPDIR: process.env.TMPDIR,
+      },
+    }),
+    /real Provider modes require a clean build; --skip-build is forbidden/u,
+  );
 });
 
 test('PTY helper rejects input-echo completion and cannot pass a flooded action list', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-pty-contract-'));
   try {
     const helper = path.join(repositoryRoot, 'scripts', 'run-conversation-pty.py');
+    const credentialFile = path.join(root, '.env');
+    await writeFile(credentialFile, 'TEST_PROVIDER_KEY="synthetic-test-provider-key"\n', { mode: 0o600 });
     const invalidActions = path.join(root, 'invalid-actions.json');
     await writeFile(invalidActions, JSON.stringify([
       { kind: 'model_turn', text: '输入里已经有完成', waitFor: '完成' },
@@ -434,9 +469,15 @@ test('PTY helper rejects input-echo completion and cannot pass a flooded action 
 
     const floodedActions = path.join(root, 'flooded-actions.json');
     const floodedResult = path.join(root, 'flooded-result.json');
+    const floodedJournal = path.join(root, 'flooded-evidence.jsonl');
     await writeFile(floodedActions, JSON.stringify([
       ...Array.from({ length: 30 }, (_, index) => ({
         kind: 'model_turn', text: `SCENE=test TURN=${index + 1} NONCE=input-echo-${index + 1}`,
+        scenarioId: 'conv-test',
+        turn: index + 1,
+        nonce: `input-echo-${index + 1}`,
+        sessionId: 'test-session',
+        evidenceKind: 'soak',
         timeoutMs: 50,
       })),
       { kind: 'terminal_action', text: '/exit', waitForExit: true, timeoutMs: 50 },
@@ -446,10 +487,19 @@ test('PTY helper rejects input-echo completion and cannot pass a flooded action 
       '--actions', floodedActions,
       '--transcript', path.join(root, 'flooded.raw'),
       '--result', floodedResult,
+      '--journal', floodedJournal,
       '--session-id', 'test-session',
       '--startup-timeout-ms', '50',
       '--', '/usr/bin/true', 'fake-dist-index.js',
-    ], { cwd: root, encoding: 'utf8' }));
+    ], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        MIMI_CONVERSATION_SECRET_NAMES: 'TEST_PROVIDER_KEY',
+        MIMI_ENV_FILE: credentialFile,
+      },
+    }));
     const result = JSON.parse(await readFile(floodedResult, 'utf8')) as {
       passed: boolean;
       actions: unknown[];
@@ -458,6 +508,140 @@ test('PTY helper rejects input-echo completion and cannot pass a flooded action 
     assert.equal(result.passed, false);
     assert.equal(result.actions.length, 0);
     assert.equal(result.exitCode, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('PTY exact-secret redaction reads only the private selected env record and fails closed', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-pty-secret-redaction-'));
+  try {
+    const helper = path.join(repositoryRoot, 'scripts', 'run-conversation-pty.py');
+    const credentialFile = path.join(root, '.env');
+    const secret = 'friday-value-without-generic-token-shape!';
+    await writeFile(credentialFile, `FRIDAY_API_KEY=${JSON.stringify(secret)}\n`, { mode: 0o600 });
+    const program = String.raw`
+import importlib.util
+import json
+import os
+
+spec = importlib.util.spec_from_file_location("mimi_pty", os.environ["PTY_HELPER"])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+secrets = module.secret_values()
+sanitized, hits = module.redact(b"prefix:" + secrets[0] + b":suffix", secrets)
+passed = module.proof_passed(None, 0, True, hits, [{"modelRun": {"provenTerminal": True}}])
+print(json.dumps({"hits": hits, "leaked": secrets[0] in sanitized, "passed": passed}))
+`;
+    const environment = {
+      ...process.env,
+      PYTHONDONTWRITEBYTECODE: '1',
+      PTY_HELPER: helper,
+      MIMI_CONVERSATION_SECRET_NAMES: 'FRIDAY_API_KEY',
+      MIMI_ENV_FILE: credentialFile,
+    };
+    const { stdout } = await execFileAsync('python3', ['-c', program], {
+      cwd: root,
+      encoding: 'utf8',
+      env: environment,
+    });
+    assert.deepEqual(JSON.parse(stdout), { hits: 1, leaked: false, passed: false });
+    assert.doesNotMatch(stdout, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+
+    await chmod(credentialFile, 0o644);
+    await assert.rejects(
+      execFileAsync('python3', ['-c', program], { cwd: root, encoding: 'utf8', env: environment }),
+      /permissions or link count are invalid/u,
+    );
+    await chmod(credentialFile, 0o600);
+    await assert.rejects(
+      execFileAsync('python3', ['-c', program], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...environment, MIMI_ENV_FILE: path.join(root, 'missing.env') },
+      }),
+      /FileNotFoundError|No such file or directory/u,
+    );
+    await assert.rejects(
+      execFileAsync('python3', ['-c', program], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...environment, MIMI_CONVERSATION_SECRET_NAMES: 'FRIDAY_API_KEY,SECOND_KEY' },
+      }),
+      /exactly one valid declared Provider secret name/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('PTY dispatch journal is durable, private, ordered, and fail-closed before input', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-pty-journal-'));
+  try {
+    const helper = path.join(repositoryRoot, 'scripts', 'run-conversation-pty.py');
+    const journal = path.join(root, 'evidence.jsonl');
+    const program = String.raw`
+import importlib.util
+import json
+import os
+import types
+
+spec = importlib.util.spec_from_file_location("mimi_pty", os.environ["PTY_HELPER"])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+action = {
+    "kind": "model_turn",
+    "text": "hello",
+    "scenarioId": "conv-001",
+    "turn": 1,
+    "nonce": "nonce-001",
+    "sessionId": "session-001",
+    "evidenceKind": "soak",
+}
+submitted = []
+def observe_submit(*_):
+    with open(os.environ["JOURNAL"], encoding="utf-8") as journal:
+        submitted.append(journal.read())
+module.submit_action = observe_submit
+module.dispatch_action(-1, action, types.SimpleNamespace(journal=os.environ["JOURNAL"]))
+if not submitted or '"kind":"turn_dispatch_started"' not in submitted[0]:
+    raise AssertionError("PTY input was submitted before the durable journal record was observable")
+failed_submitted = []
+module.append_dispatch_started = lambda *_: (_ for _ in ()).throw(OSError("injected journal failure"))
+module.submit_action = lambda *_: failed_submitted.append(True)
+try:
+    module.dispatch_action(-1, action, types.SimpleNamespace(journal=os.environ["JOURNAL"]))
+except OSError:
+    pass
+else:
+    raise AssertionError("injected journal failure did not propagate")
+if failed_submitted:
+    raise AssertionError("PTY input was submitted after journal failure")
+print(json.dumps({"ordered": len(submitted), "submittedAfterFailure": len(failed_submitted)}))
+`;
+    const { stdout } = await execFileAsync('python3', ['-c', program], {
+      cwd: root,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PYTHONDONTWRITEBYTECODE: '1',
+        PTY_HELPER: helper,
+        JOURNAL: journal,
+      },
+    });
+    assert.deepEqual(JSON.parse(stdout), { ordered: 1, submittedAfterFailure: 0 });
+    const bytes = await readFile(journal, 'utf8');
+    const records = bytes.trimEnd().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+    assert.deepEqual(records.map(({ occurredAt: _occurredAt, ...record }) => record), [{
+      kind: 'turn_dispatch_started',
+      scenarioId: 'conv-001',
+      turn: 1,
+      nonce: 'nonce-001',
+      sessionId: 'session-001',
+      evidenceKind: 'soak',
+      denominatorEligible: false,
+    }]);
+    assert.equal((await stat(journal)).mode & 0o777, 0o600);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
