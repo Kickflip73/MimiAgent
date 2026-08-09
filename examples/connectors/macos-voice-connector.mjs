@@ -154,6 +154,71 @@ function boolean(value, label, fallback) {
   return value;
 }
 
+function transcriptionReceipt(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('voice recognizer receipt must be an object');
+  }
+  const allowed = new Set([
+    'receiptVersion', 'adapter', 'adapterVersion', 'final', 'text', 'charCount',
+    'truncated', 'locale', 'onDevice', 'segments', 'untrusted',
+  ]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) {
+    throw new Error('voice recognizer receipt contains unsupported fields');
+  }
+  if (value.receiptVersion !== 1 || value.adapter !== 'macos-speech-framework'
+    || value.adapterVersion !== '1' || value.final !== true || value.untrusted !== true) {
+    throw new Error('voice recognizer receipt identity/finality is invalid');
+  }
+  const text = boundedString(value.text, 'receipt.text', 100_000);
+  if (!Number.isSafeInteger(value.charCount) || value.charCount < 0
+    || typeof value.truncated !== 'boolean' || typeof value.onDevice !== 'boolean') {
+    throw new Error('voice recognizer receipt counters are invalid');
+  }
+  const receiptLocale = localeValue(value.locale, 'receipt.locale');
+  if (!Array.isArray(value.segments) || value.segments.length > 2_000) {
+    throw new Error('voice recognizer receipt segments are invalid');
+  }
+  let previousStart = -1;
+  const segments = value.segments.map((raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+      || Object.keys(raw).some((key) => !['startMs', 'endMs', 'text', 'confidence'].includes(key))) {
+      throw new Error(`voice recognizer segment ${index} is invalid`);
+    }
+    const startMs = raw.startMs;
+    const endMs = raw.endMs;
+    if (!Number.isSafeInteger(startMs) || startMs < 0 || !Number.isSafeInteger(endMs)
+      || endMs <= startMs || startMs < previousStart) {
+      throw new Error(`voice recognizer segment ${index} timing is invalid`);
+    }
+    previousStart = startMs;
+    const segmentText = boundedString(raw.text, `receipt.segments[${index}].text`, 4_000, true);
+    if (raw.confidence !== undefined
+      && (typeof raw.confidence !== 'number' || !Number.isFinite(raw.confidence)
+        || raw.confidence < 0 || raw.confidence > 1)) {
+      throw new Error(`voice recognizer segment ${index} confidence is invalid`);
+    }
+    return {
+      startMs,
+      endMs,
+      text: segmentText,
+      ...(raw.confidence === undefined ? {} : { confidence: raw.confidence }),
+    };
+  });
+  return {
+    receiptVersion: 1,
+    adapter: 'macos-speech-framework',
+    adapterVersion: '1',
+    final: true,
+    text,
+    charCount: value.charCount,
+    truncated: value.truncated,
+    locale: receiptLocale,
+    onDevice: value.onDevice,
+    segments,
+    untrusted: true,
+  };
+}
+
 function validate(action, target, rawPayload) {
   if (!ACTIONS.has(action)) throw new Error(`unsupported action: ${String(action)}`);
   const payload = payloadObject(rawPayload);
@@ -187,6 +252,7 @@ function runCommand(command, args, timeoutMs, maxOutputBytes, captureOutput = tr
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       env: { PATH: process.env.PATH, HOME: process.env.HOME, LANG: process.env.LANG, TMPDIR: process.env.TMPDIR },
+      detached: true,
       stdio: ['ignore', captureOutput ? 'pipe' : 'ignore', 'pipe'],
     });
     const chunks = [];
@@ -194,11 +260,17 @@ function runCommand(command, args, timeoutMs, maxOutputBytes, captureOutput = tr
     let stderr = '';
     let timedOut = false;
     let overflow = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs);
+    const killTree = () => {
+      if (child.pid) {
+        try { process.kill(-child.pid, 'SIGKILL'); return; } catch {}
+      }
+      child.kill('SIGKILL');
+    };
+    const timer = setTimeout(() => { timedOut = true; killTree(); }, timeoutMs);
     if (captureOutput) {
       child.stdout.on('data', (chunk) => {
         outputBytes += chunk.byteLength;
-        if (outputBytes > maxOutputBytes) { overflow = true; child.kill('SIGKILL'); return; }
+        if (outputBytes > maxOutputBytes) { overflow = true; killTree(); return; }
         chunks.push(chunk);
       });
     }
@@ -436,19 +508,26 @@ async function execute(message) {
     return { type: 'action_result', id: message.id, ok: true, result: { voices: lines.slice(0, options.limit).map(parseVoice), total: lines.length, truncated: lines.length > options.limit } };
   }
   if (message.action === 'transcribe_audio') {
-    const info = await stat(options.audioPath);
-    if (!info.isFile()) throw new Error('audio path must be a regular file');
-    if (info.size < 1) throw new Error('audio file is empty');
-    if (info.size > options.maxAudioBytes) throw new Error(`audio file exceeds ${options.maxAudioBytes} bytes`);
-    const timeoutSeconds = Math.max(1, Math.floor(options.timeoutMs / 1_000));
-    const output = await runCommand(swift, [
-      recognizerHelper, 'transcribe', options.audioPath, options.locale, String(options.onDevice),
-      String(timeoutSeconds), String(options.maxChars), wakePhrases.join('\u001f'),
-    ], options.timeoutMs + 2_000, 1_000_000);
-    let result;
-    try { result = JSON.parse(output.toString('utf8').trim()); }
-    catch { throw new Error(`voice recognizer returned invalid JSON: ${output.toString('utf8', 0, 500)}`); }
-    return { type: 'action_result', id: message.id, ok: true, result: { ...result, audioPath: options.audioPath, audioBytes: info.size, untrusted: true } };
+    try {
+      const info = await stat(options.audioPath);
+      if (!info.isFile()) throw new Error('audio path must be a regular file');
+      if (info.size < 1) throw new Error('audio file is empty');
+      if (info.size > options.maxAudioBytes) throw new Error(`audio file exceeds ${options.maxAudioBytes} bytes`);
+      const timeoutSeconds = Math.max(1, Math.floor(options.timeoutMs / 1_000));
+      const output = await runCommand(swift, [
+        recognizerHelper, 'transcribe', options.audioPath, options.locale, String(options.onDevice),
+        String(timeoutSeconds), String(options.maxChars), wakePhrases.join('\u001f'),
+      ], options.timeoutMs + 2_000, 1_000_000);
+      let parsed;
+      try { parsed = JSON.parse(output.toString('utf8').trim()); }
+      catch { throw new Error('voice recognizer returned invalid JSON'); }
+      let result;
+      try { result = transcriptionReceipt(parsed); }
+      catch { throw new Error('voice recognizer returned an invalid receipt'); }
+      return { type: 'action_result', id: message.id, ok: true, result: { ...result, audioBytes: info.size } };
+    } catch (error) {
+      throw new Error(errorText(error).replaceAll(options.audioPath, '<audio-file>'));
+    }
   }
 
   await speak(options);

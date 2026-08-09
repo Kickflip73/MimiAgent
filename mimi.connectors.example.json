@@ -361,7 +361,7 @@
       "actions": {
         "speak": { "description": "使用 macOS say 朗读文本；target 为 default 或系统 voice 名称" },
         "list_voices": { "description": "列出系统可用 voice；target 为 all" },
-        "transcribe_audio": { "description": "使用 Speech Framework 转写绝对路径音频文件" },
+        "transcribe_audio": { "description": "使用 Speech Framework 转写绝对路径音频文件", "capability": "media.audio.transcription.read", "effect": "read", "modelVisible": false },
         "listener_status": { "description": "读取语音 listener 状态；target 为 listener" },
         "listener_start": { "description": "启动并持久启用唤醒短语监听，Connector 或 Daemon 重启后继续生效" },
         "listener_stop": { "description": "停止并持久关闭唤醒短语监听" },

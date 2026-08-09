@@ -10,13 +10,32 @@ final class RecognitionBox: @unchecked Sendable {
     private let lock = NSLock()
     private var signaled = false
     private(set) var text = ""
+    private(set) var segments: [[String: Any]] = []
+    private(set) var segmentsTruncated = false
+    private(set) var isFinal = false
     private(set) var error: Error?
     let semaphore = DispatchSemaphore(value: 0)
 
     func update(result: SFSpeechRecognitionResult?, error: Error?) {
         lock.lock()
         defer { lock.unlock() }
-        if let result { text = result.bestTranscription.formattedString }
+        if let result {
+            text = result.bestTranscription.formattedString
+            isFinal = result.isFinal
+            segmentsTruncated = result.bestTranscription.segments.count > 128
+            segments = result.bestTranscription.segments.prefix(128).compactMap { segment in
+                let value = segment.substring.trimmingCharacters(in: .whitespacesAndNewlines)
+                if value.isEmpty { return nil }
+                let startMs = max(0, Int((segment.timestamp * 1_000).rounded()))
+                let durationMs = max(1, Int((segment.duration * 1_000).rounded()))
+                return [
+                    "startMs": startMs,
+                    "endMs": startMs + durationMs,
+                    "text": String(value.prefix(4_000)),
+                    "confidence": Double(segment.confidence),
+                ]
+            }
+        }
         if let error { self.error = error }
         if (result?.isFinal == true || error != nil) && !signaled {
             signaled = true
@@ -91,12 +110,34 @@ func configure(_ request: SFSpeechRecognitionRequest, onDevice: Bool, contextual
     request.addsPunctuation = true
 }
 
-func bounded(_ value: String, maxChars: Int) -> [String: Any] {
+func bounded(
+    _ value: String,
+    maxChars: Int,
+    segments: [[String: Any]] = [],
+    segmentsTruncated: Bool = false,
+    final: Bool = true
+) -> [String: Any] {
     let text = String(value.prefix(maxChars))
+    var remaining = maxChars
+    var boundedSegments: [[String: Any]] = []
+    for segment in segments {
+        guard remaining > 0, let raw = segment["text"] as? String else { break }
+        let segmentText = String(raw.prefix(min(4_000, remaining)))
+        if segmentText.isEmpty { continue }
+        var bounded = segment
+        bounded["text"] = segmentText
+        boundedSegments.append(bounded)
+        remaining -= segmentText.count
+    }
     return [
+        "receiptVersion": 1,
+        "adapter": "macos-speech-framework",
+        "adapterVersion": "1",
+        "final": final,
         "text": text,
         "charCount": value.count,
-        "truncated": value.count > maxChars,
+        "truncated": value.count > maxChars || segmentsTruncated,
+        "segments": boundedSegments,
         "untrusted": true,
     ]
 }
@@ -114,8 +155,20 @@ func transcribeFile(path: String, locale: String, onDevice: Bool, timeoutSeconds
         throw VoiceFailure(description: "audio transcription timed out")
     }
     task.cancel()
-    if let error = box.error { throw error }
-    return bounded(box.text, maxChars: maxChars)
+    if let error = box.error {
+        let nsError = error as NSError
+        if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110 {
+            return bounded("", maxChars: maxChars, final: true)
+        }
+        throw error
+    }
+    return bounded(
+        box.text,
+        maxChars: maxChars,
+        segments: box.segments,
+        segmentsTruncated: box.segmentsTruncated,
+        final: box.isFinal
+    )
 }
 
 func listenSegment(locale: String, onDevice: Bool, segmentSeconds: Double, maxChars: Int, contextual: [String]) throws -> [String: Any]? {
@@ -151,8 +204,14 @@ func listenSegment(locale: String, onDevice: Bool, segmentSeconds: Double, maxCh
         throw error
     }
     let value = box.text.trimmingCharacters(in: .whitespacesAndNewlines)
-    if value.isEmpty { return nil }
-    return bounded(value, maxChars: maxChars)
+    if value.isEmpty || !box.isFinal { return nil }
+    return bounded(
+        value,
+        maxChars: maxChars,
+        segments: box.segments,
+        segmentsTruncated: box.segmentsTruncated,
+        final: true
+    )
 }
 
 do {

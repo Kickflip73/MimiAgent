@@ -1,5 +1,13 @@
 import type { Tool } from '@openai/agents';
 import type { ExecutionCallRecord } from '../../core/execution-ledger.js';
+import {
+  resolveMediaEvidenceAnchor,
+  type MediaEvidence,
+} from '../../core/media-evidence.js';
+import {
+  runMediaAnchorSchema,
+  type RunMediaAnchor,
+} from '../../core/run-finalization.js';
 
 type InvokableTool = Tool & {
   name: string;
@@ -47,7 +55,57 @@ function semanticFailure(value: unknown): string | undefined {
 /** Captures every model-visible tool result without turning reads into replay-protected effects. */
 export class RunFactCollector {
   private readonly observed: ObservedCall[] = [];
+  private readonly runtimeEvidenceRefs = new Set<string>();
+  private readonly runtimeMediaAnchors = new Map<string, RunMediaAnchor>();
+  private runtimeMediaAnchorsTruncated = false;
   private sequence = 0;
+
+  recordMediaEvidence(
+    evidence: readonly MediaEvidence[],
+    anchors: readonly RunMediaAnchor[] = [],
+  ): void {
+    const byId = new Map(evidence.map((item) => [item.id, item]));
+    for (const item of evidence) {
+      this.runtimeEvidenceRefs.add(item.id);
+      this.runtimeEvidenceRefs.add(item.mediaRef);
+    }
+    for (const candidate of anchors) {
+      const parsed = runMediaAnchorSchema.parse(candidate);
+      const owner = byId.get(parsed.evidenceId);
+      if (!owner) throw new Error(`Run media anchor 缺少 Evidence：${parsed.evidenceId}`);
+      resolveMediaEvidenceAnchor(owner, parsed.anchor);
+      const key = JSON.stringify(parsed);
+      if (this.runtimeMediaAnchors.has(key)) continue;
+      if (this.runtimeMediaAnchors.size >= 100) {
+        this.runtimeMediaAnchorsTruncated = true;
+        continue;
+      }
+      this.runtimeMediaAnchors.set(key, parsed);
+    }
+  }
+
+  recordOriginalMediaEvidence(evidence: readonly MediaEvidence[]): void {
+    this.recordMediaEvidence(evidence, evidence.flatMap((item): RunMediaAnchor[] => {
+      if (item.kind === 'image') {
+        return [{ evidenceId: item.id, anchor: { kind: 'image', imageOrdinal: item.imageOrdinal! } }];
+      }
+      return item.coverage.status === 'metadata-only' || item.coverage.status === 'unsupported'
+        ? [{ evidenceId: item.id, anchor: { kind: 'whole' } }]
+        : [];
+    }));
+  }
+
+  mediaEvidenceFacts(): {
+    evidenceRefs: string[];
+    mediaAnchors: RunMediaAnchor[];
+    mediaAnchorsTruncated?: true;
+  } {
+    return {
+      evidenceRefs: [...this.runtimeEvidenceRefs].sort(),
+      mediaAnchors: [...this.runtimeMediaAnchors.values()],
+      ...(this.runtimeMediaAnchorsTruncated ? { mediaAnchorsTruncated: true } : {}),
+    };
+  }
 
   wrap(tools: readonly Tool[]): Tool[] {
     return tools.map((candidate) => {

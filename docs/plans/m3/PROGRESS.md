@@ -42,9 +42,9 @@
 - 新 Session 通过原子 registry first-bind 到物理 workspace realpath；Event 仅携
   `workspace:<uuid>`，Dispatcher 在 Host 内解析。已有 Session 省略 workspace 参数时继续使用
   原绑定，不能被后续 submit 静默重绑到另一项目。
-- 同轮 image/file 仍走现有 Provider input 路径；audio/video 被识别并持久摄取，但分析能力
-  尚未接入，模型请求前明确 blocked。fixture 中的 transcript/keyframe/time-range schema 不算
-  生产 ASR 或视频理解。
+- 同轮 image/file 仍走现有 Provider input 路径；本 checkpoint 当时 audio/video 仅受控摄取，
+  后续 WAV audio 工程路径的增量见下方独立 tranche。非 WAV audio 与 video 继续在模型请求前
+  明确 blocked；手工构造 schema fixture 不算生产 ASR 或视频理解。
 - Realtime transport/controller 已固定官方 route/model、20ms PCM frame、连接/停止 deadline、
   transcription/VAD-only `createResponse=false`、Provider output audio 禁止，以及 final transcript
   进入 canonical Host Run、canonical answer 交给 Mimi TTS 的合同。它没有 CLI/Daemon/设备
@@ -155,13 +155,40 @@
   89.27% / 79.18% / 85.64%，随后 clean build 与 packed-package smoke 通过。ARC-303
   完整生产面为 8443/8505，未上调门限，保留 62 行余量。
 
+## 2026-08-10 PCM WAV 音频 Evidence 与 runner durability tranche
+
+- `@audio` 首版只接受通过严格 RIFF/WAVE、PCM16、format/data 长度与布局校验的 WAV；截断、
+  float/extensible、重复 chunk、字段不一致、polyglot、非 WAV codec/container 均在 CAS/Provider
+  边界失败关闭。非 WAV audio 与全部 video 没有借 `file` 路径绕过。
+- WAV 写入 CAS 后，由现有 Session actor 在 active Run 内调用有界本地
+  `AudioFileTranscriptionPort`。严格 final ASR receipt 被转换为带 transcript segment 与 time-range
+  anchor 的 derived `MediaEvidence`；有界 transcript 进入同一个 canonical Agent Run，原始/派生
+  Evidence ref 与 anchor 进入 `RunFinalization`，持久状态不保存音频、base64、PCM、临时路径或
+  原始 ASR payload。
+- 相同 durable Task 重试按 parent Evidence、Event、session/profile/workspace/trust 与 adapter
+  identity 精确复用已登记的派生 Evidence，不重复调用 ASR；候选歧义或 lineage 不一致失败关闭。
+  macOS 实现以有界 Swift Speech 子进程完成文件 ASR，timeout/cancel 终止整个进程组，`0600`
+  临时 snapshot 的 dead-owner 目录在启动时保守清理。
+- Daemon 成功路径先把 SQLite Task 提交为终态并解除 active ownership，再 best-effort 清理
+  execution-ledger receipt。cleanup 阻塞或失败不会让已完成 Task 被再次 claim，也不会重复调用
+  Provider；正常清理仍执行，长期 orphan receipt 回收另留门禁。
+- 当前证据为 Swift helper typecheck、合成 PCM16 WAV、fake local ASR、retry/cleanup fault fixture
+  与 CLI→Event→Task→Dispatcher→真实 pipeline 回归。没有请求真实 Speech 权限，没有读取真实
+  用户音频，也没有 live Provider、设备或延迟 soak；因此这只证明工程路径可达，不计 live 媒体
+  会话或实时语音轮次。
+- conversation runner 已为 headless 派发增加同步 `turn_dispatch_started` journal、durable
+  checkpoint/no-clobber evidence publish，并把单 Provider secret 放到 evidence bundle 外的私有
+  临时根，正常退出时覆盖删除。持久 PTY 的逐轮 pre-dispatch journal、journal I/O 全局 fail-stop、
+  并发 checkpoint 单调性、SIGKILL secret recovery、完整 resume、逐场景 fixture/oracle 与 W/F
+  正式 Tool policy 仍未闭环；没有启动新的 formal soak，正式分母保持 0。
+
 ## M3 能力审计
 
 | 区域 | 已有可复用能力 | 尚未证明/实现 |
 |---|---|---|
 | 图片 | 同轮多图输入；CLI attachment 已有 CAS ref/Evidence；`generate_image` 输出 ref-only；Google edit fixture 与普通 CLI/Daemon 显式 `@media` 均可按同 Session Evidence 跨后续 Run/重启精确回取 | live 图片 Provider；OpenAI multipart edit；隐式代词/跨 Session 连续性；语义 answer anchor、Memory、URL/multi artifact |
 | 语音 | 既有 2～30 秒分段 ASR、`say` TTS、wake phrase、文件转写；新增 transcription-only transport/controller contract | CLI/mic/speaker composition；真实 turn detection、barge-in、低延迟、断线与文本降级 |
-| 音频 | `@audio` 有界摄取并在 Provider 前诚实 blocked；Evidence schema 支持 transcript anchor | 生产 ASR caller、时间片、真实 model binding/coverage 与 MemoryCandidate |
+| 音频 | 严格 PCM16 WAV 已接 CAS、本地 ASR port、derived segment/time-range Evidence、同一 canonical Run 与 Finalization anchor；durable Task retry 复用派生 Evidence | 真实 Speech 权限/用户音频/live Provider/延迟 soak；MemoryCandidate；其它 audio 格式 |
 | 视频 | `@video` 有界摄取并在 Provider 前诚实 blocked；Evidence schema 支持 keyframe/time-range anchor | 音轨提取、关键帧、时间片、有界理解、可信 adapter receipt 与诚实 coverage |
 | 连续性 | Session/run ownership 与 Effect Ledger 基座 | 跨文本/图片/语音/视频入口事项幂等、重连/恢复不重复 |
 | Eval | 既有 unit、M1、Browser/Computer E2E、103 场景 declared manifest；持久 PTY prerequisite 与 1×1/2×5 calibration 已有可审计真实 Provider 证据 | 各正式场景的可执行 fixture/oracle 与真实 Provider 100×30 基准原始证据 |
@@ -175,13 +202,15 @@
   `mediaEvidenceId` Google edit 的 CAS/ref-only 跨 Run/重启闭环已由 fixture 验证；普通 CLI/Daemon
   显式 `@media` 也已通过 Event/Dispatcher/真实 pipeline 集成回归。隐式代词、跨 Session 连续性、
   语义 answer anchor、Memory 与 live Provider 验收仍待实现。
-- Slice 2（音频时间片与 MemoryCandidate）：待实现。
+- Slice 2（音频时间片与 MemoryCandidate）：PCM16 WAV 的本地 ASR、segment/time-range Evidence、
+  canonical Run 与 Finalization anchor 已在工程/fixture 路径可达；MemoryCandidate、其它格式和
+  实机/live 验收待实现。
 - Slice 3（实时语音）：transport/controller 合同已固定但产品不可达；CLI/mic/speaker 与
   Session actor composition、实机延迟/释放证据待实现。
 - Slice 4（视频）：待实现。
 - 连续性/恢复：待实现。
-- M3 媒体 fixture/live 验收：当前新增证据仍为 unit/adapter fixture，没有 live 图片或实时语音
-  轮次；实时语音真实轮次为 0。
+- M3 媒体 fixture/live 验收：当前新增证据仍为 unit/adapter/合成 WAV fixture，没有 live 图片、
+  真实用户音频或实时语音轮次；实时语音真实轮次为 0。
 - 100×30 全产品真实终端基准：103 场景/3090 轮 manifest 仅完成静态声明与验证，
   no-tools S-lane 已完成持久 PTY prerequisite 与 1×1/2×5 calibration，但这些 calibration-only
   轮次不计正式分母；`realProviderTurnsExecuted=0`、正式分母为 0。现有

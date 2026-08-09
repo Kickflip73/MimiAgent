@@ -131,7 +131,7 @@ test('GC removes stale unbound generated claims without collecting a Session-own
 
   await store.releaseOwner(owner);
   await store.collectGarbage({ liveReferenceIds: [] });
-  await assert.rejects(store.verify(abandoned.attachments[0]!), /ENOENT/);
+  await assert.rejects(store.verify(abandoned.attachments[0]!), /不存在或不可访问/);
 });
 
 function waveFixture(payloadBytes = 140 * 1024): Buffer {
@@ -188,7 +188,7 @@ test('Event prune cannot collect a shared blob until the Session owner releases 
   now = new Date(now.getTime() + 1_001);
   const collected = await store.collectGarbage({ now, liveReferenceIds: [] });
   assert.equal(collected.deleted, 1);
-  await assert.rejects(store.verify(attachment), /ENOENT/);
+  await assert.rejects(store.verify(attachment), /不存在或不可访问/);
 });
 
 test('startup GC reconciles prune-committed Event owners even if release did not run', async () => {
@@ -324,6 +324,22 @@ test('readChunks consumes one verified fd and rejects pathname replacement befor
       // Consume the complete range; terminal verification must still run.
     }
   }, /验证与消费之间被替换/);
+});
+
+test('missing CAS errors expose only the bounded attachment name, never its physical path', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-media-path-firewall-'));
+  const artifacts = path.join(root, 'artifacts');
+  await writeFile(path.join(root, 'photo.png'), png);
+  const store = new MediaArtifactStore(artifacts);
+  const [attachment] = await store.stage([{ path: 'photo.png', kind: 'image' }], root);
+  await rm(path.join(artifacts, attachment!.sha256));
+  await assert.rejects(store.verify(attachment!), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /artifact 不存在或不可访问/iu);
+    assert.doesNotMatch(error.message, new RegExp(root, 'u'));
+    assert.doesNotMatch(error.message, /\/private\/|\/Users\//u);
+    return true;
+  });
 });
 
 test('global quota rejects new unique blobs before CAS publication', async () => {

@@ -716,9 +716,11 @@ test('dispatcher control surface is idempotent for missing, queued, paused, and 
   }
 });
 
-test('dispatcher publishes completion only after host bookkeeping leaves the active boundary', async () => {
+test('dispatcher publishes completion and removes the active boundary before ledger teardown', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-completion-boundary-'));
   const store = new MimiStore(path.join(root, 'mimi.db'));
+  let ledgerReceiptPresent = false;
+  let executeCalls = 0;
   let releaseFinalization!: () => void;
   const finalizationReleased = new Promise<void>((resolve) => { releaseFinalization = resolve; });
   let reportFinalizationStarted!: () => void;
@@ -730,6 +732,7 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
     finalizeExecutionLedger: async () => {
       reportFinalizationStarted();
       await finalizationReleased;
+      ledgerReceiptPresent = false;
     },
     reopenExecutionLedger: async () => undefined,
   } as unknown as MimiAgent;
@@ -737,6 +740,8 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
   const finalization = createRunFinalization({ runId: 'run-provider', answer, calls: [] });
   const host = new MimiHost(agent, {
     execute: async () => {
+      executeCalls += 1;
+      ledgerReceiptPresent = true;
       return {
         answer,
         effects: [{ type: 'provider_change_requested', provider: 'openai-compatible' }],
@@ -767,12 +772,16 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
     const processing = dispatcher.processTaskById(routed.task.id);
     await finalizationStarted;
 
-    assert.equal(store.getTask(routed.task.id)?.status, 'running');
-    assert.equal(dispatcher.status().activeEventCount, 1);
+    assert.equal(store.getTask(routed.task.id)?.status, 'completed');
+    assert.equal(dispatcher.status().activeEventCount, 0);
     assert.equal(dispatcher.status().activeToolCount, 0);
+    assert.equal(ledgerReceiptPresent, true);
+    assert.equal(await dispatcher.processTaskById(routed.task.id), false);
+    assert.equal(executeCalls, 1);
 
     releaseFinalization();
     assert.equal(await processing, true);
+    assert.equal(ledgerReceiptPresent, false);
     assert.equal(store.getTask(routed.task.id)?.status, 'completed');
     const taskFinalization = (store.getTask(routed.task.id)?.result as {
       finalization?: unknown;
@@ -782,6 +791,74 @@ test('dispatcher publishes completion only after host bookkeeping leaves the act
     assert.deepEqual((store.outbox.get(outboxId)?.payload as { finalization?: unknown }).finalization, finalization);
     assert.equal(dispatcher.status().activeEventCount, 0);
     assert.equal(dispatcher.status().activeToolCount, 0);
+  } finally {
+    releaseFinalization();
+    store.close();
+  }
+});
+
+test('dispatcher retains a completed receipt when post-terminal ledger teardown fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-ledger-cleanup-failure-'));
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  let ledgerReceiptPresent = false;
+  let executeCalls = 0;
+  let releaseFinalization!: () => void;
+  const finalizationReleased = new Promise<void>((resolve) => { releaseFinalization = resolve; });
+  let reportFinalizationStarted!: () => void;
+  const finalizationStarted = new Promise<void>((resolve) => { reportFinalizationStarted = resolve; });
+  const agent = {
+    currentSessionId: 'owner',
+    currentCapabilitySnapshot: () => undefined,
+    completedExecution: async () => undefined,
+    finalizeExecutionLedger: async () => {
+      reportFinalizationStarted();
+      await finalizationReleased;
+      throw new Error('injected ledger cleanup failure');
+    },
+    reopenExecutionLedger: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, {
+    execute: async () => {
+      executeCalls += 1;
+      ledgerReceiptPresent = true;
+      return { answer: 'durable answer', effects: [] };
+    },
+  });
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, host, attention);
+  try {
+    const timestamp = new Date().toISOString();
+    const routed = store.ingestEvent({
+      id: 'ledger-cleanup-failure-event',
+      externalId: 'ledger-cleanup-failure-event',
+      source: 'local-cli',
+      kind: 'command',
+      trust: 'owner',
+      payload: { prompt: 'run once' },
+      occurredAt: timestamp,
+      receivedAt: timestamp,
+      priority: 100,
+      profileId: 'owner',
+      sessionKey: 'owner',
+    });
+    assert.ok(routed.task);
+
+    const processing = dispatcher.processTaskById(routed.task.id);
+    await finalizationStarted;
+
+    assert.equal(store.getTask(routed.task.id)?.status, 'completed');
+    assert.equal(dispatcher.status().activeEventCount, 0);
+    assert.equal(dispatcher.status().activeEventIds?.length, 0);
+    assert.equal(ledgerReceiptPresent, true);
+    assert.equal(await dispatcher.processTaskById(routed.task.id), false);
+    assert.equal(executeCalls, 1);
+
+    releaseFinalization();
+    assert.equal(await processing, true);
+    assert.equal(store.getTask(routed.task.id)?.status, 'completed');
+    assert.equal(ledgerReceiptPresent, true);
+    assert.equal(await dispatcher.processTaskById(routed.task.id), false);
+    assert.equal(executeCalls, 1);
   } finally {
     releaseFinalization();
     store.close();

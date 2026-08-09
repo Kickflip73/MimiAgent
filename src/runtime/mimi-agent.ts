@@ -123,6 +123,11 @@ import { createModelControlTools } from './model-control-tools.js';
 import { createMediaTools, MediaRuntime } from './media-runtime.js';
 import { ModelConfigStore } from './model-config.js';
 import {
+  recoverStaleAudioSnapshots,
+  type AudioFileTranscriptionPort,
+} from './audio-file-analysis.js';
+import { MacOsSpeechFileAsrPort } from './macos-speech-file-asr.js';
+import {
   redactActiveEphemeralData,
   redactActiveEphemeralText,
   type ActiveEphemeralOwnerInput,
@@ -230,6 +235,8 @@ export interface MimiAgentCreateOptions {
   modelConfiguration?: ModelsConfig;
   modelBinding?: RunModelBinding;
   contextSemanticSummarizer?: ContextSemanticSummarizer;
+  /** Local file ASR only. `false` keeps audio attachments honestly unavailable. */
+  audioTranscriber?: AudioFileTranscriptionPort | false;
 }
 
 export const READ_ONLY_EVENT_CAPABILITIES = [
@@ -264,6 +271,7 @@ export class MimiAgent {
   readonly fixedModelBinding?: RunModelBinding;
   readonly personalMessages = new PersonalMessageHub();
   readonly mediaArtifacts: MediaArtifactStore;
+  readonly audioTranscriber?: AudioFileTranscriptionPort;
   private readonly localTools: Readonly<{ hosted: Tool[]; portable: Tool[] }>;
   private readonly extensionTools: Tool[];
   private readonly mcpTools: Tool[];
@@ -295,6 +303,10 @@ export class MimiAgent {
       path.resolve(config.daemonDataRoot ?? path.join(config.dataRoot, 'mimi')),
       'attachments',
     ));
+    this.audioTranscriber = createOptions.audioTranscriber === false
+      ? undefined
+      : createOptions.audioTranscriber
+        ?? (process.platform === 'darwin' ? new MacOsSpeechFileAsrPort() : undefined);
     this.fixedModelBinding = createOptions.modelBinding
       ? runModelBindingSchema.parse(structuredClone(createOptions.modelBinding))
       : undefined;
@@ -606,6 +618,9 @@ export class MimiAgent {
     sessionId?: string,
     createOptions: MimiAgentCreateOptions = {},
   ): Promise<MimiAgent> {
+    if (createOptions.audioTranscriber !== false) {
+      await recoverStaleAudioSnapshots();
+    }
     const components = await createRuntimeComponents(config, sessionId, {
       mcpEnvironment: createOptions.mcpEnvironment,
       enableMcp: createOptions.enableMcp,

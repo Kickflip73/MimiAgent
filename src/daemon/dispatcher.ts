@@ -2,13 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { RunStreamEvent } from '@openai/agents';
 import type { MimiAgent } from '../runtime/mimi-agent.js';
 import { MimiHost } from '../runtime/mimi-host.js';
-import { attachmentPayload, inputWithAttachments } from '../runtime/attachments.js';
+import { attachmentPayload } from '../runtime/attachments.js';
 import { mediaArtifactOwner, MediaArtifactStore } from '../runtime/media-artifact-store.js';
 import {
   MAX_MEDIA_REFERENCE_COUNT,
   mediaEvidenceIdsFromPayload,
 } from '../runtime/media-reference-request.js';
-import { preflightMediaEvidenceReferences } from '../runtime/media-input-materializer.js';
 import type { RuntimeEvent } from '../runtime/hooks.js';
 import { TerminalRunInterruptedError } from '../runtime/run-outcome.js';
 import { projectRunStreamEvent } from '../runtime/stream-projection.js';
@@ -49,6 +48,7 @@ import {
 } from './personal-message.js';
 import type { PersonalMessageScope } from '../runtime/personal-message-hub.js';
 import type { ComputerAccess } from '../extensions/computer/types.js';
+import { materializeDaemonMediaInput } from './media-run-input.js';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -377,6 +377,7 @@ export class MimiDispatcher {
     let runIdleTimer: NodeJS.Timeout | undefined;
     let runIdleFailure: RunFailureError | undefined;
     let execution: { sessionId: string; key: string } | undefined;
+    let completedExecutionForCleanup: { sessionId: string; key: string } | undefined;
     let leaseFailure: Error | undefined;
     let ephemeralSensitiveValues: readonly string[] = [];
     let browserRun: BrowserRunManager | undefined;
@@ -569,10 +570,12 @@ export class MimiDispatcher {
       }
       const modelInputFactory = attachments.length
         ? async (agent: MimiAgent) => {
-            await preflightMediaEvidenceReferences({
+            return materializeDaemonMediaInput({
+              text: decision.input!,
               attachments,
-              evidenceIds: referencedMediaEvidenceIds,
-              session: agent.session,
+              referencedMediaEvidenceIds,
+              attachmentRoot: this.options.attachmentRoot,
+              agent,
               authority: {
                 sessionId: decision.sessionId!,
                 profileId: event.profileId,
@@ -580,15 +583,6 @@ export class MimiDispatcher {
                 trust: event.trust,
               },
             });
-            const materialized = await inputWithAttachments(
-              decision.input!,
-              attachments,
-              this.options.attachmentRoot,
-            );
-            if (typeof materialized === 'string') {
-              throw new Error('附件模型输入未物化为协议单元');
-            }
-            return materialized;
           }
         : undefined;
       const secretReferences = ephemeralSecretReferences(task.objective);
@@ -808,12 +802,6 @@ export class MimiDispatcher {
         : undefined;
       const sessionEffect = [...result.effects].reverse()
         .find((effect) => effect.type === 'session_changed');
-      // Do not publish a terminal Task before the host has finished its
-      // bookkeeping. Clients use the terminal state as the safe boundary for
-      // follow-up runtime actions such as a Provider restart. Publishing first
-      // briefly made the just-completed conversation still appear in
-      // activeEventIds, so the restart rejected its own completed Run.
-      await this.host.finalizeExecutionLedger(decision.sessionId!, executionKey).catch(() => undefined);
       this.store.completeTask(task.id, this.workerId, {
         answer: result.answer,
         sessionId: sessionEffect?.type === 'session_changed' ? sessionEffect.sessionId : decision.sessionId,
@@ -824,6 +812,11 @@ export class MimiDispatcher {
           delivery: { suppressed: true, reason: deliveryControl.reason },
         } : {}),
       }, attempt.id, new Date(), delivery);
+      // The durable Task terminal is the at-most-once boundary. Ledger teardown
+      // is best-effort cleanup and must never make a still-runnable Task lose
+      // its completed receipt. Deferring it to finally also lets us remove the
+      // active boundary before clients observe cleanup-side host bookkeeping.
+      completedExecutionForCleanup = { sessionId: decision.sessionId!, key: executionKey };
     } catch (error) {
       let failureFinalization = runFinalizationFromError(error);
       let browserCleanupFailed = error instanceof Error && error.name === 'BrowserSessionCleanupError';
@@ -957,6 +950,12 @@ export class MimiDispatcher {
       this.active.delete(task.id);
       if (active.sessionId) {
         this.activeSessions.delete(active.sessionId);
+      }
+      if (completedExecutionForCleanup) {
+        await this.host.finalizeExecutionLedger(
+          completedExecutionForCleanup.sessionId,
+          completedExecutionForCleanup.key,
+        ).catch(() => undefined);
       }
     }
   }

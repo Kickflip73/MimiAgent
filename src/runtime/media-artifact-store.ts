@@ -24,6 +24,7 @@ import {
   type MediaEvidence,
   type MediaTrust,
 } from '../core/media-evidence.js';
+import { parsePcm16Wav } from './pcm-wav.js';
 
 export const MAX_ATTACHMENTS = 8;
 const MAX_SMALL_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -492,7 +493,7 @@ function validGif(data: Buffer): boolean {
 async function validRiffContainer(
   file: string,
   bytes: number,
-  form: 'WAVE' | 'WEBP' | 'AVI ',
+  form: 'WEBP' | 'AVI ',
 ): Promise<boolean> {
   const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -502,8 +503,6 @@ async function validRiffContainer(
       || ascii(header, 8, 4) !== form
       || header.readUInt32LE(4) + 8 !== bytes) return false;
     let offset = 12;
-    let sawFmt = false;
-    let sawData = false;
     let sawWebpPayload = false;
     let boxes = 0;
     while (offset < bytes && boxes < 4_096) {
@@ -513,16 +512,25 @@ async function validRiffContainer(
       const length = chunk.readUInt32LE(4);
       const end = offset + 8 + length;
       if (end > bytes) return false;
-      if (type === 'fmt ' && length >= 16) sawFmt = true;
-      if (type === 'data') sawData = true;
       if (type === 'VP8 ' || type === 'VP8L' || type === 'VP8X') sawWebpPayload = true;
       offset = end + (length % 2);
       boxes += 1;
     }
     if (offset !== bytes) return false;
-    if (form === 'WAVE') return sawFmt && sawData;
     if (form === 'WEBP') return sawWebpPayload;
     return boxes > 0;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function validPcm16Wav(file: string, bytes: number): Promise<boolean> {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    await parsePcm16Wav(handle, bytes);
+    return true;
+  } catch {
+    return false;
   } finally {
     await handle.close();
   }
@@ -533,7 +541,7 @@ async function validateDetectedContainer(
   mediaType: string,
   bytes: number,
 ): Promise<boolean> {
-  if (mediaType === 'audio/wav') return validRiffContainer(file, bytes, 'WAVE');
+  if (mediaType === 'audio/wav') return validPcm16Wav(file, bytes);
   if (mediaType === 'image/webp') return validRiffContainer(file, bytes, 'WEBP');
   if (mediaType === 'video/x-msvideo') return validRiffContainer(file, bytes, 'AVI ');
   if (mediaType !== 'image/png'
@@ -1727,8 +1735,14 @@ export class MediaArtifactStore {
     const sha256 = artifactSha256(attachment.artifactRef);
     if (sha256 !== attachment.sha256) throw new Error(`附件 ref 与摘要不一致：${attachment.name}`);
     const selected = attachment.legacyPath ?? path.join(this.root, sha256);
-    const expected = path.join(await realpath(this.root), sha256);
-    const physical = await realpath(selected);
+    let resolvedRoot: string;
+    let physical: string;
+    try {
+      [resolvedRoot, physical] = await Promise.all([realpath(this.root), realpath(selected)]);
+    } catch (error) {
+      throw new Error(`附件 artifact 不存在或不可访问：${attachment.name}`, { cause: error });
+    }
+    const expected = path.join(resolvedRoot, sha256);
     if (physical !== expected) throw new Error(`附件 artifact ref 越界：${attachment.name}`);
     return physical;
   }

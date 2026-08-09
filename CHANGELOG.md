@@ -39,6 +39,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only for a compatible Provider request. Completed execution-ledger replay bypasses
   CAS reads; cross-scope, tampered, and unsupported routes fail before Provider I/O.
   Coverage remains local fixture/integration evidence, not a live Provider turn
+- add the first reachable file-audio analysis path for strictly validated PCM16 WAV:
+  preserve the original in CAS, run a bounded local ASR port inside the existing
+  Session actor, register transcript segments and time ranges as derived
+  `MediaEvidence`, feed the bounded transcript to one canonical Agent Run, and record
+  ref-only anchors in `RunFinalization`; exact durable Task retries reuse the derived
+  Evidence instead of retranscribing. The macOS Swift helper and synthetic fixtures
+  are covered, while real Speech permission, user audio, live Provider and latency
+  soak remain unexecuted; non-WAV audio and video continue to fail before Provider I/O
+- commit a successful Daemon Task terminal state in SQLite before best-effort
+  execution-ledger cleanup, preventing cleanup failure from reopening the Task or
+  repeating the Provider call
+- harden the formal conversation runner with synced headless dispatch journals,
+  durable no-clobber evidence/checkpoints and an external private secret root; keep
+  persistent-PTY pre-dispatch journaling, journal fail-stop, monotonic concurrent
+  checkpoints, full resume, executable per-scenario oracles and formal Tool policies
+  as explicit blockers, with the 100-by-30 denominator still zero
 - add an authenticated local-only no-tools calibration policy with an exact empty
   SDK Tool surface, a synchronous pre-provider Trace receipt, single-provider
   credential isolation, content-bound runtime identity, and byte-verified

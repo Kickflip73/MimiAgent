@@ -77,8 +77,9 @@ case "$3" in
   *hang.wav) exec /bin/sleep 10 ;;
   *fail.wav) printf '%s' 'recognizer failed intentionally' >&2; exit 7 ;;
   *invalid.wav) printf '%s' 'not json'; exit 0 ;;
+  *leak.wav) printf '%s\\n' '{"receiptVersion":1,"adapter":"macos-speech-framework","adapterVersion":"1","final":true,"text":"x","charCount":1,"truncated":false,"locale":"en-US","onDevice":true,"segments":[],"untrusted":true,"audioPath":"/private/owner.wav"}'; exit 0 ;;
 esac
-printf '%s\\n' '{"text":"audio transcript","charCount":16,"truncated":false,"locale":"en-US","onDevice":true,"untrusted":true}'
+printf '%s\\n' '{"receiptVersion":1,"adapter":"macos-speech-framework","adapterVersion":"1","final":true,"text":"audio transcript","charCount":16,"truncated":false,"locale":"en-US","onDevice":true,"segments":[{"startMs":0,"endMs":750,"text":"audio transcript","confidence":0.9}],"untrusted":true}'
 `);
   await writeFile(mockSay, `#!/bin/sh
 log=${JSON.stringify(sayLog)}
@@ -99,11 +100,13 @@ esac
   const invalidAudio = path.join(root, 'invalid.wav');
   const failedAudio = path.join(root, 'fail.wav');
   const hangAudio = path.join(root, 'hang.wav');
+  const leakingAudio = path.join(root, 'leak.wav');
   await Promise.all([
     writeFile(audio, 'synthetic audio'),
     writeFile(invalidAudio, 'synthetic audio'),
     writeFile(failedAudio, 'synthetic audio'),
     writeFile(hangAudio, 'synthetic audio'),
+    writeFile(leakingAudio, 'synthetic audio'),
   ]);
   const connector = fileURLToPath(new URL('../examples/connectors/macos-voice-connector.mjs', import.meta.url));
   const helper = fileURLToPath(new URL('../examples/connectors/macos-voice-recognizer.swift', import.meta.url));
@@ -194,7 +197,16 @@ esac
       locale: 'en-US', onDevice: true, maxChars: 123, timeoutMs: 4000,
     });
     assert.equal(transcript.result?.text, 'audio transcript');
-    assert.equal(transcript.result?.audioPath, audio);
+    assert.equal(transcript.result?.receiptVersion, 1);
+    assert.equal(transcript.result?.adapter, 'macos-speech-framework');
+    assert.equal(transcript.result?.final, true);
+    assert.deepEqual(transcript.result?.segments, [{
+      startMs: 0,
+      endMs: 750,
+      text: 'audio transcript',
+      confidence: 0.9,
+    }]);
+    assert.equal(Object.hasOwn(transcript.result ?? {}, 'audioPath'), false);
     assert.equal(transcript.result?.untrusted, true);
     const swiftLines = await waitForLines(swiftLog, 3);
     const transcribeArgs = swiftLines.map(loggedArgs).find((args) => args[1] === 'transcribe' && args[2] === audio);
@@ -217,6 +229,14 @@ esac
     const relative = await call('relative', 'transcribe_audio', 'relative.wav', {});
     assert.equal(relative.ok, false);
     assert.match(relative.error ?? '', /absolute path/);
+    const missingPath = path.join(root, 'private-missing.wav');
+    const missing = await call('missing', 'transcribe_audio', missingPath, {});
+    assert.equal(missing.ok, false);
+    assert.doesNotMatch(missing.error ?? '', new RegExp(
+      missingPath.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'),
+      'u',
+    ));
+    assert.match(missing.error ?? '', /<audio-file>/u);
     const badBoolean = await call('boolean', 'transcribe_audio', audio, { onDevice: 'yes' });
     assert.equal(badBoolean.ok, false);
     assert.match(badBoolean.error ?? '', /must be a boolean/);
@@ -229,6 +249,10 @@ esac
     const failed = await call('failed', 'transcribe_audio', failedAudio, {});
     assert.equal(failed.ok, false);
     assert.match(failed.error ?? '', /failed intentionally/);
+    const leaking = await call('leaking', 'transcribe_audio', leakingAudio, {});
+    assert.equal(leaking.ok, false);
+    assert.match(leaking.error ?? '', /invalid receipt/);
+    assert.doesNotMatch(leaking.error ?? '', /\/private\/|\/Users\//u);
     const sayFailed = await call('say-failed', 'speak', 'Fail', { text: 'x' });
     assert.equal(sayFailed.ok, false);
     assert.match(sayFailed.error ?? '', /say failed intentionally/);

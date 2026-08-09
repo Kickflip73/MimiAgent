@@ -338,8 +338,16 @@ owner 查询大象消息时通过稳定 capability 发现正式 action，再使�
 
 能力边界必须按入口区分：image 与受支持 adapter 且显式 `fileInput=true` 的 file
 已打通同一轮工程路径，当前证据是去网络 adapter/Runtime 回归，不是 live Provider 轮次。
-PDF、EBML 及尚无可信有界解析器的容器/codec 保守拒绝；audio/video 目前只完成受控摄取和
-metadata-only `MediaEvidence`，会在模型网络请求前明确 blocked，尚无 transcript 时间片、音轨、关键帧或视频理解。Realtime 新代码也只是 transcription/VAD-only 的 Host/controller contract，强制关闭 Provider 回答音频和第二套 Agent loop；它尚未接入 CLI、麦克风、播放器或可用产品入口。
+PDF、EBML 及尚无可信有界解析器的容器/codec 保守拒绝。`@audio` 首版只接受经严格结构校验的
+PCM16 WAV：文件先进入 CAS，再由同一 Session actor 调用有界本地 ASR port，最终 transcript 被
+登记为带 segment/time-range anchor 的 derived `MediaEvidence`，并作为上下文进入同一个
+canonical Agent Run；`RunFinalization` 只保存原始/派生 ref 与结构化 anchor。相同 durable Task
+重试复用已登记的派生 Evidence，不重做 ASR。当前证据是 macOS Swift helper typecheck 与合成
+WAV/fixture 回归；尚未使用真实 Speech 权限、真实用户音频或 live Provider，也没有延迟 soak，
+因此不能表述为实机音频验收。非 WAV audio 与全部 video 仍在网络前明确 blocked，视频音轨、
+关键帧和理解尚未接入。Realtime 新代码也只是 transcription/VAD-only 的 Host/controller
+contract，强制关闭 Provider 回答音频和第二套 Agent loop；它尚未接入 CLI、麦克风、播放器或
+可用产品入口。
 
 显式 `generate_image` Media WorkUnit 已关闭生成结果的持久二进制缺口：公开 Tool schema 只接受
 prompt 和可选的同 Session `mediaEvidenceId`，不接受 raw image/data URL；Provider 必须返回唯一
@@ -763,6 +771,11 @@ npm run test:api-contract
 
 容量基准不调用模型或读取用户状态；参数、隔离规则和结果解释见
 [docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
+M3 的全产品 conversation runner 是另一条门禁：当前已把 headless 派发 journal、checkpoint 与
+证据文件按 `0600` durable 写入，并把 Provider secret 移到 evidence bundle 外的私有临时根；
+但持久 PTY 的逐轮 pre-dispatch journal、journal I/O fail-stop、单调 checkpoint、完整 resume、
+逐场景 fixture/oracle 和 W/F 等正式 Tool policy 尚未闭环。已有 PTY/1×1/2×5 仅为
+calibration-only；100×30 正式分母仍为 0，不能用本地容量 rounds 或声明 manifest 替代。
 Provider contract 同样完全离线，固定 OpenAI/DeepSeek 的默认模型、profile、
 Session 输入清洗和 Tool schema 兼容性，详见
 [docs/PROVIDER_CONTRACTS.md](docs/PROVIDER_CONTRACTS.md)。

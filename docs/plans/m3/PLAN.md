@@ -22,8 +22,10 @@ Media WorkUnit、macOS Screen OCR，以及分段 ASR、`say` TTS、wake phrase�
 Outbox 朗读。它们是可复用基座，不等于 M3 完成。
 
 截至当前 checkpoint，Slice 0 已形成可运行的 CLI attachment / `MediaEvidence` / CAS 安全
-路径：同轮 image/file 可以进入现有模型路径；audio/video 只能摄取为稳定 ref 与
-metadata-only Evidence，随后在 Provider 前诚实 blocked。显式 `generate_image` Media WorkUnit
+路径：同轮 image/file 可以进入现有模型路径；`@audio` 的首版 PCM16 WAV 已从受控摄取延伸到
+同一 Session actor 内的本地 ASR、派生 transcript segment/time-range Evidence、canonical Agent
+Run 与 `RunFinalization` anchor；非 WAV audio 与 video 仍在 Provider 前诚实 blocked。显式
+`generate_image` Media WorkUnit
 也已把唯一 inline Provider 图片有界解码并结构校验到 CAS + Session Evidence，Tool result 只
 返回 ref/digest；同 Session 后续 Run/重启可用 `mediaEvidenceId` 走 Google edit fixture 精确回取。
 OpenAI edit 与跨 scope/tamper 在网络前失败关闭，URL/multi artifact output 在写入持久结果前拒绝。
@@ -32,10 +34,11 @@ OpenAI edit 与跨 scope/tamper 在网络前失败关闭，URL/multi artifact ou
 仍只保存 ref；引用与新附件合计最多 8 项、全部 inline 图片合计最多 20 MiB。跨 profile/workspace/
 trust、篡改或不支持 `imageInput` 的 route 在 Provider 前拒绝，completed ledger receipt 在 CAS
 读取前回放。该证据仍是 fixture/集成回归，不是 live Provider，也不实现代词推断或跨 Session 引用。
-Realtime 仅完成
+WAV 路径当前只有 Swift helper 与合成 fixture 证据，没有真实 Speech 权限、用户音频、live
+Provider 或延迟 soak；MemoryCandidate 也未接入。Realtime 仅完成
 transcription/VAD-only transport/controller 和 Host runner contract，尚无 CLI、麦克风、播放器或
 Session actor 的 composition root。上述图片证据仍是 unit/adapter fixture，不是 live Provider；
-普通聊天媒体续指、音视频分析、Memory 编译和正式 benchmark 仍按后续 Slice 执行。
+普通聊天媒体续指、其它音频格式、视频分析、Memory 编译和正式 benchmark 仍按后续 Slice 执行。
 
 从该 checkpoint 继续补齐：
 
@@ -45,8 +48,9 @@ Session actor 的 composition root。上述图片证据仍是 unit/adapter fixtu
   JSON/SQLite 文本状态。
 - 在现有批次摄取、MIME/kind、symlink/篡改、配额、owner ref 与 GC 基础上完成格式结构 probe、
   掉电/reconcile fault injection 和长期 soak；Daemon Event 继续不持久化私人绝对路径。
-- 图片的跨 Session/入口事项连续性、隐式代词解析与语义 answer anchor；音频 transcript 时间片
-  与 MemoryCandidate；视频音轨、关键帧、时间片和 coverage。
+- 图片的跨 Session/入口事项连续性、隐式代词解析与语义 answer anchor；在现有 WAV transcript
+  时间片基础上补 MemoryCandidate、其它 eligible 音频格式与实机验收；视频音轨、关键帧、
+  时间片和 coverage。
 - 模型与设备能力的诚实路由。旧模型配置向后兼容，新 audio/video/realtime 能力默认
   `false`；不支持的 provider/adapter 必须在网络请求前 fail closed 或明确降级。
 - 同一 Session actor 内的实时语音生命周期、流式 ASR/TTS、turn detection、barge-in、
@@ -73,7 +77,8 @@ owner override + clean baseline
   -> Slice 0: binary firewall + MediaEvidence + artifact lifecycle
        -> model/device/media capability truth
        -> Slice 1: multi-image original-reference continuity
-       -> Slice 2: audio transcript/timeslice/MemoryCandidate
+       -> Slice 2: PCM WAV transcript/timeslice [engineering reachable]
+                   + MemoryCandidate/other formats/live acceptance
        -> Slice 3: realtime voice/turn detection/barge-in/text fallback
        -> Slice 4: video audio/keyframe/timeslice/coverage
   -> cross-entry continuity + reconnect/recovery/idempotency
@@ -130,8 +135,10 @@ CLI -> Daemon -> Provider 路径的自动化终端基准，不能混称 PTY。
 回执或 secret 命中会全局停止派发且不重试。
 
 当前 manifest 含 103 个场景、每场景 30 个声明轮次（3090 declared turns，其中 100 个 core
-场景对应目标分母 3000，3 个为 supplemental）。runner 在可强制执行的逐场景 RunPolicy、
-fixture/oracle 和完整证据绑定就绪前保持 Provider 前 `NO-GO`；因此
+场景对应目标分母 3000，3 个为 supplemental）。runner 已为 headless lane 增加 durable dispatch
+journal/checkpoint/evidence publish，并把 Provider secret 移出可保留 evidence bundle；持久 PTY
+逐轮 pre-dispatch、journal fail-stop、checkpoint 单调性、完整 resume、逐场景 fixture/oracle 与
+正式 Tool policy 仍未闭环。runner 在这些门禁就绪前保持正式 Provider soak `NO-GO`；因此
 `realProviderTurnsExecuted=0`、正式分母为 0，manifest 校验和 PTY helper 均不计入真实轮次。
 
 进度与客观阻断分别记录在 [PROGRESS.md](PROGRESS.md) 和 [BLOCKED.md](BLOCKED.md)。

@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { ExecutionCallRecord } from './execution-ledger.js';
+import {
+  mediaEvidenceAnchorSchema,
+  mediaEvidenceIdSchema,
+} from './media-evidence.js';
 
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 export const runOutcomeSchema = z.enum([
@@ -23,6 +27,12 @@ export const toolExecutionManifestEntrySchema = z.object({
   outcomeDigest: digestSchema.optional(),
 }).strict();
 
+export const runMediaAnchorSchema = z.object({
+  evidenceId: mediaEvidenceIdSchema,
+  anchor: mediaEvidenceAnchorSchema,
+}).strict();
+export type RunMediaAnchor = z.infer<typeof runMediaAnchorSchema>;
+
 export const runFinalizationRecordSchema = z.object({
   runId: z.string().min(1),
   answerDigest: digestSchema,
@@ -30,6 +40,8 @@ export const runFinalizationRecordSchema = z.object({
   reason: z.string().trim().min(1).max(2_000).optional(),
   nextAction: z.string().trim().min(1).max(2_000).optional(),
   evidenceRefs: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  mediaAnchors: z.array(runMediaAnchorSchema).max(100).default([]),
+  mediaAnchorsTruncated: z.literal(true).optional(),
   completionDecision: z.enum(['pass', 'continue', 'blocked', 'uncertain']).optional(),
   toolManifest: z.array(toolExecutionManifestEntrySchema),
 }).strict();
@@ -228,6 +240,8 @@ export function createRunFinalization(input: {
   reason?: string;
   nextAction?: string;
   evidenceRefs?: readonly string[];
+  mediaAnchors?: readonly RunMediaAnchor[];
+  mediaAnchorsTruncated?: true;
   completionDecision?: RunFinalizationRecord['completionDecision'];
   calls: readonly ExecutionCallRecord[];
 }): RunFinalizationRecord {
@@ -243,6 +257,8 @@ export function createRunFinalization(input: {
     ...(input.reason ? { reason: input.reason } : {}),
     ...(input.nextAction ? { nextAction: input.nextAction } : {}),
     evidenceRefs: input.evidenceRefs ?? runEvidenceRefs(input.calls),
+    mediaAnchors: input.mediaAnchors ?? [],
+    ...(input.mediaAnchorsTruncated ? { mediaAnchorsTruncated: true } : {}),
     ...(input.completionDecision ? { completionDecision: input.completionDecision } : {}),
     toolManifest: toolExecutionManifest(input.calls),
   });

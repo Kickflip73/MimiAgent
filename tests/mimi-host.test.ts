@@ -437,6 +437,7 @@ test('cancellation wins while a durable receipt is being recovered', async () =>
 
 test('reuses a durable completed execution receipt instead of running the model twice', async () => {
   let runnerExecutions = 0;
+  let modelInputFactoryCalls = 0;
   let currentSessionId = 'owner';
   const selected: string[] = [];
   const finalized: Array<{ sessionId: string; executionKey: string }> = [];
@@ -472,12 +473,17 @@ test('reuses a durable completed execution receipt instead of running the model 
   const result = await host.execute({
     executionId: 'event-1', sessionId: 'owner', input: 'same event',
     options: { executionKey: 'event:event-1', retainExecutionLedger: true },
+    modelInputFactory: async () => {
+      modelInputFactoryCalls += 1;
+      throw new Error('completed receipt must bypass media preparation');
+    },
   });
 
   assert.equal(result.answer, 'recovered answer');
   assert.deepEqual(result.effects, [{ type: 'session_changed', sessionId: 'new-session' }]);
   assert.equal(result.usage?.runTotalTokens, 12);
   assert.equal(runnerExecutions, 0);
+  assert.equal(modelInputFactoryCalls, 0);
   await host.finalizeExecutionLedger('owner', 'event:event-1');
   assert.equal(host.currentSessionId, 'new-session');
   assert.deepEqual(selected, []);

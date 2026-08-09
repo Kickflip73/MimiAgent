@@ -510,7 +510,22 @@ MCPManager 复用 Agents SDK 的 `MCPServerStdio` 与 `MCPServerStreamableHttp`�
 
 `MediaArtifactStore` 以 SHA-256 形成 `media-artifact:sha256:...` CAS ref，批次全部校验后才发布，并用 Event/Session owner ref、全局配额、grace marker 与 GC 管理共享 blob。Event、Session、Memory locator 和 Execution Ledger 的持久边界只保存稳定 ref、digest 与有界 `MediaEvidence` 元数据，原始二进制、data URL、base64、PCM frame 和 artifact 绝对路径不进入 Event/Session JSON；Provider 请求构造可在校验 owner、ref、摘要与 Session/Run/workspace provenance 后短暂物化所需字节，调用后不将该表示写回状态。最多 8 个附件；image/file 单个最多 10 MiB、全部可内联附件合计最多 20 MiB，audio 最多 200 MiB、video 最多 500 MiB，整批最多 500 MiB，artifact store 默认总配额 5 GiB。GC/掉电恢复仍须通过完整故障注入和长期 soak 才能成为 promotion 证据。
 
-图片作为 `input_image`，普通 file 作为 `input_file` 进入当前模型轮次。audio/video 目前只完成内容寻址摄取与 metadata-only `MediaEvidence`；在 transcript 时间片、音轨、关键帧、coverage receipt 和兼容模型 adapter 尚未接入前，模型输入构造会明确 blocked，不把音视频降格成普通 file，也不把 fixture 中手工构造的派生 Evidence 当作生产分析。格式探测只对已有有界校验器支持的格式开放；尚无可信 container/decoder probe 的格式保持 fail closed。
+图片作为 `input_image`，普通 file 作为 `input_file` 进入当前模型轮次。音频首版只开放经严格
+RIFF/WAVE、PCM16、format/data 长度与布局校验的 `audio/wav`；其它 codec/container 和全部 video
+保持网络前 fail closed，不把它们降格成普通 file。WAV ingress 写入 CAS 后，现有 Session actor
+在本次 active Run 内通过有界 `AudioFileTranscriptionPort` 读取同一已验证 artifact，产出严格 final
+ASR receipt；runtime 用冻结的 session/run/profile/workspace/trust 和 adapter binding 构造 derived
+`MediaEvidence`，为 transcript segment 与 time range 生成可验证 anchor，再把有界 transcript
+上下文交给同一个 canonical Agent。原始与派生 Evidence 均进入 `RunFactCollector`，最终
+`RunFinalization` 只保存 ref、digest、Evidence identity 和结构化 anchor，不保存音频、临时路径或
+原始 ASR payload。相同 durable Task 重试按原始 Evidence/Event/scope/adapter 精确复用已登记的
+派生 Evidence；候选不唯一或 lineage 不一致时失败关闭，不重复转写。
+
+本地 ASR 默认实现只在 macOS 使用 Swift Speech helper；子进程 timeout/cancel 会终止独立进程组，
+临时 WAV snapshot 为 `0600`，异常退出后的 dead-owner 目录在启动时保守清理。当前证据只包含
+Swift typecheck、合成 PCM16 WAV、fake local ASR 与 CLI→Event→Task→Dispatcher→真实 pipeline
+fixture；没有真实 Speech 权限、真实用户音频、live Provider、设备或延迟 soak，因此这是工程
+可达路径而非实机验收。视频音轨、关键帧、时间片、coverage receipt 与理解 adapter 仍未实现。
 
 该 binary firewall 也覆盖显式 `generate_image` Media WorkUnit。公开 Tool schema 使用可选的
 同 Session `mediaEvidenceId`，不接受 raw image/data URL；参数在 Execution Ledger 建立记录前
@@ -541,6 +556,19 @@ Provider。该路径只有 fixture 与 CLI→Event→Dispatcher→真实 pipelin
 Provider 轮次；它不做代词推断或跨 Session 关联，语义 answer anchor 与 Memory 编译仍未接入。
 
 Realtime audio 采用 transcription/VAD-only 合同：官方 OpenAI Realtime WebSocket 只接收固定 24 kHz PCM16 小帧，`createResponse=false`、Provider output audio 关闭、tools 为空，final transcript 只能进入现有 `MimiHost` canonical Run，回答文本应由 Mimi-owned TTS 播放。当前实现只有 transport/controller 与 Host runner 接口和确定性测试，没有 CLI/Session actor composition root、麦克风 source、播放器 sink 或产品启动入口；因此实时 ASR/TTS、turn detection、barge-in、重连和 750 ms 指标仍是 contract-only 门禁，不是已交付能力。
+
+成功的 Daemon Conversation Task 先把 SQLite Task 提交为终态并解除 active ownership，再
+best-effort 清理本次 execution-ledger receipt。清理阻塞或失败不能把已完成 Task 重新暴露给
+claim，也不能再次调用 Provider；遗留 receipt 由后续受控清理处理。这个顺序只解决正常恢复的
+重复执行边界，不替代长期 crash/cleanup soak。
+
+100×30 conversation runner 的当前 durability tranche 为 headless 派发先同步追加
+`turn_dispatch_started` journal，checkpoint 使用 durable temp+rename，原始证据使用 `0600`
+no-clobber publish，Provider env 位于 evidence bundle 外的私有 secret root 并在正常退出时覆盖
+删除。它仍不是正式可执行门禁：持久 PTY 尚未接逐轮 pre-dispatch journal，journal 写入失败未
+全局 fail-stop，并发 checkpoint 单调性、SIGKILL secret recovery、完整 resume、逐场景 fixture/
+oracle 与 W/F Tool policy 仍未闭环。已有持久 PTY 和 1×1/2×5 证据只属于 calibration，正式
+100×30 分母保持 0。
 
 `write_file`、`edit_file`、`apply_patch` 和 `move_file` 完成后自动返回写后诊断：JSON 立即解析，TypeScript/JavaScript 工作区在存在本地 `tsc` 与 `tsconfig.json` 时执行有界 `tsc --noEmit`。同一批文件修改还会记录运行级前后快照；`/undo` 列出可撤销 Run，`/undo <run-id>` 只预览，`/undo <run-id> --apply` 才执行恢复。撤销前会核对每个文件仍等于该 Run 的写后摘要，检测到后续人工或其他 Run 修改时拒绝覆盖；单文件快照上限 5MB、单 Run 合计 20MB，超限修改会在写入前失败关闭。
 

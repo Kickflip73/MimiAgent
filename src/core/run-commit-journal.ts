@@ -225,6 +225,11 @@ export class RunCommitJournal {
       ...(entry.finalization ? {
         finalization: {
           ...entry.finalization,
+          evidenceRefs: [...entry.finalization.evidenceRefs],
+          mediaAnchors: entry.finalization.mediaAnchors.map((item) => ({
+            evidenceId: item.evidenceId,
+            anchor: { ...item.anchor },
+          })),
           toolManifest: entry.finalization.toolManifest.map((call) => ({ ...call })),
         },
       } : {}),

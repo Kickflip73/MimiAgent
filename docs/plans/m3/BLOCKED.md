@@ -49,9 +49,13 @@
   篡改或不兼容 Provider 均在请求前拒绝，completed ledger 回放不读 CAS。OpenAI multipart edit、
   URL/multi artifact、隐式代词/跨 Session 连续性、语义 answer anchor、Memory 和 live 图片 Provider
   验收仍是阻断项；不得用 fixture/集成回归宣称完整图片产品闭环。
-- `@audio/@video` 目前只允许有界摄取后明确 blocked。没有生产 transcript、音轨、关键帧、
-  time-range 或 MemoryCandidate caller；schema fixture 不得计为分析成功。尚无可信有界 probe 的
-  container/codec 继续 fail closed，结构完整性 hardening 保留在 backlog。
+- `@audio` 首版 PCM16 WAV 已从有界摄取接到同一 Session actor 的本地 ASR port、derived
+  transcript segment/time-range `MediaEvidence`、canonical Agent Run 与 `RunFinalization` anchor；
+  相同 durable Task retry 复用派生 Evidence。该路径只有 Swift helper typecheck、合成 WAV、fake
+  ASR 与 pipeline fixture，尚无真实 Speech 权限、真实用户音频、live Provider、设备或延迟 soak，
+  也未接 MemoryCandidate，因此不得计为实机或 live 音频验收。非 WAV audio 与全部 `@video`
+  继续网络前 blocked；视频音轨、关键帧、time-range 和理解 caller 尚未实现，未知 container/
+  codec 保持 fail closed。
 - Realtime transport/controller 是 transcription-only contract：没有 CLI/Daemon/Session actor
   composition root，也没有产品 mic source、speaker sink 或实机 stop/latency evidence。它不能被
   宣称为实时语音、双工、barge-in 或文本降级已经可用。
@@ -61,11 +65,12 @@
   完整 resume 与正式 100×30 soak 仍保持 Provider 前 `NO-GO`。
   `realProviderTurnsExecuted=0`、正式分母为 0，直到
   正式场景证据通过审计后才可更新前者；现有校准轮次不计入正式分母。
-- formal runner 当前的 `turn_dispatch_started`、checkpoint 与 evidence journal 尚未在派发前
-  完成 file/dir `fsync`，崩溃恢复可能把已派发轮误当作可重放；真实 Provider `.env` 也仍位于
-  会被保留的 evidence runtime bundle，SIGKILL 可留下 credential。正式 pilot 前必须把 secret
-  文件移到证据根之外的私有临时目录，并让 dispatch journal 先 durable sync、resume 重算旧证据
-  且对 uncertain turn 永不重放。修复前不得启动新的 formal Provider 请求。
+- formal runner 的 headless `turn_dispatch_started` journal、checkpoint 和 no-clobber evidence
+  publish 已具备 file/dir durable sync，真实 Provider `.env` 已移到可保留 evidence bundle 外的
+  私有临时根并在正常退出时覆盖删除。但持久 PTY 尚无逐轮 pre-dispatch journal；journal I/O
+  失败仍须全局 fail-stop；并发 checkpoint 需证明单调；SIGKILL secret recovery、完整 resume、
+  逐场景 fixture/oracle 和 W/F 正式 Tool policy 仍未闭环。正式 100×30 soak 在这些边界完成前
+  继续 `NO-GO`，不因 durability tranche 或既有 calibration 计数。
 - CAS owner/ref/GC 已进入 production attachment path，并通过完整单测/coverage CI 以及进程
   终止、锁恢复、并发 owner、启动 reconcile 等确定性 fault-injection；真实掉电与长期配额/GC
   soak 仍未形成 promotion 证据。发生不确定恢复状态时必须保留 ref 并失败关闭，不能用 unit
