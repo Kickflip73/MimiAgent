@@ -161,7 +161,13 @@ def write_all(descriptor, value):
 def submit_action(master_fd, action):
     encoded = action["text"].encode("utf-8")
     if action["kind"] == "model_turn" and b"\n" in encoded:
-        write_all(master_fd, BRACKETED_PASTE_START + encoded + BRACKETED_PASTE_END)
+        write_all(master_fd, BRACKETED_PASTE_START)
+        write_all(master_fd, encoded)
+        write_all(master_fd, BRACKETED_PASTE_END)
+        # InteractiveTerminal consumes a bracketed-paste chunk as one editor
+        # update. Keep Enter in a later PTY read so it cannot be discarded as
+        # bytes trailing the paste-end marker.
+        time.sleep(0.05)
         write_all(master_fd, b"\r")
         return
     write_all(master_fd, encoded + b"\r")

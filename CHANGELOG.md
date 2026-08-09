@@ -33,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback behavior and keeping isolated calibration memory retrieval lexical-only
 - submit multiline persistent-PTY benchmark actions through bracketed paste with
   complete writes so embedded newlines cannot create extra model Runs or produce
-  a false turn proof
+  a false turn proof, and deliver Enter in a later PTY read so it cannot be consumed
+  as bytes trailing the paste-end marker
 - classify the integrated but previously unlisted meeting/NotebookLM Skill as an
   unpublished experimental asset so repository and package boundaries stay closed
 - identify Shell commands as unthrottled local-host execution, allow explicit

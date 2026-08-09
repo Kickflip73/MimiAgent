@@ -89,6 +89,9 @@
   创建第三个 Run，导致 Session/Trace/assistant-visible 总体审计失败。整个尝试标为
   `unproven`，成功 PTY/calibration 轮次仍为 0；修复改用 bracketed paste 后单独发送 Enter，
   并用完整写循环防止 PTY partial write。
+- 第三次 PTY 尝试没有创建 Run 或发出 Provider 请求：终端正确保留了一个完整多行草稿，但
+  paste-end 与 Enter 进入同一 PTY 读取批次，paste 处理返回时丢弃了尾随 Enter。helper 现把
+  start/data/end 分开完整写入，并在独立的下一批发送 Enter；该尝试同样为 `unproven`、0 轮。
 - 本 checkpoint 的 no-tools focused tests 为 133/133；registry credential 修复后的相关 focused
   tests 为 20/20，随后完整 `npm test` 为 1029/1029，`npm run check` 与 `npm run build` 均
   退出 0。此处仍是工程门禁证据：真实 Provider 已产生上述两个未证明 Run，但成功的持久 PTY、
