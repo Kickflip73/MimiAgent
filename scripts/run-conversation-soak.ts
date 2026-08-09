@@ -565,6 +565,7 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
     MIMI_SECURITY_PROFILE: security.profile,
     MIMI_PERMISSION_MODE: security.permission,
     MIMI_SESSION_MAX_CONCURRENCY: '1',
+    MIMI_MEMORY_RETRIEVAL_MODE: 'lexical',
     MIMI_CONVERSATION_RUN_POLICY: 'benchmark-no-tools-v1',
     MIMI_CONVERSATION_SECRET_NAMES: provider.secretNames.join(','),
   };

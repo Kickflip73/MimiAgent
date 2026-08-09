@@ -9,6 +9,7 @@ import {
   legacyModelConfigurationForAppConfig,
   parseModelsConfig,
 } from '../src/runtime/model-config.js';
+import { requireConfiguredProviderApiKey } from '../src/runtime/bootstrap.js';
 
 const deepseek = {
   id: 'deepseek-main',
@@ -22,6 +23,35 @@ const deepseek = {
     capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
   }],
 };
+
+test('daemon startup validates the configured registry Provider instead of the legacy AppConfig key', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-model-credential-'));
+  const file = path.join(root, 'models.json');
+  await new ModelConfigStore(file).write({
+    version: 1,
+    routeVersion: 1,
+    providers: [{ ...deepseek, apiKeyEnv: 'FRIDAY_API_KEY' }],
+    routing: {
+      globalDefault: { providerId: 'deepseek-main', modelId: 'deepseek-v4-pro' },
+      scenarios: {},
+    },
+  });
+  const appConfig = {
+    provider: 'openai' as const,
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    daemonDataRoot: path.join(root, 'daemon'),
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    modelsConfig: file,
+    historyLimit: 40,
+    maxTurns: 20,
+  };
+  await assert.doesNotReject(requireConfiguredProviderApiKey(appConfig, {
+    FRIDAY_API_KEY: 'fixture-provider-value',
+  }));
+  await assert.rejects(requireConfiguredProviderApiKey(appConfig, {}), /FRIDAY_API_KEY/u);
+});
 
 test('model config validates unique exact targets and fails closed on unknown capabilities', () => {
   const base = {

@@ -16,7 +16,10 @@ import {
 import { MimiAgent } from '../agent.js';
 import { sanitizeSensitiveData } from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
-import { configureAgentRuntime, requireProviderApiKey } from '../runtime/bootstrap.js';
+import {
+  configureAgentRuntime,
+  requireConfiguredProviderApiKey,
+} from '../runtime/bootstrap.js';
 import { MimiHost } from '../runtime/mimi-host.js';
 import {
   AgentRunService,
@@ -345,7 +348,7 @@ export async function installMimiLaunchAgent(config: AppConfig): Promise<string>
   if (process.platform !== 'darwin') throw new Error('自动登录启动当前仅支持 macOS launchd');
   config = await resolveDaemonWorkspaceConfig(config);
   await initializeMimi(config);
-  requireProviderApiKey(config);
+  await requireConfiguredProviderApiKey(config);
   await persistLaunchAgentProviderApiKey(config);
   const paths = mimiPaths(config);
   await mkdir(paths.root, { recursive: true, mode: 0o700 });
@@ -374,7 +377,7 @@ export async function uninstallMimiLaunchAgent(): Promise<string> {
 
 export async function runMimiDaemon(config: AppConfig): Promise<void> {
   await initializeMimi(config);
-  requireProviderApiKey(config);
+  await requireConfiguredProviderApiKey(config);
   configureAgentRuntime(config);
   const paths = mimiPaths(config);
   const controlToken = await readControlToken(paths.socket);
@@ -1129,7 +1132,7 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
   config = await resolveDaemonWorkspaceConfig(config);
   await initializeMimi(config);
   await rememberDaemonWorkspace(config);
-  requireProviderApiKey(config);
+  await requireConfiguredProviderApiKey(config);
   let paths = mimiPaths(config);
   const expectedPermissionMode = config.permissionMode ?? 'trusted';
   const { launchAgentInstalled, startupMode } = await daemonSupervisorState(config);

@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   credential isolation, content-bound runtime identity, and byte-verified
   Event/Task/Run/Session/Trace/terminal evidence; keep W/F/V/L and the formal
   100-by-30 denominator fail-closed until their executable fixtures and oracles exist
+- validate Daemon startup credentials against the configured models registry global
+  target instead of a stale legacy AppConfig Provider, while preserving legacy
+  fallback behavior and keeping isolated calibration memory retrieval lexical-only
 - classify the integrated but previously unlisted meeting/NotebookLM Skill as an
   unpublished experimental asset so repository and package boundaries stay closed
 - identify Shell commands as unthrottled local-host execution, allow explicit

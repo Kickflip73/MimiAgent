@@ -79,9 +79,14 @@
 - 源码快照在 daemon 前、每次派发前和每轮后按实际文件内容复核；build identity 覆盖完整
   `dist/**`、runner、contract、PTY helper、manifest 和 package lock。任何 unproven 轮次均使
   命令非零退出。
-- 本 checkpoint 的 focused tests 为 133/133；随后完整 `npm test` 为 1028/1028，
-  `npm run check` 与 `npm run build` 均退出 0。此处仍是工程门禁证据：持久 PTY、1-turn 和
-  2x5 真实 Provider calibration 尚未运行，`realProviderTurnsExecuted=0`。
+- 第一次持久 PTY 尝试在 Daemon readiness 阶段、任何模型请求前暴露了旧启动检查：它仍按
+  AppConfig 硬要求 `OPENAI_API_KEY`，忽略 models registry 的 global target。启动检查现与实际
+  registry Provider 的 `apiKeyEnv` 对齐；legacy 配置行为不变，校准根另固定 lexical memory，
+  不复制第二个 credential。该失败运行保留在隔离临时证据根，不计任何轮次。
+- 本 checkpoint 的 no-tools focused tests 为 133/133；registry credential 修复后的相关 focused
+  tests 为 20/20，随后完整 `npm test` 为 1029/1029，`npm run check` 与 `npm run build` 均
+  退出 0。此处仍是工程门禁证据：成功的持久 PTY、1-turn 和 2x5 真实 Provider calibration
+  尚未形成，`realProviderTurnsExecuted=0`。
 
 ## M3 能力审计
 

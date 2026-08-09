@@ -333,6 +333,7 @@ test('runner uses only the built CLI boundary and Python stdlib PTY helper', asy
   assert.match(pty, /^import pty$/mu);
   assert.match(pty, /os\.isatty\(0\)/u);
   assert.match(runner, /MIMI_CONVERSATION_RUN_POLICY: 'benchmark-no-tools-v1'/u);
+  assert.match(runner, /MIMI_MEMORY_RETRIEVAL_MODE: 'lexical'/u);
   assert.match(runner, /MIMI_CONVERSATION_PROVIDER_ENV_ALLOWLIST is forbidden/u);
   assert.match(runner, /calibration proof mismatch/u);
   assert.match(runner, /formalDenominatorTurns: 0/u);
