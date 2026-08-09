@@ -1,16 +1,13 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  appendFile,
   chmod,
   lstat,
   mkdir,
   readlink,
   readdir,
   readFile,
-  rename,
   stat,
-  writeFile,
 } from 'node:fs/promises';
 import { parse as parseDotenv } from 'dotenv';
 import os from 'node:os';
@@ -37,12 +34,21 @@ import {
   type MaterializedTurn,
   type ScenarioCapabilitySnapshot,
 } from './conversation-soak-contract.js';
+import {
+  cleanupEphemeralCredentialFile,
+  createEphemeralCredentialFile,
+  durableAppend,
+  durableReplace,
+  durableWriteExclusive,
+  type EphemeralCredentialFile,
+} from './conversation-durable-io.js';
 
 const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mimiEntry = path.join(repositoryRoot, 'dist', 'index.js');
 const ptyHelper = path.join(repositoryRoot, 'scripts', 'run-conversation-pty.py');
 const contractFile = path.join(repositoryRoot, 'scripts', 'conversation-soak-contract.ts');
+const durableIoFile = path.join(repositoryRoot, 'scripts', 'conversation-durable-io.ts');
 const runnerFile = path.join(repositoryRoot, 'scripts', 'run-conversation-soak.ts');
 const defaultManifest = path.join(repositoryRoot, 'evals', 'conversation', 'manifest.v1.json');
 const terminalTaskStates = new Set(['completed', 'failed', 'cancelled', 'dead_letter', 'paused', 'blocked']);
@@ -80,6 +86,7 @@ interface IsolatedRuntime {
   dataRoot: string;
   daemonRoot: string;
   environmentFile: string;
+  credential: EphemeralCredentialFile;
   env: NodeJS.ProcessEnv;
   secretNames: string[];
   secrets: string[];
@@ -226,9 +233,7 @@ async function readOptionalJson(file: string): Promise<Record<string, unknown>> 
 }
 
 async function writeExclusive(file: string, value: string | Buffer): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  await writeFile(file, value, { flag: 'wx', mode: 0o600 });
-  await chmod(file, 0o600);
+  await durableWriteExclusive(file, value);
 }
 
 async function writeExclusiveJson(file: string, value: unknown): Promise<void> {
@@ -252,8 +257,7 @@ async function writeEvidenceJson(
 
 async function appendJournal(file: string, value: ConversationJournalRecord): Promise<void> {
   const operation = journalWriteQueue.then(async () => {
-    await appendFile(file, `${JSON.stringify(value)}\n`, { encoding: 'utf8', mode: 0o600 });
-    await chmod(file, 0o600);
+    await durableAppend(file, `${JSON.stringify(value)}\n`);
   });
   journalWriteQueue = operation.then(() => undefined, () => undefined);
   await operation;
@@ -281,10 +285,7 @@ async function writeCheckpoint(context: RunContext): Promise<void> {
     aggregate: context.aggregate,
     globalStopReason: context.globalStopReason,
   };
-  const temporary = `${context.checkpointFile}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(checkpoint, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-  await rename(temporary, context.checkpointFile);
-  await chmod(context.checkpointFile, 0o600);
+  await durableReplace(context.checkpointFile, `${JSON.stringify(checkpoint, null, 2)}\n`);
 }
 
 async function hashRepositoryPath(relative: string): Promise<string> {
@@ -355,6 +356,7 @@ async function runtimeClosureDigest(distDigest: string, manifestFile: string): P
   const files = [
     runnerFile,
     contractFile,
+    durableIoFile,
     ptyHelper,
     manifestFile,
     path.join(repositoryRoot, 'package.json'),
@@ -512,7 +514,6 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await chmod(directory, 0o700);
   }
-  const environmentFile = path.join(configRoot, '.env');
   const connectorsFile = path.join(configRoot, 'connectors.json');
   const assistantFile = path.join(configRoot, 'assistant.json');
   const mcpFile = path.join(configRoot, 'mcp.json');
@@ -528,8 +529,6 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
     }
   }
   const provider = await isolatedProviderEnvironment(configRoot, reuse);
-  await writeFile(environmentFile, provider.environmentContents, { mode: 0o600 });
-  await chmod(environmentFile, 0o600);
   const security = securityFor(scenario.lane);
   const marker = {
     schemaVersion: 1,
@@ -548,6 +547,10 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
   } else {
     await writeExclusiveJson(markerFile, marker);
   }
+  const credential = await createEphemeralCredentialFile(provider.environmentContents, {
+    excludedRoot: context.outputRoot,
+  });
+  const environmentFile = credential.file;
   const baseNames = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'TERM'];
   const env: NodeJS.ProcessEnv = {
     ...Object.fromEntries(baseNames.flatMap((name) => process.env[name] ? [[name, process.env[name]!]] : [])),
@@ -574,12 +577,18 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
     MIMI_CONVERSATION_SECRET_NAMES: provider.secretNames.join(','),
   };
   const logs: Buffer[] = [];
-  const daemon = spawn(process.execPath, [mimiEntry, 'daemon', 'run'], {
-    cwd: workspace,
-    env,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    detached: true,
-  });
+  let daemon: ChildProcess;
+  try {
+    daemon = spawn(process.execPath, [mimiEntry, 'daemon', 'run'], {
+      cwd: workspace,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+  } catch (error) {
+    await cleanupEphemeralCredentialFile(credential);
+    throw error;
+  }
   const append = (chunk: Buffer) => {
     logs.push(Buffer.from(chunk));
     while (Buffer.concat(logs).byteLength > 4 * 1024 * 1024) logs.shift();
@@ -593,6 +602,7 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
     dataRoot,
     daemonRoot,
     environmentFile,
+    credential,
     env,
     secretNames: provider.secretNames,
     secrets: provider.secrets,
@@ -643,12 +653,7 @@ async function stopIsolatedRuntime(runtime: IsolatedRuntime, retain: boolean): P
       await runtime.exited;
     }
   } finally {
-    await writeFile(
-      runtime.environmentFile,
-      '# provider credential removed after isolated runtime shutdown\n',
-      { mode: 0o600 },
-    );
-    await chmod(runtime.environmentFile, 0o600);
+    await cleanupEphemeralCredentialFile(runtime.credential);
   }
   if (!retain) throw new Error('runtime bundle deletion is disabled until durable evidence archival is proven');
 }

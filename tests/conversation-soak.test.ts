@@ -402,9 +402,14 @@ test('runner uses only the built CLI boundary and Python stdlib PTY helper', asy
   assert.match(runner, /MIMI_CONVERSATION_RUN_POLICY: 'benchmark-no-tools-v1'/u);
   assert.match(runner, /MIMI_MEMORY_RETRIEVAL_MODE: 'lexical'/u);
   assert.match(runner, /MIMI_CONVERSATION_PROVIDER_ENV_ALLOWLIST is forbidden/u);
+  assert.match(runner, /durableAppend/u);
+  assert.match(runner, /createEphemeralCredentialFile/u);
+  assert.doesNotMatch(runner, /path\.join\(configRoot, '\.env'\)/u);
+  assert.match(runner, /kind: 'turn_dispatch_started',[\s\S]{0,800}await captureCliTurn/u);
   assert.match(runner, /calibration proof mismatch/u);
   assert.match(runner, /formalDenominatorTurns: 0/u);
   assert.match(runner, /digestTree\(path\.join\(repositoryRoot, 'dist'\)\)/u);
+  assert.match(runner, /durableIoFile/u);
   assert.doesNotMatch(runner, /streamCandidateObserved/u);
   assert.match(pty, /transportChunksObserved/u);
 });
