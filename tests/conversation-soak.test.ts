@@ -332,6 +332,8 @@ test('runner uses only the built CLI boundary and Python stdlib PTY helper', asy
   assert.match(runner, /MIMI_DAEMON_SUPERVISOR/u);
   assert.match(pty, /^import pty$/mu);
   assert.match(pty, /os\.isatty\(0\)/u);
+  assert.match(pty, /BRACKETED_PASTE_START \+ encoded \+ BRACKETED_PASTE_END/u);
+  assert.match(pty, /def write_all\(descriptor, value\):/u);
   assert.match(runner, /MIMI_CONVERSATION_RUN_POLICY: 'benchmark-no-tools-v1'/u);
   assert.match(runner, /MIMI_MEMORY_RETRIEVAL_MODE: 'lexical'/u);
   assert.match(runner, /MIMI_CONVERSATION_PROVIDER_ENV_ALLOWLIST is forbidden/u);

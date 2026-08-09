@@ -29,6 +29,8 @@ SECRET_PATTERNS = [
 TERMINAL_RUN_STATES = {"completed", "failed", "interrupted"}
 BUSY_MARKER = "运行中"
 PROMPT_READY_MARKER = "· 模式 "
+BRACKETED_PASTE_START = b"\x1b[200~"
+BRACKETED_PASTE_END = b"\x1b[201~"
 
 
 def iso_now():
@@ -145,6 +147,24 @@ def drain(master_fd, transcript, max_bytes, timeout=0.1):
     if len(transcript) > max_bytes:
         raise RuntimeError("PTY transcript exceeded the configured byte bound")
     return True
+
+
+def write_all(descriptor, value):
+    remaining = memoryview(value)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise OSError("PTY write made no progress")
+        remaining = remaining[written:]
+
+
+def submit_action(master_fd, action):
+    encoded = action["text"].encode("utf-8")
+    if action["kind"] == "model_turn" and b"\n" in encoded:
+        write_all(master_fd, BRACKETED_PASTE_START + encoded + BRACKETED_PASTE_END)
+        write_all(master_fd, b"\r")
+        return
+    write_all(master_fd, encoded + b"\r")
 
 
 def wait_startup(master_fd, transcript, timeout_ms, max_bytes):
@@ -284,7 +304,7 @@ def main():
             action_start = len(transcript)
             action_started_at = iso_now()
             before_ids = {item.get("id") for item in session_runs(args.command, args.session_id)}
-            os.write(master_fd, action["text"].encode("utf-8") + b"\r")
+            submit_action(master_fd, action)
             model_run = None
             terminal_action = None
             if action["kind"] == "model_turn":

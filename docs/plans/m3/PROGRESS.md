@@ -83,10 +83,16 @@
   AppConfig 硬要求 `OPENAI_API_KEY`，忽略 models registry 的 global target。启动检查现与实际
   registry Provider 的 `apiKeyEnv` 对齐；legacy 配置行为不变，校准根另固定 lexical memory，
   不复制第二个 credential。该失败运行保留在隔离临时证据根，不计任何轮次。
+- 第二次持久 PTY 尝试确认 `tty=true`、启动 prompt 和两个真实 Provider Run；两个 Run 分别有
+  2969/242 与 3001/1488 input/output tokens，并由 helper 独立看到 completed、正 usage 和
+  busy -> prompt-ready。但 manifest prompt 是多行，旧 helper 将内部换行当作多个 Enter，额外
+  创建第三个 Run，导致 Session/Trace/assistant-visible 总体审计失败。整个尝试标为
+  `unproven`，成功 PTY/calibration 轮次仍为 0；修复改用 bracketed paste 后单独发送 Enter，
+  并用完整写循环防止 PTY partial write。
 - 本 checkpoint 的 no-tools focused tests 为 133/133；registry credential 修复后的相关 focused
   tests 为 20/20，随后完整 `npm test` 为 1029/1029，`npm run check` 与 `npm run build` 均
-  退出 0。此处仍是工程门禁证据：成功的持久 PTY、1-turn 和 2x5 真实 Provider calibration
-  尚未形成，`realProviderTurnsExecuted=0`。
+  退出 0。此处仍是工程门禁证据：真实 Provider 已产生上述两个未证明 Run，但成功的持久 PTY、
+  1-turn 和 2x5 calibration 尚未形成；成功校准分子与正式分母均为 0。
 
 ## M3 能力审计
 
