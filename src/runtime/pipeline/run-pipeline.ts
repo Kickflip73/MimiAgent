@@ -55,6 +55,7 @@ import {
   withoutPersonalMessageFallbackHistory,
 } from './tool-set-builder.js';
 import { RunFactCollector } from './run-fact-collector.js';
+import { registerRunMediaEvidence } from './media-evidence-registration.js';
 
 export function containsImageInput(input: string | AgentInputItem[]): boolean {
   if (typeof input === 'string') return false;
@@ -240,6 +241,17 @@ export async function executeRunPipeline(
       options?.retainExecutionLedger === true,
     );
     began = true;
+    await registerRunMediaEvidence({
+      artifacts: host.mediaArtifacts,
+      session: run.session,
+      evidence: options?.mediaEvidence,
+      runId: run.runId,
+      sessionId: run.sessionId,
+      profileId: run.scope.profileId,
+      workspaceId: options?.workspaceId,
+      sourceEventId: options?.cause?.sourceEventId ?? options?.cause?.eventId,
+      trust: options?.cause?.trust ?? 'owner',
+    });
     const resumesCheckpoint = recovery !== undefined
       && recovery.status !== 'completed'
       && (recovery.input.trim() === textInput.trim() || options?.resumeState === true);

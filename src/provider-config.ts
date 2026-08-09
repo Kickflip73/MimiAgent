@@ -413,7 +413,7 @@ export async function runProviderRegistryCommand(
   const options = registryOptions(args, positionalModelId ? 3 : 2);
   const allowed = new Set([
     '--label', '--transport', '--base-url', '--api-key-env', '--model', '--kind',
-    '--image-input', '--image-output', '--tool-calling', '--context-window',
+    '--image-input', '--image-output', '--file-input', '--tool-calling', '--context-window',
     '--reasoning-high', '--reasoning-off', '--manual-budget-tokens',
   ]);
   for (const name of options.keys()) {
@@ -454,6 +454,7 @@ export async function runProviderRegistryCommand(
   }
   const imageInput = booleanOption(options.get('--image-input') ?? 'false', '--image-input');
   const imageOutput = booleanOption(options.get('--image-output') ?? 'false', '--image-output');
+  const fileInput = booleanOption(options.get('--file-input') ?? 'false', '--file-input');
   const toolCalling = booleanOption(options.get('--tool-calling') ?? 'false', '--tool-calling');
   const reasoningHighValue = options.get('--reasoning-high');
   if (reasoningHighValue && reasoningHighValue !== 'manual' && reasoningHighValue !== 'adaptive') {
@@ -469,7 +470,7 @@ export async function runProviderRegistryCommand(
   const registration: ModelRegistration = {
     target: { providerId, modelId },
     kind,
-    capabilities: { imageInput, imageOutput, toolCalling },
+    capabilities: { imageInput, imageOutput, toolCalling, fileInput },
     ...(options.has('--context-window')
       ? { contextWindow: positiveIntegerOption(options.get('--context-window')!, '--context-window') }
       : {}),

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   MemoryConfidence,
   MemoryKind,
@@ -6,6 +7,11 @@ import type {
   MemoryTrust,
   SourceRef,
 } from './types.js';
+import {
+  resolveMediaEvidenceAnchor,
+  type MediaEvidence,
+  type MediaEvidenceAnchor,
+} from '../media-evidence.js';
 
 export type EvidenceKind =
   | 'session-round'
@@ -13,7 +19,8 @@ export type EvidenceKind =
   | 'task-run'
   | 'workspace-file'
   | 'owner-explicit'
-  | 'memory-revision';
+  | 'memory-revision'
+  | 'media';
 
 export interface EvidenceRef {
   id: string;
@@ -30,6 +37,8 @@ export interface EvidenceRef {
     taskId?: string;
     relativePath?: string;
     revisionId?: string;
+    mediaEvidenceId?: string;
+    mediaAnchor?: MediaEvidenceAnchor;
   };
 }
 
@@ -120,6 +129,45 @@ export function evidenceFromSource(
       ...(source.type === 'mimi-event' ? { eventId: source.id } : {}),
       ...(source.type === 'file' ? { relativePath: source.id } : {}),
       ...(source.type === 'memory' ? { revisionId: source.id } : {}),
+    },
+  };
+}
+
+export function evidenceFromMedia(
+  evidence: MediaEvidence,
+  profileId: string,
+  workspaceId: string,
+  anchor?: MediaEvidenceAnchor,
+): EvidenceRef {
+  if (evidence.sourceRef.profileId !== profileId) {
+    throw new Error(
+      `MediaEvidence profile ${evidence.sourceRef.profileId} 与 Memory profile ${profileId} 不一致`,
+    );
+  }
+  if (evidence.sourceRef.workspaceId && evidence.sourceRef.workspaceId !== workspaceId) {
+    throw new Error(
+      `MediaEvidence workspace ${evidence.sourceRef.workspaceId} 与 Memory workspace ${workspaceId} 不一致`,
+    );
+  }
+  const resolvedAnchor = resolveMediaEvidenceAnchor(evidence, anchor);
+  const anchorIdentity = JSON.stringify(resolvedAnchor);
+  const anchoredDigest = createHash('sha256')
+    .update(`media-memory-evidence-v1\0${evidence.id}\0${anchorIdentity}`)
+    .digest('hex');
+  return {
+    id: `${evidence.id}#${anchoredDigest.slice(0, 16)}`,
+    kind: 'media',
+    profileId,
+    workspaceId,
+    digest: `sha256:${anchoredDigest}`,
+    occurredAt: evidence.occurredAt,
+    trust: evidence.sourceRef.trust,
+    locator: {
+      ...(evidence.sourceRef.sessionId ? { sessionId: evidence.sourceRef.sessionId } : {}),
+      ...(evidence.sourceRef.runId ? { runId: evidence.sourceRef.runId } : {}),
+      ...(evidence.sourceRef.eventId ? { eventId: evidence.sourceRef.eventId } : {}),
+      mediaEvidenceId: evidence.id,
+      mediaAnchor: resolvedAnchor,
     },
   };
 }

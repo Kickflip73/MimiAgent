@@ -124,6 +124,10 @@ async function run(raw: unknown): Promise<void> {
     }), { maxConcurrentSessions: 1 });
     dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {
       maxConcurrentTasks: 1,
+      attachmentRoot: path.join(
+        path.resolve(init.config.daemonDataRoot ?? path.join(init.config.dataRoot, 'mimi')),
+        'attachments',
+      ),
       connectorRuntime: new KernelConnectorRuntime(init.socket, init.taskId, init.workerToken),
       memoryMaintenance: {
         capture: (input, profileId) => agent.memoryCapture(input, profileId),

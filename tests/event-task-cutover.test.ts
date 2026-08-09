@@ -381,7 +381,9 @@ test('retention removes routed observe-only Events with their receipts', async (
       routerVersion: 'test', decision: 'observe_only', reasonCode: 'test_observation',
     });
     const cutoff = new Date(Date.parse(appended.event.createdAt) + 1);
-    assert.equal(store.pruneHistory(cutoff).events, 1);
+    const pruned = store.pruneHistory(cutoff);
+    assert.equal(pruned.events, 1);
+    assert.deepEqual(pruned.prunedEventIds, [appended.event.id]);
     assert.equal(store.getImmutableEvent(appended.event.id), undefined);
     assert.equal(store.getEventRouteReceipt(appended.event.id), undefined);
   } finally {

@@ -352,6 +352,51 @@ test('direct tools stay out of the gateway while deferred families remain invoka
   );
 });
 
+test('model schema compaction preserves the original Tool parser and parameters', async () => {
+  let executions = 0;
+  const original = sdkTool({
+    name: 'read_file',
+    description: 'read one file',
+    parameters: z.object({ path: z.string().min(1) }),
+    execute: async ({ path: filePath }) => {
+      executions += 1;
+      return { path: filePath };
+    },
+  });
+  const originalParameters = (original as Tool & {
+    parameters: Record<string, unknown>;
+  }).parameters;
+  assert.equal(typeof originalParameters.$schema, 'string');
+
+  const [modelTool] = new ToolSetBuilder().sdkTools({
+    direct: [original],
+    deferred: [],
+  }, []);
+  assert.ok(modelTool);
+  const modelParameters = (modelTool as Tool & {
+    parameters: Record<string, unknown>;
+  }).parameters;
+  assert.equal('$schema' in modelParameters, false);
+  assert.equal(
+    (original as Tool & { parameters: Record<string, unknown> }).parameters,
+    originalParameters,
+  );
+  assert.equal(typeof originalParameters.$schema, 'string');
+
+  const invoke = (modelTool as Tool & {
+    invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
+  }).invoke;
+  assert.deepEqual(
+    await invoke(new RunContext({}), JSON.stringify({ path: 'README.md' }), {}),
+    { path: 'README.md' },
+  );
+  assert.match(
+    String(await invoke(new RunContext({}), JSON.stringify({ path: 42 }), {})),
+    /InvalidToolInputError/,
+  );
+  assert.equal(executions, 1);
+});
+
 test('capability registry caches identical discovery without a loop guard', async () => {
   const builder = new ToolSetBuilder();
   const hidden = sdkTool({

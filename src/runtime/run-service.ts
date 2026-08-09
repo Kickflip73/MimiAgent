@@ -1,14 +1,16 @@
 import type { AgentInputItem, RunStreamEvent } from '@openai/agents';
 import type { ModelProvider } from '../config.js';
+import type { ModelRequirements } from '../core/model-routing.js';
 import type { RunFinalizationRecord } from '../core/run-finalization.js';
 import { attachRunFinalization } from '../core/run-finalization.js';
 import type { RuntimeEffect } from './control.js';
 import type { RuntimeEvent } from './hooks.js';
-import type {
-  CompletionDeliveryDisposition,
-  ContextUsageSnapshot,
-  MimiAgent,
-  MimiRunOptions,
+import {
+  freezeRunModelRequirements,
+  type CompletionDeliveryDisposition,
+  type ContextUsageSnapshot,
+  type MimiAgent,
+  type MimiRunOptions,
 } from './mimi-agent.js';
 import { assertRunCanComplete, isRunInterrupted, isTerminalRunInterruption } from './run-outcome.js';
 import { projectRunStreamEvent } from './stream-projection.js';
@@ -19,6 +21,8 @@ import {
   type ProviderCandidate,
   type ProviderHealthSnapshot,
 } from './provider-reliability.js';
+import { legacyModelConfiguration } from './model-config.js';
+import { WorkUnitModelResolver } from './work-unit-model-resolver.js';
 
 export interface AgentRunRequest {
   input: string;
@@ -57,6 +61,51 @@ export interface ProviderBackupRoute {
   model?: string;
 }
 
+function backupModel(
+  route: ProviderBackupRoute,
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  return route.model ?? (route.provider === 'deepseek'
+    ? environment.DEEPSEEK_MODEL?.trim() || 'deepseek-v4-pro'
+    : environment.OPENAI_MODEL?.trim() || 'gpt-5.4-mini');
+}
+
+function backupIncompatibility(
+  route: ProviderBackupRoute,
+  requirements: Readonly<ModelRequirements>,
+  scenario: string,
+): Error | undefined {
+  const model = backupModel(route);
+  const configuration = legacyModelConfiguration(route.provider === 'deepseek'
+    ? { MIMI_MODEL_PROVIDER: 'deepseek', DEEPSEEK_MODEL: model }
+    : { MIMI_MODEL_PROVIDER: 'openai', OPENAI_MODEL: model });
+  const provider = configuration.providers[0]!;
+  const registration = provider.models[0]!;
+  const resolver = new WorkUnitModelResolver({
+    providers: [provider],
+    routing: {
+      globalDefault: registration.target,
+      scenarios: {},
+    },
+  });
+  try {
+    resolver.resolve({
+      scenario,
+      profile: {
+        modelTarget: registration.target,
+        requirements: { ...requirements },
+      },
+      routeVersion: configuration.routeVersion,
+    });
+    return undefined;
+  } catch (error) {
+    return new Error(
+      `Backup Provider ${route.id} 与冻结 WorkUnit 硬能力不兼容，已在请求前拒绝`,
+      { cause: error },
+    );
+  }
+}
+
 export function providerBackupRouteFromEnvironment(
   primaryProvider: ModelProvider,
   environment: NodeJS.ProcessEnv = process.env,
@@ -73,14 +122,17 @@ export function providerBackupRouteFromEnvironment(
   if (!environment[credentialName]?.trim()) {
     throw new Error(`Backup Provider 缺少 ${credentialName}`);
   }
-  const model = environment.MIMI_BACKUP_MODEL?.trim();
-  if (model && (model.length > 200 || !/^[A-Za-z0-9._:/-]+$/.test(model))) {
+  const configuredModel = environment.MIMI_BACKUP_MODEL?.trim();
+  const model = configuredModel || (value === 'deepseek'
+    ? environment.DEEPSEEK_MODEL?.trim() || 'deepseek-v4-pro'
+    : environment.OPENAI_MODEL?.trim() || 'gpt-5.4-mini');
+  if (model.length > 200 || !/^[A-Za-z0-9._:/-]+$/.test(model)) {
     throw new Error('MIMI_BACKUP_MODEL 格式无效');
   }
   return {
-    id: `${value}:${model ?? 'default'}`,
+    id: `${value}:${model}`,
     provider: value,
-    ...(model ? { model } : {}),
+    model,
   };
 }
 
@@ -173,9 +225,20 @@ export class AgentRunService {
         : this.providerId;
       this.lastProviderId = providerId;
       selectedProvider = providerId;
+      const backupIncompatible = this.backupProvider
+        ? backupIncompatibility(
+            this.backupProvider,
+            freezeRunModelRequirements(
+              request.modelInput ?? request.input,
+              request.options,
+            ),
+            request.options?.scenario
+              ?? (request.options?.cause ? 'background.default' : 'conversation.default'),
+          )
+        : undefined;
       const candidates: ProviderCandidate[] = [
         { id: providerId, role: 'primary' },
-        ...(this.backupProvider
+        ...(this.backupProvider && !backupIncompatible
           ? [{ id: this.backupProvider.id, role: 'backup' as const }]
           : []),
       ];
@@ -189,7 +252,7 @@ export class AgentRunService {
                 ...request.options,
                 providerRoute: {
                   provider: this.backupProvider.provider,
-                  ...(this.backupProvider.model ? { model: this.backupProvider.model } : {}),
+                  model: backupModel(this.backupProvider),
                 },
               }
             : request.options,

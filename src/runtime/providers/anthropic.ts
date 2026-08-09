@@ -6,6 +6,7 @@ import type {
 import type { ProviderAdapter } from './types.js';
 import { assertHealthyResponse, modelHealthUrl } from './shared.js';
 import { NativeJsonAgentModel } from './native-model.js';
+import { withFileInputCapability } from './file-input.js';
 
 export class AnthropicMessagesAdapter implements ProviderAdapter {
   createAgentRuntime(
@@ -22,14 +23,19 @@ export class AnthropicMessagesAdapter implements ProviderAdapter {
       throw new Error('Claude reasoning=off 未注册为受支持能力；请求未发送');
     }
     return {
-      model: new NativeJsonAgentModel({
-        protocol: 'anthropic',
-        baseUrl: provider.baseUrl.replace(/\/+$/, ''),
-        apiKey,
-        modelId: registration.target.modelId,
-        reasoning,
-        reasoningCapability: registration.reasoning,
-      }),
+      model: withFileInputCapability(
+        new NativeJsonAgentModel({
+          protocol: 'anthropic',
+          baseUrl: provider.baseUrl.replace(/\/+$/, ''),
+          apiKey,
+          modelId: registration.target.modelId,
+          reasoning,
+          reasoningCapability: registration.reasoning,
+        }),
+        registration,
+        provider.transport,
+        false,
+      ),
       target: registration.target,
       registration,
       reasoning,

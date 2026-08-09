@@ -199,7 +199,12 @@ function legacyProvider(
         models: [{
           target: { providerId: 'deepseek-main', modelId },
           kind: 'agent',
-          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+          capabilities: {
+            imageInput: false,
+            imageOutput: false,
+            toolCalling: true,
+            fileInput: false,
+          },
         }],
       },
     };
@@ -221,7 +226,12 @@ function legacyProvider(
         models: [{
           target: { providerId: 'legacy-compatible', modelId },
           kind: 'agent',
-          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+          capabilities: {
+            imageInput: false,
+            imageOutput: false,
+            toolCalling: true,
+            fileInput: false,
+          },
         }],
       },
     };
@@ -238,7 +248,12 @@ function legacyProvider(
       models: [{
         target: { providerId: 'openai-main', modelId },
         kind: 'agent',
-        capabilities: { imageInput: true, imageOutput: false, toolCalling: true },
+        capabilities: {
+          imageInput: true,
+          imageOutput: false,
+          toolCalling: true,
+          fileInput: true,
+        },
       }],
     },
   };
@@ -307,6 +322,7 @@ export function legacyModelConfigurationForAppConfig(
           imageInput: config.provider === 'openai',
           imageOutput: false,
           toolCalling: true,
+          fileInput: config.provider === 'openai',
         },
       })),
     }],

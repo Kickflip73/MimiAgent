@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mimiagent.local/evals/conversation/manifest.schema.v1.json",
+  "title": "MimiAgent real terminal conversation benchmark manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "datasetRevision",
+    "seed",
+    "requiredScenarioCount",
+    "minimumTurnsPerScenario",
+    "minimumScenariosPerSuite",
+    "toolSnapshotRevision",
+    "advertisedTools",
+    "scenarios"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "datasetRevision": { "$ref": "#/$defs/identifier" },
+    "seed": { "$ref": "#/$defs/identifier" },
+    "requiredScenarioCount": { "type": "integer", "minimum": 100 },
+    "minimumTurnsPerScenario": { "type": "integer", "minimum": 30 },
+    "minimumScenariosPerSuite": { "type": "integer", "minimum": 10 },
+    "toolSnapshotRevision": { "$ref": "#/$defs/identifier" },
+    "advertisedTools": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]{0,119}$" }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 100,
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/scenario" }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,119}$"
+    },
+    "stringArray": {
+      "type": "array",
+      "maxItems": 40,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenarioId",
+        "ordinal",
+        "suite",
+        "title",
+        "lane",
+        "evidenceKind",
+        "entry",
+        "turnCount",
+        "unattendedEligible",
+        "enabledByDefault",
+        "effectClass",
+        "promptTemplate",
+        "turnActions",
+        "terminalScript",
+        "runtimeContract",
+        "fixture",
+        "machineOracle",
+        "toolExpectation",
+        "supplemental",
+        "oracle",
+        "expectedTools",
+        "expectedToolsAnyOf",
+        "forbiddenTools",
+        "tags"
+      ],
+      "properties": {
+        "scenarioId": { "type": "string", "pattern": "^conv-[0-9]{3}$" },
+        "ordinal": { "type": "integer", "minimum": 1 },
+        "suite": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "lane": { "enum": ["S", "W", "F", "V", "L"] },
+        "evidenceKind": { "enum": ["fixture", "readiness", "live_action", "soak"] },
+        "entry": { "enum": ["headless-cli", "persistent-pty"] },
+        "turnCount": { "type": "integer", "minimum": 30 },
+        "unattendedEligible": { "type": "boolean" },
+        "enabledByDefault": { "type": "boolean" },
+        "effectClass": {
+          "enum": ["read", "temporary-write", "fixture-write", "vm-write", "live-action"]
+        },
+        "promptTemplate": {
+          "type": "string",
+          "minLength": 80,
+          "maxLength": 4000,
+          "pattern": "^SCENE=\\{\\{SCENE\\}\\} TURN=\\{\\{TURN\\}\\} NONCE=\\{\\{NONCE\\}\\}"
+        },
+        "turnActions": {
+          "type": "array",
+          "minItems": 30,
+          "maxItems": 30,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 12, "maxLength": 1000 }
+        },
+        "terminalScript": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["driver", "beforeModel", "duringModel", "afterModel"],
+          "properties": {
+            "driver": { "enum": ["headless-cli", "persistent-pty"] },
+            "beforeModel": { "$ref": "#/$defs/stringArray" },
+            "duringModel": { "$ref": "#/$defs/stringArray" },
+            "afterModel": { "$ref": "#/$defs/stringArray" }
+          }
+        },
+        "runtimeContract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "securityProfile", "fixtureCapability", "allowedTools"],
+          "properties": {
+            "mode": { "enum": ["general", "plan", "ultra"] },
+            "securityProfile": { "enum": ["safe", "workstation", "full-owner"] },
+            "fixtureCapability": { "$ref": "#/$defs/identifier" },
+            "allowedTools": { "$ref": "#/$defs/stringArray" }
+          }
+        },
+        "fixture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id", "setup", "receipt"],
+          "properties": {
+            "kind": { "enum": ["none", "policy-only", "temp-workspace", "loopback", "dedicated-host"] },
+            "id": { "$ref": "#/$defs/identifier" },
+            "setup": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "receipt": { "type": "string", "minLength": 1, "maxLength": 500 }
+          }
+        },
+        "machineOracle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "assertions"],
+          "properties": {
+            "kind": { "$ref": "#/$defs/identifier" },
+            "assertions": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 30,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 3, "maxLength": 240 }
+            }
+          }
+        },
+        "toolExpectation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "names"],
+          "properties": {
+            "mode": { "enum": ["none", "all", "any"] },
+            "names": { "$ref": "#/$defs/stringArray" }
+          }
+        },
+        "supplemental": { "type": "boolean" },
+        "oracle": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "expectedTools": { "$ref": "#/$defs/stringArray" },
+        "expectedToolsAnyOf": { "$ref": "#/$defs/stringArray" },
+        "forbiddenTools": { "$ref": "#/$defs/stringArray" },
+        "tags": { "$ref": "#/$defs/stringArray" }
+      }
+    }
+  }
+}

@@ -6,6 +6,7 @@ import type {
 import type { ProviderAdapter } from './types.js';
 import { assertHealthyResponse, requiredBaseUrl } from './shared.js';
 import { NativeJsonAgentModel } from './native-model.js';
+import { withFileInputCapability } from './file-input.js';
 
 export class GoogleGenerateContentAdapter implements ProviderAdapter {
   createAgentRuntime(
@@ -15,13 +16,18 @@ export class GoogleGenerateContentAdapter implements ProviderAdapter {
     reasoning: ReasoningIntent,
   ) {
     return {
-      model: new NativeJsonAgentModel({
-        protocol: 'google',
-        baseUrl: requiredBaseUrl(provider),
-        apiKey,
-        modelId: registration.target.modelId,
-        reasoning,
-      }),
+      model: withFileInputCapability(
+        new NativeJsonAgentModel({
+          protocol: 'google',
+          baseUrl: requiredBaseUrl(provider),
+          apiKey,
+          modelId: registration.target.modelId,
+          reasoning,
+        }),
+        registration,
+        provider.transport,
+        false,
+      ),
       target: registration.target,
       registration,
       reasoning,

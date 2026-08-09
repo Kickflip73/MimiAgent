@@ -1,15 +1,37 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, link, lstat, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 import {
+  resolveEnvironmentFile,
   securityProfileSummary,
   type AppConfig,
   type SecurityProfileSummary,
 } from '../config.js';
-import { mimiPaths } from './client-runtime.js';
-import type { DaemonHealthSnapshot } from './health-model.js';
-import type { MimiDoctorReport } from './service.js';
+import { providerApiKeyName } from '../provider-config.js';
+import { providerBackupRouteFromEnvironment } from '../runtime/run-service.js';
+import {
+  mimiBuildDiagnostics,
+  mimiPaths,
+} from './client-runtime.js';
+import {
+  parseConnectorConfig,
+  type ConnectorCapability,
+  type ConnectorFileConfig,
+} from './connectors.js';
+import {
+  buildDaemonHealth,
+  doctorBlockingHealthRisks,
+  type DaemonHealthSnapshot,
+} from './health-model.js';
+import { mimiRpc } from './ipc.js';
+import { pathExists } from './json-file.js';
+import { MIMI_LAUNCH_AGENT_LABEL } from './launch-agent-config.js';
+import { classifyReadinessUnknown } from './operational-classification.js';
+import { launchAgentProviderConfigured } from './provider-environment.js';
 import { resourceHostSummary } from './resource-slo.js';
+import type { DaemonStatus, MimiActivitySnapshot } from './types.js';
 
 export const DIAGNOSTIC_BUNDLE_SCHEMA_VERSION = 1;
 
@@ -337,6 +359,203 @@ export async function inspectDiagnosticStorage(config: AppConfig): Promise<Diagn
     },
   };
 }
+
+function diagnosticErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Produces the product-level Doctor report without adding policy to the daemon composition root. */
+export async function doctorMimi(config: AppConfig) {
+  const paths = mimiPaths(config);
+  const issues: string[] = [];
+  try {
+    providerBackupRouteFromEnvironment(config.provider);
+  } catch (error) {
+    issues.push(`Provider 主备配置无效：${diagnosticErrorMessage(error)}`);
+  }
+  let connectorConfig: ConnectorFileConfig | undefined;
+  if (await pathExists(paths.connectorsConfig)) {
+    try {
+      connectorConfig = parseConnectorConfig(JSON.parse(await readFile(paths.connectorsConfig, 'utf8')) as unknown);
+    } catch (error) {
+      issues.push(`Connector 配置无效：${diagnosticErrorMessage(error)}`);
+    }
+  } else {
+    issues.push('尚未初始化 connectors.json');
+  }
+  const enabled = connectorConfig
+    ? Object.entries(connectorConfig.connectors).filter(([, connector]) => connector.enabled).map(([id]) => id)
+    : [];
+  if (connectorConfig && enabled.length === 0) issues.push('没有启用任何 Connector');
+  const scriptPaths = connectorConfig
+    ? [...new Set(Object.values(connectorConfig.connectors)
+      .flatMap((connector) => connector.args)
+      .filter((argument) => path.isAbsolute(argument) && /\.(?:mjs|cjs|js)$/.test(argument)))]
+    : [];
+  const missingScripts: string[] = [];
+  for (const script of scriptPaths) if (!await pathExists(script)) missingScripts.push(script);
+  if (missingScripts.length) issues.push(`${missingScripts.length} 个 Connector 脚本不存在`);
+  const configured = Boolean(process.env[providerApiKeyName(config.provider)]?.trim());
+  if (!configured) issues.push(`${config.provider} API Key 未配置`);
+  const launchAgentFile = path.join(
+    os.homedir(),
+    'Library',
+    'LaunchAgents',
+    `${MIMI_LAUNCH_AGENT_LABEL}.plist`,
+  );
+  const launchAgentInstalled = await pathExists(launchAgentFile);
+  const persistentProviderKey = await launchAgentProviderConfigured(config);
+  if (launchAgentInstalled && !persistentProviderKey) {
+    issues.push(`launchd 持久环境文件缺少 ${providerApiKeyName(config.provider)}`);
+  }
+  let daemonStatus: DaemonStatus | undefined;
+  let runtimeConnectors: ConnectorCapability[] | undefined;
+  let activity: MimiActivitySnapshot | undefined;
+  try {
+    daemonStatus = await mimiRpc<DaemonStatus>(paths.socket, 'status', undefined, 300);
+  } catch {
+    // Offline is a state, not a Doctor failure.
+  }
+  if (daemonStatus) {
+    const [connectorResult, activityResult] = await Promise.allSettled([
+      mimiRpc<ConnectorCapability[]>(paths.socket, 'connectors.list', {}, 1_000),
+      mimiRpc<MimiActivitySnapshot>(paths.socket, 'activity.get', { limit: 1 }, 1_000),
+    ]);
+    if (connectorResult.status === 'fulfilled') runtimeConnectors = connectorResult.value;
+    else issues.push(`无法读取 Connector 在线状态：${diagnosticErrorMessage(connectorResult.reason)}`);
+    if (activityResult.status === 'fulfilled') activity = activityResult.value;
+    else issues.push(`无法读取 MimiAgent 活动状态：${diagnosticErrorMessage(activityResult.reason)}`);
+  } else if (configured && connectorConfig) {
+    issues.push('MimiAgent 后台服务未运行');
+  }
+  const computerStatus = daemonStatus?.computer;
+  if (config.computer && daemonStatus && computerStatus?.ready !== true) {
+    issues.push(`Computer Use 不可用：${computerStatus?.lastOperationalFailure ?? computerStatus?.lastFailure ?? 'Daemon 未报告 ready'}`);
+  }
+  const offlineConnectors = runtimeConnectors?.filter((connector) => connector.enabled && !connector.online) ?? [];
+  const unavailableConnectors = runtimeConnectors?.filter((connector) => (
+    connector.enabled && connector.online
+    && connector.readiness.inbound === 'unavailable'
+    && connector.readiness.outbound === 'unavailable'
+  )) ?? [];
+  const taskDeadLetters = activity?.tasks.dead_letter ?? 0;
+  const outboxDeadLetters = activity?.outbox.dead_letter ?? 0;
+  const health = daemonStatus
+    ? daemonStatus.health ?? buildDaemonHealth({
+        tasks: activity?.tasks ?? daemonStatus.tasks,
+        outbox: activity?.outbox ?? daemonStatus.outbox,
+        pendingDigest: activity?.pendingDigest,
+        connectors: runtimeConnectors,
+        checkedAt: activity?.generatedAt,
+        taskWorkerRuntime: daemonStatus.taskWorkerRuntime,
+        autonomousBudgetExhaustions: activity?.autonomousBudgetExhaustions?.length,
+        unknownRunSources: activity?.unknownRunSources,
+      })
+    : undefined;
+  if (health) {
+    issues.push(...doctorBlockingHealthRisks(
+      health,
+      activity?.failureClassification?.unclassifiedDeadLetters ?? taskDeadLetters,
+    ).map((risk) => risk.message));
+  }
+  const build = mimiBuildDiagnostics(daemonStatus?.buildVersion, config.workspaceRoot);
+  if (build.aligned === false) {
+    issues.push(`构建漂移：installed=${build.installed}，running=${build.running ?? 'unknown'}`);
+  }
+  let storage: DiagnosticStorageSnapshot | undefined;
+  const capacityRisks = [
+    ['database', 'SQLite', '运行 mimi daemon activity 检查保留策略和积压，再安排数据库备份与维护'],
+    ['logs', 'Daemon 日志', '安全重启 MimiAgent 以轮转超限日志，并检查重复错误'],
+    ['memory', 'Memory', '检查 MemoryHub 页面、索引和备份增长'],
+  ] as const;
+  try {
+    storage = await inspectDiagnosticStorage(config);
+    for (const [key, label] of capacityRisks) {
+      if (storage.capacity[key] !== 'ok') issues.push(`${label} 容量达到 ${storage.capacity[key]} 阈值`);
+    }
+  } catch (error) {
+    issues.push(`无法读取本地容量指标：${diagnosticErrorMessage(error)}`);
+  }
+  const nextActions: string[] = [];
+  if (!connectorConfig) nextActions.push('运行 mimi 完成自动初始化');
+  if (!configured) nextActions.push(`在 ~/.mimi-agent/.env（或旧目录）配置 ${providerApiKeyName(config.provider)}`);
+  if (launchAgentInstalled && !persistentProviderKey && configured) {
+    nextActions.push(`把 ${providerApiKeyName(config.provider)} 写入 ${resolveEnvironmentFile()} 后重新运行 mimi`);
+  }
+  if (missingScripts.length) nextActions.push('重新运行 npm install 或修复 Connector 脚本路径');
+  if (!daemonStatus && configured && connectorConfig) nextActions.push('运行 mimi，后台服务会自动启动');
+  if (build.aligned === false) nextActions.push('满足安全切换门禁后，从同一 clean package 部署运行构建');
+  if (health) {
+    for (const action of health.risks.map((risk) => risk.nextAction)) {
+      if (!nextActions.includes(action)) nextActions.push(action);
+    }
+  }
+  for (const [key, , action] of capacityRisks) {
+    if (storage && storage.capacity[key] !== 'ok') nextActions.push(action);
+  }
+  return {
+    ready: issues.length === 0,
+    platform: process.platform,
+    node: process.version,
+    provider: { id: config.provider, configured },
+    build,
+    paths,
+    connectors: {
+      configured: Boolean(connectorConfig),
+      total: connectorConfig ? Object.keys(connectorConfig.connectors).length : 0,
+      enabled,
+      missingScripts,
+      ...(runtimeConnectors ? {
+        runtime: {
+          online: runtimeConnectors.filter((connector) => connector.enabled && connector.online).map((connector) => connector.id),
+          offline: offlineConnectors.map((connector) => connector.id),
+          inboundReady: runtimeConnectors.filter((connector) => connector.enabled && connector.online && connector.readiness.inbound === 'ready').map((connector) => connector.id),
+          outboundReady: runtimeConnectors.filter((connector) => connector.enabled && connector.online && connector.readiness.outbound === 'ready').map((connector) => connector.id),
+          unavailable: unavailableConnectors.map((connector) => connector.id),
+        },
+      } : {}),
+    },
+    systemBinaries: [] as Array<{ path: string; available: boolean }>,
+    daemon: {
+      running: Boolean(daemonStatus),
+      ...(daemonStatus ? { status: daemonStatus } : {}),
+      ...(health ? { health } : {}),
+      ...(activity ? {
+        activity: {
+          needsAttention: activity.needsAttention,
+          workPending: activity.workPending,
+          taskDeadLetters,
+          outboxDeadLetters,
+          resourceTrends: activity.resourceTrends ?? [],
+          runUsageBySource: activity.runUsageBySource ?? [],
+          autonomousBudgetExhaustions: activity.autonomousBudgetExhaustions ?? [],
+          failureClassification: {
+            ...(activity.failureClassification ?? {
+              deadLetters: [],
+              digest: [],
+              unclassifiedDeadLetters: taskDeadLetters,
+            }),
+            readinessUnknown: classifyReadinessUnknown(
+              runtimeConnectors ?? [],
+              daemonStatus?.startedAt ?? new Date().toISOString(),
+            ),
+          },
+        },
+      } : {}),
+    },
+    launchAgent: { installed: launchAgentInstalled, file: launchAgentFile },
+    computer: {
+      configured: Boolean(config.computer),
+      ...(config.computer ? { backend: config.computer.backend, ready: computerStatus?.ready === true } : {}),
+      ...(computerStatus ? { diagnostics: { ...computerStatus } as Record<string, unknown> } : {}),
+    },
+    ...(storage ? { storage } : {}),
+    issues,
+    nextActions,
+  };
+}
+
+export type MimiDoctorReport = Awaited<ReturnType<typeof doctorMimi>>;
 
 export async function writeRedactedDiagnosticBundle(
   outputFile: string,

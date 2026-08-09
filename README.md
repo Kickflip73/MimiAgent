@@ -180,8 +180,12 @@ OpenAI Responses API。兼容服务若只实现了部分 OpenAI 协议，Tool Ca
 `MIMI_MODEL_SUPPORTS_IMAGE_INPUT` 显式覆盖。
 
 多 Provider 并行使用时，在 owner 私有的 `~/.mimi-agent/models.json` 注册精确
-`providerId/modelId`、transport、`apiKeyEnv` 和 `imageInput/imageOutput/toolCalling`
-三项硬能力；可用 `MIMI_MODELS_CONFIG` 覆盖路径。配置文件不保存 API key，写入采用
+`providerId/modelId`、transport、`apiKeyEnv` 和
+`imageInput/imageOutput/fileInput/toolCalling` 硬能力；其中 `fileInput` 向后兼容且默认
+`false`。M3 schema 另有默认 `false` 的 `audioInput/audioOutput/videoInput/
+realtimeAudio`。Realtime-only target 使用独立 `kind=realtime` 和显式官方 WebSocket route，
+不会进入普通 Agent resolver；这些字段只表达路由资格，不代表 CLI 实时语音已经可用。
+可用 `MIMI_MODELS_CONFIG` 覆盖路径。配置文件不保存 API key，写入采用
 严格校验、共享锁和原子替换。文件不存在时继续按上面的旧环境变量启动，行为兼容。
 Session 固定值只影响下一 Run，不修改全局 Provider，也不重启 Daemon；结构化
 `model_control` 可查看注册、当前 binding、路由和健康状态；其 direct Owner 写动作
@@ -269,7 +273,7 @@ LaunchAgent 的 plist 不保存 API Key，而是读取持久环境文件；只�
 
 Daemon 在安全重启前轮转超过 10 MiB 的 stdout/stderr 日志，每类最多保留 5 份历史，并把活动文件重新创建为 `0600`。Doctor 和脱敏诊断包同时检查活动日志、SQLite/WAL/SHM 与 Memory 目录的容量：日志在 10/100 MiB、数据库在 512 MiB/2 GiB、Memory 在 1/4 GiB 分别进入 warning/critical。轮转只发生在旧进程退出后，避免移动仍由运行中进程持有的文件描述符。
 
-`mimi daemon backup [输出目录]` 使用 SQLite Online Backup API 捕获一致数据库快照，并备份 Session、Plan、Team、Execution Ledger、Memory、Trace、用户 Soul 和两份 Daemon 配置；control bearer、Socket、日志和 Computer 临时产物不会进入备份。目录和文件固定为 `0700`/`0600`，`manifest.json` 保存每个文件的大小与 SHA-256，创建结束和 `backup verify` 都执行 SQLite `integrity_check`。`mimi daemon restore <备份目录>` 会再次校验完整清单，只允许后台已停止且工作/Daemon 数据根都不存在时恢复，并通过同目录 staging 后再改名提交；它不会覆盖已有状态，也不会恢复旧 control bearer。恢复完成后重新运行 `mimi daemon doctor`，启动时会生成当前机器的新控制令牌。
+`mimi daemon backup [输出目录]` 使用 SQLite Online Backup API 捕获一致数据库快照，并备份 Session、Plan、Team、Execution Ledger、Memory、Trace、用户 Soul 和两份 Daemon 配置；control bearer、Socket、日志和 Computer 临时产物不会进入备份。目录和文件固定为 `0700`/`0600`，`manifest.json` 保存每个文件的大小与 SHA-256，创建结束和 `backup verify` 都执行 SQLite `integrity_check`。`mimi daemon restore <备份目录>` 会再次校验完整清单，只允许后台已停止且工作/Daemon 数据根都不存在时恢复，并通过同目录 staging 后再改名提交；它不会覆盖已有状态，也不会恢复旧 control bearer。恢复完成后重新运行 `mimi daemon doctor`，启动时会生成当前机器的新控制令牌。当前 M3 工程 checkpoint 的 `attachments/` CAS/owner refs 与 `session-workspaces.json` 尚未纳入该备份协议；含媒体 ref 或 opaque workspace binding 的数据在 backup/restore E2E 完成前不能宣称可完整恢复。
 
 `mimi daemon events/runs/outbox/schedule list` 返回不携带大正文的有界管理摘要；需要查看原始 payload、answer、投递内容或完整 prompt 时，使用 `mimi daemon show event|run|outbox|schedule <id>`。这样长期积累的大记录不会挤爆本地 IPC；CLI 的 `/history` 使用 revision 分块读取，Memory 列表只返回摘要和 ref，正文必须显式 `/memory read`。
 
@@ -327,6 +331,14 @@ owner 查询大象消息时通过稳定 capability 发现正式 action，再使�
 `macos-screen-connector.mjs` 使用系统 `screencapture` 和 Vision Framework 读取原生应用、画布、远程桌面等非 DOM 界面的屏幕文字。它支持显式保存 PNG、OCR 已有图片，以及临时截图后 OCR 并立即清理；默认不持续录屏、不轮询屏幕、不保存图片历史，也不增加云端 OCR 依赖。
 
 `macos-voice-connector.mjs` 使用 Speech/AVFoundation 和系统 `say` 提供免键盘交互：可选持续监听“MimiAgent”开头的 owner 命令、转写已有音频、列出声音，并把命令结果经可靠 Outbox 自动朗读。监听默认关闭，但一次 `listener_start/stop` 会原子保存并跨 Connector/Daemon 重启恢复；不保存麦克风音频，非唤醒语音不会形成 Event，重复命令会短期抑制，朗读期间 listener 自动暂停以避免自我唤醒。
+
+当前 M3 checkpoint 的终端解析与受控摄取路径识别 `@image:`、`@file:`、`@audio:` 和
+`@video:`；这四个标签不等于四种媒体都已有 live Provider 能力。附件先在绑定 Session 的物理工作区内完成 containment、普通文件、名称、MIME/内容类型、大小和 SHA-256 校验，再写入独立的内容寻址 artifact store；Event、Session 和模型准备路径只传 opaque `workspaceId`、`media-artifact:sha256:...` ref、digest 与有界 `MediaEvidence` 元数据，不保存工作区绝对路径或二进制。最多 8 个附件；可内联给模型的 image/file 单个最多 10 MiB、合计最多 20 MiB，audio 最多 200 MiB、video 最多 500 MiB，整批最多 500 MiB。Event/Session owner ref、配额与 grace-period GC 已接入当前安全生命周期，但完整 crash/长期 soak 仍是 promotion 前门禁。
+
+能力边界必须按入口区分：image 与受支持 adapter 且显式 `fileInput=true` 的 file
+已打通同一轮工程路径，当前证据是去网络 adapter/Runtime 回归，不是 live Provider 轮次。
+PDF、EBML 及尚无可信有界解析器的容器/codec 保守拒绝；audio/video 目前只完成受控摄取和
+metadata-only `MediaEvidence`，会在模型网络请求前明确 blocked，尚无 transcript 时间片、音轨、关键帧或视频理解。Realtime 新代码也只是 transcription/VAD-only 的 Host/controller contract，强制关闭 Provider 回答音频和第二套 Agent loop；它尚未接入 CLI、麦克风、播放器或可用产品入口。`generate_image` / edit-image 的输出入 CAS、协议/ledger 二进制清除以及跨轮原图重注入仍待实现，因此本 checkpoint 不宣称图片生成闭环、多轮原图引用或实时语音可用。
 
 临时集成也可设置 `MIMI_WEBHOOK_PORT` 与 `MIMI_WEBHOOK_TOKEN` 开启仅监听 localhost 的认证 Webhook。所有 Webhook 来信固定记录为 external provenance；默认使用受限事件策略，只有命中 owner 明确配置的 source policy 才获得对应代办权。
 
@@ -500,6 +512,16 @@ Run 生效，不修改活动 Provider，也不重启 Daemon。运行中的 Run �
 Provider 和模型注册由 CLI 管理，配置只保存 credential 环境变量引用，不保存 key：
 
 ```bash
+# 官方 OpenAI Responses：明确开放图片、文件和工具调用输入
+mimi provider add openai-main/gpt-5.4-mini \
+  --label OpenAI \
+  --transport openai-responses \
+  --api-key-env OPENAI_API_KEY \
+  --image-input true \
+  --file-input true \
+  --tool-calling true
+
+# OpenAI-compatible 端点的未知能力仍需按实际协议显式声明
 mimi provider add acme \
   --label Acme \
   --transport openai-chat-completions \
@@ -520,7 +542,10 @@ mimi provider set acme/exact-model-id
 递增 `routeVersion`；活动 Run/Team 的冻结 binding 不变。`reload_mcp` 只重载 MCP，
 不会也不需要用来刷新模型 registry。
 
-未知能力默认 `false`；不兼容的视觉、生图或推理要求会在 Provider 调用前失败关闭。
+未知能力默认 `false`；不兼容的视觉、文件、生图或推理要求会在 Provider 调用前失败关闭。
+标准 OpenAI Responses 内置配置明确声明 `fileInput=true`，因此 `@file:` 会在模型选择前
+要求文件输入能力；DeepSeek、兼容端点与其他 Provider 默认保持 `false`，只有经过协议
+核对后才应通过 `--file-input true` 开放。
 旧环境变量模型列表和 `mimi provider set openai|deepseek|openai-compatible ...`
 仅用于没有 registry 的 legacy 部署兼容。
 

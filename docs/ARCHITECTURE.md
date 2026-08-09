@@ -155,11 +155,14 @@ selection reason、routeVersion、contextWindow、maxTurns 与 maxOutputTokens�
 contextWindow 的预算失败关闭。Session 切换模型只影响下一 Run；第一次
 `run_team` 会在领取 worker 前用同一 route snapshot 原子冻结全部 TeamTask 的精确
 target，各 worker 随后只使用自己的 binding；SubAgent 每次委派时重新解析并创建
-自己的 Agent。图片理解要求 `imageInput`，生图/改图要求 `imageOutput`，纯图片模型
-只进入 Media Runtime，未知或不满足的硬能力失败关闭。fallback 仍只能发生在 stream、
-Tool 或其他副作用开始前，started/uncertain 不重放。
+自己的 Agent。图片理解要求 `imageInput`，普通文件理解要求 `fileInput`，生图/改图要求 `imageOutput`，纯图片模型
+只进入 Media Runtime；audio/video/realtime 要求各自显式能力。旧配置缺失的新字段向后
+兼容为 `false`。Realtime-only target 使用独立 `kind=realtime`，普通 Agent resolver 和
+Gateway 必须排除它；反向 Realtime route 只接受显式能力与官方 WebSocket transport。
+未知或不满足的硬能力在网络前失败关闭。fallback 仍只能发生在 stream、Tool 或其他
+副作用开始前，started/uncertain 不重放。
 
-Owner 私有 `models.json` 只保存 Provider 定义、精确模型注册、三项硬能力、可选
+Owner 私有 `models.json` 只保存 Provider 定义、精确模型注册、结构化硬能力、可选
 contextWindow/协议推理能力和路由，
 credential 只通过每个 Provider 的 `apiKeyEnv` 引用。文件使用严格 schema、共享锁和
 原子替换；不存在时从旧环境配置合成 legacy target，因此旧部署无需迁移即可启动。
@@ -307,7 +310,7 @@ Unix Socket 位于 `MIMI_DAEMON_DATA_DIR`（可回退旧目录）且权限为 `0
 
 Daemon 启动前经过一个幂等 bootstrap，而不是额外安装服务：首次运行从发布包 Connector catalog 物化绝对 Node/脚本路径，创建 `0700` 数据目录、原子且稳定的 `0600` control bearer、`0600` 配置和 SQLite 数据库。Darwin 本机 Connector 默认启用，凭证型外部来源保持待配置；QQ UI 自动化不属于默认集合。升级现有配置时补缺失的默认 enabled 本机 Connector，并通过单独版本门只补一次大象/QQ 两个 disabled 个人消息槽位；微信相关 Connector 和桥会作为 retired 项原子删除，迁移完成后也不会被后续启动恢复。其他模板中默认关闭的外部通道仍不补入。对同 ID、canonical packaged script 路径/文件身份一致，或脚本同名且 2MB 内内容摘要一致，并且未关闭 `syncTemplateActions` 的现有 Connector 合并缺失 action；内容副本仍保留 owner 配置的执行路径。`macos-system` 也只有满足该身份校验时才迁移精确旧 provenance。其他 owner 的 enabled、执行路径、环境、来源、超时和已有描述均保持不变，且无变更时不写文件。Detached 与 launchd 启动复用同一个非敏感环境构造器，保持 workspace、状态目录、Skills、MCP、permission 和运行限制一致；Daemon status 返回实际 permission，CLI 会和本地解析值一起核对。正常 `mimi` 连接也会轻量核对 supervisor：持久 Key 就绪且后台空闲时把 detached worker 安全迁移到 launchd，忙碌时继续复用并延后。协议过期或 permission 不一致的同工作区后台只有在 Event、Outbox 和 Host mutation 全部空闲时才会被替换；launchd 立即拉起的旧 plist 实例也会在重装 supervisor 前再次核对。首次解析的 env 文件路径会固化为绝对路径，API Key 等秘密仍只来自进程环境或该受保护 env 文件。安装 launchd 前必须确认所选 Provider Key 确实存在于该持久 env 文件，避免当前 Shell 可用而登录重启后循环失败。Doctor 复用同一 schema 做只读静态检查和短时认证 Unix Socket status，不拉起 Connector、不探测私人数据库、不会输出 control bearer，也不触发系统权限。
 
-恢复备份是独立于数据库迁移备份的用户运维边界。在线备份使用 SQLite Backup API，不直接复制活动 WAL；其余原子 JSON、Session、Memory Wiki、Trace 与配置按显式 allowlist 复制，control bearer、Socket、日志和临时 Computer 产物排除。完成标记 `manifest.json` 最后写入，逐文件记录大小和 SHA-256，并要求备份数据库通过 `integrity_check`。校验拒绝缺失、多余、篡改或符号链接文件。恢复仅对离线且不存在的数据根开放，先在同一父目录 staging、复验数据库，再以目录 rename 提交；不覆盖已有状态、不带回旧 IPC 身份，适用于空白环境恢复演练。
+恢复备份是独立于数据库迁移备份的用户运维边界。在线备份使用 SQLite Backup API，不直接复制活动 WAL；其余原子 JSON、Session、Memory Wiki、Trace 与配置按显式 allowlist 复制，control bearer、Socket、日志和临时 Computer 产物排除。完成标记 `manifest.json` 最后写入，逐文件记录大小和 SHA-256，并要求备份数据库通过 `integrity_check`。校验拒绝缺失、多余、篡改或符号链接文件。恢复仅对离线且不存在的数据根开放，先在同一父目录 staging、复验数据库，再以目录 rename 提交；不覆盖已有状态、不带回旧 IPC 身份，适用于空白环境恢复演练。当前 M3 工程 checkpoint 的 `attachments/` CAS/owner refs 与 `session-workspaces.json` 尚未进入该 allowlist；在同一版本化备份协议和删源恢复 E2E 完成前，含媒体 ref 或 opaque workspace binding 的状态不能获得产品恢复门禁。
 
 渠道通过独立 NDJSON 子进程接入。Host 只传递 allowlist 环境变量，负责子进程退避重启；带 `replyTarget` 的结果走 Connector Outbox 并等待 delivery ACK，主动事务走 Action Bridge。没有专用 Bridge 或必须先经过官方服务端回调的来源可使用只绑定 `127.0.0.1` 的 Bearer Webhook；Webhook 固定产生 external provenance，限制 1MB 和每分钟 60 次，并接受有界 `reply:{connector,target}` 转换为现有 Connector route。`notify:false` 表示显式无回传，不继承 owner route。入口不把渠道 SDK 或凭证耦合进 Agent Runtime。
 
@@ -503,7 +506,15 @@ MCPManager 复用 Agents SDK 的 `MCPServerStdio` 与 `MCPServerStreamableHttp`�
 
 ## 文件输入、诊断与撤销
 
-终端输入支持 `@image:相对路径`、`@file:相对路径`，含空格时可使用引号。附件必须位于当前工作区且是不跟随符号链接的普通文件，最多 8 个、单个 10MB、合计 20MB；Daemon 以 SHA-256 内容快照保存为 `0600`，模型读取前再次校验摘要。图片作为 `input_image`，其余文件作为 `input_file` 进入原 Session，不把二进制写入事件数据库。
+终端输入支持 `@image:相对路径`、`@file:相对路径`、`@audio:相对路径` 和 `@video:相对路径`，含空格时可使用引号。只允许 `local-cli + owner` 经受控字段提交附件；外部来源、`payload.attachments`、未知字段、绝对/控制字符名称、符号链接、工作区逃逸、声明 kind 与检测 MIME 不一致以及摘要变化均在 Event ingest 或模型请求前失败关闭。每个 Session 首次绑定一个物理 realpath，Daemon Event 只保存 opaque `workspaceId`；受控 registry 在 Host 内解析工具与 attachment root，不把私人绝对路径写入 SQLite。
+
+`MediaArtifactStore` 以 SHA-256 形成 `media-artifact:sha256:...` CAS ref，批次全部校验后才发布，并用 Event/Session owner ref、全局配额、grace marker 与 GC 管理共享 blob。Event、Session、Memory locator 和 Provider 边界只持久化稳定 ref、digest 与有界 `MediaEvidence` 元数据，原始二进制、data URL、base64、PCM frame 和 artifact 绝对路径不进入 Event/Session JSON；使用前再次验证 ref、摘要、owner 与 Session/Run/workspace provenance。最多 8 个附件；image/file 单个最多 10 MiB、全部可内联附件合计最多 20 MiB，audio 最多 200 MiB、video 最多 500 MiB，整批最多 500 MiB，artifact store 默认总配额 5 GiB。GC/掉电恢复仍须通过完整故障注入和长期 soak 才能成为 promotion 证据。
+
+图片作为 `input_image`，普通 file 作为 `input_file` 进入当前模型轮次。audio/video 目前只完成内容寻址摄取与 metadata-only `MediaEvidence`；在 transcript 时间片、音轨、关键帧、coverage receipt 和兼容模型 adapter 尚未接入前，模型输入构造会明确 blocked，不把音视频降格成普通 file，也不把 fixture 中手工构造的派生 Evidence 当作生产分析。格式探测只对已有有界校验器支持的格式开放；尚无可信 container/decoder probe 的格式保持 fail closed。
+
+该 binary firewall 当前只覆盖 CLI attachment 路径。`generate_image` / edit-image 的输入输出尚未在 ExecutionLedger commit 前统一 CAS 化，也尚未提供同 Session 重启后的 `mediaEvidenceId` 原图重注入；在这些闭环完成前，不能把本节解释为生成图片协议、ledger 或跨轮原图引用已经达到零 base64。
+
+Realtime audio 采用 transcription/VAD-only 合同：官方 OpenAI Realtime WebSocket 只接收固定 24 kHz PCM16 小帧，`createResponse=false`、Provider output audio 关闭、tools 为空，final transcript 只能进入现有 `MimiHost` canonical Run，回答文本应由 Mimi-owned TTS 播放。当前实现只有 transport/controller 与 Host runner 接口和确定性测试，没有 CLI/Session actor composition root、麦克风 source、播放器 sink 或产品启动入口；因此实时 ASR/TTS、turn detection、barge-in、重连和 750 ms 指标仍是 contract-only 门禁，不是已交付能力。
 
 `write_file`、`edit_file`、`apply_patch` 和 `move_file` 完成后自动返回写后诊断：JSON 立即解析，TypeScript/JavaScript 工作区在存在本地 `tsc` 与 `tsconfig.json` 时执行有界 `tsc --noEmit`。同一批文件修改还会记录运行级前后快照；`/undo` 列出可撤销 Run，`/undo <run-id>` 只预览，`/undo <run-id> --apply` 才执行恢复。撤销前会核对每个文件仍等于该 Run 的写后摘要，检测到后续人工或其他 Run 修改时拒绝覆盖；单文件快照上限 5MB、单 Run 合计 20MB，超限修改会在写入前失败关闭。
 

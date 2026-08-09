@@ -5,17 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawn } from 'node:child_process';
-import { parse as parseDotenv } from 'dotenv';
 import {
   adoptRuntimeWorkspaceConfig,
   adoptWorkspaceConfig,
   preferredEnvironmentValue,
-  resolveEnvironmentFile,
   securityProfileSummary,
   type AgentPermissionMode,
   type AppConfig,
 } from '../config.js';
-import { persistEnvironmentValues, providerApiKeyName } from '../provider-config.js';
 import { MimiAgent } from '../agent.js';
 import { sanitizeSensitiveData } from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
@@ -25,14 +22,9 @@ import {
   AgentRunService,
   providerBackupRouteFromEnvironment,
 } from '../runtime/run-service.js';
-import { resolveTaskWorkspace } from '../runtime/workspace-resolution.js';
-import { stageAttachments, type LocalAttachmentRequest } from '../runtime/attachments.js';
 import { MimiDispatcher } from './dispatcher.js';
 import {
   ConnectorManager,
-  parseConnectorConfig,
-  type ConnectorCapability,
-  type ConnectorFileConfig,
 } from './connectors.js';
 import {
   connectorCapabilitySnapshot,
@@ -49,18 +41,22 @@ import { NotifierRegistry } from './notifier.js';
 import { MimiStore } from './store.js';
 import { MimiWebhookServer } from './webhook.js';
 import { MimiRuntimeHttpServer, runtimeHttpSessionId } from './runtime-http.js';
+import {
+  resolveSessionEventWorkspace,
+  SessionWorkspaceRegistry,
+} from './session-workspace-registry.js';
+import { submitDaemonEvent } from './event-submission.js';
+import {
+  launchAgentProviderConfigured,
+  persistLaunchAgentProviderApiKey,
+} from './provider-environment.js';
 import { AttentionEngine } from './attention.js';
 import { EphemeralSecretBroker } from './ephemeral-secrets.js';
 import { TaskProcessSupervisor } from './task-supervisor.js';
 import { backgroundTaskSummary, inspectBackgroundTaskSummary } from './task-tools.js';
 import {
   buildDaemonHealth,
-  doctorBlockingHealthRisks,
 } from './health-model.js';
-import {
-  inspectDiagnosticStorage,
-  type DiagnosticStorageSnapshot,
-} from './diagnostics.js';
 import { rotateDaemonLogs } from './log-maintenance.js';
 import {
   DaemonLifecycleStore,
@@ -68,7 +64,6 @@ import {
   type DaemonLifecycleEpoch,
   type DaemonLifecycleStopReason,
 } from './lifecycle.js';
-import { classifyReadinessUnknown } from './operational-classification.js';
 import { createMimiCommandHostTools } from './host-tools.js';
 import {
   MimiLiveEvents,
@@ -113,8 +108,6 @@ import {
 } from './client-runtime.js';
 import {
   DAEMON_PROTOCOL_VERSION,
-  eventKindSchema,
-  eventTrustSchema,
   type DaemonStatus,
   type EventEnvelope,
   type MimiActivitySnapshot,
@@ -296,19 +289,6 @@ function launchctl(args: string[], ignoreFailure = false): Promise<void> {
   });
 }
 
-interface SubmitParams extends Partial<Pick<EventEnvelope,
-  'externalId' | 'source' | 'trust' | 'priority' | 'profileId' | 'sessionKey'
-  | 'actor' | 'conversation' | 'replyRoute'>> {
-  eventId?: string;
-  text?: string;
-  payload?: unknown;
-  kind?: EventEnvelope['kind'];
-  workspaceRoot?: string;
-  resumeState?: boolean;
-  approvedPersonalMessageText?: string;
-  attachments?: LocalAttachmentRequest[];
-}
-
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('RPC 参数必须是对象');
   return value as Record<string, unknown>;
@@ -356,220 +336,10 @@ function runtimeHttpConfiguration(): { port: number; token: string } | undefined
   return { port, token };
 }
 
-export async function launchAgentProviderConfigured(
-  config: AppConfig,
-  environmentFile = resolveEnvironmentFile(),
-): Promise<boolean> {
-  let contents: string;
-  try {
-    contents = await readFile(environmentFile, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
-  }
-  return Boolean(parseDotenv(contents)[providerApiKeyName(config.provider)]?.trim());
-}
+export { launchAgentProviderConfigured, persistLaunchAgentProviderApiKey };
 
-export async function persistLaunchAgentProviderApiKey(
-  config: AppConfig,
-  environmentFile = resolveEnvironmentFile(),
-): Promise<void> {
-  if (await launchAgentProviderConfigured(config, environmentFile)) return;
-  const keyName = providerApiKeyName(config.provider);
-  const value = process.env[keyName]?.trim();
-  if (!value) return;
-  await persistEnvironmentValues(environmentFile, { [keyName]: value });
-}
-
-export async function doctorMimi(config: AppConfig) {
-  const paths = mimiPaths(config);
-  const platform = process.platform;
-  const issues: string[] = [];
-  try {
-    providerBackupRouteFromEnvironment(config.provider);
-  } catch (error) {
-    issues.push(`Provider 主备配置无效：${errorMessage(error)}`);
-  }
-  let connectorConfig: ConnectorFileConfig | undefined;
-  if (await exists(paths.connectorsConfig)) {
-    try {
-      connectorConfig = parseConnectorConfig(JSON.parse(await readFile(paths.connectorsConfig, 'utf8')) as unknown);
-    } catch (error) {
-      issues.push(`Connector 配置无效：${errorMessage(error)}`);
-    }
-  } else {
-    issues.push('尚未初始化 connectors.json');
-  }
-  const enabled = connectorConfig
-    ? Object.entries(connectorConfig.connectors).filter(([, connector]) => connector.enabled).map(([id]) => id)
-    : [];
-  if (connectorConfig && enabled.length === 0) issues.push('没有启用任何 Connector');
-  const scriptPaths = connectorConfig
-    ? [...new Set(Object.values(connectorConfig.connectors)
-      .flatMap((connector) => connector.args)
-      .filter((argument) => path.isAbsolute(argument) && /\.(?:mjs|cjs|js)$/.test(argument)))]
-    : [];
-  const missingScripts: string[] = [];
-  for (const script of scriptPaths) if (!await exists(script)) missingScripts.push(script);
-  if (missingScripts.length) issues.push(`${missingScripts.length} 个 Connector 脚本不存在`);
-  const configured = Boolean(process.env[providerApiKeyName(config.provider)]?.trim());
-  if (!configured) issues.push(`${config.provider} API Key 未配置`);
-  const installedLaunchAgentFile = launchAgentFile();
-  const launchAgentInstalled = await exists(installedLaunchAgentFile);
-  const persistentProviderKey = await launchAgentProviderConfigured(config);
-  if (launchAgentInstalled && !persistentProviderKey) {
-    issues.push(`launchd 持久环境文件缺少 ${providerApiKeyName(config.provider)}`);
-  }
-  let daemonStatus: DaemonStatus | undefined;
-  let runtimeConnectors: ConnectorCapability[] | undefined;
-  let activity: MimiActivitySnapshot | undefined;
-  try {
-    daemonStatus = await mimiRpc<DaemonStatus>(paths.socket, 'status', undefined, 300);
-  } catch {
-    // Offline is a state, not a Doctor failure.
-  }
-  if (daemonStatus) {
-    const [connectorResult, activityResult] = await Promise.allSettled([
-      mimiRpc<ConnectorCapability[]>(paths.socket, 'connectors.list', {}, 1_000),
-      mimiRpc<MimiActivitySnapshot>(paths.socket, 'activity.get', { limit: 1 }, 1_000),
-    ]);
-    if (connectorResult.status === 'fulfilled') runtimeConnectors = connectorResult.value;
-    else issues.push(`无法读取 Connector 在线状态：${errorMessage(connectorResult.reason)}`);
-    if (activityResult.status === 'fulfilled') activity = activityResult.value;
-    else issues.push(`无法读取 MimiAgent 活动状态：${errorMessage(activityResult.reason)}`);
-  } else if (configured && connectorConfig) {
-    issues.push('MimiAgent 后台服务未运行');
-  }
-  const computerStatus = daemonStatus?.computer;
-  if (config.computer && daemonStatus && computerStatus?.ready !== true) {
-    issues.push(`Computer Use 不可用：${computerStatus?.lastOperationalFailure ?? computerStatus?.lastFailure ?? 'Daemon 未报告 ready'}`);
-  }
-  const offlineConnectors = runtimeConnectors?.filter((connector) => connector.enabled && !connector.online) ?? [];
-  const unavailableConnectors = runtimeConnectors?.filter((connector) => (
-    connector.enabled && connector.online
-    && connector.readiness.inbound === 'unavailable'
-    && connector.readiness.outbound === 'unavailable'
-  )) ?? [];
-  const taskDeadLetters = activity?.tasks.dead_letter ?? 0;
-  const outboxDeadLetters = activity?.outbox.dead_letter ?? 0;
-  const health = daemonStatus
-    ? daemonStatus.health ?? buildDaemonHealth({
-        tasks: activity?.tasks ?? daemonStatus.tasks,
-        outbox: activity?.outbox ?? daemonStatus.outbox,
-        pendingDigest: activity?.pendingDigest,
-        connectors: runtimeConnectors,
-        checkedAt: activity?.generatedAt,
-        taskWorkerRuntime: daemonStatus.taskWorkerRuntime,
-        autonomousBudgetExhaustions: activity?.autonomousBudgetExhaustions?.length,
-        unknownRunSources: activity?.unknownRunSources,
-      })
-    : undefined;
-  if (health) {
-    issues.push(...doctorBlockingHealthRisks(
-      health,
-      activity?.failureClassification?.unclassifiedDeadLetters ?? taskDeadLetters,
-    ).map((risk) => risk.message));
-  }
-  const build = mimiBuildDiagnostics(daemonStatus?.buildVersion, config.workspaceRoot);
-  if (build.aligned === false) {
-    issues.push(`构建漂移：installed=${build.installed}，running=${build.running ?? 'unknown'}`);
-  }
-  let storage: DiagnosticStorageSnapshot | undefined;
-  const capacityRisks = [
-    ['database', 'SQLite', '运行 mimi daemon activity 检查保留策略和积压，再安排数据库备份与维护'],
-    ['logs', 'Daemon 日志', '安全重启 MimiAgent 以轮转超限日志，并检查重复错误'],
-    ['memory', 'Memory', '检查 MemoryHub 页面、索引和备份增长'],
-  ] as const;
-  try {
-    storage = await inspectDiagnosticStorage(config);
-    for (const [key, label] of capacityRisks) {
-      if (storage.capacity[key] !== 'ok') issues.push(`${label} 容量达到 ${storage.capacity[key]} 阈值`);
-    }
-  } catch (error) {
-    issues.push(`无法读取本地容量指标：${errorMessage(error)}`);
-  }
-  const nextActions: string[] = [];
-  if (!connectorConfig) nextActions.push('运行 mimi 完成自动初始化');
-  if (!configured) nextActions.push(`在 ~/.mimi-agent/.env（或旧目录）配置 ${providerApiKeyName(config.provider)}`);
-  if (launchAgentInstalled && !persistentProviderKey && configured) {
-    nextActions.push(`把 ${providerApiKeyName(config.provider)} 写入 ${resolveEnvironmentFile()} 后重新运行 mimi`);
-  }
-  if (missingScripts.length) nextActions.push('重新运行 npm install 或修复 Connector 脚本路径');
-  if (!daemonStatus && configured && connectorConfig) nextActions.push('运行 mimi，后台服务会自动启动');
-  if (build.aligned === false) {
-    nextActions.push('满足安全切换门禁后，从同一 clean package 部署运行构建');
-  }
-  if (health) {
-    for (const action of health.risks.map((risk) => risk.nextAction)) {
-      if (!nextActions.includes(action)) nextActions.push(action);
-    }
-  }
-  for (const [key, , action] of capacityRisks) {
-    if (storage && storage.capacity[key] !== 'ok') nextActions.push(action);
-  }
-  return {
-    ready: issues.length === 0,
-    platform,
-    node: process.version,
-    provider: { id: config.provider, configured },
-    build,
-    paths,
-    connectors: {
-      configured: Boolean(connectorConfig),
-      total: connectorConfig ? Object.keys(connectorConfig.connectors).length : 0,
-      enabled,
-      missingScripts,
-      ...(runtimeConnectors ? {
-        runtime: {
-          online: runtimeConnectors.filter((connector) => connector.enabled && connector.online).map((connector) => connector.id),
-          offline: offlineConnectors.map((connector) => connector.id),
-          inboundReady: runtimeConnectors.filter((connector) => connector.enabled && connector.online && connector.readiness.inbound === 'ready').map((connector) => connector.id),
-          outboundReady: runtimeConnectors.filter((connector) => connector.enabled && connector.online && connector.readiness.outbound === 'ready').map((connector) => connector.id),
-          unavailable: unavailableConnectors.map((connector) => connector.id),
-        },
-      } : {}),
-    },
-    systemBinaries: [] as Array<{ path: string; available: boolean }>,
-    daemon: {
-      running: Boolean(daemonStatus),
-      ...(daemonStatus ? { status: daemonStatus } : {}),
-      ...(health ? { health } : {}),
-      ...(activity ? {
-        activity: {
-          needsAttention: activity.needsAttention,
-          workPending: activity.workPending,
-          taskDeadLetters,
-          outboxDeadLetters,
-          resourceTrends: activity.resourceTrends ?? [],
-          runUsageBySource: activity.runUsageBySource ?? [],
-          autonomousBudgetExhaustions: activity.autonomousBudgetExhaustions ?? [],
-          failureClassification: {
-            ...(activity.failureClassification ?? {
-              deadLetters: [],
-              digest: [],
-              unclassifiedDeadLetters: taskDeadLetters,
-            }),
-            readinessUnknown: classifyReadinessUnknown(
-              runtimeConnectors ?? [],
-              daemonStatus?.startedAt ?? new Date().toISOString(),
-            ),
-          },
-        },
-      } : {}),
-    },
-    launchAgent: { installed: launchAgentInstalled, file: installedLaunchAgentFile },
-    computer: {
-      configured: Boolean(config.computer),
-      ...(config.computer ? { backend: config.computer.backend, ready: computerStatus?.ready === true } : {}),
-      ...(computerStatus ? { diagnostics: { ...computerStatus } as Record<string, unknown> } : {}),
-    },
-    ...(storage ? { storage } : {}),
-    issues,
-    nextActions,
-  };
-}
-
-export type MimiDoctorReport = Awaited<ReturnType<typeof doctorMimi>>;
+export { doctorMimi } from './diagnostics.js';
+export type { MimiDoctorReport } from './diagnostics.js';
 
 export async function installMimiLaunchAgent(config: AppConfig): Promise<string> {
   if (process.platform !== 'darwin') throw new Error('自动登录启动当前仅支持 macOS launchd');
@@ -610,6 +380,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
   const controlToken = await readControlToken(paths.socket);
   if (!controlToken) throw new Error('MimiAgent IPC 控制令牌缺失');
   const store = new MimiStore(paths.database);
+  const workspaceRegistry = new SessionWorkspaceRegistry(
+    path.join(paths.root, 'session-workspaces.json'),
+  );
   const workerId = `${process.pid}-${randomUUID().slice(0, 8)}`;
   const lifecycle = new DaemonLifecycleStore(paths.lifecycle);
   let lifecycleEpoch: DaemonLifecycleEpoch = await lifecycle.begin({
@@ -680,6 +453,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       await computerLifecycle.start();
     }
     const agent = await MimiAgent.create(config);
+    await workspaceRegistry.bind(agent.currentSessionId, config.workspaceRoot);
     host = new MimiHost(agent, runService(agent), {
       maxConcurrentSessions: config.sessionMaxConcurrency ?? 4,
       primaryWorkspaceRoot: config.workspaceRoot,
@@ -747,6 +521,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
     dispatcher = new MimiDispatcher(store, host, attention, notifier, connectors, {
       workerId,
       maxConcurrentTasks: config.sessionMaxConcurrency ?? 4,
+      attachmentRoot: path.join(mimiPaths(config).root, 'attachments'),
       onStreamEvent: (eventId, event) => {
         const streamed = mimiStreamEvent(event);
         if (streamed) liveEvents.publish(eventId, streamed);
@@ -759,23 +534,13 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       pauseEvent: pauseTask,
       takeEphemeralSecrets: (eventId, sessionId, references) =>
         ephemeralSecrets.take(eventId, sessionId, references),
-      resolveWorkspace: async (event, sessionId) => {
-        const current = host!.workspaceRootFor(sessionId);
-        if (event.trust !== 'owner') return current ?? config.workspaceRoot;
-        const payload = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload)
-          ? event.payload as Record<string, unknown>
-          : {};
-        const requestedWorkspaceRoot = optionalAbsoluteDirectory(
-          payload.workspaceRoot,
-          'event.payload.workspaceRoot',
-        );
-        const resolved = await resolveTaskWorkspace({
-          requestedWorkspaceRoot,
-          sessionWorkspaceRoot: current,
-          defaultWorkspaceRoot: config.workspaceRoot,
-        });
-        return resolved.workspaceRoot;
-      },
+      resolveWorkspace: (event, sessionId) => resolveSessionEventWorkspace({
+        registry: workspaceRegistry,
+        event,
+        sessionId,
+        currentWorkspaceRoot: host!.workspaceRootFor(sessionId),
+        defaultWorkspaceRoot: config.workspaceRoot,
+      }),
     });
     const activeConnectors = connectors;
     const activeDispatcher = dispatcher;
@@ -970,6 +735,10 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const params = object(rawParams);
         const draftSessionId = assertSessionId(requiredString(params.draftSessionId, 'draftSessionId'));
         const requestedWorkspaceRoot = optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot');
+        const binding = await workspaceRegistry.bind(
+          draftSessionId,
+          requestedWorkspaceRoot ?? config.workspaceRoot,
+        );
         const draftExists = await host!.hasSession(draftSessionId);
         const snapshot = await createMimiChatSnapshot(
           host!,
@@ -980,7 +749,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return sanitizeSensitiveData({
           ...snapshot,
           sessionId: draftSessionId,
-          workspaceRoot: requestedWorkspaceRoot ?? snapshot.workspaceRoot,
+          workspaceRoot: binding.workspaceRoot,
           draft: true,
           permissionMode: config.permissionMode ?? 'trusted',
           contextUsed: 0,
@@ -1106,45 +875,13 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           }, signal)));
       }
       if (method === 'submit') {
-        const params = object(rawParams) as SubmitParams;
-        const now = new Date().toISOString();
-        const source = params.source ?? 'local-cli';
-        const trust = eventTrustSchema.parse(params.trust ?? 'owner');
-        const requestedWorkspaceRoot = source === 'local-cli' && trust === 'owner'
-          ? optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot')
-          : undefined;
-        const stagedAttachments = source === 'local-cli' && trust === 'owner' && params.attachments?.length
-          ? await stageAttachments(
-              params.attachments,
-              requestedWorkspaceRoot ?? config.workspaceRoot,
-              path.join(mimiPaths(config).root, 'attachments'),
-            )
-          : [];
-        const prompt = params.payload === undefined ? requiredString(params.text, 'text') : undefined;
-        const payload = params.payload ?? {
-          ...(requestedWorkspaceRoot ? { workspaceRoot: requestedWorkspaceRoot } : {}),
-          ...(params.resumeState === true ? { resumeState: true } : {}),
-          ...(typeof params.approvedPersonalMessageText === 'string'
-            && params.approvedPersonalMessageText.trim()
-            ? { approvedPersonalMessageText: params.approvedPersonalMessageText.trim().slice(0, 4_000) }
-            : {}),
-          ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
-        };
-        const event: EventEnvelope = {
-          id: params.eventId ? requiredString(params.eventId, 'eventId') : randomUUID(),
-          externalId: params.externalId ?? randomUUID(), source,
-          kind: eventKindSchema.parse(params.kind ?? 'command'), trust,
-          payload,
-          occurredAt: now, receivedAt: now, priority: Math.max(0, Math.min(100, params.priority ?? 100)),
-          profileId: params.profileId ?? 'owner',
-          sessionKey: params.sessionKey === undefined
-            ? undefined
-            : assertSessionId(requiredString(params.sessionKey, 'sessionKey')),
-          actor: params.actor, conversation: params.conversation, replyRoute: params.replyRoute,
-        };
-        return prompt !== undefined && source === 'local-cli' && trust === 'owner'
-          ? ingestOwnerPrompt(event, prompt)
-          : store.ingestEvent(event);
+        return submitDaemonEvent(rawParams, {
+          defaultWorkspaceRoot: config.workspaceRoot,
+          attachmentRoot: path.join(mimiPaths(config).root, 'attachments'),
+          store,
+          workspaceRegistry,
+          ingestOwnerPrompt,
+        });
       }
       const params = rawParams === undefined ? {} : object(rawParams);
       const requestedId = () => requiredString(params.id, 'id');

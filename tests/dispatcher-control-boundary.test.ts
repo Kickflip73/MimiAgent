@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readdir, realpath, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -11,13 +12,16 @@ import {
 import { AttentionEngine } from '../src/daemon/attention.js';
 import type { ConnectorManager } from '../src/daemon/connectors.js';
 import { MimiStore } from '../src/daemon/store.js';
+import { SessionWorkspaceRegistry } from '../src/daemon/session-workspace-registry.js';
 import {
   attachRunFinalization,
   createRunFinalization,
 } from '../src/core/run-finalization.js';
+import { FileSession } from '../src/core/session.js';
 import { RunFailureError } from '../src/core/run-failure.js';
 import { MimiHost } from '../src/runtime/mimi-host.js';
-import type { MimiAgent } from '../src/runtime/mimi-agent.js';
+import { MimiAgent } from '../src/runtime/mimi-agent.js';
+import { stageAttachments } from '../src/runtime/attachments.js';
 
 test('dispatcher idle progress ignores provider keepalives without observable progress', () => {
   assert.equal(runStreamMakesObservableProgress({
@@ -45,6 +49,320 @@ test('dispatcher idle progress ignores provider keepalives without observable pr
     name: 'tool_output',
     item: { rawItem: { name: 'inspect_mimi_activity' }, output: { ok: true } },
   } as never), true);
+});
+
+test('dispatcher resolves modern and queued legacy attachments through the configured artifact root', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-attachments-'));
+  const workspace = path.join(root, 'workspace');
+  const attachmentRoot = path.join(root, 'attachments');
+  await mkdir(workspace, { recursive: true });
+  await mkdir(attachmentRoot, { recursive: true });
+  const image = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+  );
+  await writeFile(path.join(workspace, 'photo.png'), image);
+  const modern = await stageAttachments(
+    [{ path: 'photo.png', kind: 'image' }],
+    workspace,
+    attachmentRoot,
+    {
+      profileId: 'owner',
+      sessionId: 'owner',
+      eventId: 'modern-event',
+      sourceId: 'modern-event',
+      trust: 'owner',
+      occurredAt: '2026-08-09T00:00:00.000Z',
+    },
+  );
+  const digest = createHash('sha256').update(image).digest('hex');
+  const legacyPath = path.join(attachmentRoot, digest);
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  const captured: Array<{ modelInput?: unknown; mediaEvidence?: readonly unknown[] }> = [];
+  const agent = {
+    currentSessionId: 'owner',
+    currentCapabilitySnapshot: () => undefined,
+    completedExecution: async () => undefined,
+    finalizeExecutionLedger: async () => undefined,
+    reopenExecutionLedger: async () => undefined,
+    close: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, {
+    execute: async (request) => {
+      captured.push({
+        modelInput: request.modelInput,
+        mediaEvidence: request.options?.mediaEvidence,
+      });
+      return { answer: 'inspected', effects: [] };
+    },
+  });
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {
+    attachmentRoot,
+  });
+  try {
+    const now = new Date().toISOString();
+    const events = [
+      {
+        id: 'modern-event',
+        sessionKey: 'owner',
+        attachments: modern,
+      },
+      {
+        id: 'legacy-event',
+        sessionKey: 'owner',
+        attachments: [{
+          kind: 'image',
+          name: 'legacy.png',
+          mediaType: 'image/png',
+          bytes: image.length,
+          sha256: digest,
+          path: legacyPath,
+        }],
+      },
+    ];
+    for (const item of events) {
+      const routed = store.ingestEvent({
+        id: item.id,
+        externalId: item.id,
+        source: 'local-cli',
+        kind: 'command',
+        trust: 'owner',
+        payload: { prompt: 'inspect image', attachments: item.attachments },
+        occurredAt: now,
+        receivedAt: now,
+        priority: 100,
+        profileId: 'owner',
+        sessionKey: item.sessionKey,
+      });
+      assert.ok(routed.task);
+      assert.equal(await dispatcher.processTaskById(routed.task.id), true);
+      const terminal = store.getTask(routed.task.id);
+      assert.equal(terminal?.status, 'completed', terminal?.error);
+    }
+    assert.equal(captured.length, 2);
+    for (const request of captured) {
+      assert.ok(Array.isArray(request.modelInput));
+      assert.match(JSON.stringify(request.modelInput), /input_image/);
+    }
+    assert.equal(captured[0]!.mediaEvidence?.length, 1);
+    assert.equal(captured[1]!.mediaEvidence, undefined);
+  } finally {
+    store.close();
+  }
+});
+
+test('CLI trigger Event provenance reaches the real run pipeline without confusing the Task id', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-media-pipeline-'));
+  const workspace = path.join(root, 'workspace');
+  const dataRoot = path.join(root, 'data');
+  const attachmentRoot = path.join(root, 'attachments');
+  await mkdir(workspace, { recursive: true });
+  await writeFile(
+    path.join(workspace, 'photo.png'),
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      'base64',
+    ),
+  );
+  const staged = await stageAttachments(
+    [{ path: 'photo.png', kind: 'image' }],
+    workspace,
+    attachmentRoot,
+    {
+      profileId: 'owner', sessionId: 'owner', eventId: 'source-media-event',
+      sourceId: 'source-media-event', trust: 'owner', occurredAt: '2026-08-09T00:00:00.000Z',
+    },
+  );
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-only-media-pipeline-key';
+  const agent = await MimiAgent.create({
+    provider: 'openai',
+    workspaceRoot: workspace,
+    dataRoot,
+    daemonDataRoot: root,
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: 20,
+  }, 'owner').catch((error: unknown) => {
+    if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAiKey;
+    throw error;
+  });
+  const runner = (agent as unknown as {
+    runner: { run: (...args: unknown[]) => Promise<unknown> };
+  }).runner;
+  runner.run = async () => ({
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: 'image inspected',
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() {},
+  });
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  assert.equal(agent.mediaArtifacts.root, attachmentRoot);
+  const dispatcher = new MimiDispatcher(store, agent, attention, undefined, undefined, {
+    attachmentRoot,
+  });
+  try {
+    const now = new Date().toISOString();
+    const routed = store.ingestEvent({
+      id: 'source-media-event',
+      externalId: 'source-media-event',
+      source: 'local-cli',
+      kind: 'command',
+      trust: 'owner',
+      payload: { prompt: 'inspect image', attachments: staged },
+      occurredAt: now,
+      receivedAt: now,
+      priority: 100,
+      profileId: 'owner',
+      sessionKey: 'owner',
+    });
+    assert.ok(routed.task);
+    assert.notEqual(routed.task.id, 'source-media-event');
+    assert.equal(await dispatcher.processTaskById(routed.task.id), true);
+    const terminal = store.getTask(routed.task.id);
+    assert.equal(terminal?.status, 'completed', terminal?.error);
+    const session = new FileSession(path.join(dataRoot, 'sessions'), 'owner');
+    assert.equal((await session.listMediaEvidence()).length, 1);
+    assert.equal((await session.listMediaEvidence())[0]?.sourceRef.eventId, 'source-media-event');
+    assert.deepEqual(
+      (await readdir(path.join(attachmentRoot, '.refs'))).map((name) => name.split('-')[0]).sort(),
+      ['event', 'session'],
+    );
+    await agent.clearSession();
+    assert.equal((await session.listMediaEvidence()).length, 0);
+    assert.deepEqual(
+      (await readdir(path.join(attachmentRoot, '.refs'))).map((name) => name.split('-')[0]),
+      ['event'],
+    );
+  } finally {
+    await agent.close();
+    store.close();
+    if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAiKey;
+  }
+});
+
+test('opaque Session workspace binding scopes a new Session first Run without leaking its path into Event', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-workspace-binding-'));
+  const workspaceA = path.join(root, 'daemon-default');
+  const workspaceB = path.join(root, 'client-project');
+  await mkdir(workspaceA);
+  await mkdir(workspaceB);
+  const registry = new SessionWorkspaceRegistry(path.join(root, 'session-workspaces.json'));
+  const binding = await registry.bind('new-session', workspaceB);
+  const createdRoots: Array<string | undefined> = [];
+  const fakeAgent = (sessionId: string) => ({
+    currentSessionId: sessionId,
+    bindSessionActor: () => undefined,
+    completedExecution: async () => undefined,
+    finalizeExecutionLedger: async () => undefined,
+    reopenExecutionLedger: async () => undefined,
+    currentCapabilitySnapshot: () => undefined,
+    close: async () => undefined,
+  }) as unknown as MimiAgent;
+  const primary = fakeAgent('primary');
+  const host = new MimiHost(primary, {
+    execute: async () => ({ answer: 'primary', effects: [] }),
+  }, {
+    primaryWorkspaceRoot: workspaceA,
+    createSessionRuntime: async (sessionId, workspaceRoot) => {
+      createdRoots.push(workspaceRoot);
+      return {
+        agent: fakeAgent(sessionId),
+        runs: { execute: async () => ({ answer: 'scoped', effects: [] }) },
+      };
+    },
+  });
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {
+    resolveWorkspace: async (event, sessionId) => {
+      const payload = event.payload as Record<string, unknown>;
+      const resolved = await registry.resolve(sessionId, String(payload.workspaceId));
+      return resolved?.workspaceRoot;
+    },
+  });
+  try {
+    const now = new Date().toISOString();
+    const routed = store.ingestEvent({
+      id: 'workspace-event', externalId: 'workspace-event', source: 'local-cli', kind: 'command',
+      trust: 'owner', payload: { prompt: 'list project files', workspaceId: binding.workspaceId },
+      occurredAt: now, receivedAt: now, priority: 100, profileId: 'owner', sessionKey: 'new-session',
+    });
+    assert.ok(routed.task);
+    const durable = store.getImmutableEvent('workspace-event');
+    assert.ok(durable);
+    assert.doesNotMatch(JSON.stringify(durable.payload), new RegExp(workspaceB.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+    assert.doesNotMatch(JSON.stringify(durable.payload), /client-project|\/Users\//u);
+    assert.equal(await dispatcher.processTaskById(routed.task.id), true);
+    assert.equal(store.getTask(routed.task.id)?.status, 'completed');
+    assert.deepEqual(createdRoots, [await realpath(workspaceB)]);
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
+
+test('completed execution receipt is recovered before a missing attachment is read or provider is called', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-ledger-media-recovery-'));
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  let providerCalls = 0;
+  const agent = {
+    currentSessionId: 'owner',
+    currentCapabilitySnapshot: () => undefined,
+    completedExecution: async () => ({
+      answer: 'recovered answer',
+      effects: [],
+      finalization: createRunFinalization({
+        runId: 'completed-run', answer: 'recovered answer', calls: [], outcome: 'completed',
+      }),
+    }),
+    finalizeExecutionLedger: async () => undefined,
+    reopenExecutionLedger: async () => undefined,
+    close: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, {
+    execute: async () => {
+      providerCalls += 1;
+      return { answer: 'unexpected provider answer', effects: [] };
+    },
+  });
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {
+    attachmentRoot: path.join(root, 'missing-artifacts'),
+  });
+  try {
+    const now = new Date().toISOString();
+    const digest = 'a'.repeat(64);
+    const routed = store.ingestEvent({
+      id: 'recovery-media-event', externalId: 'recovery-media-event', source: 'local-cli',
+      kind: 'command', trust: 'owner', profileId: 'owner', sessionKey: 'owner', priority: 100,
+      occurredAt: now, receivedAt: now,
+      payload: {
+        prompt: 'read attachment',
+        attachments: [{
+          kind: 'file', name: 'notes.txt', mediaType: 'text/plain', bytes: 1,
+          sha256: digest, artifactRef: `media-artifact:sha256:${digest}`,
+        }],
+      },
+    });
+    assert.ok(routed.task);
+    assert.equal(await dispatcher.processTaskById(routed.task.id), true);
+    const terminal = store.getTask(routed.task.id);
+    assert.equal(terminal?.status, 'completed', terminal?.error);
+    assert.equal((terminal?.result as { answer?: string }).answer, 'recovered answer');
+    assert.equal(providerCalls, 0);
+  } finally {
+    await host.close();
+    store.close();
+  }
 });
 
 test('dispatcher records idle timeout as a retryable typed failure after SDK abort wrapping', async () => {

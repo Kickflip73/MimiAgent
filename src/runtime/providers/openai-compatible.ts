@@ -6,6 +6,7 @@ import type {
   ReasoningIntent,
 } from '../../core/model-routing.js';
 import type { ProviderAdapter } from './types.js';
+import { withFileInputCapability } from './file-input.js';
 import { assertHealthyResponse, requiredBaseUrl } from './shared.js';
 
 export class OpenAICompatibleAdapter implements ProviderAdapter {
@@ -16,10 +17,15 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     reasoning: ReasoningIntent,
   ) {
     return {
-      model: new OpenAIChatCompletionsModel(
-        new OpenAI({ apiKey, baseURL: requiredBaseUrl(provider), fetch: globalThis.fetch }),
-        registration.target.modelId,
-        { strictFeatureValidation: true },
+      model: withFileInputCapability(
+        new OpenAIChatCompletionsModel(
+          new OpenAI({ apiKey, baseURL: requiredBaseUrl(provider), fetch: globalThis.fetch }),
+          registration.target.modelId,
+          { strictFeatureValidation: true },
+        ),
+        registration,
+        provider.transport,
+        true,
       ),
       target: registration.target,
       registration,

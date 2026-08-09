@@ -23,6 +23,7 @@ function cliHelp(): string {
   mimi "任务"             执行单次任务
   mimi provider add <providerId/modelId> [能力选项]
                            为已有 Provider 注册模型；新 Provider 需完整连接参数
+                           能力：--image-input/--image-output/--file-input/--tool-calling <true|false>
   mimi provider set <providerId/modelId>
                            更新 registry 全局默认 target，不重启
   mimi provider list       查看 registry

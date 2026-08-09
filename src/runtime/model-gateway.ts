@@ -121,6 +121,9 @@ export class ModelGateway {
       throw new Error(`模型 ${modelTargetKey(target)} 不是可运行工具循环的 Agent Runtime`);
     }
     const credential = this.environment[provider.apiKeyEnv]?.trim();
+    // Preserve the SDK's official-model placeholder for offline/injected Runner use.
+    // Any configured endpoint or real credential still goes through Mimi's adapter,
+    // where file/image protocol gates run immediately before the network boundary.
     if (!credential && provider.transport === 'openai-responses' && !provider.baseUrl) {
       return {
         model: registration.target.modelId,

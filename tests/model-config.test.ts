@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   ModelConfigStore,
   legacyModelConfiguration,
+  legacyModelConfigurationForAppConfig,
   parseModelsConfig,
 } from '../src/runtime/model-config.js';
 
@@ -32,7 +33,9 @@ test('model config validates unique exact targets and fails closed on unknown ca
       scenarios: {},
     },
   };
-  assert.equal(parseModelsConfig(base).providers.length, 1);
+  const parsed = parseModelsConfig(base);
+  assert.equal(parsed.providers.length, 1);
+  assert.equal(parsed.providers[0]!.models[0]!.capabilities.fileInput, false);
   assert.throws(() => parseModelsConfig({
     ...base,
     providers: [deepseek, { ...deepseek, id: 'duplicate' }],
@@ -64,6 +67,17 @@ test('model config validates unique exact targets and fails closed on unknown ca
       },
     },
   }), /maxOutputTokens|contextWindow|输出/);
+  assert.throws(() => parseModelsConfig({
+    ...base,
+    providers: [{
+      ...deepseek,
+      transport: 'anthropic-messages',
+      models: [{
+        ...deepseek.models[0],
+        capabilities: { ...deepseek.models[0]!.capabilities, fileInput: true },
+      }],
+    }],
+  }), /尚未实现 fileInput|fileInput/);
 });
 
 test('private model config writes atomically with owner-only permissions', async () => {
@@ -171,4 +185,25 @@ test('legacy environment synthesizes a compatible exact target without persistin
   });
   assert.equal(config.providers[0]?.apiKeyEnv, 'MIMI_PROVIDER_API_KEY');
   assert.doesNotMatch(JSON.stringify(config), /never-persist-this/);
+});
+
+test('standard OpenAI configurations explicitly enable file input while other legacy providers do not', () => {
+  const openai = legacyModelConfiguration({
+    MIMI_MODEL_PROVIDER: 'openai',
+    OPENAI_MODEL: 'gpt-5.4-mini',
+  });
+  assert.equal(openai.providers[0]!.transport, 'openai-responses');
+  assert.equal(openai.providers[0]!.models[0]!.capabilities.fileInput, true);
+
+  const appOpenai = legacyModelConfigurationForAppConfig({
+    provider: 'openai',
+    defaultModel: 'gpt-5.4-mini',
+  } as Parameters<typeof legacyModelConfigurationForAppConfig>[0], {});
+  assert.ok(appOpenai.providers[0]!.models.every((model) => model.capabilities.fileInput === true));
+
+  const appDeepSeek = legacyModelConfigurationForAppConfig({
+    provider: 'deepseek',
+    defaultModel: 'deepseek-v4-pro',
+  } as Parameters<typeof legacyModelConfigurationForAppConfig>[0], {});
+  assert.ok(appDeepSeek.providers[0]!.models.every((model) => model.capabilities.fileInput === false));
 });

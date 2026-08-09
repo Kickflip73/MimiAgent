@@ -54,6 +54,9 @@ function anthropicContent(content: unknown): string | Array<Record<string, unkno
       result.push({ type: 'text', text: value.text });
       continue;
     }
+    if (value.type === 'input_file') {
+      throw new Error('Anthropic Messages adapter 尚未实现 input_file 显式转换；请求未发送');
+    }
     if (value.type !== 'input_image') continue;
     const image = dataImage(value.image);
     if (!image) {
@@ -80,6 +83,9 @@ function googleParts(content: unknown): Array<Record<string, unknown>> {
     if (typeof value.text === 'string') {
       result.push({ text: value.text });
       continue;
+    }
+    if (value.type === 'input_file') {
+      throw new Error('Google Generate Content adapter 尚未实现 input_file 显式转换；请求未发送');
     }
     if (value.type !== 'input_image') continue;
     const image = dataImage(value.image);

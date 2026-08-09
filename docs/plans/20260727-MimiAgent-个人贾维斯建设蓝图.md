@@ -2,7 +2,7 @@
 
 日期：2026-07-27
 
-状态：可实施基线 v1.5（2026-08-05 M2 工程收敛中，多模态阶段尚未开放）
+状态：可实施基线 v1.5（2026-08-10 M2 工程验收已关闭；owner 已裁决启动隔离 M3 工程，product/promotion gate 仍未开放）
 
 目标：把 MimiAgent 从“很强的本地执行 Agent”建设成一个长期在线、真正了解
 owner、默认使用当前 OS 用户已配置完整能力、可靠托管电脑/工作/生活事务的个人 AI 助手。
@@ -594,18 +594,21 @@ M0 可用运行基线 → M1 可靠眼睛和双手
 M1 + M2 → M3 多模态交互 → M4 工作闭环 → M5 生活助理 → M6 持续运行
 ```
 
-### 当前阶段：M1 收口，同时修复 M0 运行健康
+### 当前阶段：隔离 M3 工程已获 owner 授权，M1 外部门禁继续收口
 
-当前阶段的唯一实施计划为：
+当前长期运行主线的收口计划为：
 [MimiAgent M1 架构收敛重构计划](20260731-MimiAgent-M1架构收敛重构计划.md)。
-M2 的独立设计和开发可以按 owner 裁决并行，但合并到长期运行主线或部署前仍需满足
-M1 计划规定的 ARC-503 门禁；24h/72h/7d/30d 长期窗口继续作为发布质量信号。
+owner 已明确授权在独立工作树启动 M3 工程，但合并到长期运行主线、部署或产品 promotion
+前仍需满足 M1 计划规定的 ARC-503 门禁；24h/72h/7d/30d 长期窗口继续作为发布质量信号。
+该裁决不是 `GO`，也不修改既有不可变退出记录。M3 的当前实施与证据边界见
+[M3 多模态交互实施计划](m3/PLAN.md)。
 
 M2 独立工作树已经形成 L0～L3 契约、`sqlite-vec@0.1.9` vec0/RRF、local embedder、
 lexical 降级、异步形成和预算化 Personal Context，并通过 60 个非变体问题、零 Key本地向量、
-packed package 与 941/941 隔离 CI。owner 私有入口机制已通过严格只读测试，但真实必要 Catalog
-当前因活动 WAL 返回 incomplete；M2 发布退出门禁尚未关闭，且未部署到长期运行 Daemon，
-也不替代 ARC-503；M3 门禁保持关闭。
+packed package 与 941/941 隔离 CI。owner 后续显式授权 `--allow-wal`，真实私有入口 100 问
+审计为 64 partial、36 evidence-insufficient、0 incorrect、来源覆盖 100%，且
+`auditStatus=complete`；因此 M2 工程验收可关闭。长期 Daemon 仍未部署，ARC-503 与最新 M1
+`NO-GO` 也未关闭；owner 只据此允许隔离 M3 工程，不代表主线 merge/deploy/promotion `GO`。
 
 按 `PROGRESS.md` 和 `BLOCKED.md` 截至 2026-07-30 的最后证据：M0 代码与发布基线曾经
 完成全绿，M1 的历史代表性实机动作也已提供能力证据，因此当前不回退到 M-1 或重新
@@ -674,10 +677,12 @@ M1 分母，微信永久退役。
 
 参考周期：6～10 周。
 
-实施状态（2026-08-06）：代码、迁移、60 问确定性评测、Vec 故障探针、local embedder、
-package smoke 与完整隔离 CI 已通过。真实 owner 本机入口只输出聚合并严格拒绝活动 WAL，
-当前 auditStatus 为 incomplete；仓库不保存或伪造私有问题集。M2 暂不部署到长期运行 Daemon，
-该外部运行态证据补齐前 M3 门禁保持关闭。
+实施状态（2026-08-09）：代码、迁移、60 问确定性评测、Vec 故障探针、local embedder、
+package smoke 与完整隔离 CI 已通过。owner 显式 `--allow-wal` 后，真实本机入口仅输出聚合的
+100 问审计得到 64 partial、36 evidence-insufficient、0 incorrect、来源覆盖 100% 和
+`auditStatus=complete`；仓库不保存或伪造私有问题集。M2 工程验收可关闭。M2 尚未部署到
+长期运行 Daemon，且不替代 ARC-503 或最新 M1 `NO-GO`；owner 已单独授权隔离 M3 工程，
+主线合并、部署和 promotion 门禁仍保持关闭。
 
 交付：
 

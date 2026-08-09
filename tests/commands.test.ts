@@ -246,6 +246,39 @@ test('provider registry add/set/list/test manages models.json without secrets or
   assert.match(tested.error ?? '', /TEST_PROVIDER_KEY/);
 });
 
+test('provider registry persists explicit OpenAI Responses fileInput and keeps it false by default', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-provider-file-input-'));
+  const modelsFile = path.join(root, 'models.json');
+  await runProviderRegistryCommand([
+    'add', 'openai-main/gpt-5.4-mini',
+    '--label', 'OpenAI',
+    '--transport', 'openai-responses',
+    '--api-key-env', 'OPENAI_API_KEY',
+    '--image-input', 'true',
+    '--file-input', 'true',
+    '--tool-calling', 'true',
+  ], modelsFile, { OPENAI_API_KEY: '' });
+  const explicit = JSON.parse(await readFile(modelsFile, 'utf8')) as {
+    providers: Array<{ models: Array<{ capabilities: { fileInput: boolean } }> }>;
+  };
+  assert.equal(explicit.providers[0]!.models[0]!.capabilities.fileInput, true);
+
+  const secondRoot = await mkdtemp(path.join(os.tmpdir(), 'mimi-provider-file-default-'));
+  const secondFile = path.join(secondRoot, 'models.json');
+  await runProviderRegistryCommand([
+    'add', 'openai-main/gpt-5.4-mini',
+    '--label', 'OpenAI',
+    '--transport', 'openai-responses',
+    '--api-key-env', 'OPENAI_API_KEY',
+    '--image-input', 'true',
+    '--tool-calling', 'true',
+  ], secondFile, { OPENAI_API_KEY: '' });
+  const defaulted = JSON.parse(await readFile(secondFile, 'utf8')) as {
+    providers: Array<{ models: Array<{ capabilities: { fileInput: boolean } }> }>;
+  };
+  assert.equal(defaulted.providers[0]!.models[0]!.capabilities.fileInput, false);
+});
+
 test('handles status and high-frequency inspection commands', async () => {
   const output: string[] = [];
   const original = console.log;

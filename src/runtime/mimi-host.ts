@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import type { AgentInputItem } from '@openai/agents';
 import type { SessionSummary } from '../core/session.js';
 import type { PersonalMessageAuthorization } from '../core/personal-message.js';
 import type { ComputerAccess } from '../extensions/computer/types.js';
@@ -12,11 +13,14 @@ import {
   type AgentRunResult,
 } from './run-service.js';
 import type { ProviderHealthSnapshot } from './provider-reliability.js';
+import type { RealtimeCanonicalTurnRunner } from './realtime-audio-controller.js';
 
 export interface HostedAgentRunRequest extends AgentRunRequest {
   sessionId: string;
   executionId?: string;
   workspaceRoot?: string;
+  /** Materialized only after execution-ledger recovery misses. */
+  modelInputFactory?: () => Promise<AgentInputItem[]>;
 }
 
 export type HostCancelResult =
@@ -192,6 +196,9 @@ export class MimiHost {
     observer: AgentRunObserver = {},
   ): Promise<AgentRunResult> {
     this.assertOpen();
+    if (request.modelInput && request.modelInputFactory) {
+      throw new Error('modelInput 与 modelInputFactory 不能同时提供');
+    }
     const executionId = request.executionId ?? randomUUID();
     if (this.pending.has(executionId)) throw new Error(`Execution ${executionId} 已存在`);
     const controller = new AbortController();
@@ -227,8 +234,11 @@ export class MimiHost {
             signal.throwIfAborted();
             return recovered;
           }
+          const modelInput = request.modelInput ?? await request.modelInputFactory?.();
+          signal.throwIfAborted();
           const result = await actor.runs.execute({
             input: request.input,
+            ...(modelInput ? { modelInput } : {}),
             signal,
             options: request.options,
           }, observer);
@@ -285,6 +295,48 @@ export class MimiHost {
         signal,
       );
     }, sessionId));
+  }
+
+  /**
+   * Realtime ASR enters the same keyed Session actor and normal Run pipeline as text input.
+   * Raw PCM/provider deltas never cross this boundary; the retained execution key makes a
+   * finalized transcript idempotent across transport reconnects.
+   */
+  realtimeTurnRunner(sessionId: string, workspaceRoot?: string): RealtimeCanonicalTurnRunner {
+    let activeExecutionId: string | undefined;
+    return {
+      submitStableTurn: async ({ turnId, transcript, source }) => {
+        const executionKey = `realtime:${sessionId}:${turnId}`;
+        const executionId = randomUUID();
+        activeExecutionId = executionId;
+        try {
+          const result = await this.execute({
+            executionId,
+            sessionId,
+            workspaceRoot,
+            input: transcript,
+            options: {
+              executionKey,
+              retainExecutionLedger: true,
+              scenario: 'conversation.default',
+              cause: {
+                eventId: executionKey,
+                sourceEventId: turnId,
+                source: source === 'realtime-asr' ? 'local-realtime-voice' : 'local-text-fallback',
+                conversation: sessionId,
+                trust: 'owner',
+              },
+            },
+          });
+          return { assistantText: result.answer };
+        } finally {
+          if (activeExecutionId === executionId) activeExecutionId = undefined;
+        }
+      },
+      cancelActiveTurn: (reason) => {
+        if (activeExecutionId) this.cancel(activeExecutionId, reason);
+      },
+    };
   }
 
   finalizeExecutionLedger(sessionId: string, executionKey: string): Promise<void> {

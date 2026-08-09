@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -23,17 +23,21 @@ test('attachment input is parsed, snapshotted and converted to multimodal model 
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-attachments-'));
   const image = path.join(root, 'photo.png');
   const note = path.join(root, 'note.txt');
-  await writeFile(image, Buffer.from([137, 80, 78, 71]));
+  await writeFile(image, Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64',
+  ));
   await writeFile(note, 'hello');
   const parsed = parseAttachmentInput('分析它 @image:photo.png @file:"note.txt"');
   assert.equal(parsed.text, '分析它');
-  const staged = await stageAttachments(parsed.attachments, root, path.join(root, '.staged'));
+  const attachmentRoot = path.join(root, '.staged');
+  const staged = await stageAttachments(parsed.attachments, root, attachmentRoot);
   assert.equal(staged.length, 2);
-  const input = await inputWithAttachments(parsed.text, staged);
+  const input = await inputWithAttachments(parsed.text, staged, attachmentRoot);
   assert.notEqual(typeof input, 'string');
-  assert.equal(inputText(input), '分析它');
+  assert.match(inputText(input), /^分析它\n\[媒体引用 /);
   assert.deepEqual((input as Array<{ content: Array<{ type: string }> }>)[0]!.content.map((part) => part.type), [
-    'input_text', 'input_image', 'input_file',
+    'input_text', 'input_text', 'input_image', 'input_text', 'input_file',
   ]);
 });
 
@@ -42,6 +46,28 @@ test('attachment staging rejects workspace escape and symlink input', async () =
   await assert.rejects(
     stageAttachments([{ path: '../outside.txt' }], root, path.join(root, '.staged')),
     /不能超出当前工作区/,
+  );
+  const outside = await mkdtemp(path.join(os.tmpdir(), 'mimi-attachments-outside-'));
+  await writeFile(path.join(outside, 'secret.txt'), 'private');
+  await symlink(outside, path.join(root, 'linked-directory'));
+  await assert.rejects(
+    stageAttachments([{ path: 'linked-directory/secret.txt' }], root, path.join(root, '.staged')),
+    /符号链接|超出当前工作区/,
+  );
+  await writeFile(path.join(root, 'inside.txt'), 'inside');
+  await symlink(path.join(root, 'inside.txt'), path.join(root, 'linked-file.txt'));
+  await assert.rejects(
+    stageAttachments([{ path: 'linked-file.txt' }], root, path.join(root, '.staged')),
+    /符号链接/,
+  );
+});
+
+test('media attachment kind is verified from bytes instead of trusting the extension', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-attachments-mime-'));
+  await writeFile(path.join(root, 'fake.png'), 'not a png');
+  await assert.rejects(
+    stageAttachments([{ path: 'fake.png', kind: 'image' }], root, path.join(root, '.staged')),
+    /内容与声明类型 image 不一致/,
   );
 });
 

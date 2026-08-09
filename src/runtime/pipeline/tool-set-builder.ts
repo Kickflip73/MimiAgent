@@ -45,6 +45,16 @@ export interface ClassifiedToolSet {
   deferred: Tool[];
 }
 
+function compactModelToolSchema(tool: Tool): Tool {
+  const parameters = (tool as Tool & { parameters?: unknown }).parameters;
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)
+    || !('$schema' in parameters)) return tool;
+  const modelParameters = { ...(parameters as Record<string, unknown>) };
+  // The dialect declaration does not constrain values and need not be repeated for every Tool.
+  delete modelParameters.$schema;
+  return { ...tool, parameters: modelParameters } as Tool;
+}
+
 export class ToolSetBuilder {
   classify(
     tools: Tool[],
@@ -111,7 +121,7 @@ export class ToolSetBuilder {
   }
 
   sdkTools(classified: ClassifiedToolSet, gatewayTools: readonly Tool[]): Tool[] {
-    return [...classified.direct, ...gatewayTools];
+    return [...classified.direct, ...gatewayTools].map(compactModelToolSchema);
   }
 
   scoped(

@@ -3,6 +3,7 @@ import type { RunStreamEvent } from '@openai/agents';
 import type { MimiAgent } from '../runtime/mimi-agent.js';
 import { MimiHost } from '../runtime/mimi-host.js';
 import { attachmentPayload, inputWithAttachments } from '../runtime/attachments.js';
+import { mediaArtifactOwner, MediaArtifactStore } from '../runtime/media-artifact-store.js';
 import type { RuntimeEvent } from '../runtime/hooks.js';
 import { TerminalRunInterruptedError } from '../runtime/run-outcome.js';
 import { projectRunStreamEvent } from '../runtime/stream-projection.js';
@@ -69,6 +70,8 @@ export interface DispatcherOptions {
     event: ImmutableEvent,
     sessionId: string,
   ) => MaybePromise<string | undefined>;
+  /** Stable root for content-addressed media artifacts referenced by durable Events. */
+  attachmentRoot?: string;
 }
 
 export function runStreamMakesObservableProgress(event: RunStreamEvent): boolean {
@@ -138,6 +141,8 @@ export class MimiDispatcher {
   private preferOutbox = true;
   private readonly delivery: OutboxDeliveryCoordinator;
   private nextMaintenanceAt = 0;
+  private nextMediaGcAt = 0;
+  private readonly mediaArtifacts?: MediaArtifactStore;
 
   constructor(
     private readonly store: MimiStore,
@@ -150,6 +155,9 @@ export class MimiDispatcher {
     this.workerId = options.workerId ?? `${process.pid}-${randomUUID().slice(0, 8)}`;
     this.host = agentOrHost instanceof MimiHost ? agentOrHost : new MimiHost(agentOrHost);
     this.delivery = new OutboxDeliveryCoordinator(this.store, this.notifier, this.workerId);
+    this.mediaArtifacts = options.attachmentRoot
+      ? new MediaArtifactStore(options.attachmentRoot)
+      : undefined;
   }
 
   start(): void {
@@ -234,7 +242,7 @@ export class MimiDispatcher {
   }
 
   async processOnce(): Promise<boolean> {
-    this.runMaintenanceIfDue();
+    await this.runMaintenanceIfDue();
     this.attention.emitDueRoutines();
     this.attention.emitDueBriefings();
     this.store.schedules.emitDue();
@@ -286,7 +294,7 @@ export class MimiDispatcher {
   }
 
   private async scheduleAvailable(): Promise<boolean> {
-    this.runMaintenanceIfDue();
+    await this.runMaintenanceIfDue();
     this.attention.emitDueRoutines();
     this.attention.emitDueBriefings();
     this.store.schedules.emitDue();
@@ -521,7 +529,39 @@ export class MimiDispatcher {
       preemptTimer = setInterval(checkPreemption, this.options.preemptPollMs ?? 250);
       preemptTimer.unref();
       refreshRunIdleWatchdog();
-      const modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
+      const attachments = event.source === 'local-cli' && event.trust === 'owner'
+        ? attachmentPayload(event.payload, { allowLegacyPath: true })
+        : [];
+      const modelInputFactory = attachments.length
+        ? async () => {
+            const materialized = await inputWithAttachments(
+              decision.input!,
+              attachments,
+              this.options.attachmentRoot,
+            );
+            if (typeof materialized === 'string') {
+              throw new Error('附件模型输入未物化为协议单元');
+            }
+            return materialized;
+          }
+        : undefined;
+      const mediaEvidence = attachments.flatMap((attachment) => (
+        attachment.evidence ? [attachment.evidence] : []
+      ));
+      const payload = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload)
+        ? event.payload as Record<string, unknown>
+        : {};
+      const workspaceId = typeof payload.workspaceId === 'string' ? payload.workspaceId : undefined;
+      for (const evidence of mediaEvidence) {
+        if (evidence.sourceRef.eventId !== event.id
+          || evidence.sourceRef.profileId !== event.profileId
+          || evidence.sourceRef.trust !== event.trust
+          || (workspaceId && evidence.sourceRef.workspaceId !== workspaceId)
+          || (evidence.sourceRef.sessionId
+            && evidence.sourceRef.sessionId !== decision.sessionId)) {
+          throw new Error(`MediaEvidence ${evidence.id} 与触发 Event/Session provenance 不一致`);
+        }
+      }
       const secretReferences = ephemeralSecretReferences(task.objective);
       const directOwnerConversation = task.type === 'conversation'
         && event.id === active.authority.id
@@ -540,10 +580,15 @@ export class MimiDispatcher {
         sessionId: decision.sessionId!,
         workspaceRoot,
         input: decision.input!,
-        ...(typeof modelInput === 'string' ? {} : { modelInput }),
+        ...(modelInputFactory ? { modelInputFactory } : {}),
         signal: runSignal,
         options: {
           ...decision.options,
+          ...(decision.options?.cause ? {
+            cause: { ...decision.options.cause, sourceEventId: event.id },
+          } : {}),
+          ...(mediaEvidence.length ? { mediaEvidence } : {}),
+          ...(workspaceId ? { workspaceId } : {}),
           ...(ephemeralOwnerInput ? { ephemeralOwnerInput } : {}),
           capabilityItems: this.connectors
             ? connectorEffectiveCapabilityItems(this.connectors)
@@ -1017,19 +1062,34 @@ export class MimiDispatcher {
     this.host.cancel(active.task.id, reason);
   }
 
-  private runMaintenanceIfDue(now = new Date()): void {
+  private async runMaintenanceIfDue(now = new Date()): Promise<void> {
     const maintenance = this.attention.maintenance;
+    let prunedEventIds: string[] = [];
     if (!maintenance.enabled) {
       this.nextMaintenanceAt = 0;
-      return;
+    } else if (now.getTime() >= this.nextMaintenanceAt) {
+      this.nextMaintenanceAt = now.getTime() + maintenance.intervalHours * 60 * 60_000;
+      try {
+        const cutoff = new Date(now.getTime() - maintenance.historyRetentionDays * 24 * 60 * 60_000);
+        prunedEventIds = this.store.pruneHistory(cutoff).prunedEventIds;
+      } catch (error) {
+        process.stderr.write(`[MimiAgent] history maintenance error: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
     }
-    if (now.getTime() < this.nextMaintenanceAt) return;
-    this.nextMaintenanceAt = now.getTime() + maintenance.intervalHours * 60 * 60_000;
+    if (!this.mediaArtifacts) return;
+    const gcDue = now.getTime() >= this.nextMediaGcAt;
+    if (!gcDue && !prunedEventIds.length) return;
+    if (gcDue) this.nextMediaGcAt = now.getTime() + 60 * 60_000;
     try {
-      const cutoff = new Date(now.getTime() - maintenance.historyRetentionDays * 24 * 60 * 60_000);
-      this.store.pruneHistory(cutoff);
+      for (const eventId of prunedEventIds) {
+        await this.mediaArtifacts.releaseOwner(mediaArtifactOwner('event', eventId));
+      }
+      await this.mediaArtifacts.collectGarbage({
+        now,
+        liveReferenceIds: this.store.listEventIds(),
+      });
     } catch (error) {
-      process.stderr.write(`[MimiAgent] history maintenance error: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.stderr.write(`[MimiAgent] media artifact maintenance error: ${error instanceof Error ? error.message : String(error)}\n`);
     }
   }
 }

@@ -511,7 +511,13 @@ test('owner natural-language runs retain direct tools and unified deferred Skill
     assert.ok(captured.tools?.includes('invoke_capability'));
     assert.equal(captured.tools?.includes('list_skills'), false);
     assert.ok((captured.tools?.length ?? 0) < 30);
-    assert.ok(estimateTokens(captured.toolSchemas) <= 4_000);
+    assert.ok(estimateTokens(captured.toolSchemas) <= 3_800);
+    assert.equal(captured.toolSchemas?.some((candidate) => {
+      const parameters = (candidate as { parameters?: unknown }).parameters;
+      return parameters !== null
+        && typeof parameters === 'object'
+        && '$schema' in parameters;
+    }), false);
     assert.match(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
     assert.match(captured.instructions ?? '', /精确 name="use_skill"/);
     assert.doesNotMatch(captured.instructions ?? '', /source:|location:|hidden-skill\/SKILL\.md/);

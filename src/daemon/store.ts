@@ -1138,6 +1138,8 @@ export class MimiStore extends ActivityStore {
           )
           AND NOT EXISTS (SELECT 1 FROM events child WHERE child.causation_event_id = events.id)
       `;
+      const prunedEventIds = (this.database.prepare(candidateEvents).all(timestamp) as Array<{ id: string }>)
+        .map((row) => row.id);
       this.database.prepare(`
         DELETE FROM event_route_receipts WHERE event_id IN (${candidateEvents})
       `).run(timestamp);
@@ -1164,7 +1166,18 @@ export class MimiStore extends ActivityStore {
               AND outbox.status IN ('pending', 'sending', 'dead_letter')
           )
       `).run(timestamp).changes);
-      return { memoryObservations, outbox, digestItems, runs, tasks, events, schedules, attentionState, auditEvents };
+      return {
+        memoryObservations,
+        outbox,
+        digestItems,
+        runs,
+        tasks,
+        events,
+        prunedEventIds,
+        schedules,
+        attentionState,
+        auditEvents,
+      };
     });
     try {
       this.database.exec('PRAGMA optimize; PRAGMA wal_checkpoint(PASSIVE);');
@@ -1172,6 +1185,11 @@ export class MimiStore extends ActivityStore {
       // Cleanup is already committed; optimization/checkpoint are best effort.
     }
     return result;
+  }
+
+  listEventIds(): string[] {
+    return (this.database.prepare('SELECT id FROM events ORDER BY id').all() as Array<{ id: string }>)
+      .map((row) => row.id);
   }
 
   private insertOutbox(subjectId: string, route: ReplyRoute, payload: unknown, timestamp: string): string {

@@ -12,6 +12,7 @@ import {
 import { assertSessionId } from './session-id.js';
 import { AtomicJsonStore, StateFileCorruptError } from './state-file.js';
 import { modelTargetSchema, type ModelTarget } from './model-routing.js';
+import { mediaEvidenceSchema, type MediaEvidence } from './media-evidence.js';
 import {
   runFinalizationRecordSchema,
   type RunFinalizationRecord,
@@ -141,6 +142,12 @@ export interface ContextToolArtifactReadSuccess {
   replacementRef?: never;
 }
 
+export interface SessionMediaEvidenceRegistration {
+  evidence: MediaEvidence;
+  registeredRunId: string;
+  registeredAt: string;
+}
+
 export type ContextToolArtifactReadResult = ContextToolArtifactReadSuccess | ContextToolArtifactRejected;
 
 export interface SessionPreferences {
@@ -182,6 +189,7 @@ interface SessionFile {
   contextToolArtifacts?: ContextToolArtifact[];
   preferences?: SessionPreferences;
   activeSkills?: ActivatedSkill[];
+  mediaEvidence?: SessionMediaEvidenceRegistration[];
 }
 
 const interruptedAnswerPrefix = '【本轮回答在中断前的可见片段；任务未完成】\n';
@@ -321,6 +329,11 @@ const sessionFileSchema = z.object({
     activatedAt: z.string(),
     updatedAt: z.string(),
   }).strict()).optional(),
+  mediaEvidence: z.array(z.object({
+    evidence: mediaEvidenceSchema,
+    registeredRunId: z.string().min(1).max(200),
+    registeredAt: z.string().datetime({ offset: true }),
+  }).strict()).max(1_000).optional(),
 });
 
 function decodeSessionFile(value: unknown): SessionFile {
@@ -449,6 +462,104 @@ export class FileSession implements Session {
       session.items.push(...validated);
       session.updatedAt = new Date().toISOString();
     });
+  }
+
+  async registerMediaEvidence(
+    items: readonly MediaEvidence[],
+    expectedRunId: string,
+  ): Promise<number> {
+    return this.mutateWhen((session) => {
+      if (!session.checkpoint
+        || session.checkpoint.status !== 'running'
+        || session.checkpoint.runId !== expectedRunId) {
+        return { result: 0, changed: false };
+      }
+      const parsed = items.map((item) => mediaEvidenceSchema.parse(item));
+      for (const item of parsed) {
+        if (item.sourceRef.sessionId && item.sourceRef.sessionId !== this.id) {
+          throw new Error(
+            `MediaEvidence ${item.id} 属于 Session ${item.sourceRef.sessionId}，不能注册到 ${this.id}`,
+          );
+        }
+        if (item.sourceRef.runId && item.sourceRef.runId !== expectedRunId) {
+          throw new Error(
+            `MediaEvidence ${item.id} 属于 Run ${item.sourceRef.runId}，不能注册到 ${expectedRunId}`,
+          );
+        }
+      }
+      const registrations = session.mediaEvidence ?? [];
+      const available = new Map<string, MediaEvidence>([
+        ...registrations.map((item) => [item.evidence.id, item.evidence] as const),
+        ...parsed.map((item) => [item.id, item] as const),
+      ]);
+      for (const item of parsed) {
+        const parentId = item.sourceRef.parentEvidenceId;
+        if (!parentId) continue;
+        if (parentId === item.id) {
+          throw new Error(`MediaEvidence ${item.id} 不能派生自自身`);
+        }
+        const parent = available.get(parentId);
+        if (!parent) {
+          throw new Error(`MediaEvidence ${item.id} 缺少父 Evidence ${parentId}`);
+        }
+        if (item.sourceRef.trust !== parent.sourceRef.trust
+          || item.sourceRef.profileId !== parent.sourceRef.profileId) {
+          throw new Error(`MediaEvidence ${item.id} 不能提升父 Evidence 的 trust/profile`);
+        }
+        if (parent.sourceRef.sessionId
+          && item.sourceRef.sessionId !== parent.sourceRef.sessionId) {
+          throw new Error(`MediaEvidence ${item.id} 不能跨 Session 派生`);
+        }
+        if (parent.sourceRef.workspaceId
+          && item.sourceRef.workspaceId !== parent.sourceRef.workspaceId) {
+          throw new Error(`MediaEvidence ${item.id} 不能跨 Workspace 派生`);
+        }
+        if (item.mediaRef !== parent.mediaRef
+          || item.sha256 !== parent.sha256
+          || item.kind !== parent.kind
+          || item.mimeType !== parent.mimeType
+          || item.bytes !== parent.bytes) {
+          throw new Error(`MediaEvidence ${item.id} 的父媒体资产身份不一致`);
+        }
+      }
+      let added = 0;
+      for (const evidence of parsed) {
+        const existing = registrations.find((item) => item.evidence.id === evidence.id);
+        if (existing) {
+          if (JSON.stringify(existing.evidence) !== JSON.stringify(evidence)) {
+            throw new Error(`MediaEvidence id 冲突：${evidence.id}`);
+          }
+          continue;
+        }
+        registrations.push({
+          evidence,
+          registeredRunId: expectedRunId,
+          registeredAt: new Date().toISOString(),
+        });
+        added += 1;
+      }
+      if (!added) return { result: 0, changed: false };
+      if (registrations.length > 1_000) throw new Error('Session MediaEvidence 超过 1000 条');
+      if (Buffer.byteLength(JSON.stringify(registrations), 'utf8') > 16 * 1024 * 1024) {
+        throw new Error('Session MediaEvidence 总量超过 16MiB');
+      }
+      session.mediaEvidence = registrations;
+      session.updatedAt = new Date().toISOString();
+      return { result: added, changed: true };
+    });
+  }
+
+  async getMediaEvidence(id: string): Promise<MediaEvidence | undefined> {
+    const found = (await this.load()).mediaEvidence?.find((item) => item.evidence.id === id);
+    return found ? mediaEvidenceSchema.parse(found.evidence) : undefined;
+  }
+
+  async listMediaEvidence(limit = 100): Promise<MediaEvidence[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+      throw new Error('MediaEvidence limit 必须为 1..1000 的安全整数');
+    }
+    const registrations = (await this.load()).mediaEvidence ?? [];
+    return registrations.slice(-limit).map((item) => mediaEvidenceSchema.parse(item.evidence));
   }
 
   async getCheckpoint(): Promise<RunCheckpoint | undefined> {
@@ -916,6 +1027,7 @@ export class FileSession implements Session {
       session.checkpoint = undefined;
       session.contextArchive = undefined;
       session.activeSkills = [];
+      session.mediaEvidence = undefined;
       session.updatedAt = new Date().toISOString();
     });
   }

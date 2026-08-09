@@ -9,6 +9,7 @@ import { isTerminalRunInterruption, TerminalRunInterruptedError } from '../src/r
 import {
   AgentRunService,
   providerBackupRouteFromEnvironment,
+  type AgentRunRequest,
 } from '../src/runtime/run-service.js';
 import { ProviderCircuitBreaker } from '../src/runtime/provider-reliability.js';
 
@@ -395,7 +396,11 @@ test('shared run service uses one configured backup only before a stream starts'
   } as unknown as MimiAgent;
   const service = new AgentRunService(agent, {
     providerId: 'openai',
-    backupProvider: { id: 'deepseek:backup', provider: 'deepseek' },
+    backupProvider: {
+      id: 'deepseek:deepseek-v4-flash',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+    },
   });
   const result = await service.execute({ input: 'work' });
   assert.equal(result.answer, 'backup answer');
@@ -405,8 +410,45 @@ test('shared run service uses one configured backup only before a stream starts'
   assert.equal(service.providerHealth().state, 'open');
   assert.deepEqual(
     service.providerHealthRoutes().map((health) => [health.provider, health.state]),
-    [['openai', 'open'], ['deepseek:backup', 'closed']],
+    [['openai', 'open'], ['deepseek:deepseek-v4-flash', 'closed']],
   );
+});
+
+test('shared run service excludes an incompatible fileInput backup before failover', async () => {
+  const breaker = new ProviderCircuitBreaker({ failureThreshold: 1, openMs: 60_000 });
+  breaker.acquire('openai-main');
+  breaker.failure('openai-main', Object.assign(new Error('primary rate limited'), { status: 429 }));
+  let networkCalls = 0;
+  const agent = {
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => {
+      networkCalls += 1;
+      throw new Error('incompatible backup must never reach the SDK');
+    },
+    failRun: async () => undefined,
+  } as unknown as MimiAgent;
+  const service = new AgentRunService(agent, {
+    providerId: 'openai-main',
+    providerReliability: breaker,
+    backupProvider: {
+      id: 'deepseek:deepseek-v4-flash',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+    },
+  });
+  const modelInput = [{
+    role: 'user',
+    content: [
+      { type: 'input_text', text: 'summarize' },
+      { type: 'input_file', file: 'data:text/plain;base64,aGVsbG8=', filename: 'notes.txt' },
+    ],
+  }] as AgentRunRequest['modelInput'];
+
+  await assert.rejects(
+    service.execute({ input: 'summarize', modelInput }),
+    /熔断中/,
+  );
+  assert.equal(networkCalls, 0);
 });
 
 test('shared run service never switches Provider after the stream handle exists', async () => {
@@ -433,7 +475,11 @@ test('shared run service never switches Provider after the stream handle exists'
   } as unknown as MimiAgent;
   await assert.rejects(new AgentRunService(agent, {
     providerId: 'openai',
-    backupProvider: { id: 'deepseek:backup', provider: 'deepseek' },
+    backupProvider: {
+      id: 'deepseek:deepseek-v4-flash',
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+    },
   }).execute({ input: 'work' }), /network after streaming began/);
   assert.equal(attempts, 1);
   assert.equal(failures, 1);
@@ -511,15 +557,17 @@ test('production backup route configuration is exact and requires its own creden
     MIMI_BACKUP_PROVIDER: 'openai',
     OPENAI_API_KEY: 'fixture-openai-key',
   }), {
-    id: 'openai:default',
+    id: 'openai:gpt-5.4-mini',
     provider: 'openai',
+    model: 'gpt-5.4-mini',
   });
   assert.deepEqual(providerBackupRouteFromEnvironment('openai-compatible', {
     MIMI_BACKUP_PROVIDER: 'openai',
     OPENAI_API_KEY: 'fixture-openai-key',
   }), {
-    id: 'openai:default',
+    id: 'openai:gpt-5.4-mini',
     provider: 'openai',
+    model: 'gpt-5.4-mini',
   });
 });
 

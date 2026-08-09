@@ -249,6 +249,50 @@ test('gateway rejects missing credentials, incompatible runtime kind and unknown
   );
 });
 
+test('official OpenAI keeps an offline Runner placeholder while configured endpoints require credentials', () => {
+  const capabilities = {
+    imageInput: true,
+    imageOutput: false,
+    fileInput: true,
+    toolCalling: true,
+  };
+  const gateway = new ModelGateway({
+    providers: [
+      {
+        id: 'official',
+        label: 'Official',
+        transport: 'openai-responses',
+        apiKeyEnv: 'OFFICIAL_KEY',
+        models: [{
+          target: { providerId: 'official', modelId: 'offline-agent' },
+          kind: 'agent',
+          capabilities,
+        }],
+      },
+      {
+        id: 'endpoint',
+        label: 'Endpoint',
+        transport: 'openai-responses',
+        baseUrl: 'https://gateway.example/v1',
+        apiKeyEnv: 'ENDPOINT_KEY',
+        models: [{
+          target: { providerId: 'endpoint', modelId: 'endpoint-agent' },
+          kind: 'agent',
+          capabilities,
+        }],
+      },
+    ],
+    environment: {},
+  });
+  assert.equal(gateway.createAgentRuntime({
+    providerId: 'official', modelId: 'offline-agent',
+  }).model, 'offline-agent');
+  assert.throws(
+    () => gateway.createAgentRuntime({ providerId: 'endpoint', modelId: 'endpoint-agent' }),
+    /ENDPOINT_KEY/,
+  );
+});
+
 test('OpenAI Responses and OpenAI-compatible adapters send distinct native requests', async () => {
   const requests: Array<{
     path?: string;

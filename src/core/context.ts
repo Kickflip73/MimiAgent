@@ -165,11 +165,142 @@ export class ContextProtocolBudgetError extends Error {
   readonly name = 'ContextProtocolBudgetError';
 }
 
+interface TokenEstimateProjection {
+  value: unknown;
+  opaqueMediaTokens: number;
+}
+
+const DATA_URL_MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/u;
+
+function decodedProviderDataUrlBytes(
+  value: string,
+  kind: 'input_image' | 'input_file',
+): number | undefined {
+  const delimiter = ';base64,';
+  const delimiterAt = value.indexOf(delimiter);
+  if (!value.startsWith('data:') || delimiterAt <= 5) return undefined;
+  const mediaType = value.slice(5, delimiterAt);
+  if (!DATA_URL_MEDIA_TYPE.test(mediaType) || mediaType !== mediaType.toLowerCase()) return undefined;
+  if (kind === 'input_image' && !mediaType.startsWith('image/')) return undefined;
+  if (kind === 'input_file' && /^(?:audio|image|video)\//u.test(mediaType)) return undefined;
+  const payloadAt = delimiterAt + delimiter.length;
+  const payloadLength = value.length - payloadAt;
+  if (payloadLength <= 0 || payloadLength % 4 !== 0) return undefined;
+  let padding = 0;
+  if (value.endsWith('==')) padding = 2;
+  else if (value.endsWith('=')) padding = 1;
+  const contentEnd = value.length - padding;
+  for (let index = payloadAt; index < contentEnd; index += 1) {
+    const code = value.charCodeAt(index);
+    const valid = (code >= 65 && code <= 90)
+      || (code >= 97 && code <= 122)
+      || (code >= 48 && code <= 57)
+      || code === 43
+      || code === 47;
+    if (!valid) return undefined;
+  }
+  for (let index = contentEnd; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 61) return undefined;
+  }
+  const bytes = (payloadLength / 4) * 3 - padding;
+  return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : undefined;
+}
+
+function opaqueProviderMediaTokens(
+  kind: 'input_image' | 'input_file',
+  bytes: number,
+  detail?: unknown,
+): number {
+  if (kind === 'input_image') {
+    // Image providers account for pixels/tiles instead of base64 characters. Without
+    // decoded dimensions, retain a conservative size component and a bounded high-detail
+    // allowance; actual provider usage replaces this estimate after the request.
+    const base = detail === 'low' ? 128 : 256;
+    return base + Math.min(16_384, Math.ceil(bytes / 2_048));
+  }
+  // File providers extract or inspect content behind an opaque file part. The 64k ceiling
+  // keeps planning bounded while charging substantially more than an image for large files.
+  return 512 + Math.min(65_536, Math.ceil(bytes / 512));
+}
+
+function projectProviderMediaPart(value: unknown): TokenEstimateProjection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { value, opaqueMediaTokens: 0 };
+  }
+  const part = value as Record<string, unknown>;
+  const kind = part.type === 'input_image'
+    ? 'input_image'
+    : part.type === 'input_file'
+      ? 'input_file'
+      : undefined;
+  if (!kind) return { value, opaqueMediaTokens: 0 };
+  if (kind === 'input_image'
+    && part.detail !== undefined
+    && part.detail !== 'auto'
+    && part.detail !== 'low'
+    && part.detail !== 'high') {
+    return { value, opaqueMediaTokens: 0 };
+  }
+  const field = kind === 'input_image' ? 'image' : 'file';
+  const data = part[field];
+  if (typeof data !== 'string') return { value, opaqueMediaTokens: 0 };
+  const bytes = decodedProviderDataUrlBytes(data, kind);
+  if (bytes === undefined) return { value, opaqueMediaTokens: 0 };
+  const delimiterAt = data.indexOf(';base64,');
+  const mediaType = data.slice(5, delimiterAt);
+  return {
+    value: {
+      ...part,
+      [field]: `[provider-opaque-media type=${mediaType} bytes=${bytes}]`,
+    },
+    opaqueMediaTokens: opaqueProviderMediaTokens(kind, bytes, part.detail),
+  };
+}
+
+function projectProviderMediaMessage(value: unknown): TokenEstimateProjection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { value, opaqueMediaTokens: 0 };
+  }
+  const item = value as Record<string, unknown>;
+  if (item.role !== 'user' || !Array.isArray(item.content)) {
+    return { value, opaqueMediaTokens: 0 };
+  }
+  let opaqueMediaTokens = 0;
+  let changed = false;
+  const content = item.content.map((part) => {
+    const projected = projectProviderMediaPart(part);
+    opaqueMediaTokens += projected.opaqueMediaTokens;
+    changed ||= projected.opaqueMediaTokens > 0;
+    return projected.value;
+  });
+  return {
+    value: changed ? { ...item, content } : value,
+    opaqueMediaTokens,
+  };
+}
+
+function providerMediaProjection(value: unknown): TokenEstimateProjection {
+  if (!Array.isArray(value)) return projectProviderMediaMessage(value);
+  let opaqueMediaTokens = 0;
+  let changed = false;
+  const items = value.map((item) => {
+    const projected = projectProviderMediaMessage(item);
+    opaqueMediaTokens += projected.opaqueMediaTokens;
+    changed ||= projected.opaqueMediaTokens > 0;
+    return projected.value;
+  });
+  return { value: changed ? items : value, opaqueMediaTokens };
+}
+
 export function estimateTokens(value: unknown): number {
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  const projection = providerMediaProjection(value);
+  const text = typeof projection.value === 'string'
+    ? projection.value
+    : JSON.stringify(projection.value);
   if (!text) return 0;
   const ascii = (text.match(/[\x00-\x7f]/g) ?? []).length;
-  return Math.ceil(ascii / 4 + (text.length - ascii) / 1.5);
+  return Math.ceil(ascii / 4 + (text.length - ascii) / 1.5)
+    + projection.opaqueMediaTokens;
 }
 
 export class ContextManager {
@@ -1016,6 +1147,13 @@ export class ContextManager {
     if (Array.isArray(content)) return content.map((part) => this.extractText(part)).filter(Boolean).join(' ');
     if (content && typeof content === 'object') {
       const value = content as Record<string, unknown>;
+      if (value.type === 'input_image') return '[图片输入已省略二进制]';
+      if (value.type === 'input_file') {
+        const filename = typeof value.filename === 'string'
+          ? value.filename.replace(/[\r\n\t]/gu, ' ').trim().slice(0, 255)
+          : '文件';
+        return `[文件输入 ${filename || '文件'} 已省略二进制]`;
+      }
       if (typeof value.text === 'string') return value.text.replace(/\s+/g, ' ').trim();
       return JSON.stringify(content).replace(/\s+/g, ' ').trim();
     }

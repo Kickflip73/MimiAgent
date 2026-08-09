@@ -18,7 +18,7 @@ const provider: ProviderDefinition = {
     {
       target: { providerId: 'fake', modelId: 'vision' },
       kind: 'agent',
-      capabilities: { imageInput: true, imageOutput: false, toolCalling: true },
+      capabilities: { imageInput: true, imageOutput: false, toolCalling: true, fileInput: true },
       contextWindow: 16_000,
     },
     {
@@ -128,6 +128,36 @@ test('resolver distinguishes image input from image output and blocks incompatib
     profile: { requirements: { imageInput: true } },
     routeVersion: 1,
   }), /没有兼容模型|imageInput|图片输入/);
+});
+
+test('resolver treats fileInput as an independent hard capability', () => {
+  const resolver = new WorkUnitModelResolver({
+    providers: [provider],
+    routing: {
+      globalDefault: { providerId: 'fake', modelId: 'text' },
+      scenarios: {
+        'file-understanding.default': {
+          candidates: [
+            { providerId: 'fake', modelId: 'text' },
+            { providerId: 'fake', modelId: 'vision' },
+          ],
+        },
+      },
+    },
+  });
+  assert.equal(resolver.resolve({
+    scenario: 'file-understanding.default',
+    profile: { requirements: { fileInput: true } },
+    routeVersion: 1,
+  }).target.modelId, 'vision');
+  assert.throws(() => resolver.resolve({
+    scenario: 'file-understanding.default',
+    profile: {
+      modelTarget: { providerId: 'fake', modelId: 'text' },
+      requirements: { fileInput: true },
+    },
+    routeVersion: 1,
+  }), /fileInput|文件输入/);
 });
 
 test('resolver uses a configured route fallback only before execution and records the reason', () => {

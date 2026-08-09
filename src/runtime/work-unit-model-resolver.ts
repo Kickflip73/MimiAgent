@@ -30,14 +30,27 @@ interface Candidate {
 }
 
 function satisfies(
+  provider: ProviderDefinition,
   registration: ModelRegistration,
   requirements: ModelRequirements,
 ): boolean {
   if (requirements.imageInput && !registration.capabilities.imageInput) return false;
   if (requirements.imageOutput && !registration.capabilities.imageOutput) return false;
+  if (requirements.fileInput && registration.capabilities.fileInput !== true) return false;
+  if (requirements.audioInput && registration.capabilities.audioInput !== true) return false;
+  if (requirements.audioOutput && registration.capabilities.audioOutput !== true) return false;
+  if (requirements.videoInput && registration.capabilities.videoInput !== true) return false;
+  if (requirements.realtimeAudio
+    && (registration.capabilities.realtimeAudio !== true
+      || registration.capabilities.audioInput !== true
+      || registration.capabilities.audioOutput !== true
+      || provider.realtimeTransport !== 'openai-realtime-websocket'
+      || provider.transport !== 'openai-responses'
+      || provider.baseUrl !== undefined)) return false;
   if (requirements.toolCalling && !registration.capabilities.toolCalling) return false;
   if (requirements.imageOutput && registration.kind !== 'image-generation') return false;
-  if (!requirements.imageOutput && registration.kind !== 'agent') return false;
+  if (requirements.realtimeAudio && registration.kind !== 'realtime') return false;
+  if (!requirements.imageOutput && !requirements.realtimeAudio && registration.kind !== 'agent') return false;
   return true;
 }
 
@@ -45,6 +58,11 @@ function incompatibility(requirements: ModelRequirements): string {
   const values = [
     requirements.imageInput ? 'imageInput/图片输入' : '',
     requirements.imageOutput ? 'imageOutput/生图' : '',
+    requirements.fileInput ? 'fileInput/文件输入' : '',
+    requirements.audioInput ? 'audioInput/音频输入' : '',
+    requirements.audioOutput ? 'audioOutput/音频输出' : '',
+    requirements.videoInput ? 'videoInput/视频输入' : '',
+    requirements.realtimeAudio ? 'realtimeAudio/实时双工音频' : '',
     requirements.toolCalling ? 'toolCalling' : '',
   ].filter(Boolean);
   return values.length ? values.join('、') : 'Agent Runtime';
@@ -109,7 +127,7 @@ export class WorkUnitModelResolver {
         if (candidate.strict) throw new Error(`模型 Provider 未配置 credential：${key}`);
         continue;
       }
-      if (!satisfies(registered.registration, requirements)) {
+      if (!satisfies(registered.provider, registered.registration, requirements)) {
         if (candidate.strict) {
           throw new Error(`模型 ${key} 不满足 ${incompatibility(requirements)} 硬能力`);
         }

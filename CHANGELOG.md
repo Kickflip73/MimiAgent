@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- remove repeated top-level JSON Schema dialect metadata only from model-facing
+  Tool copies, preserving the original Zod parser and invocation closure while
+  restoring the bounded first-round owner Tool budget
+- establish the M3 media safety checkpoint with bounded content-addressed CLI
+  attachment staging, opaque Session workspace bindings, durable `MediaEvidence`
+  provenance, Event/Session artifact ownership and fail-closed audio/video input;
+  add a transcription-only Realtime host/controller contract and an auditable
+  103-scenario conversation manifest while keeping live Realtime, media analysis,
+  generated-image CAS closure, and all 3090 declared Provider turns explicitly
+  unexecuted
+- add backward-compatible, default-off `fileInput` model truth, explicit supported
+  OpenAI payload conversion, pre-network rejection in unsupported adapters and
+  failover routes, plus bounded provider-opaque context accounting for staged
+  1/10/20 MiB image and file inputs without persisting their binary payloads
+- classify the integrated but previously unlisted meeting/NotebookLM Skill as an
+  unpublished experimental asset so repository and package boundaries stay closed
 - identify Shell commands as unthrottled local-host execution, allow explicit
   deadlines up to two hours, report timeout, cancellation, and output-limit
   termination causes, and stop models from misattributing a tool deadline to

@@ -6,6 +6,7 @@ import type {
   ReasoningIntent,
 } from '../../core/model-routing.js';
 import type { ProviderAdapter } from './types.js';
+import { withFileInputCapability } from './file-input.js';
 import { assertHealthyResponse } from './shared.js';
 
 function openAiBaseUrl(provider: ProviderDefinition): string {
@@ -20,9 +21,14 @@ export class OpenAIResponsesAdapter implements ProviderAdapter {
     reasoning: ReasoningIntent,
   ) {
     return {
-      model: new OpenAIResponsesModel(
-        new OpenAI({ apiKey, baseURL: openAiBaseUrl(provider), fetch: globalThis.fetch }),
-        registration.target.modelId,
+      model: withFileInputCapability(
+        new OpenAIResponsesModel(
+          new OpenAI({ apiKey, baseURL: openAiBaseUrl(provider), fetch: globalThis.fetch }),
+          registration.target.modelId,
+        ),
+        registration,
+        provider.transport,
+        true,
       ),
       target: registration.target,
       registration,

@@ -32,6 +32,11 @@
       "published": false
     },
     {
+      "name": "meeting-notebooklm-km-skill",
+      "status": "experimental",
+      "published": false
+    },
+    {
       "name": "pdf",
       "status": "product",
       "published": true

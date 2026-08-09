@@ -43,6 +43,7 @@ import {
 import {
   modelTargetKey,
   runModelBindingSchema,
+  type ModelRequirements,
   type ModelTarget,
   type RunModelBinding,
   type WorkUnitModelProfile,
@@ -59,6 +60,10 @@ import type { ComputerAccess } from '../extensions/computer/types.js';
 import { configuredProviders } from '../provider-config.js';
 import { createTools } from '../tools.js';
 import { HookBus, type RuntimeHook } from './hooks.js';
+import {
+  MediaArtifactStore,
+  sessionMediaArtifactOwner,
+} from './media-artifact-store.js';
 import {
   createRuntimeControlTools,
   RUNTIME_OUTPUT_LEVELS,
@@ -93,6 +98,7 @@ import type {
   EffectiveCapabilityItem,
   EffectiveCapabilitySnapshot,
 } from './pipeline/capability-resolver.js';
+import type { MediaEvidence } from '../core/media-evidence.js';
 import type { RunScope } from './pipeline/run-scope.js';
 import {
   type CapabilityCatalogAccess,
@@ -108,6 +114,7 @@ import {
 } from './pipeline/run-commit-coordinator.js';
 import { RunFactCollector } from './pipeline/run-fact-collector.js';
 import { PersonalMessageHub, type PersonalMessageScope } from './personal-message-hub.js';
+import { containsFileInput } from './providers/file-input.js';
 import {
   createMimiPreferenceTools,
 } from './preference-tools.js';
@@ -161,6 +168,8 @@ export type RunTrust = 'owner' | 'trusted' | 'external' | 'public' | 'system';
 
 export interface RunCause {
   eventId: string;
+  /** Immutable ingress/trigger Event; eventId may be the derived Task identity. */
+  sourceEventId?: string;
   taskId?: string;
   profileId?: string;
   source: string;
@@ -203,6 +212,22 @@ export interface MimiRunOptions {
   };
   modelProfile?: WorkUnitModelProfile;
   scenario?: string;
+  /** Immutable, ref-only evidence staged before this Run. Raw media never belongs here. */
+  mediaEvidence?: readonly MediaEvidence[];
+  /** Opaque binding resolved by the daemon; absolute workspace paths never enter Events/Evidence. */
+  workspaceId?: string;
+}
+
+export function freezeRunModelRequirements(
+  input: string | AgentInputItem[],
+  options?: MimiRunOptions,
+): Readonly<ModelRequirements> {
+  return Object.freeze({
+    ...options?.modelProfile?.requirements,
+    ...(containsImageInput(input) ? { imageInput: true } : {}),
+    ...(containsFileInput(input) ? { fileInput: true } : {}),
+    toolCalling: options?.modelProfile?.requirements?.imageOutput ? false : true,
+  });
 }
 
 export interface MimiAgentCreateOptions {
@@ -249,6 +274,7 @@ export class MimiAgent {
   readonly requestFactory = new AgentRequestFactory();
   readonly fixedModelBinding?: RunModelBinding;
   readonly personalMessages = new PersonalMessageHub();
+  readonly mediaArtifacts: MediaArtifactStore;
   private readonly localTools: Readonly<{ hosted: Tool[]; portable: Tool[] }>;
   private readonly extensionTools: Tool[];
   private readonly mcpTools: Tool[];
@@ -276,6 +302,10 @@ export class MimiAgent {
     createOptions: MimiAgentCreateOptions = {},
   ) {
     this.components = components;
+    this.mediaArtifacts = new MediaArtifactStore(path.join(
+      path.resolve(config.daemonDataRoot ?? path.join(config.dataRoot, 'mimi')),
+      'attachments',
+    ));
     this.fixedModelBinding = createOptions.modelBinding
       ? runModelBindingSchema.parse(structuredClone(createOptions.modelBinding))
       : undefined;
@@ -596,22 +626,18 @@ export class MimiAgent {
   ): RunModelBinding {
     const scenario = options?.scenario
       ?? (options?.cause ? 'background.default' : 'conversation.default');
+    const requirements = freezeRunModelRequirements(input, options);
     return this.fixedModelBinding ?? this.components.modelResolver.resolve({
       scenario,
       profile: {
         ...options?.modelProfile,
-        requirements: {
-          ...options?.modelProfile?.requirements,
-          ...(containsImageInput(input) ? { imageInput: true } : {}),
-          toolCalling: options?.modelProfile?.requirements?.imageOutput ? false : true,
-        },
+        requirements,
       },
       sessionTarget: preferences.modelTarget
         ?? this.components.modelGateway.legacyAgentTarget(preferences.model, preferences.provider),
       routeVersion: this.components.modelConfig.routeVersion,
     });
   }
-
 
   async stream(input: string | AgentInputItem[], signal?: AbortSignal, options?: MimiRunOptions) {
     return executeRunPipeline(this, input, signal, options);
@@ -628,6 +654,10 @@ export class MimiAgent {
   private async restoreSessionState(sessionId: string): Promise<void> {
     const nextSession = this.components.state.sessions.open(sessionId);
     await nextSession.ensure();
+    await this.mediaArtifacts.reconcileEvidenceOwner(
+      sessionMediaArtifactOwner(sessionId),
+      await nextSession.listMediaEvidence(1_000),
+    );
     const preferences = await nextSession.getPreferences();
     const runtime = this.sessionRuntime(preferences);
     const checkpoint = await nextSession.getCheckpoint();
@@ -1165,6 +1195,7 @@ export class MimiAgent {
         ? this.components.state.executionLedger.store.clearSessionExcept(sessionId, retainedExecutionKey)
         : this.components.state.executionLedger.store.clearSession(sessionId),
     ]).then(() => undefined));
+    await this.mediaArtifacts.releaseOwner(sessionMediaArtifactOwner(sessionId));
   }
 
 }
