@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -6,11 +7,13 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { RunContext, Usage, type Model } from '@openai/agents';
+import { FileSession } from '../src/core/session.js';
 import { TeamTaskStore } from '../src/core/team.js';
 import type { ProviderDefinition, RunModelBinding } from '../src/core/model-routing.js';
 import { runTeamWave } from '../src/extensions/team.js';
 import { createSubAgentTools } from '../src/extensions/subagents.js';
 import { ModelGateway } from '../src/runtime/model-gateway.js';
+import { MediaArtifactStore } from '../src/runtime/media-artifact-store.js';
 import { createMediaTools, MediaRuntime } from '../src/runtime/media-runtime.js';
 import { WorkUnitModelResolver } from '../src/runtime/work-unit-model-resolver.js';
 
@@ -33,6 +36,25 @@ const provider: ProviderDefinition = {
     },
   ],
 };
+
+const png = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
+
+async function mediaAuthority(root: string, runId: string) {
+  const session = new FileSession(path.join(root, 'sessions'), 'media-session');
+  await session.ensure();
+  await session.beginRun('generate image', runId, 'media-owner');
+  return {
+    artifacts: new MediaArtifactStore(path.join(root, 'attachments')),
+    session,
+    runId,
+    sessionId: 'media-session',
+    profileId: 'owner',
+    trust: 'owner' as const,
+  };
+}
 
 function finalTextModel(text: string, onReasoning?: (effort: unknown) => void): Model {
   return {
@@ -200,6 +222,8 @@ test('Team start freezes every task against one route snapshot before workers la
 });
 
 test('Media WorkUnit sends generation only to an imageOutput model', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-media-routing-'));
+  const authority = await mediaAuthority(root, 'run-routing');
   const requests: Array<{ path?: string; body: string }> = [];
   const server = http.createServer((request, response) => {
     let body = '';
@@ -208,7 +232,7 @@ test('Media WorkUnit sends generation only to an imageOutput model', async () =>
     request.on('end', () => {
       requests.push({ path: request.url, body });
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ data: [{ b64_json: 'ZmFrZS1wbmc=' }] }));
+      response.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -248,15 +272,18 @@ test('Media WorkUnit sends generation only to an imageOutput model', async () =>
         },
       },
     });
-    const result = await new MediaRuntime(gateway, resolver).run({
+    const result = await new MediaRuntime(gateway, resolver, () => authority).run({
       prompt: 'draw a red square',
       routeVersion: 3,
     });
     assert.equal(result.binding.target.modelId, 'image-output');
     assert.equal(result.cost, 'unknown');
+    assert.equal(result.artifact.sha256, createHash('sha256').update(png).digest('hex'));
+    assert.equal(result.evidence.ref, (await authority.session.listMediaEvidence(10))[0]?.id);
+    assert.doesNotMatch(JSON.stringify(result), /data:|iVBOR/u);
     assert.deepEqual(requests.map((item) => item.path), ['/v1/images/generations']);
     assert.match(requests[0]!.body, /"model":"image-output"/);
-    await assert.rejects(new MediaRuntime(gateway, resolver).run({
+    await assert.rejects(new MediaRuntime(gateway, resolver, () => authority).run({
       prompt: 'wrong',
       modelTarget: { providerId: 'media', modelId: 'vision-only' },
       routeVersion: 3,
@@ -268,6 +295,8 @@ test('Media WorkUnit sends generation only to an imageOutput model', async () =>
 });
 
 test('MimiAgent media tool creates a Media WorkUnit and blocks before Provider without a compatible target', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-media-tool-'));
+  const authority = await mediaAuthority(root, 'run-tool');
   const requests: Array<{ path?: string; body: string }> = [];
   const server = http.createServer((request, response) => {
     let body = '';
@@ -276,7 +305,7 @@ test('MimiAgent media tool creates a Media WorkUnit and blocks before Provider w
     request.on('end', () => {
       requests.push({ path: request.url, body });
       response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ data: [{ b64_json: 'cHJvZHVjdC1pbWFnZQ==' }] }));
+      response.end(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -305,7 +334,7 @@ test('MimiAgent media tool creates a Media WorkUnit and blocks before Provider w
         scenarios: {},
       },
     });
-    const media = new MediaRuntime(gateway, resolver);
+    const media = new MediaRuntime(gateway, resolver, () => authority);
     const tool = createMediaTools({
       runtime: () => media,
       routeVersion: () => 4,
@@ -314,15 +343,19 @@ test('MimiAgent media tool creates a Media WorkUnit and blocks before Provider w
     const result = await tool.invoke(
       new RunContext({}),
       JSON.stringify({ prompt: 'draw a blue circle' }),
+      { toolCall: { callId: 'call-media-generate' } } as never,
     ) as unknown as {
       kind: string;
       binding: RunModelBinding;
-      artifacts: Array<{ data?: string }>;
+      artifact: { ref: string; sha256: string };
+      evidence: { ref: string };
     };
     assert.equal(result.kind, 'media');
     assert.equal(result.binding.kind, 'image-generation');
     assert.equal(result.binding.routeVersion, 4);
-    assert.equal(result.artifacts[0]?.data, 'cHJvZHVjdC1pbWFnZQ==');
+    assert.match(result.artifact.ref, /^media-artifact:sha256:/u);
+    assert.match(result.evidence.ref, /^media-evidence:sha256:/u);
+    assert.doesNotMatch(JSON.stringify(result), /iVBOR|data:/u);
     assert.equal(requests.length, 1);
 
     const agentOnly: ProviderDefinition = {
@@ -341,13 +374,14 @@ test('MimiAgent media tool creates a Media WorkUnit and blocks before Provider w
       },
     });
     const blockedTool = createMediaTools({
-      runtime: () => new MediaRuntime(blockedGateway, blockedResolver),
+      runtime: () => new MediaRuntime(blockedGateway, blockedResolver, () => authority),
       routeVersion: () => 5,
     }).find((item) => item.name === 'generate_image');
     assert.ok(blockedTool && 'invoke' in blockedTool);
     const blocked = await blockedTool.invoke(
       new RunContext({}),
       JSON.stringify({ prompt: 'must block' }),
+      { toolCall: { callId: 'call-media-blocked' } } as never,
     );
     assert.match(String(blocked), /没有兼容模型|imageOutput|生图/);
     assert.equal(requests.length, 1);

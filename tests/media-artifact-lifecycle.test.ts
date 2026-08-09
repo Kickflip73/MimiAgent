@@ -19,6 +19,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { MimiStore } from '../src/daemon/store.js';
 import {
+  MAX_GENERATED_IMAGE_BYTES,
   MediaArtifactStore,
   mediaArtifactOwner,
   sessionMediaArtifactOwner,
@@ -28,6 +29,110 @@ const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
 );
+
+test('generated image bytes use the bounded CAS lifecycle without attachment Evidence', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-generated-image-cas-'));
+  const artifacts = path.join(root, 'artifacts');
+  const store = new MediaArtifactStore(artifacts);
+  const batch = await store.stageGeneratedImage({
+    data: png,
+    mediaType: 'image/png',
+    originalName: 'generated.png',
+  });
+  assert.equal(batch.attachments.length, 1);
+  const attachment = batch.attachments[0]!;
+  assert.deepEqual(attachment, {
+    kind: 'image',
+    name: 'generated.png',
+    mediaType: 'image/png',
+    bytes: png.length,
+    sha256: createHash('sha256').update(png).digest('hex'),
+    artifactRef: `media-artifact:sha256:${createHash('sha256').update(png).digest('hex')}`,
+  });
+  assert.deepEqual(await store.read(attachment), png);
+
+  await batch.commit(sessionMediaArtifactOwner('generated-session'));
+  await store.verify(attachment);
+  assert.ok((await readdir(path.join(artifacts, '.refs'))).some((name) => name.startsWith('session-')));
+  assert.equal((await readdir(artifacts)).some((name) => name.startsWith('.staging-')), false);
+});
+
+test('generated image staging rolls back MIME mismatches and malformed containers', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-generated-image-reject-'));
+  const artifacts = path.join(root, 'artifacts');
+  const store = new MediaArtifactStore(artifacts, { gcGraceMs: 0 });
+  await assert.rejects(store.stageGeneratedImage({
+    data: png,
+    mediaType: 'image/jpeg',
+    originalName: 'declared.jpg',
+  }), /MIME.*不一致/);
+  await assert.rejects(store.stageGeneratedImage({
+    data: png.subarray(0, png.length - 12),
+    mediaType: 'image/png',
+    originalName: 'truncated.png',
+  }), /容器截断、损坏/);
+  await assert.rejects(store.stageGeneratedImage({
+    data: png,
+    mediaType: 'IMAGE\/PNG',
+    originalName: 'uppercase.png',
+  }), /MIME.*小写/);
+  await assert.rejects(store.stageGeneratedImage({
+    data: png,
+    mediaType: 'image/png',
+    originalName: '../private.png',
+  }), /媒体原始名称/);
+  assert.deepEqual(await readdir(path.join(artifacts, '.claims')), []);
+  await store.collectGarbage({ liveReferenceIds: [] });
+  assert.equal(
+    (await readdir(artifacts)).filter((name) => /^[a-f0-9]{64}$/u.test(name)).length,
+    0,
+  );
+});
+
+test('generated image staging rejects empty and oversized byte payloads before creating CAS state', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-generated-image-limit-'));
+  const artifacts = path.join(root, 'artifacts');
+  const store = new MediaArtifactStore(artifacts);
+  await assert.rejects(store.stageGeneratedImage({
+    data: new Uint8Array(),
+    mediaType: 'image/png',
+    originalName: 'empty.png',
+  }), /不能为空/);
+  await assert.rejects(store.stageGeneratedImage({
+    data: new Uint8Array(MAX_GENERATED_IMAGE_BYTES + 1),
+    mediaType: 'image/png',
+    originalName: 'oversized.png',
+  }), /超过.*bytes/);
+  await assert.rejects(access(artifacts), { code: 'ENOENT' });
+});
+
+test('GC removes stale unbound generated claims without collecting a Session-owned blob', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-generated-image-unbound-gc-'));
+  const artifacts = path.join(root, 'artifacts');
+  const store = new MediaArtifactStore(artifacts, { gcGraceMs: 0 });
+  const abandoned = await store.stageGeneratedImage({
+    data: png,
+    mediaType: 'image/png',
+    originalName: 'abandoned.png',
+  });
+  const durable = await store.stageGeneratedImage({
+    data: png,
+    mediaType: 'image/png',
+    originalName: 'durable.png',
+  });
+  const owner = sessionMediaArtifactOwner('generated-survivor');
+  await durable.commit(owner);
+  assert.equal((await readdir(path.join(artifacts, '.claims'))).length, 1);
+
+  const collected = await store.collectGarbage({ liveReferenceIds: [] });
+  assert.equal(collected.staleClaims, 1);
+  assert.deepEqual(await readdir(path.join(artifacts, '.claims')), []);
+  await store.verify(abandoned.attachments[0]!);
+
+  await store.releaseOwner(owner);
+  await store.collectGarbage({ liveReferenceIds: [] });
+  await assert.rejects(store.verify(abandoned.attachments[0]!), /ENOENT/);
+});
 
 function waveFixture(payloadBytes = 140 * 1024): Buffer {
   const fmt = Buffer.alloc(24);

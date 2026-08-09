@@ -64,7 +64,7 @@
   分类并由同一 asset-boundary gate 验证。
 - ARC-303 完整生产面为 8294 行，低于 8505 门禁，保留 211 行余量；没有上调预算。
 
-## 2026-08-10 no-tools calibration checkpoint（待真实执行）
+## 2026-08-10 no-tools calibration checkpoint 与真实执行证据
 
 - 空 deferred surface 不再生成 `inspect_capabilities` / `invoke_capability` gateway；fake Runner
   从真实 pipeline 捕获的 SDK Tool 列表严格为空。
@@ -120,35 +120,60 @@
   100×30 正式执行保持 NO-GO、正式分母 0。
 - 本 checkpoint 的 no-tools focused tests 为 133/133；registry credential 修复后的相关 focused
   tests 为 20/20，随后完整 `npm test` 为 1029/1029，`npm run check` 与 `npm run build` 均
-  退出 0。此处仍是工程门禁证据：真实 Provider 已产生上述两个未证明 Run，但成功的持久 PTY、
-  1-turn 和 2x5 calibration 尚未形成；成功校准分子与正式分母均为 0。
+  退出 0。这组数字是实际派发前的工程门禁证据；成功的持久 PTY、1×1 与 2×5 calibration
+  以上述固定提交和独立证据根为准，仍不进入 100×30 正式分母。
+
+## 2026-08-10 图片 Media WorkUnit 闭环 tranche
+
+- `generate_image` 的公开 Tool schema 已移除 raw `image`，只接受 prompt 与可选的同 Session
+  `mediaEvidenceId`；legacy raw image/data URL 在 Execution Ledger 建立记录前拒绝。
+- Provider 输出只接受唯一 inline canonical base64 图片。Runtime 先做 10 MiB 上限预检、解码、
+  MIME 与结构校验，再写 CAS、注册带真实 Run binding/lineage 的 Session `MediaEvidence`，最后
+  返回 ref/digest/anchor。URL-only、多 artifact、小图或大于 ledger inline 阈值的合法图片都不会
+  以 base64 或 `output_truncated` 进入 Session/Ledger。
+- 同一 Session 的后续 Run 与进程重启可用 `mediaEvidenceId` 重新校验 CAS，并在 Google edit
+  请求边界短暂物化完全相同的原始像素；跨 Session、跨 workspace、不存在或被篡改的 ref 均在
+  Provider 前拒绝。OpenAI edit 因缺少 multipart adapter 继续网络前 blocked。
+- 当前证据是 image/media unit、真实 adapter payload 与本地 fixture 回归，不是 live 图片
+  Provider 验收。普通聊天 `@media`/代词续指、多图重注入、语义 answer anchor、Memory 编译、
+  remote URL 与多 artifact 仍未完成；本 tranche 不改变正式 100×30 分母 0 或产品门禁状态。
+- 本 tranche 门禁已完成：`npm run check` 退出 0；完整 `npm test` 为 1049/1049、0 fail，耗时
+  117.0 秒；`npm run build` 与 `npm run test:package` 均退出 0。conversation manifest 校验仍为
+  103 scenarios / 3090 declared turns，`realProviderTurnsExecuted=0` 且 formal `NO-GO`；这些
+  工程/fixture 测试不计 live 图片验收或 100×30 正式轮次。
+- 最终文件集的 `npm run ci` 也退出 0：repository hygiene、release consistency、依赖方向与
+  asset boundary 均通过，coverage 套件 1049/1049，整体 line/branch/function 覆盖率分别为
+  89.19% / 78.92% / 85.53%，随后 clean build 与 packed-package smoke 通过。
 
 ## M3 能力审计
 
 | 区域 | 已有可复用能力 | 尚未证明/实现 |
 |---|---|---|
-| 图片 | 同轮多图输入；CLI attachment 已有 CAS ref、Evidence、workspace/run provenance 与生命周期 | `mediaEvidenceId` 跨轮原图重注入；生成/编辑输入输出在 ledger 前 CAS 化；answer anchor |
+| 图片 | 同轮多图输入；CLI attachment 已有 CAS ref/Evidence；显式 `generate_image` 输出已在 ledger 前 CAS 化并返回 ref-only，Google edit fixture 可按同 Session `mediaEvidenceId` 跨后续 Run/重启精确回取 | live 图片 Provider；OpenAI multipart edit；普通聊天 `@media`/代词与多图重注入；语义 answer anchor、Memory、URL/multi artifact |
 | 语音 | 既有 2～30 秒分段 ASR、`say` TTS、wake phrase、文件转写；新增 transcription-only transport/controller contract | CLI/mic/speaker composition；真实 turn detection、barge-in、低延迟、断线与文本降级 |
 | 音频 | `@audio` 有界摄取并在 Provider 前诚实 blocked；Evidence schema 支持 transcript anchor | 生产 ASR caller、时间片、真实 model binding/coverage 与 MemoryCandidate |
 | 视频 | `@video` 有界摄取并在 Provider 前诚实 blocked；Evidence schema 支持 keyframe/time-range anchor | 音轨提取、关键帧、时间片、有界理解、可信 adapter receipt 与诚实 coverage |
 | 连续性 | Session/run ownership 与 Effect Ledger 基座 | 跨文本/图片/语音/视频入口事项幂等、重连/恢复不重复 |
-| Eval | 既有 unit、M1、Browser/Computer E2E 与 103 场景 declared manifest | 可执行 fixture/oracle、持久 PTY smoke、真实 Provider 100×30 基准与原始证据 |
+| Eval | 既有 unit、M1、Browser/Computer E2E、103 场景 declared manifest；持久 PTY prerequisite 与 1×1/2×5 calibration 已有可审计真实 Provider 证据 | 各正式场景的可执行 fixture/oracle 与真实 Provider 100×30 基准原始证据 |
 
 ## 阶段状态
 
 - Slice 0（CLI attachment binary firewall、MediaEvidence、artifact lifecycle）：checkpoint 实现、
   完整单测、coverage CI、构建与 package smoke 已绿；外部掉电/长期 soak 未完成，不能宣称
   promotion gate 通过。
-- Slice 1（多图原图引用）：同轮可达；跨轮 `mediaEvidenceId` 重注入与生成图片 CAS 闭环待实现。
+- Slice 1（多图原图引用）：同轮可达；显式 `generate_image` 输出和同 Session
+  `mediaEvidenceId` Google edit 的 CAS/ref-only 跨 Run/重启闭环已由 fixture 验证。普通聊天
+  `@media`/代词、多图重注入、语义 answer anchor、Memory 与 live Provider 验收仍待实现。
 - Slice 2（音频时间片与 MemoryCandidate）：待实现。
 - Slice 3（实时语音）：transport/controller 合同已固定但产品不可达；CLI/mic/speaker 与
   Session actor composition、实机延迟/释放证据待实现。
 - Slice 4（视频）：待实现。
 - 连续性/恢复：待实现。
-- M3 fixture/live 验收：尚未开始有效 live 计数，实时语音真实轮次为 0。
+- M3 媒体 fixture/live 验收：当前新增证据仍为 unit/adapter fixture，没有 live 图片或实时语音
+  轮次；实时语音真实轮次为 0。
 - 100×30 全产品真实终端基准：103 场景/3090 轮 manifest 仅完成静态声明与验证，
-  no-tools S-lane calibration 已具备可审计派发门禁但尚未执行；
-  `realProviderTurnsExecuted=0`、正式分母为 0；现有
+  no-tools S-lane 已完成持久 PTY prerequisite 与 1×1/2×5 calibration，但这些 calibration-only
+  轮次不计正式分母；`realProviderTurnsExecuted=0`、正式分母为 0。现有
   `bench:capacity` 的 100 rounds 不走真实 Provider，永不计入该分母。
 
 后续每次长跑应追加记录 manifest digest、build identity、seed、场景/轮次分母、Provider/model、

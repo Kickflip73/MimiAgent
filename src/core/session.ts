@@ -57,6 +57,89 @@ function redactAttachmentData(item: AgentInputItem): AgentInputItem {
   return changed ? { ...value, content } as unknown as AgentInputItem : item;
 }
 
+function mediaBinaryPlaceholder(value: string, label: 'binary' | 'url'): string {
+  const digest = createHash('sha256').update(value).digest('hex');
+  return `[MEDIA_${label.toUpperCase()}_REDACTED sha256:${digest} length:${value.length}]`;
+}
+
+function redactMediaBinaryValue(
+  value: unknown,
+  depth = 0,
+): { value: unknown; changed: boolean } {
+  if (depth > 8 || value === null || typeof value !== 'object') {
+    return { value, changed: false };
+  }
+  if (Array.isArray(value)) {
+    let changed = false;
+    const next = value.map((item) => {
+      const redacted = redactMediaBinaryValue(item, depth + 1);
+      changed ||= redacted.changed;
+      return redacted.value;
+    });
+    return changed ? { value: next, changed: true } : { value, changed: false };
+  }
+  const record = value as Record<string, unknown>;
+  const imageArtifact = typeof record.mediaType === 'string'
+    && record.mediaType.toLowerCase().startsWith('image/');
+  let changed = false;
+  const next: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(record)) {
+    // `image` was the legacy generate_image binary argument. The ref-only schema uses
+    // mediaEvidenceId, so every remaining string under this key is unsafe to persist.
+    if (key === 'image' && typeof item === 'string') {
+      next[key] = mediaBinaryPlaceholder(item, 'binary');
+      changed = true;
+      continue;
+    }
+    if (imageArtifact && key === 'data' && typeof item === 'string') {
+      next[key] = mediaBinaryPlaceholder(item, 'binary');
+      changed = true;
+      continue;
+    }
+    if (imageArtifact && key === 'url' && typeof item === 'string') {
+      next[key] = mediaBinaryPlaceholder(item, 'url');
+      changed = true;
+      continue;
+    }
+    const redacted = redactMediaBinaryValue(item, depth + 1);
+    next[key] = redacted.value;
+    changed ||= redacted.changed;
+  }
+  return changed ? { value: next, changed: true } : { value, changed: false };
+}
+
+function redactMediaToolBinary(item: AgentInputItem): AgentInputItem {
+  const record = item as unknown as Record<string, unknown>;
+  if (record.type === 'function_call'
+    && record.name === 'generate_image'
+    && typeof record.arguments === 'string') {
+    try {
+      const redacted = redactMediaBinaryValue(JSON.parse(record.arguments) as unknown);
+      return redacted.changed
+        ? { ...record, arguments: JSON.stringify(redacted.value) } as unknown as AgentInputItem
+        : item;
+    } catch {
+      return item;
+    }
+  }
+  if (record.type !== 'function_call_result') return item;
+  const serialized = typeof record.output === 'string';
+  let output: unknown = record.output;
+  if (serialized) {
+    try {
+      output = JSON.parse(record.output as string) as unknown;
+    } catch {
+      return item;
+    }
+  }
+  const redacted = redactMediaBinaryValue(output);
+  if (!redacted.changed) return item;
+  return {
+    ...record,
+    output: serialized ? JSON.stringify(redacted.value) : redacted.value,
+  } as unknown as AgentInputItem;
+}
+
 export interface RunCheckpoint {
   runId: string;
   status: RunStatus;
@@ -457,7 +540,8 @@ export class FileSession implements Session {
   async addItems(items: AgentInputItem[]): Promise<void> {
     const validated = (z.array(z.record(z.string(), z.unknown())).parse(items) as unknown as AgentInputItem[])
       .map(redactComputerToolInput)
-      .map(redactAttachmentData);
+      .map(redactAttachmentData)
+      .map(redactMediaToolBinary);
     await this.mutate((session) => {
       session.items.push(...validated);
       session.updatedAt = new Date().toISOString();
@@ -494,32 +578,52 @@ export class FileSession implements Session {
       ]);
       for (const item of parsed) {
         const parentId = item.sourceRef.parentEvidenceId;
-        if (!parentId) continue;
-        if (parentId === item.id) {
-          throw new Error(`MediaEvidence ${item.id} 不能派生自自身`);
+        if (parentId) {
+          if (parentId === item.id) {
+            throw new Error(`MediaEvidence ${item.id} 不能派生自自身`);
+          }
+          const parent = available.get(parentId);
+          if (!parent) {
+            throw new Error(`MediaEvidence ${item.id} 缺少父 Evidence ${parentId}`);
+          }
+          if (item.sourceRef.trust !== parent.sourceRef.trust
+            || item.sourceRef.profileId !== parent.sourceRef.profileId) {
+            throw new Error(`MediaEvidence ${item.id} 不能提升父 Evidence 的 trust/profile`);
+          }
+          if (parent.sourceRef.sessionId
+            && item.sourceRef.sessionId !== parent.sourceRef.sessionId) {
+            throw new Error(`MediaEvidence ${item.id} 不能跨 Session 派生`);
+          }
+          if (parent.sourceRef.workspaceId
+            && item.sourceRef.workspaceId !== parent.sourceRef.workspaceId) {
+            throw new Error(`MediaEvidence ${item.id} 不能跨 Workspace 派生`);
+          }
+          if (item.mediaRef !== parent.mediaRef
+            || item.sha256 !== parent.sha256
+            || item.kind !== parent.kind
+            || item.mimeType !== parent.mimeType
+            || item.bytes !== parent.bytes) {
+            throw new Error(`MediaEvidence ${item.id} 的父媒体资产身份不一致`);
+          }
         }
-        const parent = available.get(parentId);
-        if (!parent) {
-          throw new Error(`MediaEvidence ${item.id} 缺少父 Evidence ${parentId}`);
-        }
-        if (item.sourceRef.trust !== parent.sourceRef.trust
-          || item.sourceRef.profileId !== parent.sourceRef.profileId) {
-          throw new Error(`MediaEvidence ${item.id} 不能提升父 Evidence 的 trust/profile`);
-        }
-        if (parent.sourceRef.sessionId
-          && item.sourceRef.sessionId !== parent.sourceRef.sessionId) {
-          throw new Error(`MediaEvidence ${item.id} 不能跨 Session 派生`);
-        }
-        if (parent.sourceRef.workspaceId
-          && item.sourceRef.workspaceId !== parent.sourceRef.workspaceId) {
-          throw new Error(`MediaEvidence ${item.id} 不能跨 Workspace 派生`);
-        }
-        if (item.mediaRef !== parent.mediaRef
-          || item.sha256 !== parent.sha256
-          || item.kind !== parent.kind
-          || item.mimeType !== parent.mimeType
-          || item.bytes !== parent.bytes) {
-          throw new Error(`MediaEvidence ${item.id} 的父媒体资产身份不一致`);
+        for (const inputId of item.sourceRef.inputEvidenceIds ?? []) {
+          if (inputId === item.id) {
+            throw new Error(`MediaEvidence ${item.id} 不能引用自身作为输入`);
+          }
+          const inputEvidence = available.get(inputId);
+          if (!inputEvidence) {
+            throw new Error(`MediaEvidence ${item.id} 缺少输入 Evidence ${inputId}`);
+          }
+          if (item.sourceRef.trust !== inputEvidence.sourceRef.trust
+            || item.sourceRef.profileId !== inputEvidence.sourceRef.profileId) {
+            throw new Error(`MediaEvidence ${item.id} 的 input Evidence trust/profile 不一致`);
+          }
+          if (item.sourceRef.sessionId !== inputEvidence.sourceRef.sessionId) {
+            throw new Error(`MediaEvidence ${item.id} 不能跨 Session 引用输入 Evidence`);
+          }
+          if (item.sourceRef.workspaceId !== inputEvidence.sourceRef.workspaceId) {
+            throw new Error(`MediaEvidence ${item.id} 不能跨 Workspace 引用输入 Evidence`);
+          }
         }
       }
       let added = 0;

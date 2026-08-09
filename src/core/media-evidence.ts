@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import type { RunModelBinding } from './model-routing.js';
 
 const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 export const mediaArtifactRefSchema = z.string()
   .regex(/^media-artifact:sha256:[a-f0-9]{64}$/);
+export const mediaEvidenceIdSchema = z.string()
+  .regex(/^media-evidence:sha256:[a-f0-9]{64}$/);
 
 export const mediaOriginalNameSchema = z.string().min(1).max(255)
   .refine((value) => value === value.trim(), {
@@ -25,6 +28,7 @@ export type MediaTrust = z.infer<typeof mediaTrustSchema>;
 export const mediaEvidenceSourceSchema = z.object({
   entry: z.enum([
     'local-attachment',
+    'media-work-unit',
     'voice-session',
     'connector-event',
     'derived-audio-slice',
@@ -38,8 +42,11 @@ export const mediaEvidenceSourceSchema = z.object({
   sessionId: z.string().trim().min(1).max(200).optional(),
   eventId: z.string().trim().min(1).max(200).optional(),
   runId: z.string().trim().min(1).max(200).optional(),
-  parentEvidenceId: z.string()
-    .regex(/^media-evidence:sha256:[a-f0-9]{64}$/)
+  parentEvidenceId: mediaEvidenceIdSchema.optional(),
+  inputEvidenceIds: z.array(mediaEvidenceIdSchema).max(8)
+    .refine((value) => new Set(value).size === value.length, {
+      message: 'inputEvidenceIds 必须唯一',
+    })
     .optional(),
 }).strict();
 export type MediaEvidenceSource = z.infer<typeof mediaEvidenceSourceSchema>;
@@ -145,7 +152,7 @@ function mediaEvidenceDigest(value: Record<string, unknown>): string {
 
 const mediaEvidenceObjectSchema = z.object({
   schemaVersion: z.literal(1),
-  id: z.string().regex(/^media-evidence:sha256:[a-f0-9]{64}$/),
+  id: mediaEvidenceIdSchema,
   mediaRef: mediaArtifactRefSchema,
   kind: mediaKindSchema,
   mimeType: z.string().trim().regex(/^[a-z0-9.+-]+\/[a-z0-9.+-]+$/i).max(200),
@@ -175,6 +182,13 @@ export const mediaEvidenceSchema = mediaEvidenceObjectSchema.superRefine((value,
   const expectedId = `media-evidence:sha256:${mediaEvidenceDigest(value as unknown as Record<string, unknown>)}`;
   if (value.id !== expectedId) {
     context.addIssue({ code: 'custom', path: ['id'], message: 'MediaEvidence id 与内容摘要不一致' });
+  }
+  if (value.sourceRef.inputEvidenceIds?.includes(value.id)) {
+    context.addIssue({
+      code: 'custom',
+      path: ['sourceRef', 'inputEvidenceIds'],
+      message: 'MediaEvidence 不能引用自身作为输入',
+    });
   }
   if ((value.kind === 'image') !== (value.imageOrdinal !== undefined)) {
     context.addIssue({ code: 'custom', path: ['imageOrdinal'], message: '只有图片 Evidence 必须包含稳定 imageOrdinal' });
@@ -350,6 +364,70 @@ export function createOriginalMediaEvidence(input: CreateOriginalMediaEvidenceIn
         ? '原图已内容寻址，结论尚未生成'
         : '媒体已内容寻址，尚未生成时间片或关键帧分析',
     },
+  });
+}
+
+export interface CreateGeneratedImageEvidenceInput {
+  attachment: {
+    artifactRef: string;
+    sha256: string;
+    mediaType: string;
+    bytes: number;
+    name: string;
+  };
+  binding: RunModelBinding;
+  runId: string;
+  sessionId: string;
+  profileId: string;
+  workspaceId?: string;
+  eventId?: string;
+  trust: MediaTrust;
+  occurredAt: string;
+  inputEvidenceIds?: readonly string[];
+}
+
+export function createGeneratedImageEvidence(
+  input: CreateGeneratedImageEvidenceInput,
+): MediaEvidence {
+  if (input.binding.kind !== 'image-generation') {
+    throw new Error('生成图片 Evidence 必须绑定 image WorkUnit 模型');
+  }
+  return createMediaEvidence({
+    schemaVersion: 1,
+    mediaRef: input.attachment.artifactRef,
+    kind: 'image',
+    mimeType: input.attachment.mediaType,
+    sha256: input.attachment.sha256,
+    bytes: input.attachment.bytes,
+    originalName: input.attachment.name,
+    sourceRef: {
+      entry: 'media-work-unit',
+      sourceId: `media-work-unit:${input.runId}:${input.attachment.sha256}`,
+      trust: input.trust,
+      profileId: input.profileId,
+      ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+      sessionId: input.sessionId,
+      ...(input.eventId ? { eventId: input.eventId } : {}),
+      runId: input.runId,
+      ...(input.inputEvidenceIds?.length
+        ? { inputEvidenceIds: [...input.inputEvidenceIds] }
+        : {}),
+    },
+    occurredAt: input.occurredAt,
+    imageOrdinal: 0,
+    transcriptSegments: [],
+    keyframes: [],
+    timeRanges: [],
+    modelBinding: {
+      status: 'model',
+      providerId: input.binding.target.providerId,
+      modelId: input.binding.target.modelId,
+      scenario: input.binding.scenario,
+      routeVersion: input.binding.routeVersion,
+      selectionReason: input.binding.reason,
+    },
+    derivedArtifactRefs: [],
+    coverage: { status: 'full', modalities: ['image'] },
   });
 }
 

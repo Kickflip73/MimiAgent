@@ -46,7 +46,17 @@ export async function registerRunMediaEvidence(
   );
   let sessionPersisted = false;
   try {
-    await input.session.registerMediaEvidence(input.evidence, input.runId);
+    const added = await input.session.registerMediaEvidence(input.evidence, input.runId);
+    if (added === 0) {
+      const existing = await Promise.all(
+        input.evidence.map((item) => input.session.getMediaEvidence(item.id)),
+      );
+      if (existing.some((item, index) => (
+        !item || JSON.stringify(item) !== JSON.stringify(input.evidence![index])
+      ))) {
+        throw new Error('MediaEvidence 未写入当前 active Run，拒绝提交 artifact owner');
+      }
+    }
     sessionPersisted = true;
     await owner.commit();
   } catch (error) {

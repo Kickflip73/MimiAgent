@@ -490,7 +490,28 @@ export class MimiAgent {
         },
       }),
       ...createMediaTools({
-        runtime: () => new MediaRuntime(this.components.modelGateway, this.components.modelResolver),
+        runtime: () => new MediaRuntime(
+          this.components.modelGateway,
+          this.components.modelResolver,
+          () => {
+            const active = this.activeRun;
+            if (!active) return undefined;
+            const cause = active.options?.cause;
+            const sourceEventId = cause?.sourceEventId ?? cause?.eventId;
+            return {
+              artifacts: this.mediaArtifacts,
+              session: active.session,
+              runId: active.runId,
+              sessionId: active.sessionId,
+              profileId: active.scope.profileId,
+              ...(active.options?.workspaceId
+                ? { workspaceId: active.options.workspaceId }
+                : {}),
+              ...(sourceEventId ? { eventId: sourceEventId } : {}),
+              trust: cause?.trust ?? 'owner',
+            };
+          },
+        ),
         routeVersion: () => this.components.modelConfig.routeVersion,
       }),
       ...createMimiPreferenceTools(components.preferences),

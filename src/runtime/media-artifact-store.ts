@@ -27,6 +27,7 @@ import {
 
 export const MAX_ATTACHMENTS = 8;
 const MAX_SMALL_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const MAX_GENERATED_IMAGE_BYTES = MAX_SMALL_ATTACHMENT_BYTES;
 const MAX_AUDIO_BYTES = 200 * 1024 * 1024;
 const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
 export const MAX_INLINE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
@@ -44,6 +45,12 @@ export type AttachmentKind = 'image' | 'file' | 'audio' | 'video';
 export interface LocalAttachmentRequest {
   path: string;
   kind?: AttachmentKind;
+}
+
+export interface GeneratedImageArtifactInput {
+  data: Uint8Array;
+  mediaType: string;
+  originalName: string;
 }
 
 export interface MediaEvidenceContext {
@@ -175,6 +182,18 @@ function mediaKindForType(mediaType: string): Exclude<AttachmentKind, 'file'> | 
   if (mediaType.startsWith('audio/')) return 'audio';
   if (mediaType.startsWith('video/')) return 'video';
   return undefined;
+}
+
+function canonicalGeneratedImageMediaType(value: string): string {
+  if (typeof value !== 'string'
+    || value.length > 200
+    || !/^image\/[a-z0-9.+-]+$/u.test(value)) {
+    throw new Error('生成图片 MIME 必须是规范的小写 image/* 类型');
+  }
+  if (value !== value.trim().toLowerCase()) {
+    throw new Error('生成图片 MIME 必须使用规范小写形式');
+  }
+  return value;
 }
 
 function startsWith(header: Buffer, bytes: readonly number[]): boolean {
@@ -1110,11 +1129,21 @@ export class MediaArtifactStore {
     return created;
   }
 
-  private async removeClaimLocked(claimDirectory: string, sha256s: readonly string[]): Promise<void> {
+  private async removeClaimLocked(
+    claimDirectory: string,
+    sha256s: readonly string[],
+    timestamp?: number,
+  ): Promise<number> {
     await rm(claimDirectory, { recursive: true, force: true });
     await syncDirectory(this.claimsRoot);
-    for (const sha256 of sha256s) await this.markGarbageLocked(sha256);
+    let tombstoned = 0;
+    for (const sha256 of sha256s) {
+      if (await this.markGarbageLocked(sha256, timestamp ?? this.clock().getTime())) {
+        tombstoned += 1;
+      }
+    }
     await syncDirectory(this.root);
+    return tombstoned;
   }
 
   async stage(
@@ -1127,6 +1156,78 @@ export class MediaArtifactStore {
       ? mediaArtifactOwner('event', context.eventId)
       : mediaArtifactOwner('standalone', context.sourceId ?? randomUUID()));
     return batch.attachments;
+  }
+
+  async stageGeneratedImage(
+    input: GeneratedImageArtifactInput,
+  ): Promise<MediaArtifactStageBatch> {
+    if (!(input.data instanceof Uint8Array)) {
+      throw new Error('生成图片必须提供二进制字节');
+    }
+    if (input.data.byteLength === 0) throw new Error('生成图片不能为空');
+    if (input.data.byteLength > MAX_GENERATED_IMAGE_BYTES) {
+      throw new Error(`生成图片超过 ${MAX_GENERATED_IMAGE_BYTES} bytes`);
+    }
+    const mediaType = canonicalGeneratedImageMediaType(input.mediaType);
+    const originalName = mediaOriginalNameSchema.parse(input.originalName);
+    await this.ensureLayout();
+    // A killed process leaves this in the managed `.staging-*` recovery lane instead
+    // of leaking raw generated media into a global temporary directory.
+    const source = path.join(this.root, `.staging-generated-${process.pid}-${randomUUID()}`);
+    let sourceHandle: FileHandle | undefined;
+    let batch: MediaArtifactStageBatch | undefined;
+    try {
+      sourceHandle = await open(
+        source,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+        0o600,
+      );
+      await sourceHandle.writeFile(input.data);
+      await sourceHandle.sync();
+      await sourceHandle.close();
+      sourceHandle = undefined;
+
+      // Generated output has no immutable Event owner. Keep its claim unbound until the
+      // caller durably transfers it to the canonical Session Evidence owner.
+      batch = await this.stageBatch([{ path: path.basename(source), kind: 'image' }], this.root);
+      const attachment = batch.attachments[0];
+      if (!attachment || batch.attachments.length !== 1 || attachment.kind !== 'image') {
+        throw new Error('生成图片 staging 未返回唯一图片 artifact');
+      }
+      if (attachment.mediaType !== mediaType) {
+        throw new Error(
+          `生成图片声明 MIME 与实际内容不一致：${mediaType} != ${attachment.mediaType}`,
+        );
+      }
+      const artifact: StagedAttachment = {
+        kind: attachment.kind,
+        name: originalName,
+        mediaType: attachment.mediaType,
+        bytes: attachment.bytes,
+        sha256: attachment.sha256,
+        artifactRef: attachment.artifactRef,
+      };
+      return {
+        attachments: [artifact],
+        commit: (owner) => batch!.commit(owner),
+        rollback: () => batch!.rollback(),
+      };
+    } catch (error) {
+      if (batch) {
+        try {
+          await batch.rollback();
+        } catch (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            '生成图片 staging 失败且 rollback 未完成',
+          );
+        }
+      }
+      throw error;
+    } finally {
+      await sourceHandle?.close();
+      await rm(source, { force: true });
+    }
   }
 
   async stageBatch(
@@ -1541,10 +1642,18 @@ export class MediaArtifactStore {
         const claimDirectory = path.join(this.claimsRoot, entry.name);
         const info = await stat(claimDirectory);
         if (now.getTime() - info.mtimeMs < this.gcGraceMs) continue;
-        if (!liveReferenceKeys) continue;
         const ownerKey = (await readFile(path.join(claimDirectory, '.owner'), 'utf8').catch(() => 'unbound')).trim();
-        if (ownerKey === 'unbound') continue;
         const sha256s = (await readdir(claimDirectory)).filter(isSha256Name);
+        if (ownerKey === 'unbound' || !ownerKey) {
+          // Generated output is deliberately unbound until its canonical Session Evidence
+          // becomes durable. A stale claim can be withdrawn safely: an already-acquired
+          // Session/Memory ref wins markGarbageLocked's stable snapshot, while a truly
+          // abandoned blob enters the ordinary grace-delayed tombstone path.
+          tombstoned += await this.removeClaimLocked(claimDirectory, sha256s, now.getTime());
+          staleClaims += 1;
+          continue;
+        }
+        if (!liveReferenceKeys) continue;
         if (liveReferenceKeys.has(ownerKey)) {
           const referenceDirectory = path.join(this.referencesRoot, ownerKey);
           await mkdir(referenceDirectory, { recursive: true, mode: 0o700 });
@@ -1556,12 +1665,8 @@ export class MediaArtifactStore {
           await syncDirectory(this.referencesRoot);
           await rm(path.join(this.ownerGarbageRoot, ownerKey), { force: true });
         }
-        await rm(claimDirectory, { recursive: true, force: true });
+        tombstoned += await this.removeClaimLocked(claimDirectory, sha256s, now.getTime());
         staleClaims += 1;
-        await syncDirectory(this.claimsRoot);
-        for (const sha256 of sha256s) {
-          if (await this.markGarbageLocked(sha256, now.getTime())) tombstoned += 1;
-        }
       }
       for (const entry of await readdir(this.root, { withFileTypes: true })) {
         if (!entry.isFile() || !entry.name.startsWith('.staging-')) continue;

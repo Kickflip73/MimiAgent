@@ -4,8 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  createGeneratedImageEvidence,
   createMediaEvidence,
   createOriginalMediaEvidence,
+  mediaEvidenceIdSchema,
   mediaEvidenceSchema,
   renderMediaEvidenceReference,
 } from '../src/core/media-evidence.js';
@@ -532,4 +534,200 @@ test('Session media registry is atomic, deduplicated and scoped to the active ru
   await session.clearSession();
   assert.deepEqual(await session.listMediaEvidence(), []);
   assert.equal(await session.getMediaEvidence(evidence.id), undefined);
+});
+
+test('generated image Evidence maps the frozen model binding and preserves ref-only edit lineage', () => {
+  const inputEvidenceId = `media-evidence:sha256:${'a'.repeat(64)}`;
+  assert.equal(mediaEvidenceIdSchema.parse(inputEvidenceId), inputEvidenceId);
+  const evidence = createGeneratedImageEvidence({
+    attachment: {
+      artifactRef: `media-artifact:sha256:${'b'.repeat(64)}`,
+      sha256: 'b'.repeat(64),
+      mediaType: 'image/png',
+      bytes: png.length,
+      name: 'generated.png',
+    },
+    binding: {
+      target: { providerId: 'openai-main', modelId: 'gpt-image-1' },
+      kind: 'image-generation',
+      reasoning: 'off',
+      scenario: 'image-editing.default',
+      reason: 'explicit-work-unit',
+      routeVersion: 7,
+    },
+    runId: 'run-generated-1',
+    sessionId: 'session-generated-1',
+    profileId: 'owner',
+    workspaceId: 'workspace-1',
+    eventId: 'event-generated-1',
+    trust: 'owner',
+    occurredAt: '2026-08-10T00:00:00.000Z',
+    inputEvidenceIds: [inputEvidenceId],
+  });
+
+  assert.equal(evidence.sourceRef.entry, 'media-work-unit');
+  assert.deepEqual(evidence.sourceRef.inputEvidenceIds, [inputEvidenceId]);
+  assert.equal(evidence.sourceRef.parentEvidenceId, undefined);
+  assert.deepEqual(evidence.modelBinding, {
+    status: 'model',
+    providerId: 'openai-main',
+    modelId: 'gpt-image-1',
+    scenario: 'image-editing.default',
+    routeVersion: 7,
+    selectionReason: 'explicit-work-unit',
+  });
+  assert.deepEqual(evidence.coverage, { status: 'full', modalities: ['image'] });
+  assert.equal(evidence.imageOrdinal, 0);
+  assert.doesNotMatch(JSON.stringify(evidence), /data:|base64|\/Users\//);
+});
+
+test('Session media registry accepts different-blob edit lineage and rejects missing or cross-scope inputs', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-session-media-lineage-'));
+  const session = new FileSession(root, 'lineage-session');
+  const original = createOriginalMediaEvidence({
+    kind: 'image',
+    sha256: '1'.repeat(64),
+    mimeType: 'image/png',
+    bytes: png.length,
+    originalName: 'source.png',
+    mediaRef: `media-artifact:sha256:${'1'.repeat(64)}`,
+    sourceRef: {
+      entry: 'local-attachment', sourceId: 'source-image', trust: 'owner', profileId: 'owner',
+      workspaceId: 'workspace-1', sessionId: 'lineage-session', eventId: 'event-source',
+    },
+    occurredAt: '2026-08-10T00:00:00.000Z',
+  });
+  const generated = createGeneratedImageEvidence({
+    attachment: {
+      artifactRef: `media-artifact:sha256:${'2'.repeat(64)}`,
+      sha256: '2'.repeat(64),
+      mediaType: 'image/png',
+      bytes: png.length + 1,
+      name: 'edited.png',
+    },
+    binding: {
+      target: { providerId: 'google-main', modelId: 'gemini-image' },
+      kind: 'image-generation', reasoning: 'off', scenario: 'image-editing.default',
+      reason: 'scenario-route', routeVersion: 3,
+    },
+    runId: 'run-lineage',
+    sessionId: 'lineage-session',
+    profileId: 'owner',
+    workspaceId: 'workspace-1',
+    eventId: 'event-edit',
+    trust: 'owner',
+    occurredAt: '2026-08-10T00:01:00.000Z',
+    inputEvidenceIds: [original.id],
+  });
+  await session.beginRun('edit image', 'run-lineage', 'owner-lineage');
+  assert.equal(await session.registerMediaEvidence([original, generated], 'run-lineage'), 2);
+  assert.notEqual(generated.mediaRef, original.mediaRef);
+
+  const missing = createGeneratedImageEvidence({
+    attachment: {
+      artifactRef: `media-artifact:sha256:${'3'.repeat(64)}`,
+      sha256: '3'.repeat(64), mediaType: 'image/png', bytes: png.length, name: 'missing.png',
+    },
+    binding: {
+      target: { providerId: 'google-main', modelId: 'gemini-image' },
+      kind: 'image-generation', reasoning: 'off', scenario: 'image-editing.default',
+      reason: 'scenario-route', routeVersion: 3,
+    },
+    runId: 'run-lineage', sessionId: 'lineage-session', profileId: 'owner',
+    workspaceId: 'workspace-1', trust: 'owner', occurredAt: '2026-08-10T00:02:00.000Z',
+    inputEvidenceIds: [`media-evidence:sha256:${'9'.repeat(64)}`],
+  });
+  await assert.rejects(
+    session.registerMediaEvidence([missing], 'run-lineage'),
+    /缺少输入 Evidence/,
+  );
+
+  for (const mismatch of [
+    { trust: 'external' as const },
+    { profileId: 'other-profile' },
+    { sessionId: 'other-session' },
+    { workspaceId: 'other-workspace' },
+  ]) {
+    const crossScope = createOriginalMediaEvidence({
+      kind: 'image', sha256: '4'.repeat(64), mimeType: 'image/png', bytes: png.length,
+      originalName: 'cross-scope.png', mediaRef: `media-artifact:sha256:${'4'.repeat(64)}`,
+      sourceRef: {
+        entry: 'local-attachment', sourceId: `cross-${Object.keys(mismatch)[0]}`,
+        trust: 'owner', profileId: 'owner', workspaceId: 'workspace-1',
+        sessionId: 'lineage-session', ...mismatch,
+      },
+      occurredAt: '2026-08-10T00:03:00.000Z',
+    });
+    const output = createGeneratedImageEvidence({
+      attachment: {
+        artifactRef: `media-artifact:sha256:${'5'.repeat(64)}`,
+        sha256: '5'.repeat(64), mediaType: 'image/png', bytes: png.length, name: 'output.png',
+      },
+      binding: {
+        target: { providerId: 'google-main', modelId: 'gemini-image' },
+        kind: 'image-generation', reasoning: 'off', scenario: 'image-editing.default',
+        reason: 'scenario-route', routeVersion: 3,
+      },
+      runId: 'run-lineage', sessionId: 'lineage-session', profileId: 'owner',
+      workspaceId: 'workspace-1', trust: 'owner', occurredAt: '2026-08-10T00:04:00.000Z',
+      inputEvidenceIds: [crossScope.id],
+    });
+    await assert.rejects(
+      session.registerMediaEvidence([crossScope, output], 'run-lineage'),
+      /不能注册到 lineage-session|不能跨 Session|input.*trust\/profile|不能跨 Workspace/u,
+    );
+  }
+});
+
+test('MediaEvidence edit lineage is unique, bounded and cannot reference itself', () => {
+  const base = createOriginalMediaEvidence({
+    kind: 'image', sha256: '6'.repeat(64), mimeType: 'image/png', bytes: png.length,
+    originalName: 'base.png', mediaRef: `media-artifact:sha256:${'6'.repeat(64)}`,
+    sourceRef: {
+      entry: 'local-attachment', sourceId: 'base', trust: 'owner', profileId: 'owner',
+    },
+    occurredAt: '2026-08-10T00:00:00.000Z',
+  });
+  const content = {
+    schemaVersion: 1 as const,
+    mediaRef: `media-artifact:sha256:${'7'.repeat(64)}`,
+    kind: 'image' as const,
+    mimeType: 'image/png',
+    sha256: '7'.repeat(64),
+    bytes: png.length,
+    originalName: 'result.png',
+    sourceRef: {
+      entry: 'media-work-unit' as const, sourceId: 'work-unit', trust: 'owner' as const,
+      profileId: 'owner', inputEvidenceIds: [base.id, base.id],
+    },
+    occurredAt: '2026-08-10T00:00:00.000Z',
+    imageOrdinal: 0,
+    transcriptSegments: [], keyframes: [], timeRanges: [],
+    modelBinding: {
+      status: 'model' as const, providerId: 'google-main', modelId: 'gemini-image',
+      scenario: 'image-editing.default', routeVersion: 1,
+      selectionReason: 'explicit-work-unit' as const,
+    },
+    derivedArtifactRefs: [],
+    coverage: { status: 'full' as const, modalities: ['image' as const] },
+  };
+  assert.throws(() => createMediaEvidence(content), /inputEvidenceIds.*唯一/u);
+  assert.throws(() => createMediaEvidence({
+    ...content,
+    sourceRef: {
+      ...content.sourceRef,
+      inputEvidenceIds: Array.from({ length: 9 }, (_, index) => (
+        `media-evidence:sha256:${String(index + 1).repeat(64)}`
+      )),
+    },
+  }), /too_big|最多|8/u);
+
+  const generated = createMediaEvidence({
+    ...content,
+    sourceRef: { ...content.sourceRef, inputEvidenceIds: [base.id] },
+  });
+  assert.throws(() => mediaEvidenceSchema.parse({
+    ...generated,
+    sourceRef: { ...generated.sourceRef, inputEvidenceIds: [generated.id] },
+  }), /不能引用自身/u);
 });

@@ -148,7 +148,8 @@ function collectEvidenceRefs(value: unknown, refs: Set<string>, depth = 0): void
   const record = objectValue(value);
   if (!record) return;
   if (typeof record.ref === 'string'
-    && /^(?:action-intent|execution|artifact|test):/u.test(record.ref)) {
+    && (/^(?:action-intent|execution|artifact|test):/u.test(record.ref)
+      || /^media-(?:evidence|artifact):sha256:[a-f0-9]{64}$/u.test(record.ref))) {
     refs.add(record.ref.slice(0, 500));
   }
   Object.values(record).forEach((item) => collectEvidenceRefs(item, refs, depth + 1));

@@ -5,6 +5,7 @@ import {
   constrainRunAnswer,
   createRunFinalization,
   executionCompletionDecision,
+  runEvidenceRefs,
   toolExecutionManifest,
 } from '../src/core/run-finalization.js';
 
@@ -194,4 +195,26 @@ test('Host final answer constrains non-completed model claims and binds one fina
   assert.match(answer, /不构成整体完成声明/);
   assert.doesNotMatch(answer.split('\n')[0]!, /全部业务已经完成/);
   assert.match(record.answerDigest, /^[a-f0-9]{64}$/u);
+});
+
+test('finalization collects ref-only media Evidence and artifact receipts', () => {
+  const mediaEvidenceId = `media-evidence:sha256:${'a'.repeat(64)}`;
+  const mediaArtifactRef = `media-artifact:sha256:${'b'.repeat(64)}`;
+  const refs = runEvidenceRefs([{
+    sessionId: 'owner',
+    runId: 'run-media',
+    toolName: 'generate_image',
+    callId: 'call-media',
+    argumentsJson: JSON.stringify({ prompt: 'draw a dot' }),
+    status: 'succeeded',
+    output: {
+      kind: 'media',
+      evidence: { ref: mediaEvidenceId },
+      artifact: { ref: mediaArtifactRef, bytes: 68 },
+      duplicate: { ref: mediaEvidenceId },
+      ignored: { ref: 'private:path:/Users/example/image.png' },
+      malformed: { ref: 'media-evidence:not-a-digest' },
+    },
+  }]);
+  assert.deepEqual(refs, [mediaArtifactRef, mediaEvidenceId]);
 });
