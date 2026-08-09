@@ -21,6 +21,7 @@ import {
   auditConversationTurnEvidence,
   assistantTextForNonce,
   assessScenarioEligibility,
+  conversationTaskEvidenceIdentity,
   deriveConversationResumeState,
   materializeConversationTurn,
   parseConversationManifest,
@@ -955,7 +956,7 @@ async function runHeadlessTurn(
   const task = summary?.taskId
     ? record(await mimiJson(runtime, ['daemon', 'show', 'task', summary.taskId]))
     : undefined;
-  const eventId = typeof task?.triggerEventId === 'string' ? task.triggerEventId : '';
+  const eventId = conversationTaskEvidenceIdentity(task).eventId ?? '';
   const event = eventId ? await mimiJson(runtime, ['daemon', 'show', 'event', eventId]) : undefined;
   const afterSession = await sessionSnapshot(runtime, sessionId);
   const afterItems = protocolItems(afterSession);

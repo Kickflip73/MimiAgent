@@ -97,7 +97,15 @@
   因终端渲染插入行首 gutter 导致 canonical assistant 字面查找失败，整次仍标为 `unproven`。
   PTY prerequisite 现使用专门的两轮 no-tools prompt，不再复用带 fixture/target 语义的正式场景
   action；终端证明按 Buffer 字节 offset 切片，只剥离已知 busy redraw/input gutter，并要求命中
-  不存在于输入回显中的 canonical assistant 独有片段。修复后尚未重跑，不能追认第四次尝试。
+  不存在于输入回显中的 canonical assistant 独有片段；该修复不能追认第四次尝试。
+- 固定提交 `2cc22fb` 上的第五次真实持久 PTY 已通过：同一 Session 的 2 个 Run 均为
+  `completed`，usage 分别为 3022/61 与 3138/69 input/output tokens；TTY、启动、transport
+  chunks、Run 后 prompt-ready、空 Tool surface receipts、canonical assistant 可见性、正常
+  `/exit` 与 secret hits=0 全部闭合。该证据只关闭 PTY prerequisite，不计 3000 轮正式分母。
+- 随后的首个 headless 1×1 calibration 真实完成一个 Provider Run（3185/599 tokens），但以非零
+  退出并记为 `unproven`：runner 把 `daemon show task` 的权威诊断投影
+  `taskId/sessionId/authorityEventId` 错当成持久字段 `id/sessionKey/triggerEventId`，因此没有回取
+  Event。审计边界现显式归一化两种字段并拒绝冲突；该失败证据不可追认为通过，需新目录重跑。
 - 本 checkpoint 的 no-tools focused tests 为 133/133；registry credential 修复后的相关 focused
   tests 为 20/20，随后完整 `npm test` 为 1029/1029，`npm run check` 与 `npm run build` 均
   退出 0。此处仍是工程门禁证据：真实 Provider 已产生上述两个未证明 Run，但成功的持久 PTY、

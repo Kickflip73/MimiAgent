@@ -9,6 +9,7 @@ import {
   assessScenarioEligibility,
   assistantTextForNonce,
   auditConversationTurnEvidence,
+  conversationTaskEvidenceIdentity,
   deriveConversationResumeState,
   materializeConversationTurn,
   parseConversationManifest,
@@ -199,8 +200,8 @@ test('a turn is proven only with CLI, Run usage, Trace order, Session protocol, 
   const normalizedTerminal = `Mimi terminal answer ${turn.nonce}`;
   const event = { id: 'event-1', payload: { prompt: turn.prompt } };
   const task = {
-    id: 'task-1', triggerEventId: 'event-1', authorityEventId: 'event-1',
-    sessionKey: 'conv-session-008', status: 'completed',
+    taskId: 'task-1', authorityEventId: 'event-1',
+    sessionId: 'conv-session-008', status: 'completed',
   };
   const run = {
     id: 'daemon-run-1', taskId: 'task-1', sessionKey: 'conv-session-008',
@@ -297,14 +298,14 @@ test('a turn is proven only with CLI, Run usage, Trace order, Session protocol, 
 
     const unproven = await auditConversationTurnEvidence({
       ...evidence,
-      task: { ...task, triggerEventId: 'wrong-event' },
+      task: { ...task, authorityEventId: 'wrong-event' },
       sessionDelta: [sessionDelta[0], sessionDelta[2], sessionDelta[1], sessionDelta[3]],
       traceDelta: traceDelta.filter((entry) => entry.type !== 'model_tool_surface'),
       terminal: { ...evidence.terminal, rawSha256: 'a'.repeat(64) },
       leaks: { ...evidence.leaks, pendingOutbox: true },
     });
     assert.equal(unproven.proven, false);
-    assert.match(unproven.reasons.join('\n'), /triggerEventId/);
+    assert.match(unproven.reasons.join('\n'), /authorityEventId/);
     assert.match(unproven.reasons.join('\n'), /does not follow its call/);
     assert.match(unproven.reasons.join('\n'), /model tool surface/);
     assert.match(unproven.reasons.join('\n'), /digest does not match/);
@@ -312,6 +313,27 @@ test('a turn is proven only with CLI, Run usage, Trace order, Session protocol, 
   } finally {
     await rm(evidenceRoot, { recursive: true, force: true });
   }
+});
+
+test('Task evidence identity accepts the Daemon inspection projection and rejects conflicts', () => {
+  assert.deepEqual(conversationTaskEvidenceIdentity({
+    taskId: 'task-1',
+    authorityEventId: 'event-1',
+    sessionId: 'session-1',
+  }), {
+    taskId: 'task-1',
+    eventId: 'event-1',
+    sessionId: 'session-1',
+  });
+  assert.deepEqual(conversationTaskEvidenceIdentity({
+    taskId: 'task-1', id: 'different-task',
+    authorityEventId: 'event-1', triggerEventId: 'different-event',
+    sessionId: 'session-1', sessionKey: 'different-session',
+  }), {
+    taskId: undefined,
+    eventId: undefined,
+    sessionId: undefined,
+  });
 });
 
 test('terminal evidence is normalized and secrets are stopped before persistence', () => {

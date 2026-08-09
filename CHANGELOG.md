@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   byte offsets, known-redraw normalization, and assistant-only chunks absent from the
   echoed input; keep the prerequisite prompt independent from unexecuted formal
   fixture/target actions
+- bind calibration Task evidence to the Daemon's authoritative inspection fields
+  (`taskId`, `authorityEventId`, and `sessionId`) while rejecting conflicting legacy
+  aliases, so a successful CLI Run is not discarded or weakly inferred
 - classify the integrated but previously unlisted meeting/NotebookLM Skill as an
   unpublished experimental asset so repository and package boundaries stay closed
 - identify Shell commands as unthrottled local-host execution, allow explicit

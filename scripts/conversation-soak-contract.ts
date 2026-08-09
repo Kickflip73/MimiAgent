@@ -160,6 +160,12 @@ export interface TurnEvidenceAudit {
   finalizationOutcome?: string;
 }
 
+export interface ConversationTaskEvidenceIdentity {
+  taskId?: string;
+  eventId?: string;
+  sessionId?: string;
+}
+
 const scenarioKeys = new Set([
   'scenarioId',
   'ordinal',
@@ -203,6 +209,25 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function coherentStringField(
+  value: Record<string, unknown> | undefined,
+  names: readonly string[],
+): string | undefined {
+  const candidates = names
+    .map((name) => value?.[name])
+    .filter((candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0);
+  return candidates.length > 0 && new Set(candidates).size === 1 ? candidates[0] : undefined;
+}
+
+export function conversationTaskEvidenceIdentity(value: unknown): ConversationTaskEvidenceIdentity {
+  const task = record(value);
+  return {
+    taskId: coherentStringField(task, ['taskId', 'id']),
+    eventId: coherentStringField(task, ['authorityEventId', 'triggerEventId']),
+    sessionId: coherentStringField(task, ['sessionId', 'sessionKey']),
+  };
 }
 
 function stringArray(value: unknown, field: string): string[] {
@@ -662,11 +687,12 @@ export async function auditConversationTurnEvidence(input: TurnEvidenceInput): P
 
   const event = record(input.event);
   const task = record(input.task);
+  const taskIdentity = conversationTaskEvidenceIdentity(task);
   const daemonRun = record(input.run);
   if (event?.id !== input.eventId) reasons.push('Event id does not match the canonical Event entity');
-  if (task?.id !== input.taskId) reasons.push('Task id does not match the canonical Task entity');
-  if (task?.triggerEventId !== input.eventId) reasons.push('Task triggerEventId does not match Event id');
-  if (task?.sessionKey !== input.sessionId) reasons.push('Task sessionKey does not match Session id');
+  if (taskIdentity.taskId !== input.taskId) reasons.push('Task taskId/id does not match the Task evidence');
+  if (taskIdentity.eventId !== input.eventId) reasons.push('Task authorityEventId/triggerEventId does not match Event id');
+  if (taskIdentity.sessionId !== input.sessionId) reasons.push('Task sessionId/sessionKey does not match Session id');
   if (daemonRun?.id !== input.daemonRunId) reasons.push('Daemon Run id does not match the canonical Run entity');
   if (daemonRun?.taskId !== input.taskId) reasons.push('Daemon Run taskId does not match Task id');
   if (daemonRun?.sessionKey !== input.sessionId) reasons.push('Daemon Run sessionKey does not match Session id');
