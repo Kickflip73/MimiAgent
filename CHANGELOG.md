@@ -42,6 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - bind calibration Task evidence to the Daemon's authoritative inspection fields
   (`taskId`, `authorityEventId`, and `sessionId`) while rejecting conflicting legacy
   aliases, so a successful CLI Run is not discarded or weakly inferred
+- refresh the explicit USD ceiling estimate after each completed calibration turn so
+  checkpoints and final reports include the latest Provider usage
 - classify the integrated but previously unlisted meeting/NotebookLM Skill as an
   unpublished experimental asset so repository and package boundaries stay closed
 - identify Shell commands as unthrottled local-host execution, allow explicit

@@ -106,6 +106,11 @@
   退出并记为 `unproven`：runner 把 `daemon show task` 的权威诊断投影
   `taskId/sessionId/authorityEventId` 错当成持久字段 `id/sessionKey/triggerEventId`，因此没有回取
   Event。审计边界现显式归一化两种字段并拒绝冲突；该失败证据不可追认为通过，需新目录重跑。
+- 固定提交 `104dff6` 的新隔离根 1×1 重跑已通过：`conv-008` 为 1 proven/0 unproven，
+  Event→Task→Daemon Run→runtime Run→Session/Trace 全链闭合，usage 为 3183/1087 tokens，
+  Tool calls、pending Task/Outbox/active Run、source-tree drift 与 secret hits 均为 0。它仍是
+  calibration-only、正式分母 0。运行同时暴露单轮结束时 USD checkpoint 沿用派发前数值的问题；
+  现已在每轮 usage 入账后刷新显式估算，再进入 2×5。
 - 本 checkpoint 的 no-tools focused tests 为 133/133；registry credential 修复后的相关 focused
   tests 为 20/20，随后完整 `npm test` 为 1029/1029，`npm run check` 与 `npm run build` 均
   退出 0。此处仍是工程门禁证据：真实 Provider 已产生上述两个未证明 Run，但成功的持久 PTY、

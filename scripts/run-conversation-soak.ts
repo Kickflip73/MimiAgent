@@ -23,6 +23,7 @@ import {
   assessScenarioEligibility,
   conversationTaskEvidenceIdentity,
   deriveConversationResumeState,
+  estimateConversationUsd,
   materializeConversationTurn,
   parseConversationManifest,
   redactTerminalSecrets,
@@ -858,9 +859,12 @@ async function directoryBytes(directory: string): Promise<number> {
 }
 
 function estimatedCost(options: RunnerOptions, usage: AggregateUsage): number | undefined {
-  if (options.inputUsdPerMillion === undefined || options.outputUsdPerMillion === undefined) return undefined;
-  return (usage.inputTokens / 1_000_000) * options.inputUsdPerMillion
-    + (usage.outputTokens / 1_000_000) * options.outputUsdPerMillion;
+  return estimateConversationUsd(
+    usage.inputTokens,
+    usage.outputTokens,
+    options.inputUsdPerMillion,
+    options.outputUsdPerMillion,
+  );
 }
 
 async function enforceDispatchBudget(context: RunContext): Promise<void> {
@@ -1023,6 +1027,7 @@ async function runHeadlessTurn(
   const usage = answerUsage(run);
   context.aggregate.inputTokens += usage.inputTokens;
   context.aggregate.outputTokens += usage.outputTokens;
+  context.aggregate.estimatedUsd = estimatedCost(context.options, context.aggregate);
   if (audit.proven) context.aggregate.provenTurns += 1;
   else context.aggregate.unprovenTurns += 1;
   await appendJournal(context.journalFile, {

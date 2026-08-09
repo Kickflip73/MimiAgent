@@ -464,6 +464,17 @@ export function sha256(value: string | Buffer): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+export function estimateConversationUsd(
+  inputTokens: number,
+  outputTokens: number,
+  inputUsdPerMillion: number | undefined,
+  outputUsdPerMillion: number | undefined,
+): number | undefined {
+  if (inputUsdPerMillion === undefined || outputUsdPerMillion === undefined) return undefined;
+  return (inputTokens / 1_000_000) * inputUsdPerMillion
+    + (outputTokens / 1_000_000) * outputUsdPerMillion;
+}
+
 export function materializeConversationTurn(
   manifest: ConversationManifest,
   scenario: ConversationScenario,

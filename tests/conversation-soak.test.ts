@@ -11,6 +11,7 @@ import {
   auditConversationTurnEvidence,
   conversationTaskEvidenceIdentity,
   deriveConversationResumeState,
+  estimateConversationUsd,
   materializeConversationTurn,
   parseConversationManifest,
   redactTerminalSecrets,
@@ -334,6 +335,11 @@ test('Task evidence identity accepts the Daemon inspection projection and reject
     eventId: undefined,
     sessionId: undefined,
   });
+});
+
+test('conversation USD estimate includes the just-finished turn', () => {
+  assert.ok(Math.abs((estimateConversationUsd(3183, 1087, 50, 200) ?? 0) - 0.37655) < 1e-12);
+  assert.equal(estimateConversationUsd(3183, 1087, undefined, 200), undefined);
 });
 
 test('terminal evidence is normalized and secrets are stopped before persistence', () => {
