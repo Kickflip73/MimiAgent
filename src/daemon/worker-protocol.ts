@@ -254,6 +254,13 @@ export const taskWorkerInitSchema = z.object({
         path: ['providerCredential'],
       });
     }
+    if (init.backupProvider) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: '冻结 modelBinding 不能同时携带 Backup Provider route',
+        path: ['backupProvider'],
+      });
+    }
   }
   if (Boolean(init.backupProvider) !== Boolean(init.backupProviderCredential)) {
     context.addIssue({

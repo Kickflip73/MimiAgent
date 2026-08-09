@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { MimiAgent } from '../src/runtime/mimi-agent.js';
+import { MimiAgent } from '../src/runtime/mimi-agent.js';
 import {
   createRunFinalization,
   runFinalizationFromError,
@@ -12,6 +12,9 @@ import {
   type AgentRunRequest,
 } from '../src/runtime/run-service.js';
 import { ProviderCircuitBreaker } from '../src/runtime/provider-reliability.js';
+import { legacyModelConfiguration } from '../src/runtime/model-config.js';
+import { ModelGateway } from '../src/runtime/model-gateway.js';
+import { WorkUnitModelResolver } from '../src/runtime/work-unit-model-resolver.js';
 
 function committed(answer: string) {
   return {
@@ -414,28 +417,7 @@ test('shared run service uses one configured backup only before a stream starts'
   );
 });
 
-test('shared run service excludes an incompatible fileInput backup before failover', async () => {
-  const breaker = new ProviderCircuitBreaker({ failureThreshold: 1, openMs: 60_000 });
-  breaker.acquire('openai-main');
-  breaker.failure('openai-main', Object.assign(new Error('primary rate limited'), { status: 429 }));
-  let networkCalls = 0;
-  const agent = {
-    onRuntimeEvent: () => () => undefined,
-    stream: async () => {
-      networkCalls += 1;
-      throw new Error('incompatible backup must never reach the SDK');
-    },
-    failRun: async () => undefined,
-  } as unknown as MimiAgent;
-  const service = new AgentRunService(agent, {
-    providerId: 'openai-main',
-    providerReliability: breaker,
-    backupProvider: {
-      id: 'deepseek:deepseek-v4-flash',
-      provider: 'deepseek',
-      model: 'deepseek-v4-flash',
-    },
-  });
+test('shared run service excludes incompatible file and durable-image backups before failover', async () => {
   const modelInput = [{
     role: 'user',
     content: [
@@ -443,12 +425,195 @@ test('shared run service excludes an incompatible fileInput backup before failov
       { type: 'input_file', file: 'data:text/plain;base64,aGVsbG8=', filename: 'notes.txt' },
     ],
   }] as AgentRunRequest['modelInput'];
+  const cases = [
+    {
+      request: { input: 'summarize', modelInput },
+      backupProvider: {
+        id: 'deepseek:deepseek-v4-flash',
+        provider: 'deepseek' as const,
+        model: 'deepseek-v4-flash',
+      },
+    },
+    {
+      request: {
+        input: 'reuse the exact image',
+        options: {
+          referencedMediaEvidenceIds: [`media-evidence:sha256:${'a'.repeat(64)}`],
+        },
+      },
+      backupProvider: {
+        id: 'openai:unregistered-vision-claim',
+        provider: 'openai' as const,
+        model: 'unregistered-vision-claim',
+      },
+    },
+  ] satisfies Array<{
+    request: AgentRunRequest;
+    backupProvider: { id: string; provider: 'openai' | 'deepseek'; model: string };
+  }>;
+  for (const { request, backupProvider } of cases) {
+    const breaker = new ProviderCircuitBreaker({ failureThreshold: 1, openMs: 60_000 });
+    breaker.acquire('openai-main');
+    breaker.failure('openai-main', Object.assign(new Error('primary rate limited'), { status: 429 }));
+    let networkCalls = 0;
+    const agent = {
+      onRuntimeEvent: () => () => undefined,
+      stream: async () => {
+        networkCalls += 1;
+        throw new Error('incompatible backup must never reach the SDK');
+      },
+      failRun: async () => undefined,
+    } as unknown as MimiAgent;
+    const service = new AgentRunService(agent, {
+      providerId: 'openai-main',
+      providerReliability: breaker,
+      backupProvider,
+    });
+    await assert.rejects(service.execute(request), /熔断中/);
+    assert.equal(networkCalls, 0);
+  }
+});
 
-  await assert.rejects(
-    service.execute({ input: 'summarize', modelInput }),
-    /熔断中/,
-  );
-  assert.equal(networkCalls, 0);
+test('shared run service uses the real MimiAgent route resolver before admitting a backup', async () => {
+  const configuration = legacyModelConfiguration({
+    MIMI_MODEL_PROVIDER: 'openai',
+    OPENAI_MODEL: 'gpt-5.4-mini',
+  });
+  const gateway = new ModelGateway({
+    providers: configuration.providers,
+    environment: { OPENAI_API_KEY: 'test-only-route-resolver-key' },
+  });
+  const resolver = new WorkUnitModelResolver({
+    providers: configuration.providers,
+    routing: configuration.routing,
+  });
+  const breaker = new ProviderCircuitBreaker({ failureThreshold: 1, openMs: 60_000 });
+  breaker.acquire('openai-main');
+  breaker.failure('openai-main', Object.assign(new Error('primary rate limited'), { status: 429 }));
+  let resolverCalls = 0;
+  let providerCalls = 0;
+  const agent = {
+    fixedModelBinding: undefined,
+    components: {
+      modelGateway: gateway,
+      modelResolver: resolver,
+      modelConfig: configuration,
+    },
+    resolveProviderRouteBinding(
+      ...args: Parameters<MimiAgent['resolveProviderRouteBinding']>
+    ) {
+      resolverCalls += 1;
+      return MimiAgent.prototype.resolveProviderRouteBinding.call(this, ...args);
+    },
+    onRuntimeEvent: () => () => undefined,
+    stream: async () => {
+      providerCalls += 1;
+      throw new Error('unregistered backup must never reach the runner or provider');
+    },
+    failRun: async () => undefined,
+  } as unknown as MimiAgent;
+  const service = new AgentRunService(agent, {
+    providerId: 'openai-main',
+    providerReliability: breaker,
+    backupProvider: {
+      id: 'openai:unregistered-vision-claim',
+      provider: 'openai',
+      model: 'unregistered-vision-claim',
+    },
+  });
+
+  await assert.rejects(service.execute({
+    input: 'reuse the exact image',
+    options: {
+      referencedMediaEvidenceIds: [`media-evidence:sha256:${'a'.repeat(64)}`],
+    },
+  }), /熔断中/u);
+  assert.equal(resolverCalls, 1);
+  assert.equal(providerCalls, 0);
+});
+
+test('shared run service keeps the exact backup binding when the registry changes after preflight', async () => {
+  const before = legacyModelConfiguration({
+    MIMI_MODEL_PROVIDER: 'openai',
+    OPENAI_MODEL: 'gpt-5.4-mini',
+  });
+  const after = structuredClone(before);
+  after.routeVersion += 1;
+  after.providers[0]!.id = 'openai-after-preflight';
+  after.providers[0]!.models[0]!.target.providerId = 'openai-after-preflight';
+  after.routing.globalDefault.providerId = 'openai-after-preflight';
+
+  let components = {
+    modelGateway: new ModelGateway({
+      providers: before.providers,
+      environment: { OPENAI_API_KEY: 'test-only-route-resolver-key' },
+    }),
+    modelResolver: new WorkUnitModelResolver({
+      providers: before.providers,
+      routing: before.routing,
+    }),
+    modelConfig: before,
+  };
+  const breaker = new ProviderCircuitBreaker({ failureThreshold: 1, openMs: 60_000 });
+  breaker.acquire('primary');
+  breaker.failure('primary', Object.assign(new Error('primary rate limited'), { status: 429 }));
+  let resolverCalls = 0;
+  let providerCalls = 0;
+  const agent = {
+    fixedModelBinding: undefined,
+    get components() { return components; },
+    resolveProviderRouteBinding(
+      ...args: Parameters<MimiAgent['resolveProviderRouteBinding']>
+    ) {
+      resolverCalls += 1;
+      const binding = MimiAgent.prototype.resolveProviderRouteBinding.call(this, ...args);
+      if (resolverCalls === 1) {
+        components = {
+          modelGateway: new ModelGateway({
+            providers: after.providers,
+            environment: { OPENAI_API_KEY: 'test-only-route-resolver-key' },
+          }),
+          modelResolver: new WorkUnitModelResolver({
+            providers: after.providers,
+            routing: after.routing,
+          }),
+          modelConfig: after,
+        };
+      }
+      return binding;
+    },
+    onRuntimeEvent: () => () => undefined,
+    stream: async (
+      _input: unknown,
+      _signal: unknown,
+      options: Parameters<MimiAgent['stream']>[2],
+    ) => {
+      assert.equal(Object.isFrozen(options!.providerRoute!.exactBinding), true);
+      assert.equal(Object.isFrozen(options!.providerRoute!.exactBinding!.target), true);
+      MimiAgent.prototype.resolveProviderRouteBinding.call(
+        agent,
+        options!.providerRoute!,
+        { toolCalling: true },
+        'conversation.default',
+      );
+      providerCalls += 1;
+      throw new Error('a changed registry must not select a replacement target');
+    },
+    failRun: async () => undefined,
+  } as unknown as MimiAgent;
+  const service = new AgentRunService(agent, {
+    providerId: 'primary',
+    providerReliability: breaker,
+    backupProvider: {
+      id: 'openai:gpt-5.4-mini',
+      provider: 'openai',
+      model: 'gpt-5.4-mini',
+    },
+  });
+
+  await assert.rejects(service.execute({ input: 'work' }), /routeVersion|registry|target 未注册/u);
+  assert.equal(resolverCalls, 1);
+  assert.equal(providerCalls, 0);
 });
 
 test('shared run service never switches Provider after the stream handle exists', async () => {

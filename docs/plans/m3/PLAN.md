@@ -27,6 +27,11 @@ metadata-only Evidence，随后在 Provider 前诚实 blocked。显式 `generate
 也已把唯一 inline Provider 图片有界解码并结构校验到 CAS + Session Evidence，Tool result 只
 返回 ref/digest；同 Session 后续 Run/重启可用 `mediaEvidenceId` 走 Google edit fixture 精确回取。
 OpenAI edit 与跨 scope/tamper 在网络前失败关闭，URL/multi artifact output 在写入持久结果前拒绝。
+普通 CLI/Daemon Conversation 也已支持显式
+`@media:media-evidence:sha256:<digest>`：同 Session 重启后从 CAS 校验并重注入原图，Event/Session
+仍只保存 ref；引用与新附件合计最多 8 项、全部 inline 图片合计最多 20 MiB。跨 profile/workspace/
+trust、篡改或不支持 `imageInput` 的 route 在 Provider 前拒绝，completed ledger receipt 在 CAS
+读取前回放。该证据仍是 fixture/集成回归，不是 live Provider，也不实现代词推断或跨 Session 引用。
 Realtime 仅完成
 transcription/VAD-only transport/controller 和 Host runner contract，尚无 CLI、麦克风、播放器或
 Session actor 的 composition root。上述图片证据仍是 unit/adapter fixture，不是 live Provider；
@@ -34,13 +39,14 @@ Session actor 的 composition root。上述图片证据仍是 unit/adapter fixtu
 
 从该 checkpoint 继续补齐：
 
-- 把 CLI attachment 与显式生成/编辑 Tool 已有的内容寻址 `MediaEvidence` 扩展到普通聊天
-  多图/代词续指、真实音视频分析和 Memory 编译；Session/Event/Memory/Ledger 继续只保存稳定
-  ref、digest 和有界元数据，原始二进制、base64、PCM frame 不进入 JSON/SQLite 文本状态。
+- 把 CLI attachment、显式 `@media` 引用和生成/编辑 Tool 已有的内容寻址 `MediaEvidence`
+  扩展到隐式代词/事项连续性、真实音视频分析和 Memory 编译；Session/Event/Memory/Ledger
+  继续只保存稳定 ref、digest 和有界元数据，原始二进制、base64、PCM frame 不进入
+  JSON/SQLite 文本状态。
 - 在现有批次摄取、MIME/kind、symlink/篡改、配额、owner ref 与 GC 基础上完成格式结构 probe、
   掉电/reconcile fault injection 和长期 soak；Daemon Event 继续不持久化私人绝对路径。
-- 图片在普通聊天入口中的多轮/多图原图连续性与语义 answer anchor；音频 transcript 时间片与
-  MemoryCandidate；视频音轨、关键帧、时间片和 coverage。
+- 图片的跨 Session/入口事项连续性、隐式代词解析与语义 answer anchor；音频 transcript 时间片
+  与 MemoryCandidate；视频音轨、关键帧、时间片和 coverage。
 - 模型与设备能力的诚实路由。旧模型配置向后兼容，新 audio/video/realtime 能力默认
   `false`；不支持的 provider/adapter 必须在网络请求前 fail closed 或明确降级。
 - 同一 Session actor 内的实时语音生命周期、流式 ASR/TTS、turn detection、barge-in、

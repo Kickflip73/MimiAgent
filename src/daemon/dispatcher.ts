@@ -4,6 +4,11 @@ import type { MimiAgent } from '../runtime/mimi-agent.js';
 import { MimiHost } from '../runtime/mimi-host.js';
 import { attachmentPayload, inputWithAttachments } from '../runtime/attachments.js';
 import { mediaArtifactOwner, MediaArtifactStore } from '../runtime/media-artifact-store.js';
+import {
+  MAX_MEDIA_REFERENCE_COUNT,
+  mediaEvidenceIdsFromPayload,
+} from '../runtime/media-reference-request.js';
+import { preflightMediaEvidenceReferences } from '../runtime/media-input-materializer.js';
 import type { RuntimeEvent } from '../runtime/hooks.js';
 import { TerminalRunInterruptedError } from '../runtime/run-outcome.js';
 import { projectRunStreamEvent } from '../runtime/stream-projection.js';
@@ -529,22 +534,22 @@ export class MimiDispatcher {
       preemptTimer = setInterval(checkPreemption, this.options.preemptPollMs ?? 250);
       preemptTimer.unref();
       refreshRunIdleWatchdog();
-      const attachments = event.source === 'local-cli' && event.trust === 'owner'
-        ? attachmentPayload(event.payload, { allowLegacyPath: true })
-        : [];
-      const modelInputFactory = attachments.length
-        ? async () => {
-            const materialized = await inputWithAttachments(
-              decision.input!,
-              attachments,
-              this.options.attachmentRoot,
-            );
-            if (typeof materialized === 'string') {
-              throw new Error('附件模型输入未物化为协议单元');
-            }
-            return materialized;
-          }
-        : undefined;
+      const attachments = attachmentPayload(event.payload, { allowLegacyPath: true });
+      if (attachments.length && (event.source !== 'local-cli' || event.trust !== 'owner')) {
+        throw new Error('只有 local-cli owner Event 可以提交附件');
+      }
+      const referencedMediaEvidenceIds = mediaEvidenceIdsFromPayload(event.payload);
+      if (referencedMediaEvidenceIds.length
+        && (event.source !== 'local-cli' || event.trust !== 'owner')) {
+        throw new Error('只有 local-cli owner Event 可以引用 Session MediaEvidence');
+      }
+      if (referencedMediaEvidenceIds.length
+        && (!task.sessionKey || task.sessionKey !== decision.sessionId)) {
+        throw new Error('MediaEvidence 引用需要与当前 Run 一致的显式 Session 绑定');
+      }
+      if (attachments.length + referencedMediaEvidenceIds.length > MAX_MEDIA_REFERENCE_COUNT) {
+        throw new Error(`附件与媒体引用合计最多 ${MAX_MEDIA_REFERENCE_COUNT} 个`);
+      }
       const mediaEvidence = attachments.flatMap((attachment) => (
         attachment.evidence ? [attachment.evidence] : []
       ));
@@ -562,6 +567,30 @@ export class MimiDispatcher {
           throw new Error(`MediaEvidence ${evidence.id} 与触发 Event/Session provenance 不一致`);
         }
       }
+      const modelInputFactory = attachments.length
+        ? async (agent: MimiAgent) => {
+            await preflightMediaEvidenceReferences({
+              attachments,
+              evidenceIds: referencedMediaEvidenceIds,
+              session: agent.session,
+              authority: {
+                sessionId: decision.sessionId!,
+                profileId: event.profileId,
+                ...(workspaceId ? { workspaceId } : {}),
+                trust: event.trust,
+              },
+            });
+            const materialized = await inputWithAttachments(
+              decision.input!,
+              attachments,
+              this.options.attachmentRoot,
+            );
+            if (typeof materialized === 'string') {
+              throw new Error('附件模型输入未物化为协议单元');
+            }
+            return materialized;
+          }
+        : undefined;
       const secretReferences = ephemeralSecretReferences(task.objective);
       const directOwnerConversation = task.type === 'conversation'
         && event.id === active.authority.id
@@ -588,6 +617,7 @@ export class MimiDispatcher {
             cause: { ...decision.options.cause, sourceEventId: event.id },
           } : {}),
           ...(mediaEvidence.length ? { mediaEvidence } : {}),
+          ...(referencedMediaEvidenceIds.length ? { referencedMediaEvidenceIds } : {}),
           ...(workspaceId ? { workspaceId } : {}),
           ...(ephemeralOwnerInput ? { ephemeralOwnerInput } : {}),
           capabilityItems: this.connectors

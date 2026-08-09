@@ -692,3 +692,97 @@ test('a background worker preserves the Supervisor-frozen binding reason in its 
     else process.env.MIMI_TEST_WORKER_KEY = previous;
   }
 });
+
+test('a direct providerRoute cannot replace a frozen binding and an exact route preserves it', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-model-frozen-provider-route-'));
+  const apiKeyName = 'MIMI_TEST_FROZEN_ROUTE_KEY';
+  const previous = process.env[apiKeyName];
+  process.env[apiKeyName] = 'frozen-route-secret';
+  const models: ModelsConfig = {
+    version: 1,
+    routeVersion: 12,
+    providers: [{
+      id: 'openai-main',
+      label: 'Frozen OpenAI',
+      transport: 'openai-responses',
+      apiKeyEnv: apiKeyName,
+      models: [
+        {
+          target: { providerId: 'openai-main', modelId: 'frozen-model' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        },
+        {
+          target: { providerId: 'openai-main', modelId: 'alternate-model' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        },
+      ],
+    }],
+    routing: {
+      globalDefault: { providerId: 'openai-main', modelId: 'frozen-model' },
+      scenarios: {},
+    },
+  };
+  const binding = {
+    target: { providerId: 'openai-main', modelId: 'frozen-model' },
+    kind: 'agent' as const,
+    reasoning: 'high' as const,
+    scenario: 'background.default',
+    reason: 'scenario-route' as const,
+    routeVersion: 12,
+  };
+  const config: AppConfig = {
+    provider: 'openai',
+    defaultModel: 'frozen-model',
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: null,
+    securityProfile: 'safe',
+    permissionMode: 'read-only',
+  };
+  const agent = await MimiAgent.create(config, 'frozen-route-session', {
+    modelConfiguration: models,
+    modelBinding: binding,
+  });
+  let runnerCalls = 0;
+  const runner = (agent as unknown as {
+    runner: { run: (...args: unknown[]) => Promise<unknown> };
+  }).runner;
+  runner.run = async () => {
+    runnerCalls += 1;
+    return {
+      rawResponses: [],
+      runContext: { usage: {} },
+      finalOutput: 'frozen answer',
+      completed: Promise.resolve(),
+      cancelled: false,
+      interruptions: [],
+      async *[Symbol.asyncIterator]() { /* no events */ },
+    };
+  };
+  try {
+    await assert.rejects(agent.stream('must remain frozen', undefined, {
+      scenario: 'background.default',
+      providerRoute: { provider: 'openai', model: 'alternate-model' },
+    }), /Provider failover target .* 与冻结 modelBinding .* 冲突/u);
+    assert.equal(runnerCalls, 0);
+    assert.equal(agent.activeRun, undefined);
+
+    const run = await agent.stream('exact frozen route', undefined, {
+      scenario: 'background.default',
+      providerRoute: { provider: 'openai', model: 'frozen-model' },
+    });
+    await run.completed;
+    assert.equal(runnerCalls, 1);
+    assert.deepEqual(agent.lastModelBinding, binding);
+    await agent.completeRun('frozen answer');
+  } finally {
+    await agent.close();
+    if (previous === undefined) delete process.env[apiKeyName];
+    else process.env[apiKeyName] = previous;
+  }
+});

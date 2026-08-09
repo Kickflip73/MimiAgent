@@ -21,7 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remained explicitly unexecuted
 - add backward-compatible, default-off `fileInput` model truth, explicit supported
   OpenAI payload conversion, pre-network rejection in unsupported adapters and
-  failover routes, plus bounded provider-opaque context accounting for staged
+  exact registry/capability validation for direct and failover Provider routes,
+  plus bounded provider-opaque context accounting for staged
   1/10/20 MiB image and file inputs without persisting their binary payloads
 - close the explicit `generate_image` Media WorkUnit binary boundary: accept only a
   same-Session `mediaEvidenceId` for edits, boundedly decode and structurally validate
@@ -31,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OpenAI edit, cross-scope refs, and tampering fail before a Provider request;
   URL-only and multiple-artifact outputs fail before any durable result. Evidence
   remains unit/adapter fixture coverage rather than a live image-Provider acceptance run
+- add explicit same-Session image continuation to ordinary CLI/Daemon conversations
+  with `@media:media-evidence:sha256:<digest>`: persist only reserved Evidence refs,
+  enforce the frozen profile/workspace/trust scope, combine references and new
+  attachments under the 8-item/20-MiB inline limits, and rehydrate verified CAS bytes
+  only for a compatible Provider request. Completed execution-ledger replay bypasses
+  CAS reads; cross-scope, tampered, and unsupported routes fail before Provider I/O.
+  Coverage remains local fixture/integration evidence, not a live Provider turn
 - add an authenticated local-only no-tools calibration policy with an exact empty
   SDK Tool surface, a synchronous pre-provider Trace receipt, single-provider
   credential isolation, content-bound runtime identity, and byte-verified

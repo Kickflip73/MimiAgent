@@ -166,14 +166,14 @@ test('CLI restarts an unavailable daemon and retries a draft bootstrap', async (
   }
 });
 
-test('CLI submits its launch workspace with each owner command', async () => {
+test('CLI submits its launch workspace and stable media refs with each owner command', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-submit-workspace-'));
   const socket = path.join(root, 'mimi.sock');
   const workspaceRoot = path.join(root, 'project');
-  let submitted: Record<string, unknown> | undefined;
+  const submitted: Record<string, unknown>[] = [];
   const server = new MimiIpcServer(socket, (method, params) => {
     if (method !== 'submit') throw new Error(`unexpected method: ${method}`);
-    submitted = params as Record<string, unknown>;
+    submitted.push(params as Record<string, unknown>);
     return {
       event: { id: 'event' },
       task: { id: 'task' },
@@ -191,11 +191,23 @@ test('CLI submits its launch workspace with each owner command', async () => {
     } as AppConfig, undefined, {
       requestedRunPolicy: 'benchmark-no-tools-v1',
     });
-    await client.submit('修复当前项目');
-    assert.equal(submitted?.workspaceRoot, workspaceRoot);
-    assert.equal(submitted?.source, 'local-cli');
-    assert.equal(submitted?.trust, 'owner');
-    assert.equal(submitted?.requestedRunPolicy, 'benchmark-no-tools-v1');
+    const evidenceId = `media-evidence:sha256:${'a'.repeat(64)}`;
+    await client.submit(`继续编辑 @media:${evidenceId}`, 'media-session');
+    assert.equal(submitted[0]?.workspaceRoot, workspaceRoot);
+    assert.equal(submitted[0]?.source, 'local-cli');
+    assert.equal(submitted[0]?.trust, 'owner');
+    assert.equal(submitted[0]?.requestedRunPolicy, 'benchmark-no-tools-v1');
+    assert.equal(submitted[0]?.text, '继续编辑');
+    assert.equal(submitted[0]?.sessionKey, 'media-session');
+    assert.deepEqual(submitted[0]?.referencedMediaEvidenceIds, [evidenceId]);
+
+    const eightRefs = Array.from({ length: 8 }, (_, index) =>
+      `@media:media-evidence:sha256:${index.toString(16).padStart(64, '0')}`).join(' ');
+    await assert.rejects(
+      client.submit(`检查 @image:photo.png ${eightRefs}`, 'media-session'),
+      /附件与媒体引用合计最多 8 个/u,
+    );
+    assert.equal(submitted.length, 1);
   } finally {
     await server.close();
   }

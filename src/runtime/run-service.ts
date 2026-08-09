@@ -1,17 +1,17 @@
 import type { AgentInputItem, RunStreamEvent } from '@openai/agents';
 import type { ModelProvider } from '../config.js';
-import type { ModelRequirements } from '../core/model-routing.js';
+import type { ModelRequirements, RunModelBinding } from '../core/model-routing.js';
 import type { RunFinalizationRecord } from '../core/run-finalization.js';
 import { attachRunFinalization } from '../core/run-finalization.js';
 import type { RuntimeEffect } from './control.js';
 import type { RuntimeEvent } from './hooks.js';
 import {
-  freezeRunModelRequirements,
   type CompletionDeliveryDisposition,
   type ContextUsageSnapshot,
   type MimiAgent,
   type MimiRunOptions,
 } from './mimi-agent.js';
+import { freezeRunModelRequirements } from './run-model-requirements.js';
 import { assertRunCanComplete, isRunInterrupted, isTerminalRunInterruption } from './run-outcome.js';
 import { projectRunStreamEvent } from './stream-projection.js';
 import {
@@ -75,6 +75,17 @@ function backupIncompatibility(
   requirements: Readonly<ModelRequirements>,
   scenario: string,
 ): Error | undefined {
+  if (requirements.imageInput
+    || requirements.imageOutput
+    || requirements.fileInput
+    || requirements.audioInput
+    || requirements.audioOutput
+    || requirements.videoInput
+    || requirements.realtimeAudio) {
+    return new Error(
+      `Backup Provider ${route.id} 没有精确 registry 能力回执，媒体 failover 已在请求前拒绝`,
+    );
+  }
   const model = backupModel(route);
   const configuration = legacyModelConfiguration(route.provider === 'deepseek'
     ? { MIMI_MODEL_PROVIDER: 'deepseek', DEEPSEEK_MODEL: model }
@@ -225,17 +236,36 @@ export class AgentRunService {
         : this.providerId;
       this.lastProviderId = providerId;
       selectedProvider = providerId;
-      const backupIncompatible = this.backupProvider
-        ? backupIncompatibility(
+      const requirements = freezeRunModelRequirements(
+        request.modelInput ?? request.input,
+        request.options,
+      );
+      const scenario = request.options?.scenario
+        ?? (request.options?.cause ? 'background.default' : 'conversation.default');
+      let backupIncompatible: Error | undefined;
+      let backupBinding: RunModelBinding | undefined;
+      if (this.backupProvider) {
+        if (typeof this.agent.resolveProviderRouteBinding === 'function') {
+          try {
+            backupBinding = this.agent.resolveProviderRouteBinding(
+              this.backupProvider,
+              requirements,
+              scenario,
+            );
+          } catch (error) {
+            backupIncompatible = new Error(
+              `Backup Provider ${this.backupProvider.id} 与冻结 WorkUnit 硬能力不兼容，已在请求前拒绝`,
+              { cause: error },
+            );
+          }
+        } else {
+          backupIncompatible = backupIncompatibility(
             this.backupProvider,
-            freezeRunModelRequirements(
-              request.modelInput ?? request.input,
-              request.options,
-            ),
-            request.options?.scenario
-              ?? (request.options?.cause ? 'background.default' : 'conversation.default'),
-          )
-        : undefined;
+            requirements,
+            scenario,
+          );
+        }
+      }
       const candidates: ProviderCandidate[] = [
         { id: providerId, role: 'primary' },
         ...(this.backupProvider && !backupIncompatible
@@ -253,6 +283,7 @@ export class AgentRunService {
                 providerRoute: {
                   provider: this.backupProvider.provider,
                   model: backupModel(this.backupProvider),
+                  ...(backupBinding ? { exactBinding: backupBinding } : {}),
                 },
               }
             : request.options,

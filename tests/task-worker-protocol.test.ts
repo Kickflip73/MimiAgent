@@ -192,6 +192,25 @@ test('Task worker freezes one routed target and scopes only its selected credent
     workerToken: 'a'.repeat(43),
     workspaceAccess: 'read',
     enableMcp: false,
+    providerCredential: credential,
+    modelBinding: binding,
+    modelConfiguration,
+    backupProvider: {
+      id: 'openai:gpt-5.4-mini', provider: 'openai', model: 'gpt-5.4-mini',
+    },
+    backupProviderCredential: { provider: 'openai', apiKey: 'backup-secret' },
+    mcpEnvironment: {},
+    config,
+  }), /冻结 modelBinding 不能同时携带 Backup Provider/u);
+  assert.throws(() => taskWorkerInitSchema.parse({
+    type: 'init',
+    taskId: 'd4d0011b-d947-5963-b2ef-7982b303f612',
+    database: '/daemon/mimi.db',
+    assistantConfig: '/daemon/assistant.json',
+    socket: '/daemon/mimi.sock',
+    workerToken: 'a'.repeat(43),
+    workspaceAccess: 'read',
+    enableMcp: false,
     providerCredential: {
       ...credential,
       target: { providerId: 'left', modelId: 'left-model' },

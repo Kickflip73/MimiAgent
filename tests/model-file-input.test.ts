@@ -307,4 +307,36 @@ test('standard OpenAI install scans input_file into a hard requirement before mo
   assert.equal(selectedInput?.profile?.requirements?.fileInput, true);
   assert.deepEqual(binding.target, { providerId: 'openai-main', modelId: 'gpt-5.4-mini' });
   assert.equal(config.providers[0]!.models[0]!.capabilities.fileInput, true);
+  const providerRouteBinding = MimiAgent.prototype.resolveProviderRouteBinding.call(
+    fakeAgent,
+    { provider: 'openai', model: 'gpt-5.4-mini' },
+    { fileInput: true, toolCalling: true },
+    'conversation.default',
+  );
+  assert.deepEqual(providerRouteBinding.target, {
+    providerId: 'openai-main', modelId: 'gpt-5.4-mini',
+  });
+  assert.equal(providerRouteBinding.reason, 'safe-fallback');
+  assert.throws(
+    () => MimiAgent.prototype.resolveProviderRouteBinding.call(
+      fakeAgent,
+      {
+        provider: 'deepseek',
+        model: 'gpt-5.4-mini',
+        exactBinding: providerRouteBinding,
+      },
+      { fileInput: true, toolCalling: true },
+      'conversation.default',
+    ),
+    /exact binding Provider 不一致/u,
+  );
+  assert.throws(
+    () => MimiAgent.prototype.resolveProviderRouteBinding.call(
+      fakeAgent,
+      { provider: 'openai', model: 'unregistered-vision-claim' },
+      { imageInput: true, toolCalling: true },
+      'conversation.default',
+    ),
+    /未在当前 registry 精确注册/u,
+  );
 });

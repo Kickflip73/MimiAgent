@@ -43,9 +43,12 @@
 - 同轮 image/file attachment 已可达，并已有 CAS/`MediaEvidence`/opaque workspace/ref 生命周期
   安全路径。显式 `generate_image` 现只接受可选 `mediaEvidenceId`，把唯一 inline Provider 图片
   有界解码和结构校验后先写 CAS/Session Evidence，再向 Session/Ledger 返回 ref-only result；
-  Google edit fixture 已证明同 Session 后续 Run/重启的原始像素精确回取。OpenAI multipart edit、
-  URL/multi artifact、普通聊天 `@media`/代词与多图重注入、语义 answer anchor、Memory 和 live
-  图片 Provider 验收仍是阻断项；不得用 unit/adapter fixture 宣称完整图片产品闭环。
+  Google edit fixture 已证明同 Session 后续 Run/重启的原始像素精确回取。普通 CLI/Daemon 的
+  显式 `@media:media-evidence:sha256:<digest>` 也已接通同 Session CAS 重注入：Event/Session 只
+  保存 ref，新附件与引用合计最多 8 项且 inline 合计最多 20 MiB；跨 profile/workspace/trust、
+  篡改或不兼容 Provider 均在请求前拒绝，completed ledger 回放不读 CAS。OpenAI multipart edit、
+  URL/multi artifact、隐式代词/跨 Session 连续性、语义 answer anchor、Memory 和 live 图片 Provider
+  验收仍是阻断项；不得用 fixture/集成回归宣称完整图片产品闭环。
 - `@audio/@video` 目前只允许有界摄取后明确 blocked。没有生产 transcript、音轨、关键帧、
   time-range 或 MemoryCandidate caller；schema fixture 不得计为分析成功。尚无可信有界 probe 的
   container/codec 继续 fail closed，结构完整性 hardening 保留在 backlog。
@@ -58,6 +61,11 @@
   完整 resume 与正式 100×30 soak 仍保持 Provider 前 `NO-GO`。
   `realProviderTurnsExecuted=0`、正式分母为 0，直到
   正式场景证据通过审计后才可更新前者；现有校准轮次不计入正式分母。
+- formal runner 当前的 `turn_dispatch_started`、checkpoint 与 evidence journal 尚未在派发前
+  完成 file/dir `fsync`，崩溃恢复可能把已派发轮误当作可重放；真实 Provider `.env` 也仍位于
+  会被保留的 evidence runtime bundle，SIGKILL 可留下 credential。正式 pilot 前必须把 secret
+  文件移到证据根之外的私有临时目录，并让 dispatch journal 先 durable sync、resume 重算旧证据
+  且对 uncertain turn 永不重放。修复前不得启动新的 formal Provider 请求。
 - CAS owner/ref/GC 已进入 production attachment path，并通过完整单测/coverage CI 以及进程
   终止、锁恢复、并发 owner、启动 reconcile 等确定性 fault-injection；真实掉电与长期配额/GC
   soak 仍未形成 promotion 证据。发生不确定恢复状态时必须保留 ref 并失败关闭，不能用 unit

@@ -26,6 +26,10 @@ import type {
   TaskRecord,
 } from './types.js';
 import { parseAttachmentInput } from '../runtime/attachments.js';
+import {
+  MAX_MEDIA_REFERENCE_COUNT,
+  parseMediaReferenceInput,
+} from '../runtime/media-reference-request.js';
 import type { SessionSummary } from '../core/session.js';
 import type { MemoryRef, MemoryScope } from '../core/memory.js';
 import type { ModelControlRequest } from '../core/model-routing.js';
@@ -241,10 +245,22 @@ export class MimiChatClient {
   ): Promise<AcceptedMimiEvent> {
     const eventId = randomUUID();
     const parsed = parseAttachmentInput(input);
-    if (!parsed.text && !parsed.attachments.length) throw new Error('命令不能为空');
+    const referenced = parseMediaReferenceInput(parsed.text);
+    if (parsed.attachments.length + referenced.mediaEvidenceIds.length
+      > MAX_MEDIA_REFERENCE_COUNT) {
+      throw new Error(`附件与媒体引用合计最多 ${MAX_MEDIA_REFERENCE_COUNT} 个`);
+    }
+    if (!referenced.text && !parsed.attachments.length && !referenced.mediaEvidenceIds.length) {
+      throw new Error('命令不能为空');
+    }
     const params = {
-      text: parsed.text || '请检查随附文件。',
+      text: referenced.text || (parsed.attachments.length
+        ? '请检查随附文件。'
+        : '请检查引用的媒体证据。'),
       ...(parsed.attachments.length ? { attachments: parsed.attachments } : {}),
+      ...(referenced.mediaEvidenceIds.length
+        ? { referencedMediaEvidenceIds: referenced.mediaEvidenceIds }
+        : {}),
       source: 'local-cli',
       trust: 'owner',
       profileId: 'owner',

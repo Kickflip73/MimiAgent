@@ -20,7 +20,7 @@ export interface HostedAgentRunRequest extends AgentRunRequest {
   executionId?: string;
   workspaceRoot?: string;
   /** Materialized only after execution-ledger recovery misses. */
-  modelInputFactory?: () => Promise<AgentInputItem[]>;
+  modelInputFactory?: (agent: MimiAgent) => Promise<AgentInputItem[]>;
 }
 
 export type HostCancelResult =
@@ -234,7 +234,7 @@ export class MimiHost {
             signal.throwIfAborted();
             return recovered;
           }
-          const modelInput = request.modelInput ?? await request.modelInputFactory?.();
+          const modelInput = request.modelInput ?? await request.modelInputFactory?.(actor.agent);
           signal.throwIfAborted();
           const result = await actor.runs.execute({
             input: request.input,

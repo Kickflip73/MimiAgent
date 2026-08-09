@@ -88,6 +88,11 @@ import { restrictedShellEnvironment } from './shell-environment.js';
 import { canAccessRuntimePaths, RunContextBuilder } from './run-context-builder.js';
 import { RuntimeActionCoordinator } from './runtime-action-coordinator.js';
 import { RuntimeControlCoordinator } from './runtime-control-coordinator.js';
+import {
+  resolveProviderRouteBinding as resolveRuntimeProviderRouteBinding,
+  type ProviderRunRoute,
+} from './provider-route-binding.js';
+import { freezeRunModelRequirements } from './run-model-requirements.js';
 import { createPlanTools } from './plan-tools.js';
 import { ContextAssembler } from './pipeline/context-assembler.js';
 import {
@@ -105,16 +110,12 @@ import {
 } from './pipeline/capability-registry.js';
 import { ToolSetBuilder } from './pipeline/tool-set-builder.js';
 import { AgentRequestFactory } from './pipeline/request-factory.js';
-import {
-  containsImageInput,
-  executeRunPipeline,
-} from './pipeline/run-pipeline.js';
+import { executeRunPipeline } from './pipeline/run-pipeline.js';
 import {
   RunCommitCoordinator,
 } from './pipeline/run-commit-coordinator.js';
 import { RunFactCollector } from './pipeline/run-fact-collector.js';
 import { PersonalMessageHub, type PersonalMessageScope } from './personal-message-hub.js';
-import { containsFileInput } from './providers/file-input.js';
 import {
   createMimiPreferenceTools,
 } from './preference-tools.js';
@@ -129,6 +130,7 @@ import {
 } from './ephemeral-owner-input.js';
 
 export { AGENT_MODES } from './instructions.js';
+export { freezeRunModelRequirements } from './run-model-requirements.js';
 export type { AgentMode } from './instructions.js';
 export type { ContextUsageSnapshot } from '../core/run-finalization.js';
 
@@ -206,28 +208,15 @@ export interface MimiRunOptions {
   personalMessage?: PersonalMessageScope;
   capabilityItems?: readonly EffectiveCapabilityItem[];
   capabilityCatalog?: CapabilityCatalogAccess;
-  providerRoute?: {
-    provider: AppConfig['provider'];
-    model?: string;
-  };
+  providerRoute?: ProviderRunRoute;
   modelProfile?: WorkUnitModelProfile;
   scenario?: string;
   /** Immutable, ref-only evidence staged before this Run. Raw media never belongs here. */
   mediaEvidence?: readonly MediaEvidence[];
+  /** Existing image Evidence selected from this Session for the current model turn. */
+  referencedMediaEvidenceIds?: readonly string[];
   /** Opaque binding resolved by the daemon; absolute workspace paths never enter Events/Evidence. */
   workspaceId?: string;
-}
-
-export function freezeRunModelRequirements(
-  input: string | AgentInputItem[],
-  options?: MimiRunOptions,
-): Readonly<ModelRequirements> {
-  return Object.freeze({
-    ...options?.modelProfile?.requirements,
-    ...(containsImageInput(input) ? { imageInput: true } : {}),
-    ...(containsFileInput(input) ? { fileInput: true } : {}),
-    toolCalling: options?.modelProfile?.requirements?.imageOutput ? false : true,
-  });
 }
 
 export interface MimiAgentCreateOptions {
@@ -640,6 +629,13 @@ export class MimiAgent {
     return modelTargetKey(this.resolveRunModelBinding(input, options, preferences).target);
   }
 
+  modelRequirementsForRun(
+    input: string | AgentInputItem[],
+    options?: MimiRunOptions,
+  ): Readonly<ModelRequirements> {
+    return freezeRunModelRequirements(input, options);
+  }
+
   resolveRunModelBinding(
     input: string | AgentInputItem[],
     options: MimiRunOptions | undefined,
@@ -658,6 +654,19 @@ export class MimiAgent {
         ?? this.components.modelGateway.legacyAgentTarget(preferences.model, preferences.provider),
       routeVersion: this.components.modelConfig.routeVersion,
     });
+  }
+
+  resolveProviderRouteBinding(
+    route: ProviderRunRoute,
+    requirements: Readonly<ModelRequirements>,
+    scenario: string,
+  ): RunModelBinding {
+    return resolveRuntimeProviderRouteBinding({
+      modelGateway: this.components.modelGateway,
+      modelResolver: this.components.modelResolver,
+      routeVersion: this.components.modelConfig.routeVersion,
+      ...(this.fixedModelBinding ? { fixedModelBinding: this.fixedModelBinding } : {}),
+    }, route, requirements, scenario);
   }
 
   async stream(input: string | AgentInputItem[], signal?: AbortSignal, options?: MimiRunOptions) {

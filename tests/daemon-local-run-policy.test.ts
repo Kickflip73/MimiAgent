@@ -87,3 +87,74 @@ test('local no-tools policy parser is exact and fail-closed', () => {
   assert.equal(parseRequestedLocalRunPolicy(undefined), undefined);
   assert.throws(() => parseRequestedLocalRunPolicy('no-tools'), /不支持/u);
 });
+
+test('stable media refs persist through the authenticated Event boundary without payload bypasses', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-media-ref-ingress-'));
+  const workspace = path.join(root, 'workspace');
+  await mkdir(workspace);
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  const workspaceRegistry = new SessionWorkspaceRegistry(path.join(root, 'session-workspaces.json'));
+  const evidenceId = `media-evidence:sha256:${'a'.repeat(64)}`;
+  const options = {
+    defaultWorkspaceRoot: workspace,
+    attachmentRoot: path.join(root, 'attachments'),
+    store,
+    workspaceRegistry,
+    ingestOwnerPrompt: (event: EventEnvelope, prompt: string) => {
+      const payload = event.payload as Record<string, unknown>;
+      return store.ingestEvent({ ...event, payload: { ...payload, prompt } });
+    },
+  };
+  try {
+    const accepted = await submitDaemonEvent({
+      text: 'continue editing',
+      source: 'local-cli',
+      trust: 'owner',
+      profileId: 'owner',
+      sessionKey: 'media-session',
+      workspaceRoot: workspace,
+      referencedMediaEvidenceIds: [evidenceId],
+      eventId: 'media-reference-event',
+      externalId: 'local-cli:media-reference-event',
+    }, options);
+    assert.equal(accepted.inserted, true);
+    assert.deepEqual(
+      (accepted.event.payload as Record<string, unknown>).referencedMediaEvidenceIds,
+      [evidenceId],
+    );
+    const durableJson = JSON.stringify(accepted.event);
+    assert.doesNotMatch(durableJson, /data:|base64/u);
+    assert.doesNotMatch(durableJson, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    const base = {
+      text: 'blocked', source: 'local-cli', trust: 'owner', sessionKey: 'media-session',
+    };
+    await assert.rejects(submitDaemonEvent({
+      ...base, source: 'connector:test', trust: 'external',
+      referencedMediaEvidenceIds: [evidenceId],
+    }, options), /只有 local-cli owner/u);
+    await assert.rejects(submitDaemonEvent({
+      ...base, sessionKey: undefined, referencedMediaEvidenceIds: [evidenceId],
+    }, options), /需要显式 Session/u);
+    await assert.rejects(submitDaemonEvent({
+      ...base, payload: { prompt: 'bypass' }, referencedMediaEvidenceIds: [evidenceId],
+    }, options), /显式 payload/u);
+    await assert.rejects(submitDaemonEvent({
+      ...base, payload: { referencedMediaEvidenceIds: [evidenceId] },
+    }, options), /保留字段/u);
+    await assert.rejects(submitDaemonEvent({
+      ...base, referencedMediaEvidenceIds: 'private-path',
+    }, options), /必须是数组/u);
+    await assert.rejects(submitDaemonEvent({
+      ...base, referencedMediaEvidenceIds: [evidenceId, evidenceId],
+    }, options), /不能重复/u);
+    await assert.rejects(submitDaemonEvent({
+      ...base,
+      attachments: [{ kind: 'image', path: 'not-read-before-count.png' }],
+      referencedMediaEvidenceIds: Array.from({ length: 8 }, (_, index) =>
+        `media-evidence:sha256:${index.toString(16).padStart(64, '0')}`),
+    }, options), /附件与媒体引用合计最多 8 个/u);
+  } finally {
+    store.close();
+  }
+});

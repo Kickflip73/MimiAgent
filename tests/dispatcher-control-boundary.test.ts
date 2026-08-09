@@ -17,6 +17,7 @@ import {
   attachRunFinalization,
   createRunFinalization,
 } from '../src/core/run-finalization.js';
+import { createOriginalMediaEvidence } from '../src/core/media-evidence.js';
 import { FileSession } from '../src/core/session.js';
 import { RunFailureError } from '../src/core/run-failure.js';
 import { MimiHost } from '../src/runtime/mimi-host.js';
@@ -78,9 +79,12 @@ test('dispatcher resolves modern and queued legacy attachments through the confi
   const digest = createHash('sha256').update(image).digest('hex');
   const legacyPath = path.join(attachmentRoot, digest);
   const store = new MimiStore(path.join(root, 'mimi.db'));
+  const session = new FileSession(path.join(root, 'sessions'), 'owner');
+  await session.ensure();
   const captured: Array<{ modelInput?: unknown; mediaEvidence?: readonly unknown[] }> = [];
   const agent = {
     currentSessionId: 'owner',
+    session,
     currentCapabilitySnapshot: () => undefined,
     completedExecution: async () => undefined,
     finalizeExecutionLedger: async () => undefined,
@@ -193,15 +197,19 @@ test('CLI trigger Event provenance reaches the real run pipeline without confusi
   const runner = (agent as unknown as {
     runner: { run: (...args: unknown[]) => Promise<unknown> };
   }).runner;
-  runner.run = async () => ({
-    rawResponses: [],
-    runContext: { usage: {} },
-    finalOutput: 'image inspected',
-    completed: Promise.resolve(),
-    cancelled: false,
-    interruptions: [],
-    async *[Symbol.asyncIterator]() {},
-  });
+  const modelInputs: unknown[] = [];
+  runner.run = async (_runtimeAgent, modelInput) => {
+    modelInputs.push(modelInput);
+    return {
+      rawResponses: [],
+      runContext: { usage: {} },
+      finalOutput: 'image inspected',
+      completed: Promise.resolve(),
+      cancelled: false,
+      interruptions: [],
+      async *[Symbol.asyncIterator]() {},
+    };
+  };
   const store = new MimiStore(path.join(root, 'mimi.db'));
   const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
   assert.equal(agent.mediaArtifacts.root, attachmentRoot);
@@ -230,7 +238,39 @@ test('CLI trigger Event provenance reaches the real run pipeline without confusi
     assert.equal(terminal?.status, 'completed', terminal?.error);
     const session = new FileSession(path.join(dataRoot, 'sessions'), 'owner');
     assert.equal((await session.listMediaEvidence()).length, 1);
-    assert.equal((await session.listMediaEvidence())[0]?.sourceRef.eventId, 'source-media-event');
+    const evidence = (await session.listMediaEvidence())[0]!;
+    assert.equal(evidence.sourceRef.eventId, 'source-media-event');
+
+    const followUp = store.ingestEvent({
+      id: 'source-media-follow-up',
+      externalId: 'source-media-follow-up',
+      source: 'local-cli',
+      kind: 'command',
+      trust: 'owner',
+      payload: {
+        prompt: 'inspect the exact same original image again',
+        referencedMediaEvidenceIds: [evidence.id],
+      },
+      occurredAt: now,
+      receivedAt: now,
+      priority: 100,
+      profileId: 'owner',
+      sessionKey: 'owner',
+    });
+    assert.ok(followUp.task);
+    assert.equal(await dispatcher.processTaskById(followUp.task.id), true);
+    assert.equal(store.getTask(followUp.task.id)?.status, 'completed');
+    assert.equal(modelInputs.length, 2);
+    assert.match(JSON.stringify(modelInputs[1]), /input_image/u);
+    assert.match(JSON.stringify(modelInputs[1]), new RegExp(
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+        'base64',
+      ).toString('base64').slice(0, 40),
+      'u',
+    ));
+    assert.match(JSON.stringify(modelInputs[1]), new RegExp(evidence.id, 'u'));
+    assert.equal((await session.listMediaEvidence()).length, 1);
     assert.deepEqual(
       (await readdir(path.join(attachmentRoot, '.refs'))).map((name) => name.split('-')[0]).sort(),
       ['event', 'session'],
@@ -241,6 +281,114 @@ test('CLI trigger Event provenance reaches the real run pipeline without confusi
       (await readdir(path.join(attachmentRoot, '.refs'))).map((name) => name.split('-')[0]),
       ['event'],
     );
+  } finally {
+    await agent.close();
+    store.close();
+    if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAiKey;
+  }
+});
+
+test('combined attachment and Session Evidence budget fails before current CAS reads or model dispatch', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-combined-media-budget-'));
+  const workspace = path.join(root, 'workspace');
+  const dataRoot = path.join(root, 'data');
+  const attachmentRoot = path.join(root, 'attachments');
+  await mkdir(workspace, { recursive: true });
+  const previousOpenAiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = 'test-only-combined-media-budget-key';
+  const agent = await MimiAgent.create({
+    provider: 'openai',
+    workspaceRoot: workspace,
+    dataRoot,
+    daemonDataRoot: root,
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: 20,
+  }, 'owner').catch((error: unknown) => {
+    if (previousOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAiKey;
+    throw error;
+  });
+  let modelCalls = 0;
+  const runner = (agent as unknown as {
+    runner: { run: (...args: unknown[]) => Promise<unknown> };
+  }).runner;
+  runner.run = async () => {
+    modelCalls += 1;
+    throw new Error('model must not run after media budget rejection');
+  };
+
+  const sourceRunId = 'combined-budget-source-run';
+  const referencedSha = 'c'.repeat(64);
+  await agent.session.beginRun('register referenced image metadata', sourceRunId, 'test-owner');
+  const referenced = createOriginalMediaEvidence({
+    kind: 'image',
+    sha256: referencedSha,
+    mimeType: 'image/png',
+    bytes: 68,
+    originalName: 'prior.png',
+    mediaRef: `media-artifact:sha256:${referencedSha}`,
+    sourceRef: {
+      entry: 'local-attachment',
+      sourceId: 'combined-budget-source',
+      trust: 'owner',
+      profileId: 'owner',
+      sessionId: 'owner',
+      runId: sourceRunId,
+    },
+    occurredAt: '2026-08-10T02:00:00.000Z',
+  });
+  assert.equal(await agent.session.registerMediaEvidence([referenced], sourceRunId), 1);
+  await agent.session.completeRun('metadata registered', sourceRunId);
+
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, agent, attention, undefined, undefined, {
+    attachmentRoot,
+    maxAttempts: 1,
+  });
+  try {
+    const now = new Date().toISOString();
+    const firstSha = 'a'.repeat(64);
+    const secondSha = 'b'.repeat(64);
+    const routed = store.ingestEvent({
+      id: 'combined-media-budget-event',
+      externalId: 'combined-media-budget-event',
+      source: 'local-cli',
+      kind: 'command',
+      trust: 'owner',
+      profileId: 'owner',
+      sessionKey: 'owner',
+      priority: 100,
+      occurredAt: now,
+      receivedAt: now,
+      payload: {
+        prompt: 'compare current files with the prior image',
+        referencedMediaEvidenceIds: [referenced.id],
+        attachments: [
+          {
+            kind: 'file', name: 'first.bin', mediaType: 'application/octet-stream',
+            bytes: 10 * 1024 * 1024, sha256: firstSha,
+            artifactRef: `media-artifact:sha256:${firstSha}`,
+          },
+          {
+            kind: 'file', name: 'second.bin', mediaType: 'application/octet-stream',
+            bytes: 10 * 1024 * 1024, sha256: secondSha,
+            artifactRef: `media-artifact:sha256:${secondSha}`,
+          },
+        ],
+      },
+    });
+    assert.ok(routed.task);
+    assert.equal(await dispatcher.processTaskById(routed.task.id), true);
+    const terminal = store.getTask(routed.task.id);
+    assert.equal(terminal?.status, 'failed');
+    assert.match(terminal?.error ?? '', /合计超过 20MB/u);
+    assert.equal(modelCalls, 0);
+    await assert.rejects(realpath(path.join(attachmentRoot, firstSha)), /ENOENT/u);
+    await assert.rejects(realpath(path.join(attachmentRoot, secondSha)), /ENOENT/u);
   } finally {
     await agent.close();
     store.close();
@@ -310,6 +458,67 @@ test('opaque Session workspace binding scopes a new Session first Run without le
   }
 });
 
+test('dispatcher rejects forged external attachments and media refs without an explicit Session before Host', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-media-ingress-'));
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  let hostCalls = 0;
+  const agent = {
+    currentSessionId: 'owner',
+    currentCapabilitySnapshot: () => undefined,
+    completedExecution: async () => undefined,
+    finalizeExecutionLedger: async () => undefined,
+    reopenExecutionLedger: async () => undefined,
+    close: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, {
+    execute: async () => {
+      hostCalls += 1;
+      return { answer: 'must not run', effects: [] };
+    },
+  });
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, host, attention, undefined, undefined, {
+    attachmentRoot: path.join(root, 'missing-artifacts'),
+    maxAttempts: 1,
+  });
+  try {
+    const now = new Date().toISOString();
+    const digest = 'a'.repeat(64);
+    const external = store.ingestEvent({
+      id: 'forged-external-attachment', externalId: 'forged-external-attachment',
+      source: 'connector:forged', kind: 'command', trust: 'external', profileId: 'owner',
+      sessionKey: 'external-session', priority: 100, occurredAt: now, receivedAt: now,
+      payload: {
+        prompt: 'pretend this attachment was inspected',
+        attachments: [{
+          kind: 'file', name: 'notes.txt', mediaType: 'text/plain', bytes: 1,
+          sha256: digest, artifactRef: `media-artifact:sha256:${digest}`,
+        }],
+      },
+    });
+    assert.ok(external.task);
+    assert.equal(await dispatcher.processTaskById(external.task.id), true);
+    assert.match(store.getTask(external.task.id)?.error ?? '', /只有 local-cli owner/u);
+
+    const unbound = store.ingestEvent({
+      id: 'unbound-owner-media-ref', externalId: 'unbound-owner-media-ref',
+      source: 'local-cli', kind: 'command', trust: 'owner', profileId: 'owner',
+      priority: 100, occurredAt: now, receivedAt: now,
+      payload: {
+        prompt: 'reuse an image without choosing a Session',
+        referencedMediaEvidenceIds: [`media-evidence:sha256:${'b'.repeat(64)}`],
+      },
+    });
+    assert.ok(unbound.task);
+    assert.equal(await dispatcher.processTaskById(unbound.task.id), true);
+    assert.match(store.getTask(unbound.task.id)?.error ?? '', /显式 Session/u);
+    assert.equal(hostCalls, 0);
+  } finally {
+    await host.close();
+    store.close();
+  }
+});
+
 test('completed execution receipt is recovered before a missing attachment is read or provider is called', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-ledger-media-recovery-'));
   const store = new MimiStore(path.join(root, 'mimi.db'));
@@ -347,6 +556,7 @@ test('completed execution receipt is recovered before a missing attachment is re
       occurredAt: now, receivedAt: now,
       payload: {
         prompt: 'read attachment',
+        referencedMediaEvidenceIds: [`media-evidence:sha256:${'b'.repeat(64)}`],
         attachments: [{
           kind: 'file', name: 'notes.txt', mediaType: 'text/plain', bytes: 1,
           sha256: digest, artifactRef: `media-artifact:sha256:${digest}`,

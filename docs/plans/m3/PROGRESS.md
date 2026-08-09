@@ -134,22 +134,32 @@
 - 同一 Session 的后续 Run 与进程重启可用 `mediaEvidenceId` 重新校验 CAS，并在 Google edit
   请求边界短暂物化完全相同的原始像素；跨 Session、跨 workspace、不存在或被篡改的 ref 均在
   Provider 前拒绝。OpenAI edit 因缺少 multipart adapter 继续网络前 blocked。
+- 普通 CLI/Daemon Conversation 已接通显式
+  `@media:media-evidence:sha256:<digest>`：ChatClient 把 token 转为 immutable Event 中的
+  `referencedMediaEvidenceIds`，Dispatcher/Run 在同一 Session/profile/workspace/trust 下验证 Evidence
+  与 CAS 后临时构造 `input_image`，Session 与 Event 不保存 data URL。重启可恢复；引用与新附件
+  合计最多 8 项，全部 inline 图片合计最多 20 MiB。跨 scope、篡改和不兼容模型均在 Provider 前
+  拒绝；completed execution receipt 在 CAS materializer 前回放，零 artifact read/Provider call。
+- `providerRoute` 和 backup failover 现在必须解析到当前 registry 的精确模型，并以真实 capability
+  满足冻结 WorkUnit；任意模型名不再被推定支持 image/file，未注册或不兼容 route 在网络前移除。
 - 当前证据是 image/media unit、真实 adapter payload 与本地 fixture 回归，不是 live 图片
-  Provider 验收。普通聊天 `@media`/代词续指、多图重注入、语义 answer anchor、Memory 编译、
-  remote URL 与多 artifact 仍未完成；本 tranche 不改变正式 100×30 分母 0 或产品门禁状态。
-- 本 tranche 门禁已完成：`npm run check` 退出 0；完整 `npm test` 为 1049/1049、0 fail，耗时
-  117.0 秒；`npm run build` 与 `npm run test:package` 均退出 0。conversation manifest 校验仍为
+  Provider 验收。显式 `@media` 有 CLI→Event→Dispatcher→真实 pipeline 集成回归，但隐式代词、
+  跨 Session、语义 answer anchor、Memory 编译、remote URL 与多 artifact 仍未完成；本 tranche
+  不改变正式 100×30 分母 0 或产品门禁状态。
+- 本 tranche 门禁已完成：`npm run check` 退出 0；完整 `npm test` 为 1062/1062、0 fail，耗时
+  116.2 秒；`npm run build` 与 `npm run test:package` 均退出 0。conversation manifest 校验仍为
   103 scenarios / 3090 declared turns，`realProviderTurnsExecuted=0` 且 formal `NO-GO`；这些
   工程/fixture 测试不计 live 图片验收或 100×30 正式轮次。
 - 最终文件集的 `npm run ci` 也退出 0：repository hygiene、release consistency、依赖方向与
-  asset boundary 均通过，coverage 套件 1049/1049，整体 line/branch/function 覆盖率分别为
-  89.19% / 78.92% / 85.53%，随后 clean build 与 packed-package smoke 通过。
+  asset boundary 均通过，coverage 套件 1062/1062，整体 line/branch/function 覆盖率分别为
+  89.27% / 79.18% / 85.64%，随后 clean build 与 packed-package smoke 通过。ARC-303
+  完整生产面为 8443/8505，未上调门限，保留 62 行余量。
 
 ## M3 能力审计
 
 | 区域 | 已有可复用能力 | 尚未证明/实现 |
 |---|---|---|
-| 图片 | 同轮多图输入；CLI attachment 已有 CAS ref/Evidence；显式 `generate_image` 输出已在 ledger 前 CAS 化并返回 ref-only，Google edit fixture 可按同 Session `mediaEvidenceId` 跨后续 Run/重启精确回取 | live 图片 Provider；OpenAI multipart edit；普通聊天 `@media`/代词与多图重注入；语义 answer anchor、Memory、URL/multi artifact |
+| 图片 | 同轮多图输入；CLI attachment 已有 CAS ref/Evidence；`generate_image` 输出 ref-only；Google edit fixture 与普通 CLI/Daemon 显式 `@media` 均可按同 Session Evidence 跨后续 Run/重启精确回取 | live 图片 Provider；OpenAI multipart edit；隐式代词/跨 Session 连续性；语义 answer anchor、Memory、URL/multi artifact |
 | 语音 | 既有 2～30 秒分段 ASR、`say` TTS、wake phrase、文件转写；新增 transcription-only transport/controller contract | CLI/mic/speaker composition；真实 turn detection、barge-in、低延迟、断线与文本降级 |
 | 音频 | `@audio` 有界摄取并在 Provider 前诚实 blocked；Evidence schema 支持 transcript anchor | 生产 ASR caller、时间片、真实 model binding/coverage 与 MemoryCandidate |
 | 视频 | `@video` 有界摄取并在 Provider 前诚实 blocked；Evidence schema 支持 keyframe/time-range anchor | 音轨提取、关键帧、时间片、有界理解、可信 adapter receipt 与诚实 coverage |
@@ -162,8 +172,9 @@
   完整单测、coverage CI、构建与 package smoke 已绿；外部掉电/长期 soak 未完成，不能宣称
   promotion gate 通过。
 - Slice 1（多图原图引用）：同轮可达；显式 `generate_image` 输出和同 Session
-  `mediaEvidenceId` Google edit 的 CAS/ref-only 跨 Run/重启闭环已由 fixture 验证。普通聊天
-  `@media`/代词、多图重注入、语义 answer anchor、Memory 与 live Provider 验收仍待实现。
+  `mediaEvidenceId` Google edit 的 CAS/ref-only 跨 Run/重启闭环已由 fixture 验证；普通 CLI/Daemon
+  显式 `@media` 也已通过 Event/Dispatcher/真实 pipeline 集成回归。隐式代词、跨 Session 连续性、
+  语义 answer anchor、Memory 与 live Provider 验收仍待实现。
 - Slice 2（音频时间片与 MemoryCandidate）：待实现。
 - Slice 3（实时语音）：transport/controller 合同已固定但产品不可达；CLI/mic/speaker 与
   Session actor composition、实机延迟/释放证据待实现。

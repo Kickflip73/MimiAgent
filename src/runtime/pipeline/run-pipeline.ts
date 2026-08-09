@@ -25,7 +25,7 @@ import { parseSkillInvocation } from '../../extensions/skill-invocation.js';
 import type { Skill } from '../../extensions/skills.js';
 import { createSubAgentTools } from '../../extensions/subagents.js';
 import { createTeamTools } from '../../extensions/team.js';
-import { createModel, createModelContext, normalizeModelInput, prepareComputerHistoryForModelInput } from '../model.js';
+import { createModelContext, normalizeModelInput, prepareComputerHistoryForModelInput } from '../model.js';
 import { AGENT_MODES, BASE_INSTRUCTIONS } from '../instructions.js';
 import { withExecutionLedger } from '../tool-ledger.js';
 import { materializeMcpTools } from '../mcp-ledger.js';
@@ -56,19 +56,8 @@ import {
 } from './tool-set-builder.js';
 import { RunFactCollector } from './run-fact-collector.js';
 import { registerRunMediaEvidence } from './media-evidence-registration.js';
-
-export function containsImageInput(input: string | AgentInputItem[]): boolean {
-  if (typeof input === 'string') return false;
-  return input.some((item) => {
-    const value = item as unknown as Record<string, unknown>;
-    if (!Array.isArray(value.content)) return false;
-    return value.content.some((part) => (
-      Boolean(part)
-      && typeof part === 'object'
-      && (part as Record<string, unknown>).type === 'input_image'
-    ));
-  });
-}
+import { materializeMediaEvidenceReferences } from '../media-input-materializer.js';
+import { containsImageInput } from '../run-model-requirements.js';
 
 function renderActiveSkills(skills: readonly Skill[]): string {
   if (!skills.length) return '';
@@ -102,6 +91,20 @@ export async function executeRunPipeline(
     await host.refreshModelConfiguration();
     const textInput = inputText(input);
     if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
+    const modelInput = options?.referencedMediaEvidenceIds?.length
+      ? await materializeMediaEvidenceReferences({
+          input,
+          evidenceIds: options.referencedMediaEvidenceIds,
+          session: host.session,
+          artifacts: host.mediaArtifacts,
+          authority: {
+            sessionId: host.sessionId,
+            profileId: options.cause?.profileId ?? 'owner',
+            ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+            trust: options.cause?.trust ?? 'owner',
+          },
+        })
+      : input;
     const preferences = await host.session.getPreferences();
     const routeConfig = options?.providerRoute
       ? { ...host.config, provider: options.providerRoute.provider }
@@ -115,20 +118,20 @@ export async function executeRunPipeline(
     }
     if (
       host.fixedModelBinding
-      && containsImageInput(input)
+      && containsImageInput(modelInput)
       && !host.components.modelGateway.inspect(host.fixedModelBinding.target).capabilities.imageInput
     ) {
       throw new Error('冻结模型不满足 imageInput/图片输入硬能力');
     }
     const binding = options?.providerRoute
-      ? undefined
-      : host.resolveRunModelBinding(input, options, preferences);
-    const routeModel = options?.providerRoute
-      ? createModel(routeConfig, options.providerRoute.model)
-      : host.runtimeForBinding(binding!);
-    const routeProvider = binding
-      ? host.components.modelGateway.provider(binding.target)
-      : undefined;
+      ? host.resolveProviderRouteBinding(
+          options.providerRoute,
+          host.modelRequirementsForRun(modelInput, options),
+          scenario,
+        )
+      : host.resolveRunModelBinding(modelInput, options, preferences);
+    const routeModel = host.runtimeForBinding(binding);
+    const routeProvider = host.components.modelGateway.provider(binding.target);
     const scope = captureRunScope({
       sessionId: host.sessionId,
       workspaceRoot: host.config.workspaceRoot,
@@ -934,7 +937,7 @@ export async function executeRunPipeline(
       });
       return { input: view.input, instructions: view.instructions };
     };
-    const streamResult = await host.runner.run(request.agent, input, {
+    const streamResult = await host.runner.run(request.agent, modelInput, {
       session: run.session,
       sessionInputCallback,
       callModelInputFilter,

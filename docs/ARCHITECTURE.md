@@ -506,7 +506,7 @@ MCPManager 复用 Agents SDK 的 `MCPServerStdio` 与 `MCPServerStreamableHttp`�
 
 ## 文件输入、诊断与撤销
 
-终端输入支持 `@image:相对路径`、`@file:相对路径`、`@audio:相对路径` 和 `@video:相对路径`，含空格时可使用引号。只允许 `local-cli + owner` 经受控字段提交附件；外部来源、`payload.attachments`、未知字段、绝对/控制字符名称、符号链接、工作区逃逸、声明 kind 与检测 MIME 不一致以及摘要变化均在 Event ingest 或模型请求前失败关闭。每个 Session 首次绑定一个物理 realpath，Daemon Event 只保存 opaque `workspaceId`；受控 registry 在 Host 内解析工具与 attachment root，不把私人绝对路径写入 SQLite。
+终端输入支持 `@image:相对路径`、`@file:相对路径`、`@audio:相对路径` 和 `@video:相对路径`，含空格时可使用引号；已持久化的同 Session 原图可用 `@media:media-evidence:sha256:<digest>` 显式引用。只允许 `local-cli + owner` 经受控字段提交附件或媒体引用；外部来源、`payload.attachments`/保留引用字段注入、未知字段、绝对/控制字符名称、符号链接、工作区逃逸、声明 kind 与检测 MIME 不一致以及摘要变化均在 Event ingest 或模型请求前失败关闭。每个 Session 首次绑定一个物理 realpath，Daemon Event 只保存 opaque `workspaceId` 和有界 Evidence ID；受控 registry 在 Host 内解析工具与 attachment root，不把私人绝对路径或物化媒体写入 SQLite。
 
 `MediaArtifactStore` 以 SHA-256 形成 `media-artifact:sha256:...` CAS ref，批次全部校验后才发布，并用 Event/Session owner ref、全局配额、grace marker 与 GC 管理共享 blob。Event、Session、Memory locator 和 Execution Ledger 的持久边界只保存稳定 ref、digest 与有界 `MediaEvidence` 元数据，原始二进制、data URL、base64、PCM frame 和 artifact 绝对路径不进入 Event/Session JSON；Provider 请求构造可在校验 owner、ref、摘要与 Session/Run/workspace provenance 后短暂物化所需字节，调用后不将该表示写回状态。最多 8 个附件；image/file 单个最多 10 MiB、全部可内联附件合计最多 20 MiB，audio 最多 200 MiB、video 最多 500 MiB，整批最多 500 MiB，artifact store 默认总配额 5 GiB。GC/掉电恢复仍须通过完整故障注入和长期 soak 才能成为 promotion 证据。
 
@@ -524,8 +524,21 @@ URL-only 或多 artifact 输出失败关闭，小图和超过 ledger inline 大�
 Provider 请求构造时短暂物化原始像素；Google edit adapter 已有精确字节回取的 fixture 回归，
 跨 Session、跨 workspace、摘要篡改和不存在的 ref 均在 Provider 调用前拒绝。OpenAI edit 尚无
 multipart adapter，仍在网络前 blocked；remote URL 和多 artifact output 也未开放。该路径的证据
-是 unit/adapter fixture，不是 live 图片 Provider 验收；普通聊天的 `@media`/代词续指、多图重注入、
-语义 answer anchor 与 Memory 编译仍未接入，不能由显式 Tool edit 推断为完整图片连续性。
+是 unit/adapter fixture，不是 live 图片 Provider 验收。
+
+普通 CLI/Daemon Conversation 另有显式 `@media:<MediaEvidence.id>` 路径。ChatClient 从 owner
+正文拆出引用并通过保留的 `referencedMediaEvidenceIds` Event 字段传递；自然语言 prompt 与
+canonical Session transcript 不携带 data URL。Dispatcher 只接受绑定 Session 的 `local-cli + owner`
+Event，并把引用作为本轮冻结的 `imageInput` requirement；pipeline 在同一 profile/workspace/trust
+下读取 Session Evidence、验证 CAS 摘要，随后只为 Provider 请求构造临时 `input_image`。进程重启
+后复用同一 Session JSON 与 artifact store 即可恢复；新附件和引用合计最多 8 项，既有 inline
+附件与引用图片的 decoded bytes 合计最多 20 MiB，所有配额在分配 base64 前检查。
+
+跨 Session、profile、workspace、trust、不存在/非图片/篡改 ref 或不支持 `imageInput` 的 route
+均在 Provider I/O 前失败关闭。Host 在模型输入 factory 和 reference materializer 之前查询
+completed execution receipt，因此 Task 安全回放即使 artifact 已丢失或损坏也不读 CAS、不调用
+Provider。该路径只有 fixture 与 CLI→Event→Dispatcher→真实 pipeline 集成证据，没有 live 图片
+Provider 轮次；它不做代词推断或跨 Session 关联，语义 answer anchor 与 Memory 编译仍未接入。
 
 Realtime audio 采用 transcription/VAD-only 合同：官方 OpenAI Realtime WebSocket 只接收固定 24 kHz PCM16 小帧，`createResponse=false`、Provider output audio 关闭、tools 为空，final transcript 只能进入现有 `MimiHost` canonical Run，回答文本应由 Mimi-owned TTS 播放。当前实现只有 transport/controller 与 Host runner 接口和确定性测试，没有 CLI/Session actor composition root、麦克风 source、播放器 sink 或产品启动入口；因此实时 ASR/TTS、turn detection、barge-in、重连和 750 ms 指标仍是 contract-only 门禁，不是已交付能力。
 
@@ -759,7 +772,10 @@ Provider success。handle 后的 429、余额、网络或 5xx 会记录该 route
 因此任何副作用开始后更不可能重放整轮。当前 AppConfig 未增加新的
 公开配置字段；可选 `MIMI_BACKUP_PROVIDER=openai|deepseek` 与
 `MIMI_BACKUP_MODEL` 由 runtime 组合根解析，backup 必须不同于 primary 且具备自己的
-Provider Key。主 Daemon、每个 Session actor 和 isolated worker 都显式构造同一主备
+Provider Key；其模型还必须在当前 model registry 精确注册，并以该 target 的真实 capability
+通过冻结 WorkUnit 要求，不能按 Provider 名或任意模型字符串推定媒体/fileInput 支持。未注册
+或不兼容的 backup 在任何 Provider I/O 前从候选中移除，公开 `providerRoute` 也走相同精确绑定，
+不再绕过 ModelResolver。主 Daemon、每个 Session actor 和 isolated worker 都显式构造同一主备
 RunService；worker route/credential 经过严格 IPC schema，credential 不进入基础环境、
 Shell 或 MCP。status、Doctor 和 diagnostic bundle 同时报告两条 route health。
 

@@ -5,6 +5,10 @@ import {
   stageAttachmentBatch,
   validateLocalAttachmentSubmission,
 } from '../runtime/attachments.js';
+import {
+  MAX_MEDIA_REFERENCE_COUNT,
+  mediaEvidenceIdsFromPayload,
+} from '../runtime/media-reference-request.js';
 import { eventKindSchema, eventTrustSchema, type EventEnvelope } from './types.js';
 import type { MimiStore } from './store.js';
 import type { SessionWorkspaceRegistry } from './session-workspace-registry.js';
@@ -21,6 +25,7 @@ interface SubmitParams extends Partial<Pick<EventEnvelope,
   resumeState?: boolean;
   approvedPersonalMessageText?: string;
   attachments?: unknown;
+  referencedMediaEvidenceIds?: unknown;
   requestedRunPolicy?: unknown;
 }
 
@@ -79,6 +84,9 @@ export async function submitDaemonEvent(
   if (payloadRecord && Object.hasOwn(payloadRecord, 'requestedRunPolicy')) {
     throw new Error('payload.requestedRunPolicy 是保留字段；必须通过认证 local-cli 提交参数设置');
   }
+  if (payloadRecord && Object.hasOwn(payloadRecord, 'referencedMediaEvidenceIds')) {
+    throw new Error('payload.referencedMediaEvidenceIds 是保留字段；必须通过认证 local-cli 提交参数设置');
+  }
   const requestedRunPolicy = parseRequestedLocalRunPolicy(params.requestedRunPolicy);
   if (requestedRunPolicy && (source !== 'local-cli' || trust !== 'owner')) {
     throw new Error('requestedRunPolicy 仅允许认证 local-cli owner 收窄本轮权限');
@@ -92,6 +100,25 @@ export async function submitDaemonEvent(
     payload: params.payload,
     attachments: params.attachments,
   });
+  const hasRequestedMediaReferences = Object.hasOwn(params, 'referencedMediaEvidenceIds');
+  const referencedMediaEvidenceIds = hasRequestedMediaReferences
+    ? mediaEvidenceIdsFromPayload({
+        referencedMediaEvidenceIds: params.referencedMediaEvidenceIds,
+      })
+    : [];
+  if (hasRequestedMediaReferences && (source !== 'local-cli' || trust !== 'owner')) {
+    throw new Error('只有 local-cli owner 输入可以提交媒体引用');
+  }
+  if (hasRequestedMediaReferences && !sessionKey) {
+    throw new Error('媒体引用需要显式 Session 绑定');
+  }
+  if (hasRequestedMediaReferences && params.payload !== undefined) {
+    throw new Error('显式 payload 不能与媒体引用同时提交');
+  }
+  if ((requestedAttachments?.length ?? 0) + referencedMediaEvidenceIds.length
+    > MAX_MEDIA_REFERENCE_COUNT) {
+    throw new Error(`附件与媒体引用合计最多 ${MAX_MEDIA_REFERENCE_COUNT} 个`);
+  }
   const prompt = params.payload === undefined ? requiredString(params.text, 'text') : undefined;
   const eventKind = eventKindSchema.parse(params.kind ?? 'command');
   const requestedWorkspaceRoot = source === 'local-cli' && trust === 'owner'
@@ -137,6 +164,7 @@ export async function submitDaemonEvent(
         ? { approvedPersonalMessageText: params.approvedPersonalMessageText.trim().slice(0, 4_000) }
         : {}),
       ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
+      ...(referencedMediaEvidenceIds.length ? { referencedMediaEvidenceIds } : {}),
     };
     const basePayload = requestedRunPolicy
       ? {

@@ -15,6 +15,7 @@ import { createSubAgentTools } from '../src/extensions/subagents.js';
 import { ModelGateway } from '../src/runtime/model-gateway.js';
 import { MediaArtifactStore } from '../src/runtime/media-artifact-store.js';
 import { createMediaTools, MediaRuntime } from '../src/runtime/media-runtime.js';
+import { freezeRunModelRequirements } from '../src/runtime/mimi-agent.js';
 import { WorkUnitModelResolver } from '../src/runtime/work-unit-model-resolver.js';
 
 const provider: ProviderDefinition = {
@@ -41,6 +42,14 @@ const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
   'base64',
 );
+
+test('a durable media Evidence reference freezes imageInput before materialization', () => {
+  assert.equal(freezeRunModelRequirements('reuse it', {
+    referencedMediaEvidenceIds: [
+      `media-evidence:sha256:${'a'.repeat(64)}`,
+    ],
+  }).imageInput, true);
+});
 
 async function mediaAuthority(root: string, runId: string) {
   const session = new FileSession(path.join(root, 'sessions'), 'media-session');

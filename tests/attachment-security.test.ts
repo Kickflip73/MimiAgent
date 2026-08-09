@@ -6,6 +6,10 @@ import {
   validateLocalAttachmentSubmission,
   type StagedAttachment,
 } from '../src/runtime/attachments.js';
+import {
+  mediaEvidenceIdsFromPayload,
+  parseMediaReferenceInput,
+} from '../src/runtime/media-reference-request.js';
 
 const digest = 'a'.repeat(64);
 
@@ -112,4 +116,60 @@ test('submit attachment policy rejects silent discard and payload path bypasses'
   assert.deepEqual(validateLocalAttachmentSubmission({
     source: 'local-cli', trust: 'owner', attachments: attachment,
   }), attachment);
+});
+
+test('stable media references are removed from text and parsed exactly once', () => {
+  const first = `media-evidence:sha256:${'1'.repeat(64)}`;
+  const second = `media-evidence:sha256:${'2'.repeat(64)}`;
+  assert.deepEqual(
+    parseMediaReferenceInput(`比较原图 @media:${first}\n以及 @media:${second}`),
+    { text: '比较原图 \n以及', mediaEvidenceIds: [first, second] },
+  );
+  assert.deepEqual(mediaEvidenceIdsFromPayload({
+    prompt: 'compare',
+    referencedMediaEvidenceIds: [first, second],
+  }), [first, second]);
+  assert.deepEqual(mediaEvidenceIdsFromPayload({ prompt: 'plain' }), []);
+
+  assert.throws(
+    () => parseMediaReferenceInput(`重复 @media:${first} @media:${first}`),
+    /不能重复/u,
+  );
+  assert.throws(
+    () => parseMediaReferenceInput(`错误 @media:media-evidence:sha256:${'A'.repeat(64)}`),
+    /格式无效/u,
+  );
+  assert.throws(
+    () => parseMediaReferenceInput(`错误 @MEDIA:${first}`),
+    /格式无效/u,
+  );
+  assert.throws(() => parseMediaReferenceInput('错误 @media:'), /格式无效/u);
+  assert.throws(
+    () => parseMediaReferenceInput(Array.from({ length: 9 }, (_, index) =>
+      `@media:media-evidence:sha256:${index.toString(16).padStart(64, '0')}`).join(' ')),
+    /最多 8 个/u,
+  );
+  for (const invalid of [null, {}, 'private', 1, false]) {
+    assert.throws(
+      () => mediaEvidenceIdsFromPayload({ referencedMediaEvidenceIds: invalid }),
+      /必须是数组/u,
+    );
+  }
+  assert.throws(
+    () => mediaEvidenceIdsFromPayload({ referencedMediaEvidenceIds: [first, first] }),
+    /不能重复/u,
+  );
+  assert.throws(
+    () => mediaEvidenceIdsFromPayload({
+      referencedMediaEvidenceIds: [`media-evidence:sha256:${'A'.repeat(64)}`],
+    }),
+    /格式无效/u,
+  );
+  assert.throws(
+    () => mediaEvidenceIdsFromPayload({
+      referencedMediaEvidenceIds: Array.from({ length: 9 }, (_, index) =>
+        `media-evidence:sha256:${index.toString(16).padStart(64, '0')}`),
+    }),
+    /最多 8 个/u,
+  );
 });
