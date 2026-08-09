@@ -156,6 +156,7 @@ export class HostCapabilityRegistry {
   }
 
   gatewayTools(deferredTools: readonly Tool[]): Tool[] {
+    if (deferredTools.length === 0) return [];
     const deferredNames = new Set(deferredTools.map((candidate) => candidate.name));
     for (const name of deferredNames) {
       if (!this.byName.has(name)) throw new Error(`Deferred capability 不属于当前 Host registry：${name}`);

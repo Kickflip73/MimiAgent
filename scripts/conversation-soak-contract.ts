@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { lstat, readFile, stat } from 'node:fs/promises';
+import path from 'node:path';
 
 export const conversationLanes = ['S', 'W', 'F', 'V', 'L'] as const;
 export const conversationEvidenceKinds = ['fixture', 'readiness', 'live_action', 'soak'] as const;
@@ -111,14 +113,28 @@ export interface TurnEvidenceInput {
   runtimeRunId?: string;
   cliExitCode: number | null;
   cliTimedOut: boolean;
+  event: unknown;
+  task: unknown;
   run: unknown;
+  sessionSnapshot: unknown;
   sessionDelta: unknown[];
   traceDelta: unknown[];
+  expectedAdvertisedTools: string[];
+  evidenceRoot: string;
+  entityArtifacts: {
+    event: ConversationEvidenceArtifact;
+    task: ConversationEvidenceArtifact;
+    run: ConversationEvidenceArtifact;
+    session: ConversationEvidenceArtifact;
+    trace: ConversationEvidenceArtifact;
+  };
   terminal: {
     rawPath: string;
     rawSha256: string;
+    rawBytes: number;
     normalizedPath: string;
     normalizedSha256: string;
+    normalizedBytes: number;
     normalizedText: string;
   };
   oraclePassed: boolean;
@@ -128,6 +144,12 @@ export interface TurnEvidenceInput {
     activeSessionRun: boolean;
     sourceTreeChanged: boolean;
   };
+}
+
+export interface ConversationEvidenceArtifact {
+  path: string;
+  sha256: string;
+  bytes: number;
 }
 
 export interface TurnEvidenceAudit {
@@ -562,7 +584,70 @@ function runFacts(value: unknown): {
   };
 }
 
-export function auditConversationTurnEvidence(input: TurnEvidenceInput): TurnEvidenceAudit {
+function canonicalToolNames(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) return undefined;
+  return [...new Set(value as string[])].sort();
+}
+
+async function verifiedArtifact(
+  root: string,
+  artifact: ConversationEvidenceArtifact,
+  label: string,
+  reasons: string[],
+): Promise<Buffer | undefined> {
+  if (!artifact.path || path.isAbsolute(artifact.path)
+    || !/^[0-9a-f]{64}$/u.test(artifact.sha256)
+    || !Number.isSafeInteger(artifact.bytes) || artifact.bytes < 0) {
+    reasons.push(`${label} evidence reference is invalid`);
+    return undefined;
+  }
+  const resolvedRoot = path.resolve(root);
+  const resolved = path.resolve(resolvedRoot, artifact.path);
+  if (resolved !== resolvedRoot && !resolved.startsWith(`${resolvedRoot}${path.sep}`)) {
+    reasons.push(`${label} evidence path escapes the output root`);
+    return undefined;
+  }
+  try {
+    const before = await lstat(resolved);
+    if (!before.isFile() || before.isSymbolicLink()) {
+      reasons.push(`${label} evidence is not a regular file`);
+      return undefined;
+    }
+    const contents = await readFile(resolved);
+    const after = await stat(resolved);
+    if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+      reasons.push(`${label} evidence changed while it was verified`);
+      return undefined;
+    }
+    if (contents.byteLength !== artifact.bytes) reasons.push(`${label} evidence byte count does not match`);
+    if (sha256(contents) !== artifact.sha256) reasons.push(`${label} evidence digest does not match`);
+    return contents;
+  } catch (error) {
+    reasons.push(`${label} evidence cannot be read: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
+async function verifyJsonArtifact(
+  root: string,
+  artifact: ConversationEvidenceArtifact,
+  expected: unknown,
+  label: string,
+  reasons: string[],
+): Promise<void> {
+  const contents = await verifiedArtifact(root, artifact, label, reasons);
+  if (!contents) return;
+  try {
+    const parsed = JSON.parse(contents.toString('utf8')) as unknown;
+    if (JSON.stringify(parsed) !== JSON.stringify(expected)) {
+      reasons.push(`${label} evidence does not match the audited entity`);
+    }
+  } catch {
+    reasons.push(`${label} evidence is not valid JSON`);
+  }
+}
+
+export async function auditConversationTurnEvidence(input: TurnEvidenceInput): Promise<TurnEvidenceAudit> {
   const reasons: string[] = [];
   if (input.cliExitCode !== 0) reasons.push(`CLI exit code was ${String(input.cliExitCode)}`);
   if (input.cliTimedOut) reasons.push('CLI timed out');
@@ -574,6 +659,17 @@ export function auditConversationTurnEvidence(input: TurnEvidenceInput): TurnEvi
   })) {
     if (!value) reasons.push(`${field} is missing`);
   }
+
+  const event = record(input.event);
+  const task = record(input.task);
+  const daemonRun = record(input.run);
+  if (event?.id !== input.eventId) reasons.push('Event id does not match the canonical Event entity');
+  if (task?.id !== input.taskId) reasons.push('Task id does not match the canonical Task entity');
+  if (task?.triggerEventId !== input.eventId) reasons.push('Task triggerEventId does not match Event id');
+  if (task?.sessionKey !== input.sessionId) reasons.push('Task sessionKey does not match Session id');
+  if (daemonRun?.id !== input.daemonRunId) reasons.push('Daemon Run id does not match the canonical Run entity');
+  if (daemonRun?.taskId !== input.taskId) reasons.push('Daemon Run taskId does not match Task id');
+  if (daemonRun?.sessionKey !== input.sessionId) reasons.push('Daemon Run sessionKey does not match Session id');
 
   const facts = runFacts(input.run);
   if (facts.status !== 'completed') reasons.push(`Daemon Run status was ${facts.status ?? 'missing'}`);
@@ -607,6 +703,17 @@ export function auditConversationTurnEvidence(input: TurnEvidenceInput): TurnEvi
     if (callCounts.get(id) !== 1 || resultCounts.get(id) !== 1) {
       reasons.push(`tool protocol pair ${id} is not exactly 1:1`);
     }
+    const callIndex = input.sessionDelta.findIndex((item) => itemType(item) === 'function_call' && callId(item) === id);
+    const resultIndex = input.sessionDelta.findIndex((item) => itemType(item) === 'function_call_result' && callId(item) === id);
+    if (callIndex >= 0 && resultIndex >= 0 && resultIndex <= callIndex) {
+      reasons.push(`tool protocol result ${id} does not follow its call`);
+    }
+  }
+  const userIndex = input.sessionDelta.findIndex((item) => itemRole(item) === 'user');
+  const assistantIndex = input.sessionDelta.findIndex((item) => itemRole(item) === 'assistant');
+  if (userIndex < 0 || assistantIndex <= userIndex) reasons.push('Session user/assistant protocol order is invalid');
+  if (assistantIndex >= 0 && results.some((item) => input.sessionDelta.indexOf(item) >= assistantIndex)) {
+    reasons.push('assistant unit precedes a function_call_result');
   }
   const toolCalls = calls.map(toolName).filter((name): name is string => Boolean(name));
   for (const expected of input.scenario.expectedTools) {
@@ -645,17 +752,59 @@ export function auditConversationTurnEvidence(input: TurnEvidenceInput): TurnEvi
   if (end < 0) reasons.push('trace delta is missing turn_end after model binding');
   const tracedRunId = binding >= 0 ? record(trace[binding]?.data)?.workUnitId : undefined;
   if (typeof tracedRunId !== 'string') reasons.push('runtime Run id is missing from model binding trace');
-  else if (input.runtimeRunId && tracedRunId !== input.runtimeRunId) reasons.push('runtime Run id does not match trace');
-
-  if (!input.terminal.rawPath || !/^[0-9a-f]{64}$/.test(input.terminal.rawSha256)) {
-    reasons.push('raw terminal evidence reference is invalid');
+  else if (!input.runtimeRunId || tracedRunId !== input.runtimeRunId) reasons.push('runtime Run id does not match trace');
+  for (const index of [start, binding, end].filter((value) => value >= 0)) {
+    if (trace[index]?.sessionId !== input.sessionId) reasons.push('Trace event Session id does not match');
   }
-  if (!input.terminal.normalizedPath || !/^[0-9a-f]{64}$/.test(input.terminal.normalizedSha256)) {
-    reasons.push('normalized terminal evidence reference is invalid');
+
+  const surfaces = trace.filter((entry, index) => index > binding
+    && (end < 0 || index < end)
+    && entry.type === 'model_tool_surface');
+  if (surfaces.length !== 1) reasons.push(`trace must contain exactly one pre-dispatch model tool surface; observed ${surfaces.length}`);
+  const surface = surfaces[0];
+  const surfaceData = record(surface?.data);
+  const expectedTools = [...new Set(input.expectedAdvertisedTools)].sort();
+  const advertisedTools = canonicalToolNames(surfaceData?.advertisedTools);
+  if (JSON.stringify(advertisedTools) !== JSON.stringify(expectedTools)) {
+    reasons.push('pre-dispatch advertised Tools do not match the expected RunPolicy surface');
+  }
+  if (surface?.sessionId !== input.sessionId
+    || surfaceData?.runId !== tracedRunId
+    || surfaceData?.phase !== 'before_model_dispatch') {
+    reasons.push('pre-dispatch model tool surface is not bound to this Session/runtime Run');
+  }
+  if (surfaceData?.advertisedToolCount !== expectedTools.length) {
+    reasons.push('pre-dispatch advertised Tool count does not match');
+  }
+  const expectedToolDigest = `sha256:${sha256(JSON.stringify(expectedTools))}`;
+  if (surfaceData?.toolSetDigest !== expectedToolDigest) {
+    reasons.push('pre-dispatch advertised Tool digest does not match');
+  }
+
+  const rawTerminal = await verifiedArtifact(input.evidenceRoot, {
+    path: input.terminal.rawPath,
+    sha256: input.terminal.rawSha256,
+    bytes: input.terminal.rawBytes,
+  }, 'raw terminal', reasons);
+  const normalizedTerminal = await verifiedArtifact(input.evidenceRoot, {
+    path: input.terminal.normalizedPath,
+    sha256: input.terminal.normalizedSha256,
+    bytes: input.terminal.normalizedBytes,
+  }, 'normalized terminal', reasons);
+  if (!rawTerminal) reasons.push('raw terminal evidence is unavailable');
+  if (normalizedTerminal && normalizedTerminal.toString('utf8') !== input.terminal.normalizedText) {
+    reasons.push('normalized terminal evidence does not match audited text');
   }
   if (!input.terminal.normalizedText.includes(input.turn.nonce)) {
     reasons.push('normalized terminal evidence does not contain the nonce');
   }
+  await Promise.all([
+    verifyJsonArtifact(input.evidenceRoot, input.entityArtifacts.event, input.event, 'Event', reasons),
+    verifyJsonArtifact(input.evidenceRoot, input.entityArtifacts.task, input.task, 'Task', reasons),
+    verifyJsonArtifact(input.evidenceRoot, input.entityArtifacts.run, input.run, 'Daemon Run', reasons),
+    verifyJsonArtifact(input.evidenceRoot, input.entityArtifacts.session, input.sessionSnapshot, 'Session', reasons),
+    verifyJsonArtifact(input.evidenceRoot, input.entityArtifacts.trace, input.traceDelta, 'Trace', reasons),
+  ]);
   if (!input.oraclePassed) reasons.push('scenario state oracle did not pass');
   for (const [name, leaked] of Object.entries(input.leaks)) {
     if (leaked) reasons.push(`leak guard failed: ${name}`);

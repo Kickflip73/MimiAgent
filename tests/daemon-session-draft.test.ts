@@ -188,11 +188,14 @@ test('CLI submits its launch workspace with each owner command', async () => {
       workspaceRoot,
       provider: 'openai',
       permissionMode: 'trusted',
-    } as AppConfig);
+    } as AppConfig, undefined, {
+      requestedRunPolicy: 'benchmark-no-tools-v1',
+    });
     await client.submit('修复当前项目');
     assert.equal(submitted?.workspaceRoot, workspaceRoot);
     assert.equal(submitted?.source, 'local-cli');
     assert.equal(submitted?.trust, 'owner');
+    assert.equal(submitted?.requestedRunPolicy, 'benchmark-no-tools-v1');
   } finally {
     await server.close();
   }

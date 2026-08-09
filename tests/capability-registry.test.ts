@@ -158,6 +158,11 @@ test('registry rejects duplicate authority and snapshot equals the SDK model sur
   assert.deepEqual(snapshot.hiddenTools.flatMap((group) => group.names), ['deferred_extension']);
 });
 
+test('an empty deferred surface does not advertise discovery gateway tools', () => {
+  const registry = new HostCapabilityRegistry([]);
+  assert.deepEqual(registry.gatewayTools([]), []);
+});
+
 test('50 Host tools, 50 MCP tools, and 50 Connector actions keep first-round schemas bounded', async () => {
   const makeDeferred = (name: string) => tool({
     name,

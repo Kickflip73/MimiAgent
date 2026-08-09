@@ -50,8 +50,10 @@
   进入 canonical Host Run、canonical answer 交给 Mimi TTS 的合同。它没有 CLI/Daemon/设备
   composition root，真实实时语音轮次仍为 0。
 - conversation manifest 当前为 103 scenarios / 3090 declared turns / 10 suites；runner 校验会
-  报告 `realProviderTurnsExecuted=0` 并在可强制 RunPolicy 就绪前 Provider 前 `NO-GO`。这不是
-  PTY smoke 或真实 benchmark，正式分母仍为 0。
+  报告 `realProviderTurnsExecuted=0`。专用 `benchmark-no-tools-v1` RunPolicy 现已从认证
+  local-cli owner Event 贯穿到冻结 Run，并在模型派发前把精确 `advertisedTools=[]`、Run/Session
+  归属和摘要写入 Trace；只有 S-lane no-tools calibration 因此解除工程门禁。它还没有真实执行，
+  也不是 PTY smoke 或正式 benchmark，正式分母仍为 0。
 - 冻结 checkpoint 后的完整 `npm test`：1023 tests / 1023 pass / 0 fail / 0 skipped /
   0 todo，耗时 116.203 秒。`npm run check`、`npm run build` 与 `npm run test:package`
   均退出 0。
@@ -61,6 +63,25 @@
   `meeting-notebooklm-km-skill` 未进入 `skills/manifest.json`，现按未发布 experimental Skill
   分类并由同一 asset-boundary gate 验证。
 - ARC-303 完整生产面为 8294 行，低于 8505 门禁，保留 211 行余量；没有上调预算。
+
+## 2026-08-10 no-tools calibration checkpoint（待真实执行）
+
+- 空 deferred surface 不再生成 `inspect_capabilities` / `invoke_capability` gateway；fake Runner
+  从真实 pipeline 捕获的 SDK Tool 列表严格为空。
+- 校准策略只能由认证 `local-cli` + `owner` 的顶层 RPC 参数请求；payload 字段注入、外部来源、
+  未绑定 Session 和未知策略版本均在 Event 持久化前失败关闭。
+- 每次模型派发前同步写入 `model_tool_surface` Trace receipt；写入失败会阻止 Provider 调用。
+  headless 与 PTY 审计均要求该 receipt 与 Event -> Task -> Daemon Run -> runtime Run -> Session
+  全链、正 usage、终端原始字节和哈希严格对账。
+- runner 只投递 100 场景矩阵中声明为 S/headless/no-tools 的校准场景；W/F/V/L 与正式 soak
+  继续失败关闭。Provider 配置被投影为单一 Provider/Model，临时 `MIMI_ENV_FILE` 只保存一个
+  选中 key 且权限为 0600，Daemon 停止后覆盖删除；通用环境 allowlist 被禁止。
+- 源码快照在 daemon 前、每次派发前和每轮后按实际文件内容复核；build identity 覆盖完整
+  `dist/**`、runner、contract、PTY helper、manifest 和 package lock。任何 unproven 轮次均使
+  命令非零退出。
+- 本 checkpoint 的 focused tests 为 133/133；随后完整 `npm test` 为 1028/1028，
+  `npm run check` 与 `npm run build` 均退出 0。此处仍是工程门禁证据：持久 PTY、1-turn 和
+  2x5 真实 Provider calibration 尚未运行，`realProviderTurnsExecuted=0`。
 
 ## M3 能力审计
 
@@ -86,6 +107,7 @@
 - 连续性/恢复：待实现。
 - M3 fixture/live 验收：尚未开始有效 live 计数，实时语音真实轮次为 0。
 - 100×30 全产品真实终端基准：103 场景/3090 轮 manifest 仅完成静态声明与验证，
+  no-tools S-lane calibration 已具备可审计派发门禁但尚未执行；
   `realProviderTurnsExecuted=0`、正式分母为 0；现有
   `bench:capacity` 的 100 rounds 不走真实 Provider，永不计入该分母。
 

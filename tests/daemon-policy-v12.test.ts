@@ -90,6 +90,38 @@ test('resume authorization comes from local owner metadata instead of prompt tex
   assert.equal(structured.options?.resumeState, true);
 });
 
+test('versioned local-owner no-tools metadata narrows the entire model capability surface', () => {
+  const requested = decideEvent(event({
+    source: 'local-cli',
+    trust: 'owner',
+    sessionKey: 'benchmark-session',
+    payload: {
+      prompt: '只回答这一句',
+      requestedRunPolicy: 'benchmark-no-tools-v1',
+    },
+  }));
+  assert.deepEqual(requested.options?.policy, {
+    allowedCapabilities: [],
+    allowedTools: [],
+    allowSideEffects: false,
+    allowedSideEffectTools: [],
+    allowUnknownTools: false,
+    allowMcp: false,
+    allowSessionContext: true,
+    computerAccess: 'none',
+  });
+  assert.equal(requested.options?.computerAccess, 'none');
+
+  const untrusted = decideEvent(event({
+    payload: {
+      text: 'external input',
+      requestedRunPolicy: 'benchmark-no-tools-v1',
+    },
+  }));
+  assert.deepEqual(untrusted.options?.policy?.allowedCapabilities, ['delivery-control']);
+  assert.equal(untrusted.options?.policy?.allowSessionContext, false);
+});
+
 test('run scenario follows the durable task kind instead of treating every Daemon cause as background', () => {
   const owner = event({
     source: 'local-cli',

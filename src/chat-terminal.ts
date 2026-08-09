@@ -15,6 +15,7 @@ import {
   type DaemonReconciler,
 } from './daemon/chat-client.js';
 import type { MimiChatSnapshot } from './daemon/types.js';
+import { parseRequestedLocalRunPolicy } from './daemon/local-run-policy.js';
 import {
   configuredProviderRequest,
   persistProviderConfiguration,
@@ -72,9 +73,12 @@ export async function runMimiCli(
   version: string,
   reconcileDaemon?: DaemonReconciler,
 ): Promise<void> {
-  const client = reconcileDaemon
-    ? new MimiChatClient(config, reconcileDaemon)
-    : new MimiChatClient(config);
+  const requestedRunPolicy = parseRequestedLocalRunPolicy(
+    process.env.MIMI_CONVERSATION_RUN_POLICY,
+  );
+  const client = new MimiChatClient(config, reconcileDaemon, {
+    ...(requestedRunPolicy ? { requestedRunPolicy } : {}),
+  });
   await client.connect();
   const switchProvider = async (
     provider: 'openai' | 'deepseek' | 'openai-compatible',

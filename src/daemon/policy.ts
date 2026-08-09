@@ -9,6 +9,10 @@ import type { ComputerAccess } from '../extensions/computer/types.js';
 import { assertSessionId, sessionIdSchema } from '../core/session-id.js';
 import type { EventEnvelope, TaskRecord } from './types.js';
 import {
+  BENCHMARK_NO_TOOLS_RUN_POLICY,
+  requestedLocalRunPolicyForEvent,
+} from './local-run-policy.js';
+import {
   personalMessageAuthorizationFor,
   type PersonalMessageAuthorization,
   type PersonalMessageMode,
@@ -338,7 +342,11 @@ export function decideEvent(
   const ownerDelegated = !forceRestricted && restrictedProvenance && ownerSourcePolicyAccess !== undefined;
   const mayAct = !restrictedProvenance || ownerDelegated;
   const backgroundTask = task !== undefined && task.type !== 'conversation';
-  const computerAccess = backgroundTask
+  const benchmarkNoTools = !backgroundTask
+    && requestedLocalRunPolicyForEvent(event) === BENCHMARK_NO_TOOLS_RUN_POLICY;
+  const computerAccess = benchmarkNoTools
+    ? 'none'
+    : backgroundTask
     ? 'none'
     : ownerComputerAccess ?? (!restrictedProvenance ? 'background' : 'none');
   const computerEnabled = computerAccess !== 'none';
@@ -428,7 +436,18 @@ export function decideEvent(
     fileActivityPlaybook(event),
     backgroundTaskPlaybook(backgroundTask),
   ].filter(Boolean).join('\n');
-  const policy = memoryMaintenance
+  const policy = benchmarkNoTools
+    ? {
+        allowedCapabilities: [] as const,
+        allowedTools: [] as const,
+        allowSideEffects: false,
+        allowedSideEffectTools: [] as const,
+        allowUnknownTools: false,
+        allowMcp: false,
+        allowSessionContext: true,
+        computerAccess: 'none' as const,
+      }
+    : memoryMaintenance
     ? {
         allowedCapabilities: ['memory-read', 'memory-write', 'state-read', 'state-write'] as const,
         allowedTools: MEMORY_MAINTENANCE_TOOLS,
@@ -560,7 +579,7 @@ export function decideEvent(
           personName: person.displayName,
         } : {}),
       },
-      ...(computerEnabled ? {
+      ...(benchmarkNoTools ? { computerAccess: 'none' as const } : computerEnabled ? {
         computerAccess,
         ...(ownerComputerApps ? { computerApps: ownerComputerApps } : {}),
       } : {}),

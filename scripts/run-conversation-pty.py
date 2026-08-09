@@ -231,7 +231,7 @@ def wait_model_turn(master_fd, transcript, start_offset, args, before_ids, timeo
         "outputTokens": output_tokens,
         "promptReadyAfterBusy": prompt_ready,
         "readEvents": read_events,
-        "streamCandidateObserved": read_events >= 2,
+        "transportChunksObserved": read_events >= 2,
         "provenTerminal": status == "completed" and input_tokens > 0 and output_tokens > 0 and prompt_ready,
     }
 

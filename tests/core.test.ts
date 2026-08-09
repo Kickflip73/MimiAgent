@@ -529,6 +529,64 @@ test('owner natural-language runs retain direct tools and unified deferred Skill
   }
 });
 
+test('benchmark no-tools policy records an empty SDK surface before model dispatch', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-no-tools-receipt-'));
+  const dataRoot = path.join(root, '.mimi-agent');
+  const agent = await MimiAgent.create({
+    provider: 'openai', workspaceRoot: root, dataRoot,
+    skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40, contextWindow: 128_000, maxTurns: 20,
+  });
+  let advertisedTools: string[] | undefined;
+  const runner = (agent as unknown as {
+    runner: { run: (runtimeAgent: { tools: Array<{ name: string }> }) => Promise<unknown> };
+  }).runner;
+  runner.run = async (runtimeAgent) => {
+    advertisedTools = runtimeAgent.tools.map((tool) => tool.name);
+    return {};
+  };
+  const now = new Date().toISOString();
+  const decision = decideEvent({
+    id: 'no-tools-event',
+    externalId: 'no-tools-event',
+    source: 'local-cli',
+    kind: 'command',
+    trust: 'owner',
+    sessionKey: agent.currentSessionId,
+    payload: {
+      prompt: '只回答，不使用工具。',
+      requestedRunPolicy: 'benchmark-no-tools-v1',
+    },
+    profileId: 'owner',
+    occurredAt: now,
+    receivedAt: now,
+    priority: 100,
+  });
+  try {
+    await agent.stream('只回答，不使用工具。', undefined, decision.options);
+    assert.deepEqual(advertisedTools, []);
+    await agent.completeRun('NO_TOOLS_ANSWER');
+    const trace = (await readFile(
+      path.join(dataRoot, 'traces', `${agent.currentSessionId}.jsonl`),
+      'utf8',
+    )).trim().split('\n').map((line) => JSON.parse(line) as {
+      type: string;
+      data: Record<string, unknown>;
+    });
+    const receipt = trace.find((entry) => entry.type === 'model_tool_surface');
+    assert.ok(receipt);
+    assert.deepEqual(receipt.data.advertisedTools, []);
+    assert.equal(receipt.data.advertisedToolCount, 0);
+    assert.match(String(receipt.data.toolSetDigest), /^sha256:[a-f0-9]{64}$/u);
+    assert.ok(trace.findIndex((entry) => entry.type === 'turn_start')
+      < trace.findIndex((entry) => entry.type === 'model_tool_surface'));
+    assert.ok(trace.findIndex((entry) => entry.type === 'model_tool_surface')
+      < trace.findIndex((entry) => entry.type === 'turn_end'));
+  } finally {
+    await agent.close();
+  }
+});
+
 test('failed durable attempts retain owner input after legacy history cleanup changes item offsets', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cleanup-rollback-'));
   const dataRoot = path.join(root, '.mimi-agent');

@@ -12,6 +12,7 @@ import {
   materializeConversationTurn,
   parseConversationManifest,
   redactTerminalSecrets,
+  sha256,
   stripTerminalControl,
   type ConversationJournalRecord,
 } from '../scripts/conversation-soak-contract.js';
@@ -185,12 +186,65 @@ test('resume excludes every dispatched turn and exposes incomplete dispatch as u
 });
 
 test('a turn is proven only with CLI, Run usage, Trace order, Session protocol, and leak evidence', async () => {
+  const evidenceRoot = await mkdtemp(path.join(os.tmpdir(), 'mimi-conversation-evidence-'));
   const value = await manifest();
   const scenario = {
     ...value.scenarios[10]!,
     toolExpectation: { mode: 'any' as const, names: ['read_file'] },
   };
   const turn = materializeConversationTurn(value, scenario, 1);
+  const rawTerminal = `raw terminal ${turn.nonce}`;
+  const normalizedTerminal = `Mimi terminal answer ${turn.nonce}`;
+  const event = { id: 'event-1', payload: { prompt: turn.prompt } };
+  const task = {
+    id: 'task-1', triggerEventId: 'event-1', authorityEventId: 'event-1',
+    sessionKey: 'conv-session-008', status: 'completed',
+  };
+  const run = {
+    id: 'daemon-run-1', taskId: 'task-1', sessionKey: 'conv-session-008',
+    status: 'completed',
+    answer: {
+      usage: { runInputTokens: 31, runOutputTokens: 7 },
+      finalization: { outcome: 'completed' },
+    },
+  };
+  const sessionDelta = [
+    { role: 'user', content: turn.prompt },
+    { type: 'function_call', callId: 'call-1', name: 'read_file', arguments: '{}' },
+    { type: 'function_call_result', callId: 'call-1', name: 'read_file', output: 'ok' },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `done ${turn.nonce}` }] },
+  ];
+  const sessionSnapshot = { items: sessionDelta };
+  const expectedAdvertisedTools = ['read_file'];
+  const traceDelta = [
+    { sessionId: 'conv-session-008', type: 'turn_start', data: { input: turn.prompt } },
+    {
+      sessionId: 'conv-session-008',
+      type: 'model_binding_event',
+      data: { workUnitKind: 'conversation', workUnitId: 'runtime-run-1' },
+    },
+    {
+      sessionId: 'conv-session-008',
+      type: 'model_tool_surface',
+      data: {
+        phase: 'before_model_dispatch',
+        runId: 'runtime-run-1',
+        advertisedTools: expectedAdvertisedTools,
+        advertisedToolCount: 1,
+        toolSetDigest: `sha256:${sha256(JSON.stringify(expectedAdvertisedTools))}`,
+      },
+    },
+    { sessionId: 'conv-session-008', type: 'turn_end', data: { answer: `done ${turn.nonce}` } },
+  ];
+  const artifact = async (name: string, content: string) => {
+    await writeFile(path.join(evidenceRoot, name), content, { mode: 0o600 });
+    return { path: name, sha256: sha256(content), bytes: Buffer.byteLength(content) };
+  };
+  const jsonArtifact = (name: string, entity: unknown) => artifact(name, `${JSON.stringify(entity, null, 2)}\n`);
+  await Promise.all([
+    writeFile(path.join(evidenceRoot, 'turn.raw.ansi'), rawTerminal, { mode: 0o600 }),
+    writeFile(path.join(evidenceRoot, 'turn.txt'), normalizedTerminal, { mode: 0o600 }),
+  ]);
   const evidence = {
     scenario,
     turn,
@@ -201,33 +255,29 @@ test('a turn is proven only with CLI, Run usage, Trace order, Session protocol, 
     runtimeRunId: 'runtime-run-1',
     cliExitCode: 0,
     cliTimedOut: false,
-    run: {
-      status: 'completed',
-      answer: {
-        usage: { runInputTokens: 31, runOutputTokens: 7 },
-        finalization: { outcome: 'completed' },
-      },
+    event,
+    task,
+    run,
+    sessionSnapshot,
+    sessionDelta,
+    traceDelta,
+    expectedAdvertisedTools,
+    evidenceRoot,
+    entityArtifacts: {
+      event: await jsonArtifact('event.json', event),
+      task: await jsonArtifact('task.json', task),
+      run: await jsonArtifact('run.json', run),
+      session: await jsonArtifact('session.json', sessionSnapshot),
+      trace: await jsonArtifact('trace.json', traceDelta),
     },
-    sessionDelta: [
-      { role: 'user', content: turn.prompt },
-      { type: 'function_call', callId: 'call-1', name: 'read_file', arguments: '{}' },
-      { type: 'function_call_result', callId: 'call-1', name: 'read_file', output: 'ok' },
-      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `done ${turn.nonce}` }] },
-    ],
-    traceDelta: [
-      { type: 'turn_start', data: { input: turn.prompt } },
-      {
-        type: 'model_binding_event',
-        data: { workUnitKind: 'conversation', workUnitId: 'runtime-run-1' },
-      },
-      { type: 'turn_end', data: { answer: `done ${turn.nonce}` } },
-    ],
     terminal: {
       rawPath: 'turn.raw.ansi',
-      rawSha256: 'a'.repeat(64),
+      rawSha256: sha256(rawTerminal),
+      rawBytes: Buffer.byteLength(rawTerminal),
       normalizedPath: 'turn.txt',
-      normalizedSha256: 'b'.repeat(64),
-      normalizedText: `Mimi terminal answer ${turn.nonce}`,
+      normalizedSha256: sha256(normalizedTerminal),
+      normalizedBytes: Buffer.byteLength(normalizedTerminal),
+      normalizedText: normalizedTerminal,
     },
     oraclePassed: true,
     leaks: {
@@ -237,28 +287,36 @@ test('a turn is proven only with CLI, Run usage, Trace order, Session protocol, 
       sourceTreeChanged: false,
     },
   };
-  const result = auditConversationTurnEvidence(evidence);
-  assert.equal(result.proven, true, result.reasons.join('\n'));
-  assert.equal(result.usage.inputTokens, 31);
-  assert.equal(result.usage.outputTokens, 7);
+  try {
+    const result = await auditConversationTurnEvidence(evidence);
+    assert.equal(result.proven, true, result.reasons.join('\n'));
+    assert.equal(result.usage.inputTokens, 31);
+    assert.equal(result.usage.outputTokens, 7);
 
-  const unproven = auditConversationTurnEvidence({
-    ...evidence,
-    run: { status: 'completed', answer: { finalization: { outcome: 'completed' } } },
-    sessionDelta: evidence.sessionDelta.slice(0, -1),
-    leaks: { ...evidence.leaks, pendingOutbox: true },
-  });
-  assert.equal(unproven.proven, false);
-  assert.match(unproven.reasons.join('\n'), /input token usage/);
-  assert.match(unproven.reasons.join('\n'), /assistant unit/);
-  assert.match(unproven.reasons.join('\n'), /pendingOutbox/);
+    const unproven = await auditConversationTurnEvidence({
+      ...evidence,
+      task: { ...task, triggerEventId: 'wrong-event' },
+      sessionDelta: [sessionDelta[0], sessionDelta[2], sessionDelta[1], sessionDelta[3]],
+      traceDelta: traceDelta.filter((entry) => entry.type !== 'model_tool_surface'),
+      terminal: { ...evidence.terminal, rawSha256: 'a'.repeat(64) },
+      leaks: { ...evidence.leaks, pendingOutbox: true },
+    });
+    assert.equal(unproven.proven, false);
+    assert.match(unproven.reasons.join('\n'), /triggerEventId/);
+    assert.match(unproven.reasons.join('\n'), /does not follow its call/);
+    assert.match(unproven.reasons.join('\n'), /model tool surface/);
+    assert.match(unproven.reasons.join('\n'), /digest does not match/);
+    assert.match(unproven.reasons.join('\n'), /pendingOutbox/);
+  } finally {
+    await rm(evidenceRoot, { recursive: true, force: true });
+  }
 });
 
 test('terminal evidence is normalized and secrets are stopped before persistence', () => {
-  const secret = 'sk-test-secret-value-123456789';
+  const secret = 'provider-secret-fixture-value-123456789';
   const redacted = redactTerminalSecrets(`\x1b[31manswer\x1b[0m ${secret}\rnext`, [secret]);
   assert.ok(redacted.hits >= 1);
-  assert.doesNotMatch(redacted.text, /sk-test-secret/);
+  assert.doesNotMatch(redacted.text, /provider-secret-fixture/u);
   assert.equal(stripTerminalControl(redacted.text), 'answer <redacted-provider-secret>\nnext');
 });
 
@@ -274,8 +332,13 @@ test('runner uses only the built CLI boundary and Python stdlib PTY helper', asy
   assert.match(runner, /MIMI_DAEMON_SUPERVISOR/u);
   assert.match(pty, /^import pty$/mu);
   assert.match(pty, /os\.isatty\(0\)/u);
-  assert.match(runner, /NO-GO before Provider dispatch/u);
-  assert.match(runner, /per-scenario RunPolicy/u);
+  assert.match(runner, /MIMI_CONVERSATION_RUN_POLICY: 'benchmark-no-tools-v1'/u);
+  assert.match(runner, /MIMI_CONVERSATION_PROVIDER_ENV_ALLOWLIST is forbidden/u);
+  assert.match(runner, /calibration proof mismatch/u);
+  assert.match(runner, /formalDenominatorTurns: 0/u);
+  assert.match(runner, /digestTree\(path\.join\(repositoryRoot, 'dist'\)\)/u);
+  assert.doesNotMatch(runner, /streamCandidateObserved/u);
+  assert.match(pty, /transportChunksObserved/u);
 });
 
 test('PTY helper rejects input-echo completion and cannot pass a flooded action list', async () => {

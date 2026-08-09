@@ -29,6 +29,7 @@ import { parseAttachmentInput } from '../runtime/attachments.js';
 import type { SessionSummary } from '../core/session.js';
 import type { MemoryRef, MemoryScope } from '../core/memory.js';
 import type { ModelControlRequest } from '../core/model-routing.js';
+import type { RequestedLocalRunPolicy } from './local-run-policy.js';
 
 const CHAT_RECONNECT_INITIAL_DELAY_MS = 50;
 const CHAT_RECONNECT_MAX_DELAY_MS = 1_000;
@@ -48,6 +49,7 @@ export interface MimiChatClientOptions {
   submitTimeoutMs?: number;
   submitRetryDeadlineMs?: number;
   startDaemon?: (config: AppConfig) => Promise<DaemonStatus>;
+  requestedRunPolicy?: RequestedLocalRunPolicy;
 }
 
 async function defaultReconcileDaemon(config: AppConfig, status: DaemonStatus): Promise<DaemonStatus> {
@@ -251,6 +253,9 @@ export class MimiChatClient {
       ...(options?.resumeState ? { resumeState: true } : {}),
       ...(options?.approvedPersonalMessageText
         ? { approvedPersonalMessageText: options.approvedPersonalMessageText }
+        : {}),
+      ...(this.options.requestedRunPolicy
+        ? { requestedRunPolicy: this.options.requestedRunPolicy }
         : {}),
       eventId,
       externalId: `local-cli:${eventId}`,

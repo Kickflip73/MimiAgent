@@ -3,7 +3,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFile,
   chmod,
-  copyFile,
   lstat,
   mkdir,
   readlink,
@@ -13,6 +12,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import { parse as parseDotenv } from 'dotenv';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -38,6 +38,8 @@ const execFileAsync = promisify(execFile);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const mimiEntry = path.join(repositoryRoot, 'dist', 'index.js');
 const ptyHelper = path.join(repositoryRoot, 'scripts', 'run-conversation-pty.py');
+const contractFile = path.join(repositoryRoot, 'scripts', 'conversation-soak-contract.ts');
+const runnerFile = path.join(repositoryRoot, 'scripts', 'run-conversation-soak.ts');
 const defaultManifest = path.join(repositoryRoot, 'evals', 'conversation', 'manifest.v1.json');
 const terminalTaskStates = new Set(['completed', 'failed', 'cancelled', 'dead_letter', 'paused', 'blocked']);
 
@@ -73,6 +75,7 @@ interface IsolatedRuntime {
   workspace: string;
   dataRoot: string;
   daemonRoot: string;
+  environmentFile: string;
   env: NodeJS.ProcessEnv;
   secretNames: string[];
   secrets: string[];
@@ -228,10 +231,31 @@ async function writeExclusiveJson(file: string, value: unknown): Promise<void> {
   await writeExclusive(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function appendJournal(file: string, value: ConversationJournalRecord): Promise<void> {
-  await appendFile(file, `${JSON.stringify(value)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await chmod(file, 0o600);
+async function writeEvidenceJson(
+  outputRoot: string,
+  file: string,
+  value: unknown,
+): Promise<EvidenceArtifact> {
+  const contents = `${JSON.stringify(value, null, 2)}\n`;
+  await writeExclusive(file, contents);
+  return {
+    kind: 'json',
+    path: path.relative(outputRoot, file),
+    sha256: sha256(contents),
+    bytes: Buffer.byteLength(contents),
+  };
 }
+
+async function appendJournal(file: string, value: ConversationJournalRecord): Promise<void> {
+  const operation = journalWriteQueue.then(async () => {
+    await appendFile(file, `${JSON.stringify(value)}\n`, { encoding: 'utf8', mode: 0o600 });
+    await chmod(file, 0o600);
+  });
+  journalWriteQueue = operation.then(() => undefined, () => undefined);
+  await operation;
+}
+
+let journalWriteQueue: Promise<void> = Promise.resolve();
 
 async function readJournal(file: string): Promise<ConversationJournalRecord[]> {
   if (!await exists(file)) return [];
@@ -323,12 +347,28 @@ async function digestTree(root: string): Promise<string> {
   return digest.digest('hex');
 }
 
+async function runtimeClosureDigest(distDigest: string, manifestFile: string): Promise<string> {
+  const files = [
+    runnerFile,
+    contractFile,
+    ptyHelper,
+    manifestFile,
+    path.join(repositoryRoot, 'package.json'),
+    path.join(repositoryRoot, 'package-lock.json'),
+  ];
+  const closure = await Promise.all(files.map(async (file) => ({
+    file: path.relative(repositoryRoot, file),
+    sha256: sha256(await readFile(file)),
+  })));
+  return sha256(JSON.stringify({ distDigest, closure }));
+}
+
 function boundedBuildEnvironment(): NodeJS.ProcessEnv {
   const names = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR'];
   return Object.fromEntries(names.flatMap((name) => process.env[name] ? [[name, process.env[name]!]] : []));
 }
 
-async function cleanBuild(outputRoot: string): Promise<string> {
+async function cleanBuild(outputRoot: string, manifestFile: string): Promise<string> {
   const buildLog = path.join(outputRoot, 'build.log');
   const result = await execFileAsync('npm', ['run', 'build'], {
     cwd: repositoryRoot,
@@ -346,86 +386,94 @@ async function cleanBuild(outputRoot: string): Promise<string> {
   const sanitized = redactTerminalSecrets(result.output, []).text;
   await writeExclusive(buildLog, sanitized);
   if (result.code !== 0) throw new Error(`clean build failed; see ${buildLog}`);
-  return digestTree(path.join(repositoryRoot, 'dist'));
+  return runtimeClosureDigest(await digestTree(path.join(repositoryRoot, 'dist')), manifestFile);
 }
 
 async function isolatedProviderEnvironment(configRoot: string, reuse: boolean): Promise<{
   values: NodeJS.ProcessEnv;
   secretNames: string[];
-  modelsFile?: string;
+  secrets: string[];
+  environmentContents: string;
+  modelsFile: string;
   configDigest: string;
 }> {
   const modelsSource = process.env.MIMI_CONVERSATION_MODELS_CONFIG?.trim();
+  if (!modelsSource) {
+    throw new Error('real calibration requires MIMI_CONVERSATION_MODELS_CONFIG with one selected target');
+  }
   const modelsFile = path.join(configRoot, 'models.json');
-  const secretNames: string[] = [];
-  if (modelsSource) {
-    const source = path.resolve(modelsSource);
-    const parsed = record(await readJson(source));
-    const routing = record(parsed?.routing);
-    const target = record(routing?.globalDefault);
-    const providerId = typeof target?.providerId === 'string' ? target.providerId : undefined;
-    const providers = Array.isArray(parsed?.providers) ? parsed.providers.map(record).filter(Boolean) : [];
-    const provider = providers.find((item) => item?.id === providerId);
-    if (!provider || typeof provider.apiKeyEnv !== 'string') {
-      throw new Error('isolated models config must expose one global-default provider apiKeyEnv');
-    }
-    secretNames.push(provider.apiKeyEnv);
-    if (reuse) {
-      if (!await exists(modelsFile)) throw new Error('resume runtime bundle is missing models.json');
-      if (sha256(await readFile(source)) !== sha256(await readFile(modelsFile))) {
-        throw new Error('resume Provider model config digest changed');
-      }
-    } else {
-      await copyFile(source, modelsFile);
-      await chmod(modelsFile, 0o600);
+  if (process.env.MIMI_CONVERSATION_PROVIDER_ENV_ALLOWLIST?.trim()) {
+    throw new Error('MIMI_CONVERSATION_PROVIDER_ENV_ALLOWLIST is forbidden; select exactly one Provider key');
+  }
+  const source = path.resolve(modelsSource);
+  const parsed = record(await readJson(source));
+  const routing = record(parsed?.routing);
+  const target = record(routing?.globalDefault);
+  const providerId = typeof target?.providerId === 'string' ? target.providerId : undefined;
+  const modelId = typeof target?.modelId === 'string' ? target.modelId : undefined;
+  const providers = Array.isArray(parsed?.providers) ? parsed.providers.map(record).filter(Boolean) : [];
+  const provider = providers.find((item) => item?.id === providerId);
+  const models = Array.isArray(provider?.models) ? provider.models.map(record).filter(Boolean) : [];
+  const selectedModel = models.find((item) => {
+    const selectedTarget = record(item?.target);
+    return selectedTarget?.providerId === providerId && selectedTarget?.modelId === modelId;
+  });
+  if (!provider || !selectedModel || typeof provider.apiKeyEnv !== 'string'
+    || !/^[A-Z][A-Z0-9_]*$/u.test(provider.apiKeyEnv)
+    || !providerId || !modelId) {
+    throw new Error('isolated models config must expose one valid global-default Provider/Model target');
+  }
+  const projected = {
+    version: 1,
+    routeVersion: typeof parsed?.routeVersion === 'number' ? parsed.routeVersion : 1,
+    providers: [{ ...provider, models: [selectedModel] }],
+    routing: {
+      globalDefault: { providerId, modelId },
+      scenarios: {},
+    },
+  };
+  const projectedContents = `${JSON.stringify(projected, null, 2)}\n`;
+  if (reuse) {
+    if (!await exists(modelsFile)) throw new Error('resume runtime bundle is missing models.json');
+    if (sha256(projectedContents) !== sha256(await readFile(modelsFile))) {
+      throw new Error('resume Provider model config digest changed');
     }
   } else {
-    const provider = process.env.MIMI_MODEL_PROVIDER?.trim() || 'openai';
-    const name = provider === 'deepseek'
-      ? 'DEEPSEEK_API_KEY'
-      : provider === 'openai-compatible' ? 'MIMI_PROVIDER_API_KEY' : 'OPENAI_API_KEY';
-    secretNames.push(name);
-    if (reuse && await exists(modelsFile)) {
-      throw new Error('resume Provider config shape changed from legacy environment to models.json');
-    }
+    await writeExclusive(modelsFile, projectedContents);
   }
-  const explicit = (process.env.MIMI_CONVERSATION_PROVIDER_ENV_ALLOWLIST ?? '')
-    .split(',').map((item) => item.trim()).filter(Boolean);
-  for (const name of explicit) {
-    if (!/^[A-Z][A-Z0-9_]*$/.test(name) || ['HOME', 'PATH', 'CODEX_HOME'].includes(name)) {
-      throw new Error(`unsafe provider environment allowlist entry: ${name}`);
-    }
-    if (!secretNames.includes(name)) secretNames.push(name);
+  await chmod(modelsFile, 0o600);
+
+  const credentialSource = path.resolve(
+    process.env.MIMI_CONVERSATION_PROVIDER_ENV_FILE?.trim()
+      || path.join(os.homedir(), '.mimi-agent', '.env'),
+  );
+  const credentialValues = await exists(credentialSource)
+    ? parseDotenv(await readFile(credentialSource, 'utf8'))
+    : {};
+  const secretName = provider.apiKeyEnv;
+  const secretValue = process.env[secretName] ?? credentialValues[secretName];
+  if (!secretValue || secretValue.includes('\0') || /[\r\n]/u.test(secretValue)) {
+    throw new Error(`selected Provider credential ${secretName} is not configured as one bounded line`);
   }
-  for (const name of secretNames) {
-    if (!process.env[name]) throw new Error(`selected Provider credential ${name} is not configured`);
+  const environmentContents = `${secretName}=${JSON.stringify(secretValue)}\n`;
+  if (parseDotenv(environmentContents)[secretName] !== secretValue) {
+    throw new Error(`selected Provider credential ${secretName} cannot be safely serialized`);
   }
-  const nonSecret = [
-    'MIMI_MODEL_PROVIDER',
-    'MIMI_PROVIDER_BASE_URL',
-    'MIMI_MODEL',
-    'MIMI_MODELS',
-    'OPENAI_MODEL',
-    'OPENAI_MODELS',
-    'DEEPSEEK_MODEL',
-    'DEEPSEEK_MODELS',
-    'DEEPSEEK_BASE_URL',
-    'NODE_EXTRA_CA_CERTS',
-    'SSL_CERT_FILE',
-    'SSL_CERT_DIR',
-  ];
+  const nonSecret = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR'];
   const values: NodeJS.ProcessEnv = {};
-  for (const name of [...nonSecret, ...secretNames]) {
+  for (const name of nonSecret) {
     if (process.env[name]) values[name] = process.env[name];
   }
   return {
     values,
-    secretNames,
-    ...(modelsSource ? { modelsFile } : {}),
+    secretNames: [secretName],
+    secrets: [secretValue],
+    environmentContents,
+    modelsFile,
     configDigest: sha256(JSON.stringify({
-      models: modelsSource ? sha256(await readFile(modelsFile)) : 'legacy-environment',
-      values: Object.fromEntries(Object.entries(values).filter(([name]) => !secretNames.includes(name))),
-      secretNames: [...secretNames].sort(),
+      models: sha256(projectedContents),
+      values,
+      secretNames: [secretName],
     })),
   };
 }
@@ -466,17 +514,18 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
   const mcpFile = path.join(configRoot, 'mcp.json');
   if (!reuse) {
     await Promise.all([
-      writeExclusive(environmentFile, '# isolated conversation benchmark; credentials stay in the child environment\n'),
       writeExclusiveJson(connectorsFile, { backgroundDefaultsVersion: 0, connectors: {} }),
       writeExclusiveJson(mcpFile, { mcpServers: {} }),
     ]);
   } else {
-    for (const required of [environmentFile, connectorsFile, mcpFile]) {
+    for (const required of [connectorsFile, mcpFile]) {
       if (!await exists(required)) throw new Error(`resume runtime bundle is missing ${path.basename(required)}`);
       await chmod(required, 0o600);
     }
   }
   const provider = await isolatedProviderEnvironment(configRoot, reuse);
+  await writeFile(environmentFile, provider.environmentContents, { mode: 0o600 });
+  await chmod(environmentFile, 0o600);
   const security = securityFor(scenario.lane);
   const marker = {
     schemaVersion: 1,
@@ -507,7 +556,7 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
     MIMI_DAEMON_DATA_DIR: daemonRoot,
     MIMI_DAEMON_SUPERVISOR: 'foreground',
     MIMI_ENV_FILE: environmentFile,
-    ...(provider.modelsFile ? { MIMI_MODELS_CONFIG: provider.modelsFile } : {}),
+    MIMI_MODELS_CONFIG: provider.modelsFile,
     MIMI_CONNECTORS_CONFIG: connectorsFile,
     MIMI_ASSISTANT_CONFIG: assistantFile,
     MIMI_MCP_CONFIG: mcpFile,
@@ -516,6 +565,7 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
     MIMI_SECURITY_PROFILE: security.profile,
     MIMI_PERMISSION_MODE: security.permission,
     MIMI_SESSION_MAX_CONCURRENCY: '1',
+    MIMI_CONVERSATION_RUN_POLICY: 'benchmark-no-tools-v1',
     MIMI_CONVERSATION_SECRET_NAMES: provider.secretNames.join(','),
   };
   const logs: Buffer[] = [];
@@ -537,9 +587,10 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
     workspace,
     dataRoot,
     daemonRoot,
+    environmentFile,
     env,
     secretNames: provider.secretNames,
-    secrets: provider.secretNames.map((name) => env[name]!).filter(Boolean),
+    secrets: provider.secrets,
     daemon,
     exited,
     logs,
@@ -575,15 +626,24 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
 
 async function stopIsolatedRuntime(runtime: IsolatedRuntime, retain: boolean): Promise<void> {
   try {
-    await mimiText(runtime, ['daemon', 'stop'], 15_000);
-  } catch {
-    signalGroup(runtime.daemon, 'SIGTERM');
-  }
-  await Promise.race([runtime.exited, delay(15_000)]);
-  if (runtime.daemon.exitCode === null && runtime.daemon.signalCode === null) {
-    runtime.forcedShardKill = true;
-    signalGroup(runtime.daemon, 'SIGKILL');
-    await runtime.exited;
+    try {
+      await mimiText(runtime, ['daemon', 'stop'], 15_000);
+    } catch {
+      signalGroup(runtime.daemon, 'SIGTERM');
+    }
+    await Promise.race([runtime.exited, delay(15_000)]);
+    if (runtime.daemon.exitCode === null && runtime.daemon.signalCode === null) {
+      runtime.forcedShardKill = true;
+      signalGroup(runtime.daemon, 'SIGKILL');
+      await runtime.exited;
+    }
+  } finally {
+    await writeFile(
+      runtime.environmentFile,
+      '# provider credential removed after isolated runtime shutdown\n',
+      { mode: 0o600 },
+    );
+    await chmod(runtime.environmentFile, 0o600);
   }
   if (!retain) throw new Error('runtime bundle deletion is disabled until durable evidence archival is proven');
 }
@@ -823,6 +883,9 @@ function estimatedCost(options: RunnerOptions, usage: AggregateUsage): number | 
 }
 
 async function enforceDispatchBudget(context: RunContext): Promise<void> {
+  if (Date.now() - context.startedAt >= context.options.hardStopMs) {
+    context.globalStopReason = '12h hard-stop boundary reached';
+  }
   if (Date.now() - context.startedAt >= context.options.stopDispatchMs) {
     context.globalStopReason = '11h30 dispatch boundary reached';
   }
@@ -853,6 +916,12 @@ async function runHeadlessTurn(
   sessionId: string,
 ): Promise<void> {
   await enforceDispatchBudget(context);
+  const beforeSourceSnapshot = await captureSourceSnapshot();
+  const changedBeforeDispatch = changedSourcePaths(context.sourceSnapshot, beforeSourceSnapshot);
+  if (changedBeforeDispatch.length) {
+    context.globalStopReason = `P0 source changed before dispatch: ${changedBeforeDispatch.slice(0, 20).join(', ')}`;
+    throw new Error(context.globalStopReason);
+  }
   const beforeSession = await sessionSnapshot(runtime, sessionId);
   const beforeItems = protocolItems(beforeSession);
   const beforeTrace = await traceSnapshot(runtime, sessionId);
@@ -920,6 +989,16 @@ async function runHeadlessTurn(
   }
   const pendingTask = !terminalTaskStates.has(String(task?.status));
   const pendingOutbox = summary?.taskId ? await activeOutboxForTask(runtime, summary.taskId) : true;
+  const canonicalEvent = event ?? null;
+  const canonicalTask = task ?? null;
+  const canonicalRun = run ?? null;
+  const entityArtifacts = {
+    event: await writeEvidenceJson(context.outputRoot, path.join(turnDirectory, `${prefix}.event.json`), canonicalEvent),
+    task: await writeEvidenceJson(context.outputRoot, path.join(turnDirectory, `${prefix}.task.json`), canonicalTask),
+    run: await writeEvidenceJson(context.outputRoot, path.join(turnDirectory, `${prefix}.daemon-run.json`), canonicalRun),
+    session: await writeEvidenceJson(context.outputRoot, path.join(turnDirectory, `${prefix}.session.json`), afterSession),
+    trace: await writeEvidenceJson(context.outputRoot, path.join(turnDirectory, `${prefix}.trace.json`), traces),
+  };
   const evidence = {
     scenario,
     turn,
@@ -930,14 +1009,22 @@ async function runHeadlessTurn(
     runtimeRunId: runtimeRunIdFromTrace(traces),
     cliExitCode: capture.exitCode,
     cliTimedOut: capture.timedOut,
-    run,
+    event: canonicalEvent,
+    task: canonicalTask,
+    run: canonicalRun,
+    sessionSnapshot: afterSession,
     sessionDelta,
     traceDelta: traces,
+    expectedAdvertisedTools: [],
+    evidenceRoot: context.outputRoot,
+    entityArtifacts,
     terminal: {
       rawPath: path.relative(context.outputRoot, rawFile),
       rawSha256: sha256(redacted.text),
+      rawBytes: Buffer.byteLength(redacted.text),
       normalizedPath: path.relative(context.outputRoot, normalizedFile),
       normalizedSha256: sha256(normalized),
+      normalizedBytes: Buffer.byteLength(normalized),
       normalizedText: normalized,
     },
     // Calibration verifies the transport/protocol oracle only. Scenario-specific
@@ -951,7 +1038,7 @@ async function runHeadlessTurn(
       sourceTreeChanged,
     },
   };
-  const audit = auditConversationTurnEvidence(evidence);
+  const audit = await auditConversationTurnEvidence(evidence);
   const usage = answerUsage(run);
   context.aggregate.inputTokens += usage.inputTokens;
   context.aggregate.outputTokens += usage.outputTokens;
@@ -984,22 +1071,29 @@ async function runHeadlessTurn(
     terminal: {
       rawPath: evidence.terminal.rawPath,
       rawSha256: evidence.terminal.rawSha256,
+      rawBytes: evidence.terminal.rawBytes,
       normalizedPath: evidence.terminal.normalizedPath,
       normalizedSha256: evidence.terminal.normalizedSha256,
+      normalizedBytes: evidence.terminal.normalizedBytes,
     },
-    event,
+    entityArtifacts,
     leaks: evidence.leaks,
     secretHits: redacted.hits,
   });
   await writeCheckpoint(context);
   if (context.globalStopReason) throw new Error(context.globalStopReason);
+  if (!audit.proven) throw new Error(`turn ${turn.key} is unproven: ${audit.reasons.join('; ')}`);
 }
 
 function selectedCalibrationScenarios(manifest: ConversationManifest, options: RunnerOptions): ConversationScenario[] {
   let scenarios = manifest.scenarios.filter((scenario) => scenario.entry === 'headless-cli'
     && scenario.unattendedEligible
     && scenario.enabledByDefault
-    && (options.lane ? scenario.lane === options.lane : scenario.lane === 'S'));
+    && (options.lane ? scenario.lane === options.lane : scenario.lane === 'S')
+    && scenario.runtimeContract.allowedTools.length === 0
+    && scenario.expectedTools.length === 0
+    && scenario.expectedToolsAnyOf.length === 0
+    && scenario.toolExpectation.mode === 'none');
   if (options.sceneIds.length) {
     const requested = new Set(options.sceneIds);
     scenarios = scenarios.filter((scenario) => requested.has(scenario.scenarioId));
@@ -1055,6 +1149,7 @@ async function runScenarioCalibration(context: RunContext, scenario: Conversatio
         if (context.globalStopReason) throw error;
       }
     }
+    if (failed) throw new Error(`scenario ${scenario.scenarioId} has one or more unproven calibration turns`);
   } finally {
     await stopIsolatedRuntime(runtime, true);
     await appendJournal(context.journalFile, {
@@ -1151,8 +1246,8 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       return start >= 0 && end > start && assistant !== undefined
         && terminalContainsAssistant(raw, start, end, assistant);
     });
-    const streamed = modelActions.length === turns.length && modelActions.every((item) => (
-      record(item?.modelRun)?.streamCandidateObserved === true
+    const transportChunksObserved = modelActions.length === turns.length && modelActions.every((item) => (
+      record(item?.modelRun)?.transportChunksObserved === true
       && record(item?.modelRun)?.promptReadyAfterBusy === true
       && record(item?.modelRun)?.provenTerminal === true
     )) && assistantVisible;
@@ -1161,6 +1256,24 @@ async function runPtySmoke(context: RunContext): Promise<void> {
     const traceStarts = trace.filter((item) => record(item)?.type === 'turn_start').length;
     const traceBindings = trace.filter((item) => record(item)?.type === 'model_binding_event'
       && record(record(item)?.data)?.workUnitKind === 'conversation').length;
+    const bindingRunIds = new Set(trace.filter((item) => record(item)?.type === 'model_binding_event'
+      && record(record(item)?.data)?.workUnitKind === 'conversation')
+      .map((item) => record(record(item)?.data)?.workUnitId)
+      .filter((id): id is string => typeof id === 'string'));
+    const toolSurfaces = trace.filter((item) => record(item)?.type === 'model_tool_surface');
+    const emptyToolDigest = `sha256:${sha256(JSON.stringify([]))}`;
+    const toolSurfaceProven = toolSurfaces.length === turns.length && toolSurfaces.every((item) => {
+      const entry = record(item);
+      const data = record(entry?.data);
+      return entry?.sessionId === sessionId
+        && data?.phase === 'before_model_dispatch'
+        && typeof data.runId === 'string'
+        && bindingRunIds.has(data.runId)
+        && Array.isArray(data.advertisedTools)
+        && data.advertisedTools.length === 0
+        && data.advertisedToolCount === 0
+        && data.toolSetDigest === emptyToolDigest;
+    });
     const traceEnds = trace.filter((item) => record(item)?.type === 'turn_end').length;
     const usage = runDetails.map(answerUsage);
     const usageProven = usage.length === turns.length
@@ -1170,11 +1283,12 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       && helper?.passed === true
       && tty
       && startupObserved
-      && streamed
+      && transportChunksObserved
       && noncesInSession
       && noncesInTerminal
       && traceStarts >= turns.length
       && traceBindings >= turns.length
+      && toolSurfaceProven
       && traceEnds >= turns.length
       && usageProven
       && modelActions.every((item) => runs.some((run) => run.id === record(item?.modelRun)?.daemonRunId))
@@ -1188,12 +1302,18 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       sessionId,
       tty,
       startupObserved,
-      streamedOutputObserved: streamed,
+      transportChunksObserved,
       assistantOutputVisibleAfterInputEcho: assistantVisible,
       cliExitCode: child.exitCode,
       runCount: runs.length,
       usageProven,
-      trace: { starts: traceStarts, bindings: traceBindings, ends: traceEnds },
+      trace: {
+        starts: traceStarts,
+        bindings: traceBindings,
+        toolSurfaces: toolSurfaces.length,
+        toolSurfaceProven,
+        ends: traceEnds,
+      },
       noncesInSession,
       noncesInTerminal,
       activeSessionRun: activeSessionRun(session),
@@ -1217,7 +1337,7 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       passed,
       tty,
       startupObserved,
-      streamedOutputObserved: streamed,
+      transportChunksObserved,
       assistantOutputVisibleAfterInputEcho: assistantVisible,
       exitCode: child.exitCode,
       turns: turns.length,
@@ -1264,10 +1384,21 @@ async function initializeRun(
     if (process.env.MIMI_CONVERSATION_CONFIRM_REAL_PROVIDER !== 'YES') {
       throw new Error('real Provider execution requires MIMI_CONVERSATION_CONFIRM_REAL_PROVIDER=YES');
     }
-    if (!options.skipBuild) buildDigest = await cleanBuild(outputRoot);
+    if (options.maxInputTokens === undefined || options.maxOutputTokens === undefined
+      || options.maxEstimatedUsd === undefined
+      || options.inputUsdPerMillion === undefined || options.outputUsdPerMillion === undefined) {
+      throw new Error([
+        'real Provider calibration requires explicit input/output token caps,',
+        'an estimated USD cap, and explicit input/output USD-per-million ceiling rates',
+      ].join(' '));
+    }
+    if (!options.skipBuild) buildDigest = await cleanBuild(outputRoot, options.manifestFile);
     else {
       if (!await exists(mimiEntry)) throw new Error('--skip-build requires dist/index.js');
-      buildDigest = sha256(await readFile(mimiEntry));
+      buildDigest = await runtimeClosureDigest(
+        await digestTree(path.join(repositoryRoot, 'dist')),
+        options.manifestFile,
+      );
     }
   }
   const sourceSnapshot = await captureSourceSnapshot();
@@ -1330,17 +1461,24 @@ async function main(): Promise<void> {
       unattendedDisabled: manifest.scenarios
         .filter((scenario) => scenario.lane === 'V' || scenario.lane === 'L').length,
       realProviderTurnsExecuted: 0,
-      executionGate: 'NO-GO: built CLI has no externally enforceable per-scenario RunPolicy receipt',
+      calibrationGate: 'GO only for isolated S-lane no-tools calibration with pre-dispatch Trace receipt',
+      formalExecutionGate: 'NO-GO: fixture/action/oracle execution and resumable 100x30 proof remain incomplete',
     }, null, 2)}\n`);
     return;
   }
-  throw new Error([
-    'NO-GO before Provider dispatch:',
-    'the built CLI does not yet expose an enforceable per-scenario RunPolicy receipt.',
-    'Safe calibration requires an exact empty Tool surface; W/F require exact contained/fixture Tool surfaces.',
-    'Prompt expectations and post-run audits are not authorization controls, so calibration, PTY smoke, and formal soak remain disabled.',
-  ].join(' '));
-  /* c8 ignore start -- retained implementation is activated only after the CLI policy gate exists. */
+  if (options.mode === 'soak') {
+    throw new Error([
+      'formal 100x30 dispatch remains fail-closed:',
+      'persistent scenario actions, fixture setup receipts, semantic state oracles, and resumable aggregate proof are incomplete.',
+      'No formal turn was dispatched or counted.',
+    ].join(' '));
+  }
+  if (options.resume) {
+    throw new Error('real calibration resume remains disabled until aggregate/start/build continuity is fully restored');
+  }
+  if (options.lane && options.lane !== 'S') {
+    throw new Error('only S-lane no-tools calibration is enabled; W/F/V/L remain fail-closed');
+  }
   const context = await initializeRun(options, manifest, manifestRaw);
   try {
     if (options.mode === 'pty-smoke') {
@@ -1350,13 +1488,14 @@ async function main(): Promise<void> {
       await runWithConcurrency(scenarios, options.concurrency, (scenario) => (
         runScenarioCalibration(context, scenario)
       ));
+      const requestedTurns = scenarios.length * options.calibrationTurns;
+      if (context.aggregate.provenTurns !== requestedTurns || context.aggregate.unprovenTurns !== 0) {
+        throw new Error(
+          `calibration proof mismatch: requested=${requestedTurns} proven=${context.aggregate.provenTurns} unproven=${context.aggregate.unprovenTurns}`,
+        );
+      }
     } else {
       await verifyPtyPrerequisite(context);
-      throw new Error([
-        'formal 100x30 dispatch remains fail-closed in this calibration skeleton:',
-        'persistent-PTY scenario oracles, fixture setup receipts, and semantic state oracles are not yet implemented.',
-        'No turn was dispatched or counted.',
-      ].join(' '));
     }
     await appendJournal(context.journalFile, {
       kind: 'run_finished',
@@ -1373,9 +1512,8 @@ async function main(): Promise<void> {
     mode: options.mode,
     aggregate: context.aggregate,
     formalDenominatorTurns: 0,
-    expensiveSoakExecuted: false,
+    realProviderCalibrationExecuted: true,
   }, null, 2)}\n`);
-  /* c8 ignore stop */
 }
 
 await main();

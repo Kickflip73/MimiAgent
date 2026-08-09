@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   OpenAI payload conversion, pre-network rejection in unsupported adapters and
   failover routes, plus bounded provider-opaque context accounting for staged
   1/10/20 MiB image and file inputs without persisting their binary payloads
+- add an authenticated local-only no-tools calibration policy with an exact empty
+  SDK Tool surface, a synchronous pre-provider Trace receipt, single-provider
+  credential isolation, content-bound runtime identity, and byte-verified
+  Event/Task/Run/Session/Trace/terminal evidence; keep W/F/V/L and the formal
+  100-by-30 denominator fail-closed until their executable fixtures and oracles exist
 - classify the integrated but previously unlisted meeting/NotebookLM Skill as an
   unpublished experimental asset so repository and package boundaries stay closed
 - identify Shell commands as unthrottled local-host execution, allow explicit

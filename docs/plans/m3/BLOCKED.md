@@ -26,7 +26,9 @@
 
 ## 证据计数边界
 
-- 当前没有已证明的 M3 live 会话、实时语音轮次或 100×30 终端轮次。
+- 当前没有已证明的 M3 live 会话、实时语音轮次或 100×30 终端轮次。S-lane no-tools
+  calibration 的工程派发门禁已经完成，但在持久 PTY、1-turn、2x5 的原始证据落盘前仍按
+  `realProviderTurnsExecuted=0` 记录。
 - `bench:capacity`、直接调用内部函数、静态 fixture、合成 transcript、readiness probe 和
   单次 Browser/Computer E2E 都不能计入 3000 个真实 user turns。
 - 自动化 headless CLI lane 必须走 CLI -> Daemon -> 真实 Provider 并保留 Run/Trace/Session/
@@ -46,9 +48,11 @@
 - Realtime transport/controller 是 transcription-only contract：没有 CLI/Daemon/Session actor
   composition root，也没有产品 mic source、speaker sink 或实机 stop/latency evidence。它不能被
   宣称为实时语音、双工、barge-in 或文本降级已经可用。
-- conversation manifest 的 103 个场景与 3090 轮都是 declared，不是 executed。runner 在专用
-  RunPolicy、fixture/oracle 执行和 Event→Task→Run→Session/Trace 原始证据绑定完成前保持
-  Provider 前 `NO-GO`；`realProviderTurnsExecuted=0`、正式分母为 0。
+- conversation manifest 的 103 个场景与 3090 轮都是 declared，不是 executed。专用 no-tools
+  RunPolicy、模型派发前空 Tool surface receipt 及 Event→Task→Run→Session/Trace/终端文件
+  绑定已允许隔离 S-lane calibration；W/F fixture、逐场景 action/oracle、完整 resume 与正式
+  100×30 soak 仍保持 Provider 前 `NO-GO`。`realProviderTurnsExecuted=0`、正式分母为 0，直到
+  真实校准证据通过审计后才可更新前者；校准轮次也不计入正式分母。
 - CAS owner/ref/GC 已进入 production attachment path，并通过完整单测/coverage CI 以及进程
   终止、锁恢复、并发 owner、启动 reconcile 等确定性 fault-injection；真实掉电与长期配额/GC
   soak 仍未形成 promotion 证据。发生不确定恢复状态时必须保留 ref 并失败关闭，不能用 unit

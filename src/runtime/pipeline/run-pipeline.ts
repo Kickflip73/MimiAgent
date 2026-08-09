@@ -791,6 +791,17 @@ export async function executeRunPipeline(
       focusedOutputLimit: focusedOwnerRun ? 4_096 : undefined,
       reasoning: run.scope.modelBinding?.reasoning,
     });
+    const advertisedTools = Object.freeze([...request.toolNames]);
+    await host.recordEvent('model_tool_surface', {
+      schemaVersion: 1,
+      phase: 'before_model_dispatch',
+      runId: run.runId,
+      policyRevision: run.capabilitySnapshot.policyRevision,
+      advertisedTools,
+      advertisedToolCount: advertisedTools.length,
+      toolSetDigest: run.capabilitySnapshot.toolSetDigest,
+      capabilitySnapshotDigest: run.capabilitySnapshot.snapshotDigest,
+    });
     await run.session.updateRunProgress('模型执行中', undefined, run.runId);
     const sessionInputCallback = async (
       sessionHistory: AgentInputItem[],

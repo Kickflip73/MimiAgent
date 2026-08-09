@@ -8,6 +8,7 @@ import {
 import { eventKindSchema, eventTrustSchema, type EventEnvelope } from './types.js';
 import type { MimiStore } from './store.js';
 import type { SessionWorkspaceRegistry } from './session-workspace-registry.js';
+import { parseRequestedLocalRunPolicy } from './local-run-policy.js';
 
 interface SubmitParams extends Partial<Pick<EventEnvelope,
   'externalId' | 'source' | 'trust' | 'priority' | 'profileId' | 'sessionKey'
@@ -20,6 +21,7 @@ interface SubmitParams extends Partial<Pick<EventEnvelope,
   resumeState?: boolean;
   approvedPersonalMessageText?: string;
   attachments?: unknown;
+  requestedRunPolicy?: unknown;
 }
 
 type IngestResult = ReturnType<MimiStore['ingestEvent']>;
@@ -70,6 +72,20 @@ export async function submitDaemonEvent(
   const sessionKey = params.sessionKey === undefined
     ? undefined
     : assertSessionId(requiredString(params.sessionKey, 'sessionKey'));
+  const payloadRecord = params.payload && typeof params.payload === 'object'
+    && !Array.isArray(params.payload)
+    ? params.payload as Record<string, unknown>
+    : undefined;
+  if (payloadRecord && Object.hasOwn(payloadRecord, 'requestedRunPolicy')) {
+    throw new Error('payload.requestedRunPolicy 是保留字段；必须通过认证 local-cli 提交参数设置');
+  }
+  const requestedRunPolicy = parseRequestedLocalRunPolicy(params.requestedRunPolicy);
+  if (requestedRunPolicy && (source !== 'local-cli' || trust !== 'owner')) {
+    throw new Error('requestedRunPolicy 仅允许认证 local-cli owner 收窄本轮权限');
+  }
+  if (requestedRunPolicy && !sessionKey) {
+    throw new Error('requestedRunPolicy 需要显式 Session 绑定');
+  }
   const requestedAttachments = validateLocalAttachmentSubmission({
     source,
     trust,
@@ -114,7 +130,7 @@ export async function submitDaemonEvent(
         )
       : undefined;
     const stagedAttachments = attachmentBatch?.attachments ?? [];
-    const basePayload = params.payload ?? {
+    const submittedPayload = params.payload ?? {
       ...(params.resumeState === true ? { resumeState: true } : {}),
       ...(typeof params.approvedPersonalMessageText === 'string'
         && params.approvedPersonalMessageText.trim()
@@ -122,6 +138,12 @@ export async function submitDaemonEvent(
         : {}),
       ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
     };
+    const basePayload = requestedRunPolicy
+      ? {
+          ...(submittedPayload as Record<string, unknown>),
+          requestedRunPolicy,
+        }
+      : submittedPayload;
     const payload = workspaceBinding
       ? {
           ...(basePayload && typeof basePayload === 'object' && !Array.isArray(basePayload)
