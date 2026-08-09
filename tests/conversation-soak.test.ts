@@ -7,6 +7,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import {
   assessScenarioEligibility,
+  assistantTextForNonce,
   auditConversationTurnEvidence,
   deriveConversationResumeState,
   materializeConversationTurn,
@@ -14,6 +15,7 @@ import {
   redactTerminalSecrets,
   sha256,
   stripTerminalControl,
+  terminalBytesContainAssistant,
   type ConversationJournalRecord,
 } from '../scripts/conversation-soak-contract.js';
 
@@ -318,6 +320,41 @@ test('terminal evidence is normalized and secrets are stopped before persistence
   assert.ok(redacted.hits >= 1);
   assert.doesNotMatch(redacted.text, /provider-secret-fixture/u);
   assert.equal(stripTerminalControl(redacted.text), 'answer <redacted-provider-secret>\nnext');
+});
+
+test('PTY assistant proof uses protocol text and byte offsets instead of metadata or UTF-16 indexes', () => {
+  const nonce = 'NONCE=mimi-0123456789abcdef';
+  const answer = `这是终端必须真实显示的完整回答，不能由输入回显代替。\n${nonce}`;
+  const extracted = assistantTextForNonce([{
+    type: 'message',
+    role: 'assistant',
+    content: [{
+      type: 'output_text',
+      text: answer,
+      providerData: { label: 'metadata-must-not-enter-answer' },
+    }],
+  }], nonce);
+  assert.equal(extracted, answer);
+
+  const prefix = Buffer.from('中文前缀\x1b[31m');
+  const rendered = Buffer.from(`┊  这是终端必须真实显示的完整回答，\n┊  不能由输入回显代替。\n${nonce}\x1b[0m`);
+  const raw = Buffer.concat([prefix, rendered, Buffer.from('尾部')]);
+  assert.equal(terminalBytesContainAssistant(
+    raw,
+    prefix.byteLength,
+    prefix.byteLength + rendered.byteLength,
+    answer,
+    `请确认终端输出，但不要复述答案。${nonce}`,
+  ), true);
+
+  const echoedPrompt = `输入中已经包含这段文字，因此不能把回显当作助手回答。${nonce}`;
+  assert.equal(terminalBytesContainAssistant(
+    Buffer.from(echoedPrompt),
+    0,
+    Buffer.byteLength(echoedPrompt),
+    echoedPrompt,
+    echoedPrompt,
+  ), false);
 });
 
 test('runner uses only the built CLI boundary and Python stdlib PTY helper', async () => {

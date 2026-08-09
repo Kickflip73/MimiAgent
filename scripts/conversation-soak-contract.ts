@@ -827,6 +827,62 @@ export function stripTerminalControl(value: string): string {
     .replace(/\n{4,}/gu, '\n\n\n');
 }
 
+function assistantMessageText(value: unknown): string | undefined {
+  const item = record(value);
+  if (item?.role !== 'assistant') return undefined;
+  if (typeof item.content === 'string') return item.content.trim() || undefined;
+  if (!Array.isArray(item.content)) return undefined;
+  const text = item.content.flatMap((part) => {
+    const output = record(part);
+    return output?.type === 'output_text' && typeof output.text === 'string'
+      ? [output.text]
+      : [];
+  }).join('\n').trim();
+  return text || undefined;
+}
+
+export function assistantTextForNonce(
+  items: readonly unknown[],
+  nonce: string,
+): string | undefined {
+  return items.map(assistantMessageText).find((text) => text?.includes(nonce));
+}
+
+export function terminalBytesContainAssistant(
+  raw: Buffer,
+  start: number,
+  end: number,
+  assistant: string,
+  prompt: string,
+): boolean {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+    || start < 0 || end <= start || end > raw.byteLength) return false;
+  const busyStatus = /^\^(?:\._\.|>_<|=w=|-\.-)\^.\s+运行中\s*·/u;
+  const inputBox = /^\s*┊>\s*$/u;
+  const visible = stripTerminalControl(raw.subarray(start, end).toString('utf8'))
+    .split('\n')
+    .filter((line) => !busyStatus.test(line.trim()) && !inputBox.test(line))
+    .map((line) => line.replace(/^\s*(?:[┊│┃╎╏|]\s*)+/u, ''))
+    .join('')
+    .replace(/\s+/gu, '');
+  const answer = assistant.replace(/NONCE=mimi-[a-f0-9]+/gu, '').replace(/\s+/gu, '');
+  const echoedInput = prompt.replace(/\s+/gu, '');
+  const answerCharacters = Array.from(answer);
+  if (answerCharacters.length < 8) return false;
+
+  // A PTY capture retains each animated status redraw between streamed answer chunks.
+  // Require canonical assistant-only chunks that cannot have come from the echoed input.
+  const probeSize = Math.min(24, answerCharacters.length);
+  const candidates: string[] = [];
+  for (let offset = 0; offset + probeSize <= answerCharacters.length; offset += probeSize) {
+    const candidate = answerCharacters.slice(offset, offset + probeSize).join('');
+    if (!echoedInput.includes(candidate)) candidates.push(candidate);
+  }
+  if (candidates.length === 0) return false;
+  const requiredMatches = answerCharacters.length >= probeSize * 2 ? 2 : 1;
+  return candidates.filter((candidate) => visible.includes(candidate)).length >= requiredMatches;
+}
+
 export function redactTerminalSecrets(value: string, secrets: readonly string[]): {
   text: string;
   hits: number;

@@ -92,6 +92,12 @@
 - 第三次 PTY 尝试没有创建 Run 或发出 Provider 请求：终端正确保留了一个完整多行草稿，但
   paste-end 与 Enter 进入同一 PTY 读取批次，paste 处理返回时丢弃了尾随 Enter。helper 现把
   start/data/end 分开完整写入，并在独立的下一批发送 Enter；该尝试同样为 `unproven`、0 轮。
+- 第四次 PTY 尝试真实完成 2 个 Run（3196/803 与 3906/237 input/output tokens），TTY、usage、
+  两个空 Tool surface receipts、Session/Trace nonce、无 active Run 和正常 `/exit` 均通过；最终
+  因终端渲染插入行首 gutter 导致 canonical assistant 字面查找失败，整次仍标为 `unproven`。
+  PTY prerequisite 现使用专门的两轮 no-tools prompt，不再复用带 fixture/target 语义的正式场景
+  action；终端证明按 Buffer 字节 offset 切片，只剥离已知 busy redraw/input gutter，并要求命中
+  不存在于输入回显中的 canonical assistant 独有片段。修复后尚未重跑，不能追认第四次尝试。
 - 本 checkpoint 的 no-tools focused tests 为 133/133；registry credential 修复后的相关 focused
   tests 为 20/20，随后完整 `npm test` 为 1029/1029，`npm run check` 与 `npm run build` 均
   退出 0。此处仍是工程门禁证据：真实 Provider 已产生上述两个未证明 Run，但成功的持久 PTY、

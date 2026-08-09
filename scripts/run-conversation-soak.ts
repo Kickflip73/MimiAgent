@@ -19,6 +19,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
   auditConversationTurnEvidence,
+  assistantTextForNonce,
   assessScenarioEligibility,
   deriveConversationResumeState,
   materializeConversationTurn,
@@ -26,6 +27,7 @@ import {
   redactTerminalSecrets,
   sha256,
   stripTerminalControl,
+  terminalBytesContainAssistant,
   type ConversationJournalRecord,
   type ConversationLane,
   type ConversationManifest,
@@ -839,29 +841,6 @@ function runtimeRunIdFromTrace(trace: unknown[]): string | undefined {
   return undefined;
 }
 
-function assistantTextForNonce(items: readonly unknown[], nonce: string): string | undefined {
-  const assistant = items.find((item) => {
-    const value = record(item);
-    return value?.role === 'assistant' && JSON.stringify(item).includes(nonce);
-  });
-  if (!assistant) return undefined;
-  const collect = (value: unknown): string[] => {
-    if (typeof value === 'string') return [value];
-    if (Array.isArray(value)) return value.flatMap(collect);
-    const item = record(value);
-    return item ? Object.values(item).flatMap(collect) : [];
-  };
-  return collect(record(assistant)?.content).join('\n').trim();
-}
-
-function terminalContainsAssistant(raw: string, start: number, end: number, assistant: string): boolean {
-  const visible = stripTerminalControl(raw.slice(start, end)).replace(/\s+/gu, ' ').trim();
-  const answer = assistant.replace(/NONCE=mimi-[a-f0-9]+/gu, '').replace(/\s+/gu, ' ').trim();
-  if (answer.length < 20) return false;
-  const probe = answer.slice(0, Math.min(80, answer.length));
-  return visible.includes(probe);
-}
-
 async function activeOutboxForTask(runtime: IsolatedRuntime, taskId: string): Promise<boolean> {
   const value = await mimiJson(runtime, ['daemon', 'outbox', '100']);
   if (!Array.isArray(value)) return true;
@@ -1188,7 +1167,17 @@ async function runPtySmoke(context: RunContext): Promise<void> {
   let passed = false;
   try {
     const sessionId = `benchmark-pty-${context.manifestDigest.slice(0, 8)}`;
-    const turns = [1, 2].map((number) => materializeConversationTurn(context.manifest, scenario, number));
+    const turns = [1, 2].map((number) => {
+      const turn = materializeConversationTurn(context.manifest, scenario, number);
+      return {
+        ...turn,
+        prompt: [
+          `SCENE=persistent-pty-smoke TURN=${number} ${turn.nonce}`,
+          '这是隔离的持久 PTY 无工具烟测。请只用一句自然语言确认当前轮次，不要调用任何工具。',
+          `最后另起一行原样输出 ${turn.nonce}`,
+        ].join('\n'),
+      };
+    });
     const actions = path.join(runtime.root, 'pty-actions.json');
     const rawFile = path.join(context.outputRoot, 'pty-smoke.terminal.ansi');
     const resultFile = path.join(context.outputRoot, 'pty-smoke.helper.json');
@@ -1225,7 +1214,8 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       exitCode: Number((error as { code?: number }).code ?? 1),
     }));
     const helper = record(await readJson(resultFile));
-    const raw = await readFile(rawFile, 'utf8');
+    const rawBytes = await readFile(rawFile);
+    const raw = rawBytes.toString('utf8');
     const normalized = stripTerminalControl(raw);
     await writeExclusive(normalizedFile, normalized);
     const session = await sessionSnapshot(runtime, sessionId);
@@ -1245,7 +1235,7 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       const end = typeof item?.endRawOffset === 'number' ? item.endRawOffset : -1;
       const assistant = assistantTexts[index];
       return start >= 0 && end > start && assistant !== undefined
-        && terminalContainsAssistant(raw, start, end, assistant);
+        && terminalBytesContainAssistant(rawBytes, start, end, assistant, turns[index]?.prompt ?? '');
     });
     const transportChunksObserved = modelActions.length === turns.length && modelActions.every((item) => (
       record(item?.modelRun)?.transportChunksObserved === true
@@ -1321,7 +1311,7 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       secretHits,
       rawTerminal: {
         path: path.relative(context.outputRoot, rawFile),
-        sha256: sha256(raw),
+        sha256: sha256(rawBytes),
       },
       normalizedTerminal: {
         path: path.relative(context.outputRoot, normalizedFile),

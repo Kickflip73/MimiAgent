@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   complete writes so embedded newlines cannot create extra model Runs or produce
   a false turn proof, and deliver Enter in a later PTY read so it cannot be consumed
   as bytes trailing the paste-end marker
+- bind persistent-PTY assistant visibility to canonical protocol text using terminal
+  byte offsets, known-redraw normalization, and assistant-only chunks absent from the
+  echoed input; keep the prerequisite prompt independent from unexecuted formal
+  fixture/target actions
 - classify the integrated but previously unlisted meeting/NotebookLM Skill as an
   unpublished experimental asset so repository and package boundaries stay closed
 - identify Shell commands as unthrottled local-host execution, allow explicit
