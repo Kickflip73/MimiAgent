@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-09T18:09:21.345Z",
+  "manifest": {
+    "path": "evals/conversation/manifest.v1.json",
+    "sha256": "04e8706f1d2cf4da8a138d73173770ccbeac1e61f4e13de4d0e0b959688ee540",
+    "declaredScenarios": 103,
+    "declaredTurns": 3090
+  },
+  "persistentPty": {
+    "sourceCommit": "2cc22fb",
+    "buildDigest": "79e0d3f193e581945f6cb09a0795f7d3960cad61ac539eaa1726acd28b9a8f98",
+    "evidenceRoot": "/private/tmp/mimi-m3-pty-2cc22fb",
+    "passed": true,
+    "tty": true,
+    "turns": 2,
+    "inputTokens": 6160,
+    "outputTokens": 130,
+    "emptyToolSurfaceReceipts": 2,
+    "secretHits": 0
+  },
+  "calibration": {
+    "failedAttempt": {
+      "sourceCommit": "2cc22fb",
+      "evidenceRoot": "/private/tmp/mimi-m3-calibrate-1x1-2cc22fb",
+      "requestedTurns": 1,
+      "provenTurns": 0,
+      "unprovenTurns": 1,
+      "reason": "runner treated the Daemon Task inspection projection as the persisted Task field shape"
+    },
+    "singleTurn": {
+      "sourceCommit": "104dff6",
+      "buildDigest": "d1d98042c525ebfb39da1fe37fd2e2155ee9b3de6965608cc569ebbe1448bad7",
+      "evidenceRoot": "/private/tmp/mimi-m3-calibrate-1x1-104dff6",
+      "scenarios": [
+        "conv-008"
+      ],
+      "requestedTurns": 1,
+      "provenTurns": 1,
+      "unprovenTurns": 0,
+      "inputTokens": 3183,
+      "outputTokens": 1087,
+      "secretHits": 0
+    },
+    "twoByFive": {
+      "sourceCommit": "37dceea",
+      "buildDigest": "25e1f67afb4df0525dbd83d5d25c4be136afd2d6f81736398aafd5a1e8f0061f",
+      "evidenceRoot": "/private/tmp/mimi-m3-calibrate-2x5-37dceea",
+      "scenarios": [
+        "conv-008",
+        "conv-010"
+      ],
+      "requestedTurns": 10,
+      "provenTurns": 10,
+      "unprovenTurns": 0,
+      "inputTokens": 38757,
+      "outputTokens": 3299,
+      "estimatedUsd": 2.59765,
+      "estimateOnly": true,
+      "estimateRatesPerMillionTokens": {
+        "input": 50,
+        "output": 200
+      },
+      "toolCalls": 0,
+      "secretHits": 0,
+      "leakFlags": 0,
+      "uniqueEntityChains": 10,
+      "evidenceFilesRehashed": 70,
+      "evidenceIntegrityMismatches": 0
+    }
+  },
+  "verification": {
+    "npmRunCheck": "passed",
+    "npmTest": {
+      "passed": 1032,
+      "failed": 0
+    },
+    "npmRunBuild": "passed"
+  },
+  "classification": {
+    "calibrationOnly": true,
+    "formalDenominatorTurns": 0,
+    "formalSoakGate": "NO-GO",
+    "reason": "fixture execution, per-scenario semantic oracles, complete resumable evidence, and the formal 100x30 dispatch path remain fail-closed"
+  }
+}

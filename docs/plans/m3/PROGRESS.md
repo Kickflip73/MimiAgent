@@ -111,6 +111,13 @@
   Tool calls、pending Task/Outbox/active Run、source-tree drift 与 secret hits 均为 0。它仍是
   calibration-only、正式分母 0。运行同时暴露单轮结束时 USD checkpoint 沿用派发前数值的问题；
   现已在每轮 usage 入账后刷新显式估算，再进入 2×5。
+- 固定提交 `37dceea` 的 2 场景×5 轮校准已通过：`conv-008` 与 `conv-010` 各 5 轮，
+  合计 10 proven/0 unproven、38757/3299 input/output tokens、0 Tool calls、0 leak flags、
+  0 secret hits；按明确配置的保守估算费率为 2.59765 美元（不是账单价格）。10 条链使用
+  10 组唯一 Event/Task/Daemon Run/runtime Run ID，70 份 terminal/Event/Task/Run/Session/Trace
+  文件逐字节重算为 0 mismatch。随后 `npm test` 为 1032/1032，`npm run build` 退出 0。
+  去敏机器报告见 `evals/conversation/calibration-report.v1.json`；全部仍为 calibration-only，
+  100×30 正式执行保持 NO-GO、正式分母 0。
 - 本 checkpoint 的 no-tools focused tests 为 133/133；registry credential 修复后的相关 focused
   tests 为 20/20，随后完整 `npm test` 为 1029/1029，`npm run check` 与 `npm run build` 均
   退出 0。此处仍是工程门禁证据：真实 Provider 已产生上述两个未证明 Run，但成功的持久 PTY、

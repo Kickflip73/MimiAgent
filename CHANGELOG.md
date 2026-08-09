@@ -44,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   aliases, so a successful CLI Run is not discarded or weakly inferred
 - refresh the explicit USD ceiling estimate after each completed calibration turn so
   checkpoints and final reports include the latest Provider usage
+- record the first proven persistent PTY and 1×1/2×5 real-Provider calibration as a
+  redacted machine-readable report while keeping the formal 100×30 denominator zero
 - classify the integrated but previously unlisted meeting/NotebookLM Skill as an
   unpublished experimental asset so repository and package boundaries stay closed
 - identify Shell commands as unthrottled local-host execution, allow explicit
