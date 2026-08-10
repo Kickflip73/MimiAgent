@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- add a reachable macOS `mimi voice` loop that sends stable Speech Framework
+  transcripts through one canonical Daemon Session and speaks the exact Mimi answer;
+  default to on-device ASR plus system TTS, allow an explicit local Kokoro renderer,
+  pause capture during model/TTS playback, and keep full-duplex barge-in and live
+  microphone/Provider acceptance explicitly unproven
 - remove repeated top-level JSON Schema dialect metadata only from model-facing
   Tool copies, preserving the original Zod parser and invocation closure while
   restoring the bounded first-round owner Tool budget

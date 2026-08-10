@@ -14,13 +14,18 @@ final class RecognitionBox: @unchecked Sendable {
     private(set) var segmentsTruncated = false
     private(set) var isFinal = false
     private(set) var error: Error?
+    private var lastTranscriptUpdateAt: Date?
     let semaphore = DispatchSemaphore(value: 0)
 
     func update(result: SFSpeechRecognitionResult?, error: Error?) {
         lock.lock()
         defer { lock.unlock() }
         if let result {
-            text = result.bestTranscription.formattedString
+            let updatedText = result.bestTranscription.formattedString
+            if updatedText != text && !updatedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                lastTranscriptUpdateAt = Date()
+            }
+            text = updatedText
             isFinal = result.isFinal
             segmentsTruncated = result.bestTranscription.segments.count > 128
             segments = result.bestTranscription.segments.prefix(128).compactMap { segment in
@@ -41,6 +46,14 @@ final class RecognitionBox: @unchecked Sendable {
             signaled = true
             semaphore.signal()
         }
+    }
+
+    func stableFor(seconds: TimeInterval) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isFinal, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let lastTranscriptUpdateAt else { return isFinal }
+        return Date().timeIntervalSince(lastTranscriptUpdateAt) >= seconds
     }
 }
 
@@ -171,7 +184,14 @@ func transcribeFile(path: String, locale: String, onDevice: Bool, timeoutSeconds
     )
 }
 
-func listenSegment(locale: String, onDevice: Bool, segmentSeconds: Double, maxChars: Int, contextual: [String]) throws -> [String: Any]? {
+func listenSegment(
+    locale: String,
+    onDevice: Bool,
+    segmentSeconds: Double,
+    endSilenceSeconds: Double,
+    maxChars: Int,
+    contextual: [String]
+) throws -> [String: Any]? {
     let engine = AVAudioEngine()
     let input = engine.inputNode
     let format = input.outputFormat(forBus: 0)
@@ -194,7 +214,10 @@ func listenSegment(locale: String, onDevice: Bool, segmentSeconds: Double, maxCh
     }
     engine.prepare()
     try engine.start()
-    RunLoop.current.run(until: Date().addingTimeInterval(segmentSeconds))
+    let deadline = Date().addingTimeInterval(segmentSeconds)
+    while Date() < deadline && !box.stableFor(seconds: endSilenceSeconds) {
+        RunLoop.current.run(until: min(deadline, Date().addingTimeInterval(0.05)))
+    }
     engine.stop()
     request.endAudio()
     _ = box.semaphore.wait(timeout: .now() + 5)
@@ -240,13 +263,23 @@ do {
         guard let maxChars = Int(try argument(5, "max chars")), maxChars > 0 else {
             throw VoiceFailure(description: "max chars must be positive")
         }
-        let contextual = try argument(6, "contextual strings").split(separator: "\u{1f}").map(String.init)
+        guard let endSilenceMs = Double(try argument(6, "end silence milliseconds")), endSilenceMs >= 300 else {
+            throw VoiceFailure(description: "end silence milliseconds must be at least 300")
+        }
+        let contextual = try argument(7, "contextual strings").split(separator: "\u{1f}").map(String.init)
         try authorizeSpeech()
         try authorizeMicrophone()
         try emit(["type": "ready", "locale": locale, "onDevice": onDevice])
         while true {
             do {
-                if var result = try listenSegment(locale: locale, onDevice: onDevice, segmentSeconds: segmentSeconds, maxChars: maxChars, contextual: contextual) {
+                if var result = try listenSegment(
+                    locale: locale,
+                    onDevice: onDevice,
+                    segmentSeconds: segmentSeconds,
+                    endSilenceSeconds: endSilenceMs / 1_000,
+                    maxChars: maxChars,
+                    contextual: contextual
+                ) {
                     result["type"] = "transcript"
                     result["locale"] = locale
                     result["onDevice"] = onDevice

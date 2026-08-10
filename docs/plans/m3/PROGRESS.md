@@ -45,10 +45,10 @@
 - 同轮 image/file 仍走现有 Provider input 路径；本 checkpoint 当时 audio/video 仅受控摄取，
   后续 WAV audio 工程路径的增量见下方独立 tranche。非 WAV audio 与 video 继续在模型请求前
   明确 blocked；手工构造 schema fixture 不算生产 ASR 或视频理解。
-- Realtime transport/controller 已固定官方 route/model、20ms PCM frame、连接/停止 deadline、
-  transcription/VAD-only `createResponse=false`、Provider output audio 禁止，以及 final transcript
-  进入 canonical Host Run、canonical answer 交给 Mimi TTS 的合同。它没有 CLI/Daemon/设备
-  composition root，真实实时语音轮次仍为 0。
+- 新增 `mimi voice` macOS 半双工入口：设备端优先的系统分段 ASR 把停顿后稳定 transcript
+  提交到一个 canonical Session/Run，并只播放该 Run 的原始回答；系统 TTS 默认，Kokoro renderer
+  显式可选。Realtime transport/controller 仍仅固定官方 route/model、20ms PCM frame、deadline
+  和 transcription/VAD-only 合同，没有产品级 realtime device composition；真实语音轮次仍为 0。
 - conversation manifest 当前为 103 scenarios / 3090 declared turns / 10 suites；当时只运行的
   manifest validation 命令报告 `realProviderTurnsExecuted=0`，该字段只描述那一次 validation
   没有派发模型，不能解释为整个 M3 历史从未调用真实 Provider。专用
@@ -258,7 +258,7 @@
 | 区域 | 已有可复用能力 | 尚未证明/实现 |
 |---|---|---|
 | 图片 | 同轮多图输入；CLI attachment 已有 CAS ref/Evidence；`generate_image` 输出 ref-only；Google edit fixture 与普通 CLI/Daemon 显式 `@media` 均可按同 Session Evidence 跨后续 Run/重启精确回取 | live 图片 Provider；OpenAI multipart edit；隐式代词/跨 Session 连续性；语义 answer anchor、Memory、URL/multi artifact |
-| 语音 | 既有 2～30 秒分段 ASR、`say` TTS、wake phrase、文件转写；新增 transcription-only transport/controller contract | CLI/mic/speaker composition；真实 turn detection、barge-in、低延迟、断线与文本降级 |
+| 语音 | `mimi voice` 已把分段系统 ASR、同一 canonical Session/Run、系统或 Kokoro TTS 接成半双工入口；保留 wake phrase Connector 和 transcription-only Realtime contract | 真实麦克风/live Provider 验收；全双工 turn detection、barge-in、低延迟、断线与文本降级 |
 | 音频 | 严格 PCM16 WAV 已接 CAS、本地 ASR port、derived segment/time-range Evidence、同一 canonical Run 与 Finalization anchor；durable Task retry 复用派生 Evidence | 真实 Speech 权限/用户音频/live Provider/延迟 soak；MemoryCandidate；其它 audio 格式 |
 | 视频 | `@video` 有界摄取并在 Provider 前诚实 blocked；Evidence schema 支持 keyframe/time-range anchor | 音轨提取、关键帧、时间片、有界理解、可信 adapter receipt 与诚实 coverage |
 | 连续性 | Session/run ownership 与 Effect Ledger 基座 | 跨文本/图片/语音/视频入口事项幂等、重连/恢复不重复 |
@@ -276,8 +276,9 @@
 - Slice 2（音频时间片与 MemoryCandidate）：PCM16 WAV 的本地 ASR、segment/time-range Evidence、
   canonical Run 与 Finalization anchor 已在工程/fixture 路径可达；MemoryCandidate、其它格式和
   实机/live 验收待实现。
-- Slice 3（实时语音）：transport/controller 合同已固定但产品不可达；CLI/mic/speaker 与
-  Session actor composition、实机延迟/释放证据待实现。
+- Slice 3（实时语音）：`mimi voice` 的系统 ASR -> canonical Session -> TTS 半双工入口已可达并有
+  lifecycle fixture；Realtime device composition、说话打断、实机权限/live Provider、延迟与释放
+  证据待实现。
 - Slice 4（视频）：待实现。
 - 连续性/恢复：待实现。
 - M3 媒体 fixture/live 验收：当前新增证据仍为 unit/adapter/合成 WAV fixture，没有 live 图片、

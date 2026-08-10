@@ -64,9 +64,10 @@
   也未接 MemoryCandidate，因此不得计为实机或 live 音频验收。非 WAV audio 与全部 `@video`
   继续网络前 blocked；视频音轨、关键帧、time-range 和理解 caller 尚未实现，未知 container/
   codec 保持 fail closed。
-- Realtime transport/controller 是 transcription-only contract：没有 CLI/Daemon/Session actor
-  composition root，也没有产品 mic source、speaker sink 或实机 stop/latency evidence。它不能被
-  宣称为实时语音、双工、barge-in 或文本降级已经可用。
+- `mimi voice` 已提供 macOS 分段 ASR -> canonical Session/Run -> Mimi-owned TTS 的半双工
+  产品入口，并有确定性 lifecycle/connector 测试；但真实麦克风权限、用户语音和 live Provider
+  仍为 0 轮。独立 Realtime transport/controller 仍没有产品 mic/source/sink composition，
+  因此不能宣称双工、barge-in、重连、文本降级或 750 ms 指标已经可用。
 - conversation manifest 的 103 个场景与 3090 轮都是 declared，不是 executed。专用 no-tools
   RunPolicy、模型派发前空 Tool surface receipt 及 Event→Task→Run→Session/Trace/终端文件
   绑定已允许并完成隔离 S-lane PTY/1×1/2×5 calibration；W/F fixture、逐场景 action/oracle、

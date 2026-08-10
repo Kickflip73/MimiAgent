@@ -35,9 +35,10 @@ OpenAI edit 与跨 scope/tamper 在网络前失败关闭，URL/multi artifact ou
 trust、篡改或不支持 `imageInput` 的 route 在 Provider 前拒绝，completed ledger receipt 在 CAS
 读取前回放。该证据仍是 fixture/集成回归，不是 live Provider，也不实现代词推断或跨 Session 引用。
 WAV 路径当前只有 Swift helper 与合成 fixture 证据，没有真实 Speech 权限、用户音频、live
-Provider 或延迟 soak；MemoryCandidate 也未接入。Realtime 仅完成
-transcription/VAD-only transport/controller 和 Host runner contract，尚无 CLI、麦克风、播放器或
-Session actor 的 composition root。上述图片证据仍是 unit/adapter fixture，不是 live Provider；
+Provider 或延迟 soak；MemoryCandidate 也未接入。`mimi voice` 已将 macOS 分段系统 ASR、一个
+canonical Session/Run 和系统或 Kokoro TTS 接为半双工产品入口；独立 Realtime 仍仅完成
+transcription/VAD-only transport/controller 和 Host runner contract，尚无 realtime device
+composition、barge-in 或实机证据。上述图片证据仍是 unit/adapter fixture，不是 live Provider；
 普通聊天媒体续指、其它音频格式、视频分析、Memory 编译和正式 benchmark 仍按后续 Slice 执行。
 
 从该 checkpoint 继续补齐：

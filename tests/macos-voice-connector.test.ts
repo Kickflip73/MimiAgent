@@ -333,3 +333,81 @@ fi
     await stop(second.child);
   }
 });
+
+test('macOS direct voice mode accepts unprefixed turns and uses the selected Kokoro renderer', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'macos-direct-voice-'));
+  const rendererLog = path.join(root, 'renderer.jsonl');
+  const playerLog = path.join(root, 'player.jsonl');
+  const swift = path.join(root, 'mock-swift.sh');
+  const renderer = path.join(root, 'mock-kokoro.sh');
+  const player = path.join(root, 'mock-player.sh');
+  const listenerState = path.join(root, 'listener.json');
+  await writeFile(swift, `#!/bin/sh
+if [ "$2" = "listen" ]; then
+  printf '%s\n' '{"type":"ready","locale":"zh-CN","onDevice":true}'
+  printf '%s\n' '{"type":"transcript","text":"不用唤醒词也能对话","locale":"zh-CN","onDevice":true}'
+  exec /usr/bin/tail -f /dev/null
+fi
+`);
+  await writeFile(renderer, `#!/bin/sh
+log=${JSON.stringify(rendererLog)}
+text=$(/bin/cat "$1")
+printf '%s\\037%s\\037%s\\037%s\\n' "$text" "$2" "\${3-}" "\${4-}" >> "$log"
+printf '%s' 'synthetic-kokoro-wave' > "$2"
+`);
+  await writeFile(player, `#!/bin/sh
+log=${JSON.stringify(playerLog)}
+printf '%s\n' "$1" >> "$log"
+`);
+  await Promise.all([chmod(swift, 0o755), chmod(renderer, 0o755), chmod(player, 0o755)]);
+  const connector = fileURLToPath(new URL('../examples/connectors/macos-voice-connector.mjs', import.meta.url));
+  const child = spawn(process.execPath, [connector], {
+    env: {
+      ...process.env,
+      MACOS_SWIFT_BIN: swift,
+      MACOS_SAY_BIN: '/usr/bin/false',
+      MACOS_VOICE_LISTEN: 'true',
+      MACOS_VOICE_REQUIRE_WAKE_PHRASE: 'false',
+      MACOS_VOICE_ON_DEVICE: 'true',
+      MACOS_VOICE_TTS_ENGINE: 'kokoro',
+      MACOS_VOICE_KOKORO_RENDERER: renderer,
+      MACOS_VOICE_AUDIO_PLAYER: player,
+      MACOS_VOICE_KOKORO_SPEED: '1.15',
+      MACOS_VOICE_STATE_FILE: listenerState,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const messages: Message[] = [];
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+    while (stdout.includes('\n')) {
+      const newline = stdout.indexOf('\n');
+      const line = stdout.slice(0, newline).trim();
+      stdout = stdout.slice(newline + 1);
+      if (line) messages.push(JSON.parse(line) as Message);
+    }
+  });
+
+  try {
+    const event = await waitFor(messages, (message) => message.payload?.text === '不用唤醒词也能对话');
+    assert.equal(event.type, 'event');
+    assert.equal(event.payload?.wakePhrase, undefined);
+    child.stdin.write(`${JSON.stringify({
+      type: 'deliver', id: 'kokoro-delivery', target: 'zm_yunyang', payload: { text: '这是 Mimi 的原始回答。' },
+    })}\n`);
+    const delivered = await waitFor(messages, (message) => message.id === 'kokoro-delivery');
+    assert.deepEqual(delivered, { type: 'delivery_ack', id: 'kokoro-delivery', ok: true });
+    const renderLines = await waitForLines(rendererLog, 1);
+    const rendered = renderLines[0]?.split('\u001f') ?? [];
+    assert.equal(rendered[0], '这是 Mimi 的原始回答。');
+    assert.match(rendered[1] ?? '', /\.wav$/u);
+    assert.equal(rendered[2], 'zm_yunyang');
+    assert.equal(rendered[3], '1.15');
+    const playerLines = await waitForLines(playerLog, 1);
+    assert.equal(playerLines[0], rendered[1]);
+  } finally {
+    await stop(child);
+  }
+});

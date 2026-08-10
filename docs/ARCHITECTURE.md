@@ -555,7 +555,18 @@ completed execution receipt，因此 Task 安全回放即使 artifact 已丢失�
 Provider。该路径只有 fixture 与 CLI→Event→Dispatcher→真实 pipeline 集成证据，没有 live 图片
 Provider 轮次；它不做代词推断或跨 Session 关联，语义 answer anchor 与 Memory 编译仍未接入。
 
-Realtime audio 采用 transcription/VAD-only 合同：官方 OpenAI Realtime WebSocket 只接收固定 24 kHz PCM16 小帧，`createResponse=false`、Provider output audio 关闭、tools 为空，final transcript 只能进入现有 `MimiHost` canonical Run，回答文本应由 Mimi-owned TTS 播放。当前实现只有 transport/controller 与 Host runner 接口和确定性测试，没有 CLI/Session actor composition root、麦克风 source、播放器 sink 或产品启动入口；因此实时 ASR/TTS、turn detection、barge-in、重连和 750 ms 指标仍是 contract-only 门禁，不是已交付能力。
+`mimi voice` 提供当前可达的 macOS 半双工语音入口：Swift helper 用
+`SFSpeechRecognizer + AVAudioEngine` 产生停顿后稳定的 transcript，CLI 复用一个
+`MimiChatClient` 和 canonical Session 逐轮提交；模型执行和 TTS 期间暂停 listener，随后只播放
+该 canonical Run 的原始回答。系统 TTS 是零配置默认，本地 Kokoro renderer 是显式可选项。
+原始 microphone buffer 不进入 Event、Session 或 Ledger。这个入口尚未完成实机/live Provider
+验收、说话打断播放或低延迟指标。
+
+独立 Realtime audio 仍采用 transcription/VAD-only 合同：官方 OpenAI Realtime WebSocket
+只接收固定 24 kHz PCM16 小帧，`createResponse=false`、Provider output audio 关闭、tools 为空，
+final transcript 只能进入现有 `MimiHost` canonical Run，回答文本由 Mimi-owned TTS 播放。
+Realtime transport/controller 仍没有产品 mic/source/sink composition，因此 barge-in、重连和
+750 ms 指标仍是 contract-only 门禁；不得用 `mimi voice` 的分段半双工入口替代这些证据。
 
 成功的 Daemon Conversation Task 先把 SQLite Task 提交为终态并解除 active ownership，再
 best-effort 清理本次 execution-ledger receipt。清理阻塞或失败不能把已完成 Task 重新暴露给

@@ -332,6 +332,13 @@ owner 查询大象消息时通过稳定 capability 发现正式 action，再使�
 
 `macos-voice-connector.mjs` 使用 Speech/AVFoundation 和系统 `say` 提供免键盘交互：可选持续监听“MimiAgent”开头的 owner 命令、转写已有音频、列出声音，并把命令结果经可靠 Outbox 自动朗读。监听默认关闭，但一次 `listener_start/stop` 会原子保存并跨 Connector/Daemon 重启恢复；不保存麦克风音频，非唤醒语音不会形成 Event，重复命令会短期抑制，朗读期间 listener 自动暂停以避免自我唤醒。
 
+macOS 也可直接运行 `mimi voice` 进入同一 Session 的连续语音对话。它默认使用设备端
+Speech Framework ASR 和系统 TTS；`--allow-network-asr` 显式允许系统联网识别，
+`--tts kokoro --kokoro-renderer <绝对路径>` 可使用本地 Kokoro renderer。每个稳定 transcript
+仍通过 `MimiChatClient -> Daemon -> canonical Session/Run`，播报内容就是该 Run 的原始回答。
+当前为模型执行和播放期间暂停麦克风的半双工实现，不支持说话打断播放，也尚无真实麦克风/
+Provider 验收。技术取舍见 [M3 语音技术选型](docs/plans/m3/VOICE-TECH.md)。
+
 当前 M3 checkpoint 的终端解析与受控摄取路径识别 `@image:`、`@file:`、`@audio:`、
 `@video:`，并识别显式原图引用 `@media:media-evidence:sha256:<digest>`；这些标签不等于所有
 媒体都已有 live Provider 能力。附件先在绑定 Session 的物理工作区内完成 containment、普通文件、名称、MIME/内容类型、大小和 SHA-256 校验，再写入独立的内容寻址 artifact store；Event、Session 和 Execution Ledger 的持久边界只保存 opaque `workspaceId`、`media-artifact:sha256:...` ref、digest 与有界 `MediaEvidence` 元数据，不保存工作区绝对路径或二进制。模型请求构造可以在再次校验 ref、digest、owner 与 scope 后短暂物化所需字节，但不把这种表示写回状态。新附件和 `@media:` 引用合计最多 8 项；可内联给模型的 image/file 单个最多 10 MiB、与引用原图合计最多 20 MiB，audio 最多 200 MiB、video 最多 500 MiB，整批最多 500 MiB。Event/Session owner ref、配额与 grace-period GC 已接入当前安全生命周期，但完整 crash/长期 soak 仍是 promotion 前门禁。
@@ -345,9 +352,9 @@ canonical Agent Run；`RunFinalization` 只保存原始/派生 ref 与结构化 
 重试复用已登记的派生 Evidence，不重做 ASR。当前证据是 macOS Swift helper typecheck 与合成
 WAV/fixture 回归；尚未使用真实 Speech 权限、真实用户音频或 live Provider，也没有延迟 soak，
 因此不能表述为实机音频验收。非 WAV audio 与全部 video 仍在网络前明确 blocked，视频音轨、
-关键帧和理解尚未接入。Realtime 新代码也只是 transcription/VAD-only 的 Host/controller
-contract，强制关闭 Provider 回答音频和第二套 Agent loop；它尚未接入 CLI、麦克风、播放器或
-可用产品入口。
+关键帧和理解尚未接入。独立的 Realtime transport/controller 仍只是 transcription/VAD-only
+contract，强制关闭 Provider 回答音频和第二套 Agent loop；`mimi voice` 是基于系统分段 ASR
+和 Mimi-owned TTS 的半双工入口，不等于 Realtime transport、barge-in 或低延迟指标已经完成。
 
 显式 `generate_image` Media WorkUnit 已关闭生成结果的持久二进制缺口：公开 Tool schema 只接受
 prompt 和可选的同 Session `mediaEvidenceId`，不接受 raw image/data URL；Provider 必须返回唯一

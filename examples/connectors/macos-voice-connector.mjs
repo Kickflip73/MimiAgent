@@ -7,7 +7,7 @@
 
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,11 +28,22 @@ const recognizerHelper = process.env.MACOS_VOICE_RECOGNIZER_HELPER
 const locale = localeValue(process.env.MACOS_VOICE_LOCALE || 'zh-CN', 'MACOS_VOICE_LOCALE');
 const onDevice = booleanEnv('MACOS_VOICE_ON_DEVICE', false);
 const segmentSeconds = numberEnv('MACOS_VOICE_SEGMENT_SECONDS', 6, 2, 30);
+const endSilenceMs = numberEnv('MACOS_VOICE_END_SILENCE_MS', 900, 300, 3_000);
 const maxTranscriptChars = numberEnv('MACOS_VOICE_MAX_CHARS', 2_000, 1, 20_000);
 const duplicateWindowMs = numberEnv('MACOS_VOICE_DUPLICATE_WINDOW_MS', 30_000, 0, 600_000);
 const commandTimeoutMs = numberEnv('MACOS_VOICE_COMMAND_TIMEOUT_MS', 120_000, 100, 900_000);
 const replyMaxChars = numberEnv('MACOS_VOICE_REPLY_MAX_CHARS', 80, 1, 20_000);
 const replyRate = numberEnv('MACOS_VOICE_REPLY_RATE', 220, 80, 500);
+const requireWakePhrase = booleanEnv('MACOS_VOICE_REQUIRE_WAKE_PHRASE', true);
+const ttsEngine = choiceEnv('MACOS_VOICE_TTS_ENGINE', 'system', new Set(['system', 'kokoro']));
+const kokoroRenderer = process.env.MACOS_VOICE_KOKORO_RENDERER
+  ? absolutePath(process.env.MACOS_VOICE_KOKORO_RENDERER, 'MACOS_VOICE_KOKORO_RENDERER')
+  : undefined;
+const audioPlayer = absolutePath(
+  process.env.MACOS_VOICE_AUDIO_PLAYER || '/usr/bin/afplay',
+  'MACOS_VOICE_AUDIO_PLAYER',
+);
+const kokoroSpeed = numberEnv('MACOS_VOICE_KOKORO_SPEED', 1, 0.5, 2);
 const wakePhrases = phraseList(process.env.MACOS_VOICE_WAKE_PHRASES || '咪咪,Mimi,MimiAgent');
 const listenerStateFile = absolutePath(
   process.env.MACOS_VOICE_STATE_FILE || defaultDaemonStateFile('voice-listener.json'),
@@ -61,6 +72,13 @@ function booleanEnv(name, fallback) {
   if (/^(0|false|no|off)$/i.test(raw)) return false;
   process.stderr.write(`[macos-voice] invalid ${name}; using ${fallback}\n`);
   return fallback;
+}
+
+function choiceEnv(name, fallback, allowed) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  if (allowed.has(raw)) return raw;
+  throw new Error(`${name} must be one of: ${[...allowed].join(', ')}`);
 }
 
 function write(message) {
@@ -248,6 +266,15 @@ function validate(action, target, rawPayload) {
   return {};
 }
 
+const activeCommandChildren = new Set();
+
+function killCommandTree(child) {
+  if (child.pid) {
+    try { process.kill(-child.pid, 'SIGKILL'); return; } catch {}
+  }
+  child.kill('SIGKILL');
+}
+
 function runCommand(command, args, timeoutMs, maxOutputBytes, captureOutput = true) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -255,30 +282,30 @@ function runCommand(command, args, timeoutMs, maxOutputBytes, captureOutput = tr
       detached: true,
       stdio: ['ignore', captureOutput ? 'pipe' : 'ignore', 'pipe'],
     });
+    activeCommandChildren.add(child);
     const chunks = [];
     let outputBytes = 0;
     let stderr = '';
     let timedOut = false;
     let overflow = false;
-    const killTree = () => {
-      if (child.pid) {
-        try { process.kill(-child.pid, 'SIGKILL'); return; } catch {}
-      }
-      child.kill('SIGKILL');
-    };
-    const timer = setTimeout(() => { timedOut = true; killTree(); }, timeoutMs);
+    const timer = setTimeout(() => { timedOut = true; killCommandTree(child); }, timeoutMs);
     if (captureOutput) {
       child.stdout.on('data', (chunk) => {
         outputBytes += chunk.byteLength;
-        if (outputBytes > maxOutputBytes) { overflow = true; killTree(); return; }
+        if (outputBytes > maxOutputBytes) { overflow = true; killCommandTree(child); return; }
         chunks.push(chunk);
       });
     }
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-8_000); });
-    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('error', (error) => {
+      clearTimeout(timer);
+      activeCommandChildren.delete(child);
+      reject(error);
+    });
     child.once('exit', (code, signal) => {
       clearTimeout(timer);
+      activeCommandChildren.delete(child);
       if (timedOut) return reject(new Error(`command timed out after ${timeoutMs}ms`));
       if (overflow) return reject(new Error(`command output exceeds ${maxOutputBytes} bytes`));
       if (code !== 0) return reject(new Error((stderr || `command exited code=${code} signal=${signal || 'none'}`).trim()));
@@ -293,7 +320,10 @@ function parseVoice(line) {
 }
 
 function listenerArgs() {
-  return [recognizerHelper, 'listen', locale, String(onDevice), String(segmentSeconds), String(maxTranscriptChars), wakePhrases.join('\u001f')];
+  return [
+    recognizerHelper, 'listen', locale, String(onDevice), String(segmentSeconds),
+    String(maxTranscriptChars), String(endSilenceMs), wakePhrases.join('\u001f'),
+  ];
 }
 
 let listener;
@@ -308,6 +338,9 @@ let eventSequence = 0;
 
 function commandFromTranscript(value) {
   const text = value.trim();
+  if (!requireWakePhrase) {
+    return text ? { command: text.slice(0, maxTranscriptChars) } : undefined;
+  }
   const lower = text.toLocaleLowerCase();
   for (const phrase of wakePhrases) {
     const normalized = phrase.toLocaleLowerCase();
@@ -349,7 +382,7 @@ function transcriptMessage(message) {
       type: 'voice_command',
       text: extracted.command,
       transcript: message.text.slice(0, maxTranscriptChars),
-      wakePhrase: extracted.wakePhrase,
+      ...(extracted.wakePhrase ? { wakePhrase: extracted.wakePhrase } : {}),
       locale: message.locale || locale,
       onDevice: message.onDevice === true,
       untrusted: true,
@@ -438,6 +471,9 @@ function status() {
     locale,
     onDevice,
     segmentSeconds,
+    endSilenceMs,
+    requireWakePhrase,
+    ttsEngine,
     wakePhrases,
     startedAt: listenerStartedAt,
     lastTranscriptAt: listenerLastTranscriptAt,
@@ -466,6 +502,29 @@ async function speak(options) {
   const resume = listenerDesired;
   if (resume) await stopListener();
   try {
+    if (ttsEngine === 'kokoro') {
+      if (!kokoroRenderer) {
+        throw new Error('MACOS_VOICE_KOKORO_RENDERER is required for Kokoro TTS');
+      }
+      const temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'mimi-kokoro-'));
+      await chmod(temporaryRoot, 0o700);
+      const input = path.join(temporaryRoot, 'utterance.txt');
+      const output = path.join(temporaryRoot, 'utterance.wav');
+      try {
+        await writeFile(input, options.text, { flag: 'wx', mode: 0o600 });
+        const argumentsList = [input, output, options.voice ?? '', String(kokoroSpeed)];
+        await runCommand(kokoroRenderer, argumentsList, options.timeoutMs, 1_000_000);
+        const audio = await stat(output);
+        if (!audio.isFile() || audio.size < 1 || audio.size > 100_000_000) {
+          throw new Error('Kokoro renderer returned an invalid WAV file');
+        }
+        await chmod(output, 0o600);
+        await runCommand(audioPlayer, [output], options.timeoutMs, 0, false);
+      } finally {
+        await rm(temporaryRoot, { recursive: true, force: true });
+      }
+      return;
+    }
     const args = [];
     if (options.voice) args.push('-v', options.voice);
     args.push('-r', String(options.rate), options.text);
@@ -570,6 +629,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     listenerDesired = false;
     if (listenerRestartTimer) clearTimeout(listenerRestartTimer);
     if (listener) listener.kill('SIGTERM');
+    for (const child of activeCommandChildren) killCommandTree(child);
     process.exit(0);
   });
 }

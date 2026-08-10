@@ -21,6 +21,7 @@ function cliHelp(): string {
 用法：
   mimi                    开始对话
   mimi "任务"             执行单次任务
+  mimi voice              启动同一 Session 的本地语音对话
   mimi provider add <providerId/modelId> [能力选项]
                            为已有 Provider 注册模型；新 Provider 需完整连接参数
                            能力：--image-input/--image-output/--file-input/--tool-calling <true|false>
@@ -39,6 +40,11 @@ function cliHelp(): string {
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  if (args[0] === 'voice' && args.slice(1).some((arg) => arg === '--help' || arg === '-h' || arg === 'help')) {
+    const { VOICE_HELP } = await import('./voice-terminal.js');
+    console.log(VOICE_HELP);
+    return;
+  }
   if (args[0] === 'daemon' && args.slice(1).some((arg) => arg === '--help' || arg === '-h' || arg === 'help')) {
     console.log(daemonHelp());
     return;
@@ -91,6 +97,11 @@ async function main(): Promise<void> {
   const config = loadConfig();
   if (args[0] === 'daemon') {
     await runDaemonCommand(config, args.slice(1));
+    return;
+  }
+  if (args[0] === 'voice') {
+    const { runMimiVoice } = await import('./voice-terminal.js');
+    await runMimiVoice(config, args.slice(1));
     return;
   }
   const { runMimiCli } = await import('./chat-terminal.js');
