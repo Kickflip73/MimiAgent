@@ -317,16 +317,40 @@ test('direct tools stay out of the gateway while deferred families remain invoka
     {},
   ) as { capabilities: Array<{ name: string }> };
   assert.deepEqual(naturalSessionQuery.capabilities, []);
-  assert.match(String(await inspect.invoke(
+  const directComputer = await inspect.invoke(
     context,
     JSON.stringify({ name: 'computer_observe' }),
     {},
-  )), /不是 deferred capability/);
-  assert.match(String(await inspect.invoke(
+  ) as { resolution: { status: string }; capabilities: Array<{ invokeWith: string }> };
+  assert.equal(directComputer.resolution.status, 'direct');
+  assert.equal(directComputer.capabilities[0]?.invokeWith, 'computer_observe');
+  const directBrowser = await inspect.invoke(
     context,
-    JSON.stringify({ name: 'browser_open' }),
+    JSON.stringify({ source: 'browser', name: 'browser_open' }),
     {},
-  )), /不是 deferred capability/);
+  ) as { resolution: { status: string }; capabilities: Array<{ invokeWith: string }> };
+  assert.equal(directBrowser.resolution.status, 'direct');
+  assert.equal(directBrowser.capabilities[0]?.invokeWith, 'browser_open');
+  assert.equal(
+    (await inspect.invoke(
+      context,
+      JSON.stringify({ source: 'browser', name: 'browser_missing' }),
+      {},
+    ) as { resolution: { status: string } }).resolution.status,
+    'unavailable',
+  );
+  const sourceMismatch = await inspect.invoke(
+    context,
+    JSON.stringify({ source: 'computer', name: 'browser_open' }),
+    {},
+  ) as { resolution: { status: string; actualSource: string } };
+  assert.deepEqual(sourceMismatch.resolution, {
+    name: 'browser_open',
+    status: 'source_mismatch',
+    requestedSource: 'computer',
+    actualSource: 'browser',
+    instruction: '改用 source=browser 查询；不要调用当前 source 下不存在的能力。',
+  });
   for (const [source, name, result] of [
     ['builtin', 'web_search', 'web-ok'],
     ['memory', 'memory_read', 'memory-ok'],
