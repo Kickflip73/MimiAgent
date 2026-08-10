@@ -11,6 +11,7 @@ import type { EventEnvelope, TaskRecord } from './types.js';
 import {
   isNoToolsLocalRunPolicy,
   requestedLocalRunPolicyForEvent,
+  requestedSecurityProfileForEvent,
   VOICE_CHAT_ONLY_RUN_POLICY,
   VOICE_CONVERSATION_RUN_POLICY,
 } from './local-run-policy.js';
@@ -347,10 +348,14 @@ export function decideEvent(
   const requestedRunPolicy = !backgroundTask
     ? requestedLocalRunPolicyForEvent(event)
     : undefined;
+  const requestedSecurityProfile = !backgroundTask
+    ? requestedSecurityProfileForEvent(event)
+    : undefined;
   const noToolsConversation = isNoToolsLocalRunPolicy(requestedRunPolicy);
   const voiceConversation = requestedRunPolicy === VOICE_CONVERSATION_RUN_POLICY
     || requestedRunPolicy === VOICE_CHAT_ONLY_RUN_POLICY;
-  const computerAccess = noToolsConversation
+  const computerAccess = noToolsConversation || (requestedSecurityProfile !== undefined
+    && requestedSecurityProfile !== 'full-owner')
     ? 'none'
     : backgroundTask
     ? 'none'
@@ -598,6 +603,7 @@ export function decideEvent(
       } : {}),
       ...(personalConnectorOnly ? { personalConnectorOnly: true } : {}),
       ...(resumeState ? { resumeState: true } : {}),
+      ...(requestedSecurityProfile ? { securityProfile: requestedSecurityProfile } : {}),
       ...(policy ? { policy } : {}),
     },
   };

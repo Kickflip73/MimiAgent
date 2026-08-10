@@ -171,7 +171,7 @@ test('runs the highlighted slash command directly with enter', () => {
   terminal.close();
 });
 
-test('cycles mode with shift+tab without changing the input', () => {
+test('cycles security with shift+tab without changing the input', () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   const lines: string[] = [];
@@ -181,7 +181,7 @@ test('cycles mode with shift+tab without changing the input', () => {
     onLine: (line) => lines.push(line),
     onEscape: () => undefined,
     onExit: () => undefined,
-    onModeCycle: () => { cycles += 1; },
+    onSecurityCycle: () => { cycles += 1; },
   });
 
   input.emit('keypress', '', { name: 'tab', shift: true, sequence: '\x1b[Z' });
@@ -189,6 +189,25 @@ test('cycles mode with shift+tab without changing the input', () => {
 
   assert.equal(cycles, 1);
   assert.deepEqual(lines, []);
+  terminal.close();
+});
+
+test('cycles mode with shift+caps-lock and the terminal-compatible shift+up fallback', () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  let cycles = 0;
+  const terminal = new InteractiveTerminal([], input as never, output as never);
+  terminal.start({
+    onLine: () => undefined,
+    onEscape: () => undefined,
+    onExit: () => undefined,
+    onModeCycle: () => { cycles += 1; },
+  });
+
+  input.emit('keypress', '', { name: 'capslock', shift: true });
+  input.emit('keypress', '', { name: 'up', shift: true, sequence: '\x1b[1;2A' });
+
+  assert.equal(cycles, 2);
   terminal.close();
 });
 
@@ -292,7 +311,7 @@ test('recognizes raw command-enter sequences before readline splits them', () =>
   }
 });
 
-test('clears editable input with double escape without cancelling the active task', () => {
+test('single escape immediately cancels the active task and preserves editable input', () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   const lines: string[] = [];
@@ -306,30 +325,10 @@ test('clears editable input with double escape without cancelling the active tas
 
   for (const character of '需要清空') input.emit('keypress', character, { sequence: character });
   input.emit('keypress', '', { name: 'escape' });
-  input.emit('keypress', '', { name: 'escape' });
+  assert.equal(escapes, 1);
   input.emit('keypress', '\r', { name: 'return' });
 
-  assert.equal(escapes, 0);
-  assert.deepEqual(lines, []);
-  terminal.close();
-});
-
-test('preserves the single escape action after the double-escape window', async () => {
-  const input = new FakeInput();
-  const output = new FakeOutput();
-  let escapes = 0;
-  const terminal = new InteractiveTerminal([], input as never, output as never);
-  terminal.start({
-    onLine: () => undefined,
-    onEscape: () => { escapes += 1; },
-    onExit: () => undefined,
-  });
-
-  input.emit('keypress', '草', { sequence: '草' });
-  input.emit('keypress', '', { name: 'escape' });
-  await new Promise((resolve) => setTimeout(resolve, 380));
-
-  assert.equal(escapes, 1);
+  assert.deepEqual(lines, ['需要清空']);
   terminal.close();
 });
 
@@ -385,7 +384,13 @@ test('keeps queue and a self-updating runtime status around the bottom input box
   const output = new FakeOutput();
   output.columns = 100;
   const terminal = new InteractiveTerminal([], input as never, output as never);
-  terminal.setRuntimeStatus({ mode: '编码', model: 'deepseek-chat', contextUsed: 1200, contextWindow: 128000 });
+  terminal.setRuntimeStatus({
+    mode: '编码',
+    model: 'deepseek-chat',
+    permissionMode: 'trusted',
+    contextUsed: 1200,
+    contextWindow: 128000,
+  });
   terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
   output.value = '';
 
@@ -400,7 +405,7 @@ test('keeps queue and a self-updating runtime status around the bottom input box
   const plain = plainOutput(output.value);
   assert.match(plain, /↯ 引导  1  立即调整当前执行方向\n↳ 排队  2  排队中的第一条对话内容\n↳ 排队  3 .*\.\.\./);
   assert.match(plain, /⌃X 取消排队/);
-  assert.ok(plain.indexOf('┊>') < plain.indexOf('^._.^~ 运行中 · 0秒 · 模式 编码'));
+  assert.ok(plain.indexOf('┊>') < plain.indexOf('^._.^~ 运行中 · 0秒 · 编码 · Full Owner · deepseek-chat'));
   output.value = '';
   await new Promise((resolve) => setTimeout(resolve, 420));
   const animated = plainOutput(output.value);
@@ -436,7 +441,7 @@ test('preserves the renderer spinner frame and elapsed time in interactive statu
   writer.write('\r\x1b[2K\x1b[90m^._?^- 模型思考中 · 1分 05秒\x1b[0m');
 
   const plain = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-  assert.match(plain, /\^\._\?\^- 模型思考中 · 1分 05秒 · 模式 标准/);
+  assert.match(plain, /\^\._\?\^- 模型思考中 · 1分 05秒 · 标准 · 未配置/);
   terminal.close();
 });
 
@@ -447,13 +452,16 @@ test('shows only current context usage and percentage', () => {
   const terminal = new InteractiveTerminal([], input as never, output as never);
   terminal.setRuntimeStatus({
     mode: '标准',
-    model: 'test',
+    model: 'test-model',
+    permissionMode: 'workspace',
     contextUsed: 200_000,
     contextWindow: 1_000_000,
   });
   terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
   const plain = output.value.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
   assert.match(plain, /上下文 200k\/1\.0m（20%）/);
+  assert.match(plain, /\^\._\.\^~ · 标准 · Workstation · test-model · 上下文/);
+  assert.doesNotMatch(plain, /模式 |权限 /);
   assert.doesNotMatch(plain, /\bactual\b|上下文 ~|已压缩/);
   terminal.close();
 });

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- reorder the interactive status footer to show mode, effective Security profile,
+  model, and context usage; make Shift+Tab cycle a real per-run Security ceiling,
+  add mode cycling through terminal-reported Shift+Caps Lock with Shift+Up fallback,
+  and make a single Esc immediately cancel the active conversation
 - keep raw-mode TTY output aligned with explicit terminal newlines, redraw the
   bottom input panel relative to its tracked cursor after scrolling, avoid the
   duplicate startup frame, dynamically reflow long input across multiple rows,

@@ -12,7 +12,10 @@ import {
 import { eventKindSchema, eventTrustSchema, type EventEnvelope } from './types.js';
 import type { MimiStore } from './store.js';
 import type { SessionWorkspaceRegistry } from './session-workspace-registry.js';
-import { parseRequestedLocalRunPolicy } from './local-run-policy.js';
+import {
+  parseRequestedLocalRunPolicy,
+  parseRequestedSecurityProfile,
+} from './local-run-policy.js';
 
 interface SubmitParams extends Partial<Pick<EventEnvelope,
   'externalId' | 'source' | 'trust' | 'priority' | 'profileId' | 'sessionKey'
@@ -27,6 +30,7 @@ interface SubmitParams extends Partial<Pick<EventEnvelope,
   attachments?: unknown;
   referencedMediaEvidenceIds?: unknown;
   requestedRunPolicy?: unknown;
+  requestedSecurityProfile?: unknown;
 }
 
 type IngestResult = ReturnType<MimiStore['ingestEvent']>;
@@ -84,15 +88,25 @@ export async function submitDaemonEvent(
   if (payloadRecord && Object.hasOwn(payloadRecord, 'requestedRunPolicy')) {
     throw new Error('payload.requestedRunPolicy 是保留字段；必须通过认证 local-cli 提交参数设置');
   }
+  if (payloadRecord && Object.hasOwn(payloadRecord, 'requestedSecurityProfile')) {
+    throw new Error('payload.requestedSecurityProfile 是保留字段；必须通过认证 local-cli 提交参数设置');
+  }
   if (payloadRecord && Object.hasOwn(payloadRecord, 'referencedMediaEvidenceIds')) {
     throw new Error('payload.referencedMediaEvidenceIds 是保留字段；必须通过认证 local-cli 提交参数设置');
   }
   const requestedRunPolicy = parseRequestedLocalRunPolicy(params.requestedRunPolicy);
+  const requestedSecurityProfile = parseRequestedSecurityProfile(params.requestedSecurityProfile);
   if (requestedRunPolicy && (source !== 'local-cli' || trust !== 'owner')) {
     throw new Error('requestedRunPolicy 仅允许认证 local-cli owner 收窄本轮权限');
   }
   if (requestedRunPolicy && !sessionKey) {
     throw new Error('requestedRunPolicy 需要显式 Session 绑定');
+  }
+  if (requestedSecurityProfile && (source !== 'local-cli' || trust !== 'owner')) {
+    throw new Error('requestedSecurityProfile 仅允许认证 local-cli owner 收窄本轮权限');
+  }
+  if (requestedSecurityProfile && !sessionKey) {
+    throw new Error('requestedSecurityProfile 需要显式 Session 绑定');
   }
   const requestedAttachments = validateLocalAttachmentSubmission({
     source,
@@ -166,10 +180,11 @@ export async function submitDaemonEvent(
       ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
       ...(referencedMediaEvidenceIds.length ? { referencedMediaEvidenceIds } : {}),
     };
-    const basePayload = requestedRunPolicy
+    const basePayload = requestedRunPolicy || requestedSecurityProfile
       ? {
           ...(submittedPayload as Record<string, unknown>),
-          requestedRunPolicy,
+          ...(requestedRunPolicy ? { requestedRunPolicy } : {}),
+          ...(requestedSecurityProfile ? { requestedSecurityProfile } : {}),
         }
       : submittedPayload;
     const payload = workspaceBinding

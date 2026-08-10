@@ -5,6 +5,7 @@ import {
   type Usage,
 } from '@openai/agents';
 import { z } from 'zod';
+import { restrictSecurityProfile } from '../../config.js';
 import {
   estimateTokens,
   type WorkSnapshot,
@@ -58,6 +59,7 @@ import { RunFactCollector } from './run-fact-collector.js';
 import { prepareRunMediaEvidence } from './run-media-evidence.js';
 import { materializeMediaEvidenceReferences } from '../media-input-materializer.js';
 import { containsImageInput } from '../run-model-requirements.js';
+import { toolsForSecurity } from '../tool-policy.js';
 
 function renderActiveSkills(skills: readonly Skill[]): string {
   if (!skills.length) return '';
@@ -89,6 +91,11 @@ export async function executeRunPipeline(
 ) {
     if (host.activeRun) throw new Error('当前 Session 仍有任务运行中，请等待完成或先中止');
     await host.refreshModelConfiguration();
+    const securityProfile = restrictSecurityProfile(
+      host.runtimeSecurity.id,
+      options?.securityProfile,
+    );
+    options = { ...options, securityProfile };
     const textInput = inputText(input);
     if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
     const modelInput = options?.referencedMediaEvidenceIds?.length
@@ -144,16 +151,24 @@ export async function executeRunPipeline(
       options,
     });
     const mode = scope.mode;
+    const runRuntimeAccess = Object.freeze({
+      workspaceWrite: host.runtimeAccess.workspaceWrite && securityProfile !== 'safe',
+      computer: host.runtimeAccess.computer && securityProfile === 'full-owner',
+      mcp: host.runtimeAccess.mcp && securityProfile === 'full-owner',
+      ephemeralSensitiveModelAccess: host.runtimeAccess.ephemeralSensitiveModelAccess
+        && securityProfile === 'full-owner',
+      policyRevision: `${host.runtimeAccess.policyRevision}:${securityProfile}`,
+    });
     const ephemeralSensitiveAccess = activateEphemeralOwnerInput(options?.ephemeralOwnerInput, {
       ...scope,
-      ephemeralSensitiveModelAccess: host.runtimeAccess.ephemeralSensitiveModelAccess,
+      ephemeralSensitiveModelAccess: runRuntimeAccess.ephemeralSensitiveModelAccess,
     });
     const runOptions = options
       ? (({ ephemeralOwnerInput: _ephemeralOwnerInput, ...retained }) => retained)(options)
       : undefined;
     const capabilities = host.capabilityResolver.resolve({
       scope,
-      runtimeAccess: host.runtimeAccess,
+      runtimeAccess: runRuntimeAccess,
       policy: options?.policy,
       requestedComputerAccess: options?.computerAccess,
       defaultComputerAccess: host.config.computer?.defaultAccess,
@@ -297,12 +312,12 @@ export async function executeRunPipeline(
     const persistentInstructions = [soul.instructions, projectGuidance.instructions].filter(Boolean).join('\n\n');
     const memoryTools = createMemoryTools(host.components.memory, () => memoryContext);
     const delegatedMemoryTools = createMemoryTools(host.components.memory, () => memoryContext, { workspaceOnly: true });
-    const delegatedTools = [
+    const delegatedTools = toolsForSecurity(securityProfile, [
       ...scopedTools.filter((tool) => (
         !ephemeralSensitiveAccess || tool.name !== 'run_shell'
       )),
       ...delegatedMemoryTools,
-    ];
+    ]);
     const activeStoredGoal = storedGoal?.status === 'active' || storedGoal?.status === 'paused'
       ? storedGoal
       : undefined;
@@ -404,7 +419,7 @@ export async function executeRunPipeline(
         createTeamWorkerTools({
           workspaceRoot: host.config.workspaceRoot,
           dataRoot: host.config.dataRoot,
-          canWrite: host.runtimeAccess.workspaceWrite,
+          canWrite: runRuntimeAccess.workspaceWrite,
           task,
           memorySearchTool: delegatedMemoryTools.find((tool) => tool.name === 'memory_search'),
         }),
@@ -498,13 +513,13 @@ export async function executeRunPipeline(
         },
       }) : []),
     ];
-    const preparedTools = host.toolSetBuilder.final(
+    const preparedTools = toolsForSecurity(securityProfile, host.toolSetBuilder.final(
       mode,
       runTools,
       teamTools,
       subAgentTools,
       runPolicy,
-    );
+    ));
     const localTools = withExecutionLedger(
       preparedTools,
       host.components.state.executionLedger.store,
@@ -513,7 +528,7 @@ export async function executeRunPipeline(
         runId: executionRunId,
         semanticCallIds,
         policyRevision: [
-          host.runtimeAccess.policyRevision,
+          runRuntimeAccess.policyRevision,
           mode,
           run.options?.policy ? 'run-policy' : 'default-policy',
         ].join(':'),
@@ -563,7 +578,7 @@ export async function executeRunPipeline(
       }),
     );
     const mcpAllowed = mode !== 'plan'
-      && host.runtimeAccess.mcp
+      && runRuntimeAccess.mcp
       && runPolicy?.allowMcp !== false
       && !personalConnectorOnly;
     const mcpRunIdentity = () => ({
@@ -633,7 +648,7 @@ export async function executeRunPipeline(
     run.capabilitySnapshot = capabilityRegistry.snapshot({
       runId: run.runId,
       policyRevision: [
-        host.runtimeAccess.policyRevision,
+        runRuntimeAccess.policyRevision,
         mode,
         runPolicy ? 'run-policy' : 'default-policy',
       ].join(':'),
@@ -659,7 +674,7 @@ export async function executeRunPipeline(
           freshness: 'fresh' as const,
           coverage: 'bounded' as const,
           permissionSource: [
-            host.runtimeAccess.policyRevision,
+            runRuntimeAccess.policyRevision,
             runComputerAccess,
           ].join(':'),
           safeFallback: 'none' as const,

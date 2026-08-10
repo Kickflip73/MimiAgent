@@ -192,11 +192,14 @@ test('CLI submits its launch workspace and stable media refs with each owner com
       requestedRunPolicy: 'benchmark-no-tools-v1',
     });
     const evidenceId = `media-evidence:sha256:${'a'.repeat(64)}`;
-    await client.submit(`继续编辑 @media:${evidenceId}`, 'media-session');
+    await client.submit(`继续编辑 @media:${evidenceId}`, 'media-session', {
+      requestedSecurityProfile: 'workstation',
+    });
     assert.equal(submitted[0]?.workspaceRoot, workspaceRoot);
     assert.equal(submitted[0]?.source, 'local-cli');
     assert.equal(submitted[0]?.trust, 'owner');
     assert.equal(submitted[0]?.requestedRunPolicy, 'benchmark-no-tools-v1');
+    assert.equal(submitted[0]?.requestedSecurityProfile, 'workstation');
     assert.equal(submitted[0]?.text, '继续编辑');
     assert.equal(submitted[0]?.sessionKey, 'media-session');
     assert.deepEqual(submitted[0]?.referencedMediaEvidenceIds, [evidenceId]);

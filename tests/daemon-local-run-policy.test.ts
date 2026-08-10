@@ -7,6 +7,7 @@ import { submitDaemonEvent } from '../src/daemon/event-submission.js';
 import {
   BENCHMARK_NO_TOOLS_RUN_POLICY,
   parseRequestedLocalRunPolicy,
+  parseRequestedSecurityProfile,
   VOICE_CHAT_ONLY_RUN_POLICY,
   VOICE_CONVERSATION_RUN_POLICY,
 } from '../src/daemon/local-run-policy.js';
@@ -29,6 +30,7 @@ test('authenticated local submit persists a versioned no-tools marker through th
       sessionKey: 'calibration-session',
       workspaceRoot: workspace,
       requestedRunPolicy: BENCHMARK_NO_TOOLS_RUN_POLICY,
+      requestedSecurityProfile: 'safe',
       eventId: 'calibration-event',
       externalId: 'local-cli:calibration-event',
     }, {
@@ -50,9 +52,26 @@ test('authenticated local submit persists a versioned no-tools marker through th
       (accepted.task?.objective as Record<string, unknown>).requestedRunPolicy,
       BENCHMARK_NO_TOOLS_RUN_POLICY,
     );
+    assert.equal(
+      (accepted.event.payload as Record<string, unknown>).requestedSecurityProfile,
+      'safe',
+    );
 
     await assert.rejects(submitDaemonEvent({
       payload: { prompt: 'bypass', requestedRunPolicy: BENCHMARK_NO_TOOLS_RUN_POLICY },
+      source: 'local-cli',
+      trust: 'owner',
+      sessionKey: 'calibration-session',
+    }, {
+      defaultWorkspaceRoot: workspace,
+      attachmentRoot: path.join(root, 'attachments'),
+      store,
+      workspaceRegistry,
+      ingestOwnerPrompt: (event, _prompt) => store.ingestEvent(event),
+    }), /保留字段/u);
+
+    await assert.rejects(submitDaemonEvent({
+      payload: { prompt: 'bypass', requestedSecurityProfile: 'safe' },
       source: 'local-cli',
       trust: 'owner',
       sessionKey: 'calibration-session',
@@ -69,6 +88,19 @@ test('authenticated local submit persists a versioned no-tools marker through th
       source: 'connector:test',
       trust: 'external',
       requestedRunPolicy: BENCHMARK_NO_TOOLS_RUN_POLICY,
+    }, {
+      defaultWorkspaceRoot: workspace,
+      attachmentRoot: path.join(root, 'attachments'),
+      store,
+      workspaceRegistry,
+      ingestOwnerPrompt: (event, _prompt) => store.ingestEvent(event),
+    }), /仅允许认证 local-cli owner/u);
+
+    await assert.rejects(submitDaemonEvent({
+      payload: { text: 'external' },
+      source: 'connector:test',
+      trust: 'external',
+      requestedSecurityProfile: 'safe',
     }, {
       defaultWorkspaceRoot: workspace,
       attachmentRoot: path.join(root, 'attachments'),
@@ -96,6 +128,11 @@ test('local no-tools policy parser is exact and fail-closed', () => {
   );
   assert.equal(parseRequestedLocalRunPolicy(undefined), undefined);
   assert.throws(() => parseRequestedLocalRunPolicy('no-tools'), /不支持/u);
+  assert.equal(parseRequestedSecurityProfile('safe'), 'safe');
+  assert.equal(parseRequestedSecurityProfile('workstation'), 'workstation');
+  assert.equal(parseRequestedSecurityProfile('full-owner'), 'full-owner');
+  assert.equal(parseRequestedSecurityProfile(undefined), undefined);
+  assert.throws(() => parseRequestedSecurityProfile('owner'), /不支持/u);
 });
 
 test('stable media refs persist through the authenticated Event boundary without payload bypasses', async () => {

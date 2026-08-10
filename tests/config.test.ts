@@ -8,6 +8,7 @@ import {
   loadConfig,
   loadEnvironment,
   privateRuntimePaths,
+  restrictSecurityProfile,
   resolveEnvironmentFile,
   type AppConfig,
 } from '../src/config.js';
@@ -20,6 +21,14 @@ import {
 import { migrateLegacyMimiDaemon, mimiPaths } from '../src/daemon/client-runtime.js';
 
 const ISOLATED_HOME = path.join(os.tmpdir(), `mimi-config-tests-${process.pid}`);
+
+test('requested security profiles can only reduce the configured authority', () => {
+  assert.equal(restrictSecurityProfile('full-owner', 'workstation'), 'workstation');
+  assert.equal(restrictSecurityProfile('full-owner', 'safe'), 'safe');
+  assert.equal(restrictSecurityProfile('workstation', 'full-owner'), 'workstation');
+  assert.equal(restrictSecurityProfile('safe', 'full-owner'), 'safe');
+  assert.equal(restrictSecurityProfile('workstation', undefined), 'workstation');
+});
 
 test('loads the unified environment when launched from any workspace', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-config-'));

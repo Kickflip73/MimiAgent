@@ -122,6 +122,28 @@ test('versioned local-owner no-tools metadata narrows the entire model capabilit
   assert.equal(untrusted.options?.policy?.allowSessionContext, false);
 });
 
+test('authenticated local security metadata becomes an immutable run ceiling', () => {
+  const requested = decideEvent(event({
+    source: 'local-cli',
+    trust: 'owner',
+    sessionKey: 'safe-session',
+    payload: {
+      prompt: '只读检查',
+      requestedSecurityProfile: 'safe',
+    },
+  }));
+  assert.equal(requested.options?.securityProfile, 'safe');
+  assert.equal(requested.options?.computerAccess, undefined);
+
+  const untrusted = decideEvent(event({
+    payload: {
+      text: 'external input',
+      requestedSecurityProfile: 'full-owner',
+    },
+  }));
+  assert.equal(untrusted.options?.securityProfile, undefined);
+});
+
 test('voice conversation keeps the standard owner tool policy while chat-only is explicit', () => {
   const requested = decideEvent(event({
     source: 'local-cli',

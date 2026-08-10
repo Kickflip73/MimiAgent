@@ -839,6 +839,21 @@ test('Workstation retains sandboxed shell and excludes external or GUI transacti
   );
 });
 
+test('Safe filters dynamically-added memory, plan, and team write tools', () => {
+  const tool = (name: string) => ({ name }) as Tool;
+  assert.deepEqual(
+    toolsForSecurity('safe', [
+      tool('memory_read'),
+      tool('remember'),
+      tool('show_plan'),
+      tool('update_plan'),
+      tool('delegate_research'),
+      tool('run_team'),
+    ]).map((item) => item.name),
+    ['memory_read', 'show_plan', 'delegate_research'],
+  );
+});
+
 test('tool selection is independent from shell command strings', () => {
   const tool = (name: string) => ({ name }) as Tool;
   const builder = new ToolSetBuilder();

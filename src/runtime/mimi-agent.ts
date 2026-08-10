@@ -12,8 +12,10 @@ import {
 import {
   preferredEnvironmentValue,
   privateRuntimePaths,
+  restrictSecurityProfile,
   securityProfileSummary,
   type AppConfig,
+  type SecurityProfile,
 } from '../config.js';
 import {
   estimateTokens,
@@ -197,6 +199,7 @@ export interface RunPolicy extends RunToolPolicy {
 export interface MimiRunOptions {
   cause?: RunCause;
   policy?: RunPolicy;
+  securityProfile?: SecurityProfile;
   hostInstructions?: string;
   hostTools?: Tool[];
   ephemeralOwnerInput?: EphemeralOwnerInputLease;
@@ -272,7 +275,10 @@ export class MimiAgent {
   readonly personalMessages = new PersonalMessageHub();
   readonly mediaArtifacts: MediaArtifactStore;
   readonly audioTranscriber?: AudioFileTranscriptionPort;
-  private readonly localTools: Readonly<{ hosted: Tool[]; portable: Tool[] }>;
+  private readonly localTools: Readonly<Record<SecurityProfile, Readonly<{
+    hosted: Tool[];
+    portable: Tool[];
+  }>>>;
   private readonly extensionTools: Tool[];
   private readonly mcpTools: Tool[];
   session: FileSession;
@@ -373,7 +379,7 @@ export class MimiAgent {
       access,
     );
     const baseShellEnvironment = createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env);
-    const localToolAccess: Parameters<typeof createTools>[3] = initialSecurity.id === 'safe'
+    const localToolAccess = (profile: SecurityProfile): Parameters<typeof createTools>[3] => profile === 'safe'
       ? {
         readablePaths: ['.'],
         writablePaths: [],
@@ -409,15 +415,25 @@ export class MimiAgent {
         } : {}),
         mutationObserver: this.fileChanges,
       };
-    this.localTools = {
-      hosted: createToolsForAccess(localToolAccess, true),
-      portable: createToolsForAccess(localToolAccess, false),
+    const toolsForProfile = (requested: SecurityProfile) => {
+      const effective = restrictSecurityProfile(initialSecurity.id, requested);
+      const access = localToolAccess(effective);
+      return Object.freeze({
+        hosted: createToolsForAccess(access, true),
+        portable: createToolsForAccess(access, false),
+      });
     };
+    this.localTools = Object.freeze({
+      safe: toolsForProfile('safe'),
+      workstation: toolsForProfile('workstation'),
+      'full-owner': toolsForProfile('full-owner'),
+    });
     const computerTools = components.computer ? createComputerTools(components.computer, () => {
       const active = this.activeRun;
       if (!active) return undefined;
       const policy = active.options?.policy;
       const ownerAuthorized = this.runtimeAccess.computer
+        && (active.options?.securityProfile ?? this.runtimeSecurity.id) === 'full-owner'
         && (!active.options?.cause || active.options.cause.trust === 'owner');
       return {
         runId: active.runId,
@@ -523,13 +539,18 @@ export class MimiAgent {
     const transport = binding
       ? this.components.modelGateway.provider(binding.target).transport
       : this.components.modelGateway.provider(this.defaultModelTarget).transport;
-    return this.authorizeTools([
+    const securityProfile = restrictSecurityProfile(
+      this.runtimeSecurity.id,
+      this.activeRun?.options?.securityProfile,
+    );
+    const localTools = this.localTools[securityProfile];
+    return toolsForSecurity(securityProfile, this.authorizeTools([
       ...(transport === 'openai-responses'
-        ? this.localTools.hosted
-        : this.localTools.portable),
+        ? localTools.hosted
+        : localTools.portable),
       ...this.extensionTools,
       ...this.mcpTools,
-    ]);
+    ]));
   }
 
   installModelConfiguration(next: ModelsConfig): void {
