@@ -853,7 +853,8 @@ export class InteractiveTerminal {
       : 0;
     const permLabel = this.runtime.permissionMode === 'trusted' ? 'Full Owner'
       : this.runtime.permissionMode === 'workspace' ? 'Workstation'
-      : this.runtime.permissionMode === 'safe' ? 'Safe' : this.runtime.permissionMode ?? '';
+      : this.runtime.permissionMode === 'read-only' || this.runtime.permissionMode === 'safe'
+        ? 'Safe' : this.runtime.permissionMode ?? '';
     const permPart = permLabel ? ` · ${permLabel}` : '';
     const modelPart = this.runtime.model ? ` · ${this.runtime.model}` : '';
     const contextPart = this.runtime.contextWindow > 0 && this.runtime.contextUsed > 0

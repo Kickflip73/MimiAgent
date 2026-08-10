@@ -466,6 +466,23 @@ test('shows only current context usage and percentage', () => {
   terminal.close();
 });
 
+test('renders the read-only security profile as Safe', () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  const terminal = new InteractiveTerminal([], input as never, output as never);
+  terminal.setRuntimeStatus({
+    mode: '通用',
+    model: 'test-model',
+    permissionMode: 'read-only',
+    contextUsed: 0,
+    contextWindow: 1_000_000,
+  });
+  terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
+
+  assert.match(plainOutput(output.value), /\^\._\.\^~ · 通用 · Safe · test-model/);
+  terminal.close();
+});
+
 test('keeps the input cursor away from the right edge for IME composition', () => {
   const input = new FakeInput();
   const output = new FakeOutput();
