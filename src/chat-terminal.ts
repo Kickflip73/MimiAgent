@@ -57,14 +57,58 @@ export function renderChatHistory(snapshot: MimiChatSnapshot, tty: boolean): str
 }
 
 function renderBanner(version: string, snapshot: MimiChatSnapshot): string {
-  return [
-    `MimiAgent v${version}`,
-    '全天候个人 Agent · CLI 已连接统一后台',
-    `模型    ${snapshot.provider} · ${snapshot.model}`,
-    `对话    ${snapshot.draft ? '新对话（发送消息后创建）' : snapshot.sessionId}`,
-    `工作区  ${snapshot.workspaceRoot}`,
-    `权限    ${snapshot.permissionMode === 'trusted' ? 'Full Owner' : snapshot.permissionMode === 'workspace' ? 'Workstation' : 'Safe'} · 启动配置冻结`,
-  ].join('\n');
+  const tty = process.stdout.isTTY;
+  const termCols = process.stdout.columns ?? 80;
+  const boxWidth = Math.max(20, termCols);
+  const inner = boxWidth - 2;
+
+  // CJK-aware width
+  const ansiRe = /\x1b\[[0-9;]*m/g;
+  const cjkRe = /[\u2e80-\u2eff\u2f00-\u2fdf\u3000-\u303f\u31c0-\u31ef\u3200-\u32ff\u3300-\u33ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]/;
+  function cw(s: string): number {
+    let w = 0;
+    for (const c of Array.from(s.replace(ansiRe, ''))) {
+      w += cjkRe.test(c) ? 2 : 1;
+    }
+    return w;
+  }
+
+  function padOrTruncate(s: string, w: number): string {
+    const raw = s.replace(ansiRe, '');
+    if (cw(raw) <= w) return s + ' '.repeat(w - cw(raw));
+    let out = '', used = 0;
+    for (const c of Array.from(raw)) {
+      const cw1 = cjkRe.test(c) ? 2 : 1;
+      if (used + cw1 > w - 1) break;
+      out += c; used += cw1;
+    }
+    return out + '…' + ' '.repeat(Math.max(0, w - used - 1));
+  }
+
+  const dim = tty ? '\x1b[2m' : '';
+  const rst = tty ? '\x1b[0m' : '';
+  const bar = '─'.repeat(inner);
+
+  const top = `^._.^  MimiAgent v${version}  全天候个人 Agent`;
+
+  const modelLabel = snapshot.provider && !snapshot.model.startsWith(snapshot.provider)
+    ? `${snapshot.provider} · ${snapshot.model}`
+    : snapshot.model;
+
+  const modeLabel = snapshot.mode ?? '通用';
+  const sessionLabel = snapshot.draft ? '新会话' : snapshot.sessionId;
+
+  const rows = [
+    `${dim}┌${bar}┐${rst}`,
+    `${dim}│${rst}${padOrTruncate(top, inner)}${dim}│${rst}`,
+    `${dim}│${rst}${padOrTruncate(`模型     ${modelLabel}`, inner)}${dim}│${rst}`,
+    `${dim}│${rst}${padOrTruncate(`模式     ${modeLabel}`, inner)}${dim}│${rst}`,
+    `${dim}│${rst}${padOrTruncate(`工作区   ${snapshot.workspaceRoot}`, inner)}${dim}│${rst}`,
+    `${dim}│${rst}${padOrTruncate(`会话     ${sessionLabel}`, inner)}${dim}│${rst}`,
+    `${dim}└${bar}┘${rst}`,
+  ];
+
+  return rows.join('\n');
 }
 
 export async function runMimiCli(
@@ -162,6 +206,7 @@ export async function runMimiCli(
     terminal.setRuntimeStatus({
       mode: snapshot.mode,
       model: snapshot.model,
+      permissionMode: snapshot.permissionMode,
       contextUsed: snapshot.contextUsed,
       contextWindow: snapshot.contextWindow,
     });
@@ -365,9 +410,9 @@ export async function runMimiCli(
   };
 
   await refresh();
-  process.stdout.write(`${renderBanner(version, snapshot)}\n`);
-  const history = renderChatHistory(snapshot, tty);
-  if (history) process.stdout.write(`\n${history}\n`);
+  const header = [renderBanner(version, snapshot), renderChatHistory(snapshot, tty)]
+    .filter(Boolean).join('\n\n');
+  terminal.clearScreen(header);
   terminal.start({
     onLine: (input, intent) => {
       if (input.trim() === '/exit') {
@@ -387,6 +432,12 @@ export async function runMimiCli(
       activeCancelRequested = true;
       cancelActiveEvent();
       activeAbort.abort(new Error('用户按下 Esc 取消任务'));
+    },
+    onCancelQueue: () => {
+      if (queue.length === 0) return;
+      const removed = queue.pop();
+      refreshQueue();
+      terminal.notify(`已取消排队："${(removed?.text ?? '').slice(0, 40)}"`);
     },
     onModeCycle: () => {
       if (cyclingMode) return;
