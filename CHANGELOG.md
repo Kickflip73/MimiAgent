@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - refresh the TUI busy footer on its own timer so the Mimi animation and elapsed
   duration advance without requiring new streamed conversation output
+- add native local speech primitives for voice discovery, ChatTTS/Kokoro
+  synthesis, ordered playback, and direct speaking, exposed through Host APIs,
+  and compact model tools without rewriting caller text
 - reorder the interactive status footer to show mode, effective Security profile,
   model, and context usage; make Shift+Tab cycle a real per-run Security ceiling,
   add mode cycling through terminal-reported Shift+Caps Lock with Shift+Up fallback,

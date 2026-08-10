@@ -1,0 +1,290 @@
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
+import { access, chmod, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import type { TtsConfig } from '../config.js';
+
+export type SpeechEngine = 'auto' | 'chattts' | 'kokoro';
+export type SpeechLanguage = 'auto' | 'zh' | 'en' | 'ja';
+
+export interface SpeechVoice {
+  id: string;
+  engine: Exclude<SpeechEngine, 'auto'>;
+  language: Exclude<SpeechLanguage, 'auto'>;
+  label: string;
+}
+
+export interface SpeechSynthesisOptions {
+  engine?: SpeechEngine;
+  voice?: string;
+  language?: SpeechLanguage;
+  speed?: number;
+}
+
+export interface SpeechAudio {
+  id: string;
+  file: string;
+  format: 'wav';
+  engine: Exclude<SpeechEngine, 'auto'>;
+  voice?: string;
+  language: SpeechLanguage;
+  createdAt: string;
+}
+
+export interface SpeechOutputStatus {
+  enabled: boolean;
+  renderer: string;
+  playback: string;
+  voices: number;
+  queuedPlayback: number;
+  lastError?: string;
+}
+
+export const SPEECH_VOICES: readonly SpeechVoice[] = Object.freeze(([
+  { id: 'chattts:seed-42', engine: 'chattts', language: 'zh', label: 'ChatTTS Seed 42' },
+  { id: 'zf_xiaobei', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaobei' },
+  { id: 'zf_xiaoni', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoni' },
+  { id: 'zf_xiaoxiao', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoxiao' },
+  { id: 'zf_xiaoyi', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoyi' },
+  { id: 'zm_yunjian', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunjian' },
+  { id: 'zm_yunxi', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunxi' },
+  { id: 'zm_yunxia', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunxia' },
+  { id: 'zm_yunyang', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunyang' },
+  { id: 'am_echo', engine: 'kokoro', language: 'en', label: 'Kokoro Echo' },
+  { id: 'jm_kumo', engine: 'kokoro', language: 'ja', label: 'Kokoro Kumo' },
+] satisfies SpeechVoice[]).map((voice) => Object.freeze(voice)));
+
+interface CommandResult {
+  stdout: string;
+  stderr: string;
+}
+
+export type SpeechCommandRunner = (
+  command: string,
+  args: readonly string[],
+  options: { environment?: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal },
+) => Promise<CommandResult>;
+
+function runCommand(
+  command: string,
+  args: readonly string[],
+  options: { environment?: NodeJS.ProcessEnv; timeoutMs: number; signal?: AbortSignal },
+): Promise<CommandResult> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, {
+      env: options.environment,
+      timeout: options.timeoutMs,
+      signal: options.signal,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        const detail = String(stderr).trim();
+        reject(new Error(detail ? `${error.message}: ${detail}` : error.message, { cause: error }));
+        return;
+      }
+      resolve({ stdout: String(stdout), stderr: String(stderr) });
+    });
+  });
+}
+
+function validateOptions(options: SpeechSynthesisOptions): Required<Pick<
+  SpeechSynthesisOptions,
+  'engine' | 'language' | 'speed'
+>> & Pick<SpeechSynthesisOptions, 'voice'> {
+  let engine = options.engine ?? 'auto';
+  let language = options.language ?? 'auto';
+  const speed = options.speed ?? 1;
+  if (!['auto', 'chattts', 'kokoro'].includes(engine)) throw new Error(`未知 TTS 引擎：${engine}`);
+  if (!['auto', 'zh', 'en', 'ja'].includes(language)) throw new Error(`未知 TTS 语言：${language}`);
+  if (!Number.isFinite(speed) || speed < 0.5 || speed > 2) {
+    throw new Error('TTS 语速必须在 0.5 到 2 之间');
+  }
+  const voice = options.voice?.trim();
+  if (voice) {
+    const catalogVoice = SPEECH_VOICES.find((candidate) => candidate.id === voice);
+    const chatTtsSeed = /^chattts:seed-(\d{1,10})$/.exec(voice);
+    if (!catalogVoice && !chatTtsSeed) throw new Error(`未知 TTS 音色：${voice}`);
+    const voiceEngine = catalogVoice?.engine ?? 'chattts';
+    if (engine !== 'auto' && engine !== voiceEngine) {
+      throw new Error(`音色 ${voice} 不属于 ${engine} 引擎`);
+    }
+    if (engine === 'auto') engine = voiceEngine;
+    if (language === 'auto' && catalogVoice) language = catalogVoice.language;
+  }
+  return { engine, language, speed, ...(voice ? { voice } : {}) };
+}
+
+function actualEngine(stdout: string, requested: SpeechEngine): Exclude<SpeechEngine, 'auto'> {
+  const matches = [...stdout.matchAll(/\bengine=(chattts|kokoro)\b/g)];
+  const detected = matches.at(-1)?.[1];
+  if (detected === 'chattts' || detected === 'kokoro') return detected;
+  return requested === 'kokoro' ? 'kokoro' : 'chattts';
+}
+
+export class SpeechOutput {
+  private enabled: boolean;
+  private playbackTail = Promise.resolve();
+  private queuedPlayback = 0;
+  private lastError?: string;
+  private readonly audio = new Map<string, SpeechAudio>();
+
+  constructor(
+    private readonly config: TtsConfig,
+    private readonly outputDirectory: string,
+    private readonly commandRunner: SpeechCommandRunner = runCommand,
+  ) {
+    this.enabled = config.enabled;
+  }
+
+  listVoices(): SpeechVoice[] {
+    return SPEECH_VOICES.map((voice) => ({ ...voice }));
+  }
+
+  status(): SpeechOutputStatus {
+    return {
+      enabled: this.enabled,
+      renderer: this.config.command,
+      playback: this.config.playbackCommand,
+      voices: SPEECH_VOICES.length,
+      queuedPlayback: this.queuedPlayback,
+      ...(this.lastError ? { lastError: this.lastError } : {}),
+    };
+  }
+
+  async setEnabled(enabled: boolean): Promise<SpeechOutputStatus> {
+    if (enabled) await this.assertCommandsAvailable();
+    this.enabled = enabled;
+    if (enabled) this.lastError = undefined;
+    return this.status();
+  }
+
+  async synthesize(
+    text: string,
+    options: SpeechSynthesisOptions = {},
+    signal?: AbortSignal,
+  ): Promise<SpeechAudio> {
+    this.assertEnabled();
+    if (!text.trim()) throw new Error('TTS 文本不能为空');
+    if (text.length > 20_000) throw new Error('单次 TTS 文本不能超过 20000 个字符');
+    signal?.throwIfAborted();
+    await this.assertCommandsAvailable(false);
+    const selected = validateOptions(options);
+    await mkdir(this.outputDirectory, { recursive: true, mode: 0o700 });
+    const id = randomUUID();
+    const input = path.join(this.outputDirectory, `.${id}.txt`);
+    const output = path.join(this.outputDirectory, `${id}.wav`);
+    await writeFile(input, text, { encoding: 'utf8', mode: 0o600 });
+    try {
+      const voice = selected.voice?.startsWith('chattts:seed-') ? undefined : selected.voice;
+      const seed = selected.voice?.startsWith('chattts:seed-')
+        ? selected.voice.slice('chattts:seed-'.length)
+        : undefined;
+      const result = await this.commandRunner(
+        this.config.command,
+        [input, '--no-play', output],
+        {
+          timeoutMs: this.config.synthesisTimeoutMs,
+          signal,
+          environment: {
+            ...process.env,
+            MIMI_TTS_ENGINE: selected.engine,
+            MIMI_TTS_LANGUAGE: selected.language,
+            MIMI_TTS_SPEED: String(selected.speed),
+            ...(voice ? { MIMI_TTS_VOICE: voice } : {}),
+            ...(seed ? { MIMI_TTS_CHATTTS_SEED: seed } : {}),
+          },
+        },
+      );
+      const info = await stat(output);
+      if (!info.isFile() || info.size === 0) throw new Error('TTS 渲染器未生成有效 WAV 文件');
+      await chmod(output, 0o600);
+      const audio: SpeechAudio = {
+        id,
+        file: output,
+        format: 'wav',
+        engine: actualEngine(result.stdout, selected.engine),
+        ...(selected.voice ? { voice: selected.voice } : {}),
+        language: selected.language,
+        createdAt: new Date().toISOString(),
+      };
+      this.audio.set(id, audio);
+      this.lastError = undefined;
+      return { ...audio };
+    } catch (error) {
+      await unlink(output).catch(() => undefined);
+      this.rememberError(error);
+      throw error;
+    } finally {
+      await unlink(input).catch(() => undefined);
+    }
+  }
+
+  play(audio: SpeechAudio | string, signal?: AbortSignal): Promise<SpeechAudio> {
+    this.assertEnabled();
+    const selected = typeof audio === 'string' ? this.audio.get(audio) : audio;
+    if (!selected) return Promise.reject(new Error(`TTS 音频不存在：${audio}`));
+    const previous = this.playbackTail;
+    this.queuedPlayback += 1;
+    const playback = previous.then(async () => {
+      this.assertEnabled();
+      signal?.throwIfAborted();
+      await access(selected.file, fsConstants.R_OK);
+      await this.commandRunner(this.config.playbackCommand, [selected.file], {
+        timeoutMs: this.config.playbackTimeoutMs,
+        signal,
+      });
+      this.lastError = undefined;
+      return { ...selected };
+    }).catch((error) => {
+      this.rememberError(error);
+      throw error;
+    }).finally(() => {
+      this.queuedPlayback = Math.max(0, this.queuedPlayback - 1);
+    });
+    this.playbackTail = playback.then(() => undefined, () => undefined);
+    return playback;
+  }
+
+  async speak(
+    text: string,
+    options: SpeechSynthesisOptions = {},
+    signal?: AbortSignal,
+  ): Promise<SpeechAudio> {
+    const audio = await this.synthesize(text, options, signal);
+    return this.play(audio, signal);
+  }
+
+  private assertEnabled(): void {
+    if (!this.enabled) {
+      throw new Error('TTS 已关闭；调用 speech.setEnabled(true) 或设置 MIMI_TTS_ENABLED=true 后再试');
+    }
+  }
+
+  private async assertCommandsAvailable(includePlayback = true): Promise<void> {
+    await access(this.config.command, fsConstants.X_OK).catch(() => {
+      throw new Error(`TTS 渲染器不可执行：${this.config.command}`);
+    });
+    if (!includePlayback) return;
+    await access(this.config.playbackCommand, fsConstants.X_OK).catch(() => {
+      throw new Error(`TTS 播放器不可执行：${this.config.playbackCommand}`);
+    });
+  }
+
+  private rememberError(error: unknown): void {
+    this.lastError = error instanceof Error ? error.message : String(error);
+  }
+}
+
+const sharedOutputs = new Map<string, SpeechOutput>();
+
+export function sharedSpeechOutput(config: TtsConfig, dataRoot: string): SpeechOutput {
+  const outputDirectory = path.join(dataRoot, 'media', 'tts');
+  const key = JSON.stringify({ ...config, outputDirectory });
+  const existing = sharedOutputs.get(key);
+  if (existing) return existing;
+  const created = new SpeechOutput(config, outputDirectory);
+  sharedOutputs.set(key, created);
+  return created;
+}

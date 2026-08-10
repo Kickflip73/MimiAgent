@@ -222,6 +222,36 @@ test('parses valid runtime limits once at startup', () => {
   }
 });
 
+test('loads native TTS commands, switch, and timeouts from the environment', () => {
+  const keys = [
+    'MIMI_TTS_ENABLED', 'MIMI_TTS_COMMAND', 'MIMI_TTS_PLAYBACK_COMMAND',
+    'MIMI_TTS_SYNTHESIS_TIMEOUT_MS', 'MIMI_TTS_PLAYBACK_TIMEOUT_MS',
+  ] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.MIMI_TTS_ENABLED = 'true';
+    process.env.MIMI_TTS_COMMAND = '/bin/echo';
+    process.env.MIMI_TTS_PLAYBACK_COMMAND = '/bin/echo';
+    process.env.MIMI_TTS_SYNTHESIS_TIMEOUT_MS = '120000';
+    process.env.MIMI_TTS_PLAYBACK_TIMEOUT_MS = '300000';
+    assert.deepEqual(loadConfig(ISOLATED_HOME).tts, {
+      enabled: true,
+      command: '/bin/echo',
+      playbackCommand: '/bin/echo',
+      synthesisTimeoutMs: 120_000,
+      playbackTimeoutMs: 300_000,
+    });
+    process.env.MIMI_TTS_ENABLED = 'yes';
+    assert.throws(() => loadConfig(ISOLATED_HOME), /MIMI_TTS_ENABLED.*true.*false/);
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('enables Computer Use by default for full-owner when CUA is installed and supports opt-out', async () => {
   const keys = [
     'MIMI_COMPUTER_BACKEND', 'MIMI_CUA_DRIVER_COMMAND', 'MIMI_COMPUTER_ACTION_TIMEOUT_MS',

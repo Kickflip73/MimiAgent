@@ -37,6 +37,7 @@ import { isTerminalRunInterruption } from '../run-outcome.js';
 import { createCompletionTools } from '../completion.js';
 import { createPlanTools } from '../plan-tools.js';
 import { withoutMimiPreferenceTools } from '../preference-tools.js';
+import { withoutSpeechTools } from '../speech-tools.js';
 import {
   activateEphemeralOwnerInput,
   containsActiveEphemeralValue,
@@ -313,7 +314,7 @@ export async function executeRunPipeline(
     const memoryTools = createMemoryTools(host.components.memory, () => memoryContext);
     const delegatedMemoryTools = createMemoryTools(host.components.memory, () => memoryContext, { workspaceOnly: true });
     const delegatedTools = toolsForSecurity(securityProfile, [
-      ...scopedTools.filter((tool) => (
+      ...withoutSpeechTools(scopedTools).filter((tool) => (
         !ephemeralSensitiveAccess || tool.name !== 'run_shell'
       )),
       ...delegatedMemoryTools,

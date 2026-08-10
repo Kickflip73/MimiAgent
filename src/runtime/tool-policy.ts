@@ -152,6 +152,7 @@ const TOOL_DESCRIPTOR_DEFINITIONS = {
     sideEffect: true,
     displayedOrchestrationTool: true,
   },
+  speech: { capabilities: ['execute', 'write'], sideEffect: true },
   list_modes: { capabilities: ['control'], modes: ALL_MODES },
   switch_model: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
   switch_provider: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },

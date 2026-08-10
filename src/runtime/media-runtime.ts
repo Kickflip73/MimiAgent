@@ -23,6 +23,7 @@ import type { ModelGateway } from './model-gateway.js';
 import { registerRunMediaEvidence } from './pipeline/media-evidence-registration.js';
 import type { ImageGenerationResult } from './providers/types.js';
 import type { WorkUnitModelResolver } from './work-unit-model-resolver.js';
+export { createSpeechTools } from './speech-tools.js';
 
 export interface MediaWorkUnitInput {
   prompt: string;

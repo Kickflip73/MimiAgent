@@ -23,6 +23,12 @@ import type {
   RunTrust,
   RuntimeEvent,
   RuntimeHook,
+  SpeechAudio,
+  SpeechEngine,
+  SpeechLanguage,
+  SpeechOutputStatus,
+  SpeechSynthesisOptions,
+  SpeechVoice,
   SubAgentRole,
   SubAgentToolsOptions,
   TeamRole,
@@ -31,6 +37,7 @@ import type {
   TeamTaskStatus,
   TeamToolsOptions,
   TeamWorkerResult,
+  TtsConfig,
   ToolCapability,
 } from '../src/agent.js';
 import * as root from '../src/agent.js';
@@ -83,6 +90,12 @@ const ROOT_TYPE_EXPORTS = [
   'RunTrust',
   'RuntimeEvent',
   'RuntimeHook',
+  'SpeechAudio',
+  'SpeechEngine',
+  'SpeechLanguage',
+  'SpeechOutputStatus',
+  'SpeechSynthesisOptions',
+  'SpeechVoice',
   'SubAgentRole',
   'SubAgentToolsOptions',
   'TeamRole',
@@ -91,6 +104,7 @@ const ROOT_TYPE_EXPORTS = [
   'TeamTaskStatus',
   'TeamToolsOptions',
   'TeamWorkerResult',
+  'TtsConfig',
   'ToolCapability',
 ] as const;
 
@@ -134,6 +148,12 @@ type RootPublicTypes = [
   RunTrust,
   RuntimeEvent,
   RuntimeHook,
+  SpeechAudio,
+  SpeechEngine,
+  SpeechLanguage,
+  SpeechOutputStatus,
+  SpeechSynthesisOptions,
+  SpeechVoice,
   SubAgentRole,
   SubAgentToolsOptions,
   TeamRole,
@@ -142,6 +162,7 @@ type RootPublicTypes = [
   TeamTaskStatus,
   TeamToolsOptions,
   TeamWorkerResult,
+  TtsConfig,
   ToolCapability,
 ];
 

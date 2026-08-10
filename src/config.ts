@@ -20,6 +20,14 @@ export type AgentPermissionMode = 'workspace' | 'read-only' | 'trusted';
 export type SecurityProfile = 'safe' | 'workstation' | 'full-owner';
 export type ModelProvider = 'openai' | 'deepseek' | 'openai-compatible';
 
+export interface TtsConfig {
+  enabled: boolean;
+  command: string;
+  playbackCommand: string;
+  synthesisTimeoutMs: number;
+  playbackTimeoutMs: number;
+}
+
 export interface SecurityProfileSummary {
   id: SecurityProfile;
   label: string;
@@ -102,6 +110,7 @@ export interface AppConfig {
   securityProfile?: SecurityProfile;
   trustedWorkspaceMcp?: string;
   computer?: ComputerConfig;
+  tts?: TtsConfig;
 }
 
 interface EnvironmentEntry {
@@ -397,6 +406,24 @@ function computerConfig(
   };
 }
 
+function ttsConfig(homeDirectory: string): TtsConfig {
+  const configuredCommand = preferredEnvironmentValue('MIMI_TTS_COMMAND');
+  const configuredPlayback = preferredEnvironmentValue('MIMI_TTS_PLAYBACK_COMMAND');
+  const command = configuredCommand
+    ? expandHome(configuredCommand, homeDirectory)
+    : path.join(homeDirectory, '.mimi-agent', 'render_tts.sh');
+  const playbackCommand = configuredPlayback
+    ? expandHome(configuredPlayback, homeDirectory)
+    : '/usr/bin/afplay';
+  return {
+    enabled: booleanEnvironment('MIMI_TTS_ENABLED', false),
+    command,
+    playbackCommand,
+    synthesisTimeoutMs: positiveSafeInteger(['MIMI_TTS_SYNTHESIS_TIMEOUT_MS'], 180_000)!,
+    playbackTimeoutMs: positiveSafeInteger(['MIMI_TTS_PLAYBACK_TIMEOUT_MS'], 10 * 60_000)!,
+  };
+}
+
 export function resolveEnvironmentFile(
   environmentFile?: string,
   homeDirectory = os.homedir(),
@@ -570,5 +597,6 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
     securityProfile: selectedSecurityProfile,
     trustedWorkspaceMcp,
     computer,
+    tts: ttsConfig(homeDirectory),
   };
 }
