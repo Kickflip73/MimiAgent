@@ -13,6 +13,7 @@ export interface SpeechVoice {
   engine: Exclude<SpeechEngine, 'auto'>;
   language: Exclude<SpeechLanguage, 'auto'>;
   label: string;
+  gender?: 'female' | 'male';
 }
 
 export interface SpeechSynthesisOptions {
@@ -42,17 +43,22 @@ export interface SpeechOutputStatus {
 }
 
 export const SPEECH_VOICES: readonly SpeechVoice[] = Object.freeze(([
-  { id: 'chattts:seed-42', engine: 'chattts', language: 'zh', label: 'ChatTTS Seed 42' },
-  { id: 'zf_xiaobei', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaobei' },
-  { id: 'zf_xiaoni', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoni' },
-  { id: 'zf_xiaoxiao', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoxiao' },
-  { id: 'zf_xiaoyi', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoyi' },
-  { id: 'zm_yunjian', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunjian' },
-  { id: 'zm_yunxi', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunxi' },
-  { id: 'zm_yunxia', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunxia' },
-  { id: 'zm_yunyang', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunyang' },
-  { id: 'am_echo', engine: 'kokoro', language: 'en', label: 'Kokoro Echo' },
-  { id: 'jm_kumo', engine: 'kokoro', language: 'ja', label: 'Kokoro Kumo' },
+  { id: 'chattts:male-1', engine: 'chattts', language: 'zh', label: 'ChatTTS Male 1', gender: 'male' },
+  { id: 'chattts:male-2', engine: 'chattts', language: 'zh', label: 'ChatTTS Male 2', gender: 'male' },
+  { id: 'chattts:male-3', engine: 'chattts', language: 'zh', label: 'ChatTTS Male 3', gender: 'male' },
+  { id: 'chattts:female-1', engine: 'chattts', language: 'zh', label: 'ChatTTS Female 1', gender: 'female' },
+  { id: 'chattts:female-2', engine: 'chattts', language: 'zh', label: 'ChatTTS Female 2', gender: 'female' },
+  { id: 'chattts:female-3', engine: 'chattts', language: 'zh', label: 'ChatTTS Female 3', gender: 'female' },
+  { id: 'zf_xiaobei', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaobei', gender: 'female' },
+  { id: 'zf_xiaoni', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoni', gender: 'female' },
+  { id: 'zf_xiaoxiao', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoxiao', gender: 'female' },
+  { id: 'zf_xiaoyi', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoyi', gender: 'female' },
+  { id: 'zm_yunjian', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunjian', gender: 'male' },
+  { id: 'zm_yunxi', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunxi', gender: 'male' },
+  { id: 'zm_yunxia', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunxia', gender: 'male' },
+  { id: 'zm_yunyang', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunyang', gender: 'male' },
+  { id: 'am_echo', engine: 'kokoro', language: 'en', label: 'Kokoro Echo', gender: 'male' },
+  { id: 'jm_kumo', engine: 'kokoro', language: 'ja', label: 'Kokoro Kumo', gender: 'male' },
 ] satisfies SpeechVoice[]).map((voice) => Object.freeze(voice)));
 
 interface CommandResult {
@@ -104,9 +110,8 @@ function validateOptions(options: SpeechSynthesisOptions): Required<Pick<
   const voice = options.voice?.trim();
   if (voice) {
     const catalogVoice = SPEECH_VOICES.find((candidate) => candidate.id === voice);
-    const chatTtsSeed = /^chattts:seed-(\d{1,10})$/.exec(voice);
-    if (!catalogVoice && !chatTtsSeed) throw new Error(`未知 TTS 音色：${voice}`);
-    const voiceEngine = catalogVoice?.engine ?? 'chattts';
+    if (!catalogVoice) throw new Error(`未知 TTS 音色：${voice}`);
+    const voiceEngine = catalogVoice.engine;
     if (engine !== 'auto' && engine !== voiceEngine) {
       throw new Error(`音色 ${voice} 不属于 ${engine} 引擎`);
     }
@@ -121,6 +126,11 @@ function actualEngine(stdout: string, requested: SpeechEngine): Exclude<SpeechEn
   const detected = matches.at(-1)?.[1];
   if (detected === 'chattts' || detected === 'kokoro') return detected;
   return requested === 'kokoro' ? 'kokoro' : 'chattts';
+}
+
+function actualVoice(stdout: string, requested?: string): string | undefined {
+  const matches = [...stdout.matchAll(/\bvoice=([^\s]+)\b/g)];
+  return matches.at(-1)?.[1] ?? requested;
 }
 
 export class SpeechOutput {
@@ -177,10 +187,6 @@ export class SpeechOutput {
     const output = path.join(this.outputDirectory, `${id}.wav`);
     await writeFile(input, text, { encoding: 'utf8', mode: 0o600 });
     try {
-      const voice = selected.voice?.startsWith('chattts:seed-') ? undefined : selected.voice;
-      const seed = selected.voice?.startsWith('chattts:seed-')
-        ? selected.voice.slice('chattts:seed-'.length)
-        : undefined;
       const result = await this.commandRunner(
         this.config.command,
         [input, '--no-play', output],
@@ -192,20 +198,20 @@ export class SpeechOutput {
             MIMI_TTS_ENGINE: selected.engine,
             MIMI_TTS_LANGUAGE: selected.language,
             MIMI_TTS_SPEED: String(selected.speed),
-            ...(voice ? { MIMI_TTS_VOICE: voice } : {}),
-            ...(seed ? { MIMI_TTS_CHATTTS_SEED: seed } : {}),
+            ...(selected.voice ? { MIMI_TTS_VOICE: selected.voice } : {}),
           },
         },
       );
       const info = await stat(output);
       if (!info.isFile() || info.size === 0) throw new Error('TTS 渲染器未生成有效 WAV 文件');
       await chmod(output, 0o600);
+      const renderedVoice = actualVoice(result.stdout, selected.voice);
       const audio: SpeechAudio = {
         id,
         file: output,
         format: 'wav',
         engine: actualEngine(result.stdout, selected.engine),
-        ...(selected.voice ? { voice: selected.voice } : {}),
+        ...(renderedVoice ? { voice: renderedVoice } : {}),
         language: selected.language,
         createdAt: new Date().toISOString(),
       };

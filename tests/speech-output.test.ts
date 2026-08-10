@@ -26,21 +26,26 @@ test('synthesizes the exact caller text with an explicit voice and unique WAV ou
     const text = args.length === 3 ? await readFile(args[0]!, 'utf8') : undefined;
     calls.push({ args, environment: options.environment, text });
     if (args.length === 3) await writeFile(args[2]!, 'wav-fixture');
-    return { stdout: 'engine=kokoro voice=zf_xiaobei', stderr: '' };
+    const engine = options.environment?.MIMI_TTS_ENGINE === 'chattts' ? 'chattts' : 'kokoro';
+    const voice = options.environment?.MIMI_TTS_VOICE ?? 'chattts:male-1';
+    return { stdout: `engine=${engine} voice=${voice}`, stderr: '' };
   };
   const speech = new SpeechOutput(config, root, runner);
 
   const original = '  # 标题\n原样播报 `code`。\n';
   const first = await speech.synthesize(original, { voice: 'zf_xiaobei', speed: 1.2 });
-  const second = await speech.synthesize('第二段', { engine: 'chattts', voice: 'chattts:seed-7' });
+  const second = await speech.synthesize('第二段', { engine: 'chattts', voice: 'chattts:male-2' });
 
   assert.equal(calls[0]?.text, original);
   assert.equal(calls[0]?.environment?.MIMI_TTS_ENGINE, 'kokoro');
   assert.equal(calls[0]?.environment?.MIMI_TTS_LANGUAGE, 'zh');
   assert.equal(calls[0]?.environment?.MIMI_TTS_VOICE, 'zf_xiaobei');
   assert.equal(calls[0]?.environment?.MIMI_TTS_SPEED, '1.2');
-  assert.equal(calls[1]?.environment?.MIMI_TTS_CHATTTS_SEED, '7');
+  assert.equal(calls[1]?.environment?.MIMI_TTS_VOICE, 'chattts:male-2');
+  assert.equal(calls[1]?.environment?.MIMI_TTS_CHATTTS_SEED, undefined);
   assert.equal(first.engine, 'kokoro');
+  assert.equal(second.engine, 'chattts');
+  assert.equal(second.voice, 'chattts:male-2');
   assert.notEqual(first.id, second.id);
   assert.notEqual(first.file, second.file);
   assert.equal(await readFile(first.file, 'utf8'), 'wav-fixture');
@@ -58,11 +63,18 @@ test('synthesizes the exact caller text with an explicit voice and unique WAV ou
     new RunContext({}),
     JSON.stringify({ action: 'voices' }),
   );
-  assert.match(JSON.stringify(voices), /chattts:seed-42/);
+  assert.match(JSON.stringify(voices), /chattts:male-1/);
+  assert.match(JSON.stringify(voices), /chattts:female-1/);
+  assert.match(JSON.stringify(voices), /"gender":"male"/);
+  assert.doesNotMatch(JSON.stringify(voices), /chattts:seed-/);
   assert.doesNotMatch(JSON.stringify(voices), /\/bin\/echo/);
   await speechTool.invoke(
     new RunContext({}),
     JSON.stringify({ action: 'play', input: first.id }),
+  );
+  await assert.rejects(
+    speech.synthesize('旧版伪音色', { voice: 'chattts:seed-7' }),
+    /未知 TTS 音色/,
   );
 });
 
@@ -108,6 +120,9 @@ test('honors the global switch and exposes only atomic speech tools', async () =
   assert.deepEqual(createSpeechTools(speech).map((candidate) => candidate.name), [
     'speech',
   ]);
-  assert.ok(speech.listVoices().some((voice) => voice.id === 'chattts:seed-42'));
+  assert.equal(speech.listVoices().filter((voice) => voice.engine === 'chattts').length, 6);
+  assert.ok(speech.listVoices().some((voice) => (
+    voice.id === 'chattts:male-1' && voice.gender === 'male'
+  )));
   assert.ok(speech.listVoices().some((voice) => voice.id === 'zm_yunyang'));
 });
