@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { SecurityProfile } from '../../config.js';
 import type { ComputerAccess } from '../../extensions/computer/types.js';
 import type { ToolCapability } from '../tool-policy.js';
 import type { RunScope } from './run-scope.js';
@@ -24,6 +25,20 @@ export interface RuntimeAccess {
   mcp: boolean;
   ephemeralSensitiveModelAccess: boolean;
   policyRevision: string;
+}
+
+export function runtimeAccessForSecurity(
+  runtime: RuntimeAccess,
+  securityProfile: SecurityProfile,
+): Readonly<RuntimeAccess> {
+  return Object.freeze({
+    workspaceWrite: runtime.workspaceWrite && securityProfile !== 'safe',
+    computer: runtime.computer && securityProfile === 'full-owner',
+    mcp: runtime.mcp && securityProfile === 'full-owner',
+    ephemeralSensitiveModelAccess: runtime.ephemeralSensitiveModelAccess
+      && securityProfile === 'full-owner',
+    policyRevision: `${runtime.policyRevision}:${securityProfile}`,
+  });
 }
 
 export interface ResolvedCapabilities {

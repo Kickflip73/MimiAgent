@@ -1,5 +1,9 @@
 import type { Tool } from '@openai/agents';
-import type { AgentPermissionMode, SecurityProfile } from '../config.js';
+import {
+  restrictSecurityProfile,
+  type AgentPermissionMode,
+  type SecurityProfile,
+} from '../config.js';
 import type { ToolCapability } from '../core/work-unit.js';
 import type { AgentMode } from './instructions.js';
 
@@ -253,6 +257,32 @@ export function toolsForSecurity(
     const capabilities = descriptor?.capabilities ?? customCapabilities[tool.name];
     if (!descriptor && !capabilities) return false;
     return (capabilities ?? []).every((capability) => allowed.has(capability));
+  });
+}
+
+export type SecurityToolSets = Readonly<Record<SecurityProfile, Readonly<{
+  hosted: Tool[];
+  portable: Tool[];
+}>>>;
+
+export function effectiveSecurityProfile(
+  configured: SecurityProfile,
+  requested: SecurityProfile | undefined,
+): SecurityProfile {
+  return restrictSecurityProfile(configured, requested);
+}
+
+export function createSecurityToolSets(
+  configured: SecurityProfile,
+  create: (profile: SecurityProfile) => Readonly<{ hosted: Tool[]; portable: Tool[] }>,
+): SecurityToolSets {
+  const selected = (requested: SecurityProfile) => create(
+    effectiveSecurityProfile(configured, requested),
+  );
+  return Object.freeze({
+    safe: selected('safe'),
+    workstation: selected('workstation'),
+    'full-owner': selected('full-owner'),
   });
 }
 

@@ -123,6 +123,28 @@ test('run scenario follows the durable task kind instead of treating every Daemo
   );
 });
 
+test('authenticated local security metadata becomes an immutable run ceiling', () => {
+  const requested = decideEvent(event({
+    source: 'local-cli',
+    trust: 'owner',
+    sessionKey: 'safe-session',
+    payload: {
+      prompt: '只读检查',
+      requestedSecurityProfile: 'safe',
+    },
+  }));
+  assert.equal(requested.options?.securityProfile, 'safe');
+  assert.equal(requested.options?.computerAccess, undefined);
+
+  const untrusted = decideEvent(event({
+    payload: {
+      text: 'external input',
+      requestedSecurityProfile: 'full-owner',
+    },
+  }));
+  assert.equal(untrusted.options?.securityProfile, undefined);
+});
+
 test('reply and work source policies grant distinct bounded authority', () => {
   const person = { id: 'alice', displayName: 'Alice', context: ['APAC owner contact'] };
   const reply = decideEvent(event({ actor: { id: 'alice' } }), ['answer directly'], person, 'reply');

@@ -47,13 +47,13 @@ type InputHandlers = {
   onLine: (line: string, intent: InputSubmitIntent) => void;
   onEscape: () => void;
   onExit: () => void;
+  onSecurityCycle?: () => void;
   onModeCycle?: () => void;
   onCancelQueue?: () => void;
 };
 
 const clearLine = '\r\x1b[2K';
 const selectionCursor = '\x1b[96m›\x1b[0m';
-const doubleEscapeWindowMs = 350;
 const maxVisibleInputRows = 6;
 const commandEnterSequences = new Set(['\x1b\r', '\x1b\n', '\x1b[13;9u', '\x1b[27;9;13~']);
 const shiftEnterSequences = new Set(['\x1b[13;2u', '\x1b[27;2;13~']);
@@ -109,7 +109,6 @@ export class InteractiveTerminal {
   private suppressPasteKeypress = false;
   private pasteDataListener?: (chunk: Buffer | string) => void;
   private resizeListener?: () => void;
-  private escapeTimer?: NodeJS.Timeout;
   private inputRedrawTimer?: NodeJS.Timeout;
   private readonly inputRedrawDelayMs: number;
   private readonly singleLineInputViewport: boolean;
@@ -154,42 +153,26 @@ export class InteractiveTerminal {
     this.input.resume();
     this.input.on('keypress', (text: string, key: Key) => {
       if (this.suppressPasteKeypress || this.bracketPaste) return;
-      if (key.name !== 'escape' && this.escapeTimer) {
-        clearTimeout(this.escapeTimer);
-        this.escapeTimer = undefined;
-      }
       if (key.ctrl && (key.name === 'c' || key.name === 'd')) {
         handlers.onExit();
         return;
       }
       if ((key.name === 'tab' && key.shift) || key.sequence === '\x1b[Z') {
-        handlers.onModeCycle?.();
+        handlers.onSecurityCycle?.();
         return;
       }
       if (this.selectState) {
         this.handleSelection(key);
         return;
       }
+      if ((key.name === 'capslock' && key.shift)
+        || (key.name === 'up' && key.shift)
+        || key.sequence === '\x1b[1;2A') {
+        handlers.onModeCycle?.();
+        return;
+      }
       if (key.name === 'escape') {
-        if (!this.buffer.length) {
-          handlers.onEscape();
-          return;
-        }
-        if (this.escapeTimer) {
-          clearTimeout(this.escapeTimer);
-          this.escapeTimer = undefined;
-          this.buffer = [];
-          this.cursor = 0;
-          this.completionIndex = 0;
-          this.cancelInputRedraw();
-          if (!this.flushDeferredWrites()) this.redrawAfterInput();
-          return;
-        }
-        this.escapeTimer = setTimeout(() => {
-          this.escapeTimer = undefined;
-          handlers.onEscape();
-        }, doubleEscapeWindowMs);
-        this.escapeTimer.unref();
+        handlers.onEscape();
         return;
       }
       const shiftedEnter = ((key.name === 'return' || key.name === 'enter') && key.shift)
@@ -392,8 +375,6 @@ export class InteractiveTerminal {
     if (this.busyTimer) clearTimeout(this.busyTimer);
     this.busyTimer = undefined;
     this.stopIdleBlink();
-    if (this.escapeTimer) clearTimeout(this.escapeTimer);
-    this.escapeTimer = undefined;
     this.cancelInputRedraw();
     this.eraseUi();
     const selection = this.selectState;
@@ -872,12 +853,14 @@ export class InteractiveTerminal {
       : 0;
     const permLabel = this.runtime.permissionMode === 'trusted' ? 'Full Owner'
       : this.runtime.permissionMode === 'workspace' ? 'Workstation'
-      : this.runtime.permissionMode === 'safe' ? 'Safe' : this.runtime.permissionMode ?? '';
-    const permPart = permLabel ? ` · 权限 ${permLabel}` : '';
+      : this.runtime.permissionMode === 'read-only' || this.runtime.permissionMode === 'safe'
+        ? 'Safe' : this.runtime.permissionMode ?? '';
+    const permPart = permLabel ? ` · ${permLabel}` : '';
+    const modelPart = this.runtime.model ? ` · ${this.runtime.model}` : '';
     const contextPart = this.runtime.contextWindow > 0 && this.runtime.contextUsed > 0
       ? ` · 上下文 ${this.formatTokens(this.runtime.contextUsed)}/${this.formatTokens(this.runtime.contextWindow)}（${contextRatio}%）`
       : '';
-    const text = `${state} · 模式 ${this.runtime.mode}${permPart}${contextPart}`;
+    const text = `${state} · ${this.runtime.mode}${permPart}${modelPart}${contextPart}`;
     return `\x1b[90m${this.truncateDisplay(text, Math.max(24, (this.output.columns ?? 80) - 1))}\x1b[0m`;
   }
 

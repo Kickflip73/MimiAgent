@@ -64,6 +64,22 @@ export const SECURITY_PROFILES: Readonly<Record<SecurityProfile, SecurityProfile
   }),
 });
 
+const SECURITY_PROFILE_RANK: Readonly<Record<SecurityProfile, number>> = Object.freeze({
+  safe: 0,
+  workstation: 1,
+  'full-owner': 2,
+});
+
+export function restrictSecurityProfile(
+  configured: SecurityProfile,
+  requested: SecurityProfile | undefined,
+): SecurityProfile {
+  if (!requested) return configured;
+  return SECURITY_PROFILE_RANK[requested] <= SECURITY_PROFILE_RANK[configured]
+    ? requested
+    : configured;
+}
+
 export interface AppConfig {
   provider: ModelProvider;
   providerBaseUrl?: string;

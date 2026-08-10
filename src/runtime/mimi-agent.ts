@@ -9,12 +9,7 @@ import {
   type AgentInputItem,
   type Tool,
 } from '@openai/agents';
-import {
-  preferredEnvironmentValue,
-  privateRuntimePaths,
-  securityProfileSummary,
-  type AppConfig,
-} from '../config.js';
+import { preferredEnvironmentValue, privateRuntimePaths, securityProfileSummary, type AppConfig, type SecurityProfile } from '../config.js';
 import {
   estimateTokens,
   type ContextManifest,
@@ -70,9 +65,12 @@ import { AGENT_MODES, type AgentMode } from './instructions.js';
 import { createModelContext, createModelRuntime } from './model.js';
 import { buildResumePrompt } from './session-state.js';
 import {
+  createSecurityToolSets,
+  effectiveSecurityProfile,
   toolNamesForMode,
   toolsForSecurity,
   type RunToolPolicy,
+  type SecurityToolSets,
   type ToolCapability,
 } from './tool-policy.js';
 import { createModelResolver, createRuntimeComponents, type RuntimeComponents } from './components.js';
@@ -85,18 +83,13 @@ import { RuntimeActionCoordinator } from './runtime-action-coordinator.js';
 import { RuntimeControlCoordinator } from './runtime-control-coordinator.js';
 import { createPlanTools } from './plan-tools.js';
 import { ContextAssembler } from './pipeline/context-assembler.js';
-import {
-  CapabilityResolver,
-  type RuntimeAccess,
-} from './pipeline/capability-resolver.js';
+import { CapabilityResolver, type RuntimeAccess } from './pipeline/capability-resolver.js';
 import type {
   EffectiveCapabilityItem,
   EffectiveCapabilitySnapshot,
 } from './pipeline/capability-resolver.js';
 import type { RunScope } from './pipeline/run-scope.js';
-import {
-  type CapabilityCatalogAccess,
-} from './pipeline/capability-registry.js';
+import type { CapabilityCatalogAccess } from './pipeline/capability-registry.js';
 import { ToolSetBuilder } from './pipeline/tool-set-builder.js';
 import { AgentRequestFactory } from './pipeline/request-factory.js';
 import {
@@ -181,6 +174,7 @@ export interface RunPolicy extends RunToolPolicy {
 export interface MimiRunOptions {
   cause?: RunCause;
   policy?: RunPolicy;
+  securityProfile?: SecurityProfile;
   hostInstructions?: string;
   hostTools?: Tool[];
   ephemeralOwnerInput?: EphemeralOwnerInputLease;
@@ -249,7 +243,7 @@ export class MimiAgent {
   readonly requestFactory = new AgentRequestFactory();
   readonly fixedModelBinding?: RunModelBinding;
   readonly personalMessages = new PersonalMessageHub();
-  private readonly localTools: Readonly<{ hosted: Tool[]; portable: Tool[] }>;
+  private readonly localTools: SecurityToolSets;
   private readonly extensionTools: Tool[];
   private readonly mcpTools: Tool[];
   session: FileSession;
@@ -342,7 +336,7 @@ export class MimiAgent {
       access,
     );
     const baseShellEnvironment = createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env);
-    const localToolAccess: Parameters<typeof createTools>[3] = initialSecurity.id === 'safe'
+    const localToolAccess = (profile: SecurityProfile): Parameters<typeof createTools>[3] => profile === 'safe'
       ? {
         readablePaths: ['.'],
         writablePaths: [],
@@ -350,7 +344,7 @@ export class MimiAgent {
         allowShell: false,
         mutationObserver: this.fileChanges,
       }
-      : initialSecurity.id === 'workstation' ? {
+      : profile === 'workstation' ? {
         readablePaths: ['.'],
         writablePaths: ['.'],
         allowWrite: true,
@@ -378,15 +372,16 @@ export class MimiAgent {
         } : {}),
         mutationObserver: this.fileChanges,
       };
-    this.localTools = {
-      hosted: createToolsForAccess(localToolAccess, true),
-      portable: createToolsForAccess(localToolAccess, false),
-    };
+    this.localTools = createSecurityToolSets(initialSecurity.id, (profile) => ({
+      hosted: createToolsForAccess(localToolAccess(profile), true),
+      portable: createToolsForAccess(localToolAccess(profile), false),
+    }));
     const computerTools = components.computer ? createComputerTools(components.computer, () => {
       const active = this.activeRun;
       if (!active) return undefined;
       const policy = active.options?.policy;
       const ownerAuthorized = this.runtimeAccess.computer
+        && (active.options?.securityProfile ?? this.runtimeSecurity.id) === 'full-owner'
         && (!active.options?.cause || active.options.cause.trust === 'owner');
       return {
         runId: active.runId,
@@ -471,13 +466,18 @@ export class MimiAgent {
     const transport = binding
       ? this.components.modelGateway.provider(binding.target).transport
       : this.components.modelGateway.provider(this.defaultModelTarget).transport;
-    return this.authorizeTools([
+    const securityProfile = effectiveSecurityProfile(
+      this.runtimeSecurity.id,
+      this.activeRun?.options?.securityProfile,
+    );
+    const localTools = this.localTools[securityProfile];
+    return toolsForSecurity(securityProfile, this.authorizeTools([
       ...(transport === 'openai-responses'
-        ? this.localTools.hosted
-        : this.localTools.portable),
+        ? localTools.hosted
+        : localTools.portable),
       ...this.extensionTools,
       ...this.mcpTools,
-    ]);
+    ]));
   }
 
   installModelConfiguration(next: ModelsConfig): void {

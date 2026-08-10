@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentInputItem } from '@openai/agents';
-import { adoptWorkspaceConfig, type AppConfig } from '../config.js';
+import {
+  adoptWorkspaceConfig,
+  type AppConfig,
+  type SecurityProfile,
+} from '../config.js';
 import {
   type BackgroundTaskCancelResult,
   type BackgroundTaskPauseResult,
@@ -235,6 +239,7 @@ export class MimiChatClient {
     options?: {
       resumeState?: boolean;
       approvedPersonalMessageText?: string;
+      requestedSecurityProfile?: SecurityProfile;
     },
   ): Promise<AcceptedMimiEvent> {
     const eventId = randomUUID();
@@ -251,6 +256,9 @@ export class MimiChatClient {
       ...(options?.resumeState ? { resumeState: true } : {}),
       ...(options?.approvedPersonalMessageText
         ? { approvedPersonalMessageText: options.approvedPersonalMessageText }
+        : {}),
+      ...(options?.requestedSecurityProfile
+        ? { requestedSecurityProfile: options.requestedSecurityProfile }
         : {}),
       eventId,
       externalId: `local-cli:${eventId}`,

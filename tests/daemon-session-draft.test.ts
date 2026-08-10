@@ -166,7 +166,7 @@ test('CLI restarts an unavailable daemon and retries a draft bootstrap', async (
   }
 });
 
-test('CLI submits its launch workspace with each owner command', async () => {
+test('CLI submits its launch workspace and selected security with each owner command', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-submit-workspace-'));
   const socket = path.join(root, 'mimi.sock');
   const workspaceRoot = path.join(root, 'project');
@@ -189,10 +189,14 @@ test('CLI submits its launch workspace with each owner command', async () => {
       provider: 'openai',
       permissionMode: 'trusted',
     } as AppConfig);
-    await client.submit('修复当前项目');
+    await client.submit('修复当前项目', 'workspace-session', {
+      requestedSecurityProfile: 'workstation',
+    });
     assert.equal(submitted?.workspaceRoot, workspaceRoot);
     assert.equal(submitted?.source, 'local-cli');
     assert.equal(submitted?.trust, 'owner');
+    assert.equal(submitted?.sessionKey, 'workspace-session');
+    assert.equal(submitted?.requestedSecurityProfile, 'workstation');
   } finally {
     await server.close();
   }

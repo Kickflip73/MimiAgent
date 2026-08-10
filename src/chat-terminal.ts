@@ -1,5 +1,12 @@
 import process from 'node:process';
-import { loadConfig, preferredEnvironmentValue, type AppConfig } from './config.js';
+import {
+  loadConfig,
+  preferredEnvironmentValue,
+  restrictSecurityProfile,
+  SECURITY_PROFILES,
+  type AppConfig,
+  type SecurityProfile,
+} from './config.js';
 import {
   COMMANDS,
   CommandHandler,
@@ -36,6 +43,7 @@ const CHAT_COMMANDS: CompletionItem[] = [...COMMANDS];
 
 interface PendingChatInput extends QueuedInput {
   acceptedEventId?: string;
+  securityProfile: SecurityProfile;
 }
 
 class SteeringInputAcceptedError extends Error {}
@@ -46,6 +54,14 @@ export const CHAT_HELP = `${commandHelp()}
 
 function runLabel(_input: string): string {
   return '模型思考中';
+}
+
+const SECURITY_PROFILE_ORDER = ['safe', 'workstation', 'full-owner'] as const;
+
+function securityProfileForPermission(permissionMode: string | undefined): SecurityProfile {
+  if (permissionMode === 'read-only') return 'safe';
+  if (permissionMode === 'workspace') return 'workstation';
+  return 'full-owner';
 }
 
 export function renderChatHistory(snapshot: MimiChatSnapshot, tty: boolean): string {
@@ -186,6 +202,8 @@ export async function runMimiCli(
   let activeEventId: string | undefined;
   let activeCancelRequested = false;
   let activeCancelSent = false;
+  let selectedSecurityProfile = securityProfileForPermission(snapshot.permissionMode);
+  let activeSecurityProfile: SecurityProfile | undefined;
   let cyclingMode = false;
   let draining = false;
   let steeringSubmissions = Promise.resolve();
@@ -194,18 +212,27 @@ export async function runMimiCli(
   const closedPromise = new Promise<void>((resolve) => { resolveClosed = resolve; });
   const tty = Boolean(process.stdout.isTTY);
 
+  const updateTerminalRuntimeStatus = () => {
+    const displayedSecurityProfile = activeSecurityProfile ?? selectedSecurityProfile;
+    terminal.setRuntimeStatus({
+      mode: snapshot.mode,
+      model: snapshot.model,
+      permissionMode: SECURITY_PROFILES[displayedSecurityProfile].permissionMode,
+      contextUsed: snapshot.contextUsed,
+      contextWindow: snapshot.contextWindow,
+    });
+  };
   const refresh = async () => {
     snapshot = target.sessionReady
       ? await client.snapshot(30, target.currentSessionId)
       : await client.bootstrap(target.currentSessionId);
     terminal.useSession(snapshot.sessionId);
-    terminal.setRuntimeStatus({
-      mode: snapshot.mode,
-      model: snapshot.model,
-      permissionMode: snapshot.permissionMode,
-      contextUsed: snapshot.contextUsed,
-      contextWindow: snapshot.contextWindow,
-    });
+    const configuredSecurityProfile = securityProfileForPermission(snapshot.permissionMode);
+    selectedSecurityProfile = restrictSecurityProfile(
+      configuredSecurityProfile,
+      selectedSecurityProfile,
+    );
+    updateTerminalRuntimeStatus();
     terminal.setTasks(snapshot.plan);
   };
   const close = () => {
@@ -233,6 +260,7 @@ export async function runMimiCli(
     signal = activeAbort?.signal,
     acceptedEventId?: string,
     submitOptions?: CommandRunOptions,
+    securityProfile = activeSecurityProfile ?? selectedSecurityProfile,
   ) => {
     const renderer = new TerminalRenderer(
       terminal.createWriter(process.stderr),
@@ -246,7 +274,10 @@ export async function runMimiCli(
         ? { eventId: acceptedEventId, inserted: true }
         : undefined;
       if (!accepted) {
-        const submission = client.submit(input, target.currentSessionId, submitOptions);
+        const submission = client.submit(input, target.currentSessionId, {
+          ...submitOptions,
+          requestedSecurityProfile: securityProfile,
+        });
         const settled = submission.then(() => undefined, () => undefined);
         activeSubmission = settled;
         try {
@@ -352,6 +383,8 @@ export async function runMimiCli(
         activeEventId = undefined;
         activeCancelRequested = false;
         activeCancelSent = false;
+        activeSecurityProfile = pending.securityProfile;
+        updateTerminalRuntimeStatus();
         try {
           terminal.setBusy(true);
           const result = await commands.execute(pending.text, activeAbort.signal);
@@ -361,7 +394,13 @@ export async function runMimiCli(
           }
           if (result === 'handled') continue;
           commands.remember(pending.text);
-          await submitAndDisplay(pending.text, activeAbort.signal, pending.acceptedEventId);
+          await submitAndDisplay(
+            pending.text,
+            activeAbort.signal,
+            pending.acceptedEventId,
+            undefined,
+            pending.securityProfile,
+          );
         } catch (error) {
           const message = activeCancelRequested
             ? '已请求取消当前任务。'
@@ -376,6 +415,7 @@ export async function runMimiCli(
           activeEventId = undefined;
           activeCancelRequested = false;
           activeCancelSent = false;
+          activeSecurityProfile = undefined;
           terminal.setBusy(false);
           if (!closed) await refresh().catch(() => undefined);
         }
@@ -385,16 +425,23 @@ export async function runMimiCli(
       if ((steeringQueue.length || queue.length) && !closed) void drain();
     }
   };
-  const submitSteeringInput = async (input: string) => {
+  const submitSteeringInput = async (input: string, securityProfile: SecurityProfile) => {
     try {
       // Preserve event order if Command+Enter arrives while the active input is
       // still crossing the durable submit boundary.
       await activeSubmission;
-      const accepted = await client.submit(input, target.currentSessionId);
+      const accepted = await client.submit(input, target.currentSessionId, {
+        requestedSecurityProfile: securityProfile,
+      });
       target.markSessionReady();
       snapshot.draft = false;
       if (closed) return;
-      steeringQueue.push({ text: input, intent: 'steer', acceptedEventId: accepted.eventId });
+      steeringQueue.push({
+        text: input,
+        intent: 'steer',
+        acceptedEventId: accepted.eventId,
+        securityProfile,
+      });
       refreshQueue();
       activeAbort?.abort(new SteeringInputAcceptedError('新指引已由 MimiAgent 接收'));
       void drain();
@@ -416,10 +463,13 @@ export async function runMimiCli(
         return;
       }
       if (intent === 'steer' && !input.trim().startsWith('/')) {
-        steeringSubmissions = steeringSubmissions.then(() => submitSteeringInput(input));
+        const securityProfile = selectedSecurityProfile;
+        steeringSubmissions = steeringSubmissions.then(() => (
+          submitSteeringInput(input, securityProfile)
+        ));
         return;
       }
-      queue.push({ text: input, intent: 'enqueue' });
+      queue.push({ text: input, intent: 'enqueue', securityProfile: selectedSecurityProfile });
       refreshQueue();
       void drain();
     },
@@ -434,6 +484,16 @@ export async function runMimiCli(
       const removed = queue.pop();
       refreshQueue();
       terminal.notify(`已取消排队："${(removed?.text ?? '').slice(0, 40)}"`);
+    },
+    onSecurityCycle: () => {
+      const configured = securityProfileForPermission(snapshot.permissionMode);
+      const available = SECURITY_PROFILE_ORDER.filter((profile) => (
+        restrictSecurityProfile(configured, profile) === profile
+      ));
+      const current = available.indexOf(selectedSecurityProfile);
+      selectedSecurityProfile = available[(current + 1) % available.length] ?? configured;
+      if (!activeSecurityProfile) updateTerminalRuntimeStatus();
+      terminal.notify(`后续输入使用 ${SECURITY_PROFILES[selectedSecurityProfile].label}。`);
     },
     onModeCycle: () => {
       if (cyclingMode) return;

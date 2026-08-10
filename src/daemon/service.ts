@@ -70,21 +70,12 @@ import {
 } from './lifecycle.js';
 import { classifyReadinessUnknown } from './operational-classification.js';
 import { createMimiCommandHostTools } from './host-tools.js';
-import {
-  MimiLiveEvents,
-  mimiRuntimeStreamEvent,
-  mimiStreamEvent,
-  mimiStreamTaskState,
-} from './live-events.js';
+import { MimiLiveEvents, mimiRuntimeStreamEvent, mimiStreamEvent, mimiStreamTaskState } from './live-events.js';
 import { ownerSessionId } from './policy.js';
-import {
-  createMimiChatSnapshot,
-  createMimiHistoryChunk,
-} from './chat-snapshot.js';
+import { requestedSecurityProfileForLocalSubmit } from './local-run-policy.js';
+import { createMimiChatSnapshot, createMimiHistoryChunk } from './chat-snapshot.js';
 import { pathExists as exists, writeAtomicJson } from './json-file.js';
-import {
-  initializeMimi,
-} from './initialization.js';
+import { initializeMimi } from './initialization.js';
 import {
   daemonLaunchEnvironment,
   launchAgentPlist,
@@ -307,6 +298,7 @@ interface SubmitParams extends Partial<Pick<EventEnvelope,
   resumeState?: boolean;
   approvedPersonalMessageText?: string;
   attachments?: LocalAttachmentRequest[];
+  requestedSecurityProfile?: unknown;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -1110,6 +1102,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const now = new Date().toISOString();
         const source = params.source ?? 'local-cli';
         const trust = eventTrustSchema.parse(params.trust ?? 'owner');
+        const requestedSecurityProfile = requestedSecurityProfileForLocalSubmit(params);
         const requestedWorkspaceRoot = source === 'local-cli' && trust === 'owner'
           ? optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot')
           : undefined;
@@ -1121,7 +1114,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             )
           : [];
         const prompt = params.payload === undefined ? requiredString(params.text, 'text') : undefined;
-        const payload = params.payload ?? {
+        const submittedPayload = params.payload ?? {
           ...(requestedWorkspaceRoot ? { workspaceRoot: requestedWorkspaceRoot } : {}),
           ...(params.resumeState === true ? { resumeState: true } : {}),
           ...(typeof params.approvedPersonalMessageText === 'string'
@@ -1130,6 +1123,12 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             : {}),
           ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
         };
+        const payload = requestedSecurityProfile
+          ? {
+              ...(submittedPayload as Record<string, unknown>),
+              requestedSecurityProfile,
+            }
+          : submittedPayload;
         const event: EventEnvelope = {
           id: params.eventId ? requiredString(params.eventId, 'eventId') : randomUUID(),
           externalId: params.externalId ?? randomUUID(), source,

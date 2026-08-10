@@ -8,6 +8,7 @@ import type { ToolCapability } from '../runtime/tool-policy.js';
 import type { ComputerAccess } from '../extensions/computer/types.js';
 import { assertSessionId, sessionIdSchema } from '../core/session-id.js';
 import type { EventEnvelope, TaskRecord } from './types.js';
+import { requestedSecurityProfileForEvent } from './local-run-policy.js';
 import {
   personalMessageAuthorizationFor,
   type PersonalMessageAuthorization,
@@ -338,7 +339,11 @@ export function decideEvent(
   const ownerDelegated = !forceRestricted && restrictedProvenance && ownerSourcePolicyAccess !== undefined;
   const mayAct = !restrictedProvenance || ownerDelegated;
   const backgroundTask = task !== undefined && task.type !== 'conversation';
-  const computerAccess = backgroundTask
+  const requestedSecurityProfile = !backgroundTask
+    ? requestedSecurityProfileForEvent(event)
+    : undefined;
+  const computerAccess = backgroundTask || (requestedSecurityProfile !== undefined
+    && requestedSecurityProfile !== 'full-owner')
     ? 'none'
     : ownerComputerAccess ?? (!restrictedProvenance ? 'background' : 'none');
   const computerEnabled = computerAccess !== 'none';
@@ -566,6 +571,7 @@ export function decideEvent(
       } : {}),
       ...(personalConnectorOnly ? { personalConnectorOnly: true } : {}),
       ...(resumeState ? { resumeState: true } : {}),
+      ...(requestedSecurityProfile ? { securityProfile: requestedSecurityProfile } : {}),
       ...(policy ? { policy } : {}),
     },
   };
