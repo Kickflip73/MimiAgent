@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   duration advance without requiring new streamed conversation output
 - add native local speech primitives for voice discovery, ChatTTS/Kokoro
   synthesis, ordered playback, and direct speaking, exposed through Host APIs,
-  and compact model tools without rewriting caller text
+  and one compact model tool backed by a single managed renderer without
+  rewriting caller text or falling back to TTS scripts and Skills
 - reorder the interactive status footer to show mode, effective Security profile,
   model, and context usage; make Shift+Tab cycle a real per-run Security ceiling,
   add mode cycling through terminal-reported Shift+Caps Lock with Shift+Up fallback,

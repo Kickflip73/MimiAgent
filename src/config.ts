@@ -411,7 +411,7 @@ function ttsConfig(homeDirectory: string): TtsConfig {
   const configuredPlayback = preferredEnvironmentValue('MIMI_TTS_PLAYBACK_COMMAND');
   const command = configuredCommand
     ? expandHome(configuredCommand, homeDirectory)
-    : path.join(homeDirectory, '.mimi-agent', 'render_tts.sh');
+    : path.join(homeDirectory, '.mimi-agent', 'runtime', 'tts', 'render');
   const playbackCommand = configuredPlayback
     ? expandHome(configuredPlayback, homeDirectory)
     : '/usr/bin/afplay';

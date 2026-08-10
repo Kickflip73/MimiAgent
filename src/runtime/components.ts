@@ -191,7 +191,7 @@ export async function createRuntimeComponents(
   const state = createFileRuntimeStatePorts(config, sessionId);
   const speech = sharedSpeechOutput(config.tts ?? {
     enabled: false,
-    command: path.join(os.homedir(), '.mimi-agent', 'render_tts.sh'),
+    command: path.join(os.homedir(), '.mimi-agent', 'runtime', 'tts', 'render'),
     playbackCommand: '/usr/bin/afplay',
     synthesisTimeoutMs: 180_000,
     playbackTimeoutMs: 10 * 60_000,

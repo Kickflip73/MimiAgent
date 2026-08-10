@@ -243,6 +243,11 @@ test('loads native TTS commands, switch, and timeouts from the environment', () 
     });
     process.env.MIMI_TTS_ENABLED = 'yes';
     assert.throws(() => loadConfig(ISOLATED_HOME), /MIMI_TTS_ENABLED.*true.*false/);
+    for (const key of keys) delete process.env[key];
+    assert.equal(
+      loadConfig(ISOLATED_HOME).tts?.command,
+      path.join(ISOLATED_HOME, '.mimi-agent', 'runtime', 'tts', 'render'),
+    );
   } finally {
     for (const key of keys) {
       const value = previous[key];

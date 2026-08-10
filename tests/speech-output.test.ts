@@ -59,6 +59,11 @@ test('synthesizes the exact caller text with an explicit voice and unique WAV ou
     JSON.stringify({ action: 'voices' }),
   );
   assert.match(JSON.stringify(voices), /chattts:seed-42/);
+  assert.doesNotMatch(JSON.stringify(voices), /\/bin\/echo/);
+  await speechTool.invoke(
+    new RunContext({}),
+    JSON.stringify({ action: 'play', input: first.id }),
+  );
 });
 
 test('serializes playback in call order without blocking synthesis', async () => {
