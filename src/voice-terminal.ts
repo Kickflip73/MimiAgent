@@ -12,7 +12,11 @@ import {
   MimiChatClient,
   type AcceptedMimiEvent,
 } from './daemon/chat-client.js';
-import { VOICE_CONVERSATION_RUN_POLICY } from './daemon/local-run-policy.js';
+import {
+  VOICE_CHAT_ONLY_RUN_POLICY,
+  VOICE_CONVERSATION_RUN_POLICY,
+  type RequestedLocalRunPolicy,
+} from './daemon/local-run-policy.js';
 
 const DEFAULT_VOICE_TURN_TIMEOUT_MS = 120_000;
 
@@ -22,6 +26,7 @@ export interface VoiceCliOptions {
   sessionId?: string;
   locale: string;
   onDevice: boolean;
+  chatOnly?: boolean;
   tts: VoiceTtsEngine;
   voice?: string;
   kokoroRenderer?: string;
@@ -43,7 +48,12 @@ export interface VoiceConversationSource {
 
 export interface VoiceAgentPort {
   openSession(requestedSessionId?: string): Promise<{ sessionId: string }>;
-  ask(text: string, sessionId: string, signal: AbortSignal): Promise<string>;
+  ask(
+    text: string,
+    sessionId: string,
+    signal: AbortSignal,
+    onProgress?: (text: string) => void,
+  ): Promise<string>;
   cancel(reason: Error): Promise<void>;
 }
 
@@ -51,6 +61,7 @@ export type VoiceConversationEvent =
   | { type: 'ready'; sessionId: string }
   | { type: 'user'; text: string; turnId: string }
   | { type: 'processing'; turnId: string }
+  | { type: 'status'; text: string; turnId: string }
   | { type: 'assistant'; text: string; turnId: string }
   | { type: 'error'; error: Error };
 
@@ -60,11 +71,13 @@ export const VOICE_HELP = `MimiAgent 语音对话
   mimi voice
   mimi voice --session <id>
   mimi voice --locale zh-CN [--allow-network-asr]
+  mimi voice --chat-only
   mimi voice --tts system [--voice <系统声音>]
   mimi voice --tts kokoro [--voice <Kokoro音色>] --kokoro-renderer <绝对路径>
 
 默认使用 macOS Speech Framework 的设备端识别和系统 TTS。Kokoro 是显式可选的
-本地高质量 TTS；缺少 renderer 时不会静默改用云端服务。按 Ctrl-C 退出。`;
+本地高质量 TTS；缺少 renderer 时不会静默改用云端服务。默认保留 Mimi 工具能力；
+--chat-only 显式关闭本轮工具调用。按 Ctrl-C 退出。`;
 
 function optionValue(args: string[], index: number, option: string): string {
   const value = args[index + 1];
@@ -114,6 +127,10 @@ export function parseVoiceCliOptions(args: string[]): VoiceCliOptions {
       options.onDevice = false;
       continue;
     }
+    if (argument === '--chat-only') {
+      options.chatOnly = true;
+      continue;
+    }
     if (argument === '--tts') {
       const value = optionValue(args, index, argument);
       if (value !== 'system' && value !== 'kokoro') {
@@ -141,6 +158,10 @@ export function parseVoiceCliOptions(args: string[]): VoiceCliOptions {
     throw new Error('--tts kokoro 需要 --kokoro-renderer <绝对路径>');
   }
   return options;
+}
+
+export function voiceRunPolicy(options: VoiceCliOptions): RequestedLocalRunPolicy {
+  return options.chatOnly ? VOICE_CHAT_ONLY_RUN_POLICY : VOICE_CONVERSATION_RUN_POLICY;
 }
 
 function aborted(signal: AbortSignal, error: unknown): boolean {
@@ -184,7 +205,12 @@ export async function runVoiceConversation(input: {
       const timeout = setTimeout(() => turnController.abort(timeoutError), turnTimeoutMs);
       const turnSignal = AbortSignal.any([input.signal, turnController.signal]);
       try {
-        const answer = (await input.agent.ask(text, session.sessionId, turnSignal)).trim();
+        const answer = (await input.agent.ask(
+          text,
+          session.sessionId,
+          turnSignal,
+          (progress) => input.onEvent?.({ type: 'status', text: progress, turnId: turn.turnId }),
+        )).trim();
         clearTimeout(timeout);
         if (!answer) throw new Error('MimiAgent 返回了空回答');
         input.onEvent?.({ type: 'assistant', text: answer, turnId: turn.turnId });
@@ -468,12 +494,28 @@ export class MimiVoiceAgentPort implements VoiceAgentPort {
     return { sessionId: snapshot.sessionId };
   }
 
-  async ask(text: string, sessionId: string, signal: AbortSignal): Promise<string> {
+  async ask(
+    text: string,
+    sessionId: string,
+    signal: AbortSignal,
+    onProgress?: (text: string) => void,
+  ): Promise<string> {
     const accepted = await this.client.submit(text, sessionId);
     this.activeEvent = accepted;
     let terminal = false;
+    let lastProgress = '';
     try {
-      const event = await this.client.wait(accepted.eventId, signal);
+      const event = await this.client.wait(accepted.eventId, signal, (streamed) => {
+        if (streamed.kind !== 'status') return;
+        const progress = streamed.tone === 'tool'
+          ? `正在执行 ${streamed.title}`
+          : streamed.tone === 'failure'
+            ? `${streamed.title}失败`
+            : '';
+        if (!progress || progress === lastProgress) return;
+        lastProgress = progress;
+        onProgress?.(progress);
+      });
       terminal = true;
       return eventAnswer(event);
     } finally {
@@ -502,7 +544,7 @@ export async function runMimiVoice(config: AppConfig, args: string[]): Promise<v
     await runVoiceConversation({
       source: new MacOsVoiceConversationSource(options),
       agent: new MimiVoiceAgentPort(new MimiChatClient(config, undefined, {
-        requestedRunPolicy: VOICE_CONVERSATION_RUN_POLICY,
+        requestedRunPolicy: voiceRunPolicy(options),
       })),
       signal: controller.signal,
       requestedSessionId: options.sessionId,
@@ -516,6 +558,8 @@ export async function runMimiVoice(config: AppConfig, args: string[]): Promise<v
           process.stdout.write(`\n你：${event.text}\n`);
         } else if (event.type === 'processing') {
           process.stdout.write('Mimi：正在处理...\n');
+        } else if (event.type === 'status') {
+          process.stdout.write(`Mimi：${event.text}\n`);
         } else if (event.type === 'assistant') {
           process.stdout.write(`Mimi：${event.text}\n`);
         } else {

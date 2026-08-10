@@ -122,7 +122,7 @@ test('versioned local-owner no-tools metadata narrows the entire model capabilit
   assert.equal(untrusted.options?.policy?.allowSessionContext, false);
 });
 
-test('voice conversation policy answers from Session context without advertising tools', () => {
+test('voice conversation keeps the standard owner tool policy while chat-only is explicit', () => {
   const requested = decideEvent(event({
     source: 'local-cli',
     trust: 'owner',
@@ -132,7 +132,20 @@ test('voice conversation policy answers from Session context without advertising
       requestedRunPolicy: 'voice-conversation-v1',
     },
   }));
-  assert.deepEqual(requested.options?.policy, {
+  assert.equal(requested.options?.policy, undefined);
+  assert.equal(requested.options?.computerAccess, 'background');
+  assert.match(requested.options?.hostInstructions ?? '', /明确执行请求/u);
+
+  const chatOnly = decideEvent(event({
+    source: 'local-cli',
+    trust: 'owner',
+    sessionKey: 'voice-session',
+    payload: {
+      prompt: '只聊天',
+      requestedRunPolicy: 'voice-chat-only-v1',
+    },
+  }));
+  assert.deepEqual(chatOnly.options?.policy, {
     allowedCapabilities: [],
     allowedTools: [],
     allowSideEffects: false,
@@ -142,7 +155,7 @@ test('voice conversation policy answers from Session context without advertising
     allowSessionContext: true,
     computerAccess: 'none',
   });
-  assert.match(requested.options?.hostInstructions ?? '', /实时语音对话/u);
+  assert.equal(chatOnly.options?.computerAccess, 'none');
 });
 
 test('run scenario follows the durable task kind instead of treating every Daemon cause as background', () => {

@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import {
   parseVoiceCliOptions,
   runVoiceConversation,
+  voiceRunPolicy,
   type VoiceAgentPort,
   type VoiceConversationSource,
   type VoiceTranscript,
@@ -40,8 +41,9 @@ test('voice conversation sends stable transcripts through one canonical Session 
       calls.push(`agent:open:${requestedSessionId ?? 'new'}`);
       return { sessionId: requestedSessionId ?? 'voice-session-1' };
     },
-    ask: async (text, sessionId) => {
+    ask: async (text, sessionId, _signal, onProgress) => {
       calls.push(`agent:ask:${sessionId}:${text}`);
+      if (text.startsWith('帮我')) onProgress?.('正在执行 calendar_read');
       return text.startsWith('帮我') ? '今天上午评审，下午写方案。' : '下午需要完成方案。';
     },
     cancel: async () => { calls.push('agent:cancel'); },
@@ -56,6 +58,7 @@ test('voice conversation sends stable transcripts through one canonical Session 
       if (event.type === 'ready') events.push(`ready:${event.sessionId}`);
       if (event.type === 'user') events.push(`user:${event.text}`);
       if (event.type === 'processing') events.push(`processing:${event.turnId}`);
+      if (event.type === 'status') events.push(`status:${event.text}`);
       if (event.type === 'assistant') events.push(`assistant:${event.text}`);
     },
   });
@@ -64,6 +67,7 @@ test('voice conversation sends stable transcripts through one canonical Session 
     'ready:voice-session-1',
     'user:帮我总结今天的安排',
     'processing:turn-1',
+    'status:正在执行 calendar_read',
     'assistant:今天上午评审，下午写方案。',
     'user:把下午的事情再说一遍',
     'processing:turn-2',
@@ -140,6 +144,7 @@ test('voice CLI defaults to private Apple ASR and immediate system TTS', () => {
     '--session', 'daily-voice',
     '--locale', 'en-US',
     '--allow-network-asr',
+    '--chat-only',
     '--tts', 'kokoro',
     '--voice', 'zm_yunyang',
     '--kokoro-renderer', '/opt/mimi/render-kokoro',
@@ -147,12 +152,15 @@ test('voice CLI defaults to private Apple ASR and immediate system TTS', () => {
     sessionId: 'daily-voice',
     locale: 'en-US',
     onDevice: false,
+    chatOnly: true,
     tts: 'kokoro',
     voice: 'zm_yunyang',
     kokoroRenderer: '/opt/mimi/render-kokoro',
   });
   assert.throws(() => parseVoiceCliOptions(['--tts', 'chattts']), /--tts/);
   assert.throws(() => parseVoiceCliOptions(['--session', '../other']), /--session/);
+  assert.equal(voiceRunPolicy(parseVoiceCliOptions([])), 'voice-conversation-v1');
+  assert.equal(voiceRunPolicy(parseVoiceCliOptions(['--chat-only'])), 'voice-chat-only-v1');
 });
 
 test('voice conversation releases the microphone source when startup fails', async () => {

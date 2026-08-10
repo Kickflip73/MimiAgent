@@ -11,6 +11,7 @@ import type { EventEnvelope, TaskRecord } from './types.js';
 import {
   isNoToolsLocalRunPolicy,
   requestedLocalRunPolicyForEvent,
+  VOICE_CHAT_ONLY_RUN_POLICY,
   VOICE_CONVERSATION_RUN_POLICY,
 } from './local-run-policy.js';
 import {
@@ -347,7 +348,8 @@ export function decideEvent(
     ? requestedLocalRunPolicyForEvent(event)
     : undefined;
   const noToolsConversation = isNoToolsLocalRunPolicy(requestedRunPolicy);
-  const voiceConversation = requestedRunPolicy === VOICE_CONVERSATION_RUN_POLICY;
+  const voiceConversation = requestedRunPolicy === VOICE_CONVERSATION_RUN_POLICY
+    || requestedRunPolicy === VOICE_CHAT_ONLY_RUN_POLICY;
   const computerAccess = noToolsConversation
     ? 'none'
     : backgroundTask
@@ -433,7 +435,7 @@ export function decideEvent(
     voiceConversation
       ? [
           '## 实时语音对话',
-          '直接、简短、自然地回答用户当前这句话。不要尝试调用工具、检查文件、运行命令或代替用户做现场操作。',
+          '先区分普通问答与明确执行请求：普通问答直接、简短回答，不要自行扩展成现场检查或性能实验；用户明确要求检查、修改、发送或执行时，使用当前可见工具实际完成。',
           '回答会被原样朗读，避免 Markdown 表格、代码块和冗长的过程说明。',
         ].join('\n')
       : '',

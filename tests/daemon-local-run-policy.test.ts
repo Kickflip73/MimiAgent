@@ -7,6 +7,7 @@ import { submitDaemonEvent } from '../src/daemon/event-submission.js';
 import {
   BENCHMARK_NO_TOOLS_RUN_POLICY,
   parseRequestedLocalRunPolicy,
+  VOICE_CHAT_ONLY_RUN_POLICY,
   VOICE_CONVERSATION_RUN_POLICY,
 } from '../src/daemon/local-run-policy.js';
 import { SessionWorkspaceRegistry } from '../src/daemon/session-workspace-registry.js';
@@ -88,6 +89,10 @@ test('local no-tools policy parser is exact and fail-closed', () => {
   assert.equal(
     parseRequestedLocalRunPolicy(VOICE_CONVERSATION_RUN_POLICY),
     VOICE_CONVERSATION_RUN_POLICY,
+  );
+  assert.equal(
+    parseRequestedLocalRunPolicy(VOICE_CHAT_ONLY_RUN_POLICY),
+    VOICE_CHAT_ONLY_RUN_POLICY,
   );
   assert.equal(parseRequestedLocalRunPolicy(undefined), undefined);
   assert.throws(() => parseRequestedLocalRunPolicy('no-tools'), /不支持/u);
