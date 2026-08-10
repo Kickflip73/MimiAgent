@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- make exact capability inspection return structured direct, deferred,
+  source-mismatch, or unavailable states instead of turning recoverable routing
+  mistakes into failed tool calls, and only instruct the model to use Browser
+  tools when they are visible in the current Run
 - refresh the TUI busy footer on its own timer so the Mimi animation and elapsed
   duration advance without requiring new streamed conversation output
 - add native local speech primitives for voice discovery, ChatTTS/Kokoro

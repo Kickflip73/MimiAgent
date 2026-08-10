@@ -168,7 +168,7 @@ export class HostCapabilityRegistry {
     return [
       tool({
         name: 'inspect_capabilities',
-        description: '查询本轮 Host 已授权的 deferred 能力目录；首轮已可见的 direct tools 不会在此重复。Tool 用精确 name，Connector action 用精确 capability；精确结果会返回调用 schema。',
+        description: '查询本轮能力状态。Tool 用精确 name，Connector action 用 capability；返回 resolution，deferred 结果另含调用 schema。',
         parameters: z.object({
           source: z.enum(['builtin', 'mcp', 'browser', 'computer', 'memory', 'goal', 'skill', 'connector']).optional(),
           name: z.string().trim().min(1).max(200).optional()
@@ -193,8 +193,55 @@ export class HostCapabilityRegistry {
           });
           const cached = this.discoveryCache.get(signature);
           if (cached !== undefined) return cached;
-          if (toolName && !deferredNames.has(toolName)) {
-            throw new Error(`能力未授权、不是 deferred capability 或不存在：${toolName}`);
+          const authorizedEntry = toolName
+            ? this.entries.find((entry) => entry.name === toolName)
+            : undefined;
+          if (toolName && (!authorizedEntry || (source && authorizedEntry.source !== source))) {
+            const result = {
+              authorizedCount: this.entries.length,
+              deferredCount: entries.length,
+              matchedCount: 0,
+              capabilities: [],
+              resolution: authorizedEntry
+                ? {
+                    name: toolName,
+                    status: 'source_mismatch',
+                    requestedSource: source,
+                    actualSource: authorizedEntry.source,
+                    instruction: `改用 source=${authorizedEntry.source} 查询；不要调用当前 source 下不存在的能力。`,
+                  }
+                : {
+                    name: toolName,
+                    status: 'unavailable',
+                    requestedSource: source,
+                    instruction: '该能力未在本轮 Host 授权工具集中注册；不要调用或猜测替代工具。',
+                  },
+              truncated: false,
+            };
+            this.discoveryCache.set(signature, result);
+            return result;
+          }
+          if (toolName && authorizedEntry && !deferredNames.has(toolName)) {
+            const result = {
+              authorizedCount: this.entries.length,
+              deferredCount: entries.length,
+              matchedCount: 1,
+              capabilities: [{
+                name: authorizedEntry.name,
+                source: authorizedEntry.source,
+                effect: authorizedEntry.effect,
+                availability: 'direct',
+                invokeWith: authorizedEntry.name,
+              }],
+              resolution: {
+                name: toolName,
+                status: 'direct',
+                instruction: `该工具已直接可见；立即调用 ${toolName}，不要通过 invoke_capability。`,
+              },
+              truncated: false,
+            };
+            this.discoveryCache.set(signature, result);
+            return result;
           }
           const eligibleEntries = entries.filter((entry) =>
             (!source || entry.source === source)
@@ -253,6 +300,15 @@ export class HostCapabilityRegistry {
                 invokeWith: 'invoke_capability',
               } : {}),
             })),
+            ...(toolName ? {
+              resolution: {
+                name: toolName,
+                status: matches.length > 0 ? 'deferred' : 'unavailable',
+                instruction: matches.length > 0
+                  ? '按返回的 parameters 通过 invoke_capability 调用。'
+                  : '该能力未在指定 source 下匹配；不要调用或猜测替代工具。',
+              },
+            } : {}),
             ...(connectorCatalog === undefined ? {} : { connectorCatalog }),
             ...(query && matches.length === 0 ? {
               suggestions: eligibleEntries
