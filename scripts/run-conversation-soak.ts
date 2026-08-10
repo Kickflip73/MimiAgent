@@ -1,12 +1,17 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import {
+  access,
   chmod,
   lstat,
   mkdir,
+  open,
+  realpath,
   readlink,
   readdir,
   readFile,
+  rm,
   stat,
 } from 'node:fs/promises';
 import { parse as parseDotenv } from 'dotenv';
@@ -24,6 +29,8 @@ import {
   materializeConversationTurn,
   parseConversationManifest,
   redactTerminalSecrets,
+  redactPrivateEvidenceNeedlesEqualLength,
+  runFailStopConcurrency,
   sha256,
   stripTerminalControl,
   terminalBytesContainAssistant,
@@ -46,6 +53,29 @@ import {
 } from './conversation-durable-io.js';
 import { projectConversationProviderConfigJson } from './conversation-provider-config.js';
 import {
+  finalizeConversationEvidence,
+  initializeConversationEvidenceRoot,
+  type ConversationEvidenceRoot,
+} from './conversation-evidence-finalization.js';
+import {
+  auditPtyCanonicalChain,
+  scanRetainedEvidenceTree,
+  type PrivateEvidenceNeedle,
+  type RetainedEvidenceScan,
+} from './conversation-evidence-integrity.js';
+import {
+  bindControlledRawRuntimeDaemon,
+  finalizeControlledRawRuntime,
+  recoverControlledRawRuntimes,
+  setupControlledRawRuntime,
+  terminateProcessWithDeadlines,
+  type ControlledRawRuntime,
+  type RawRuntimeFinalization,
+  type RawRuntimeRetentionReason,
+  type RuntimeRecoveryReport,
+} from './conversation-runtime-lifecycle.js';
+import { verifyConversationPtyPrerequisite } from './conversation-pty-prerequisite.js';
+import {
   assertRuntimeDependencySnapshot,
   snapshotRuntimeDependencyTree,
   type RuntimeDependencySnapshot,
@@ -58,9 +88,21 @@ const ptyHelper = path.join(repositoryRoot, 'scripts', 'run-conversation-pty.py'
 const contractFile = path.join(repositoryRoot, 'scripts', 'conversation-soak-contract.ts');
 const durableIoFile = path.join(repositoryRoot, 'scripts', 'conversation-durable-io.ts');
 const providerConfigFile = path.join(repositoryRoot, 'scripts', 'conversation-provider-config.ts');
+const evidenceFinalizationFile = path.join(repositoryRoot, 'scripts', 'conversation-evidence-finalization.ts');
+const evidenceIntegrityFile = path.join(repositoryRoot, 'scripts', 'conversation-evidence-integrity.ts');
+const evidenceSealFile = path.join(repositoryRoot, 'scripts', 'conversation-evidence-seal.ts');
+const ptyPrerequisiteFile = path.join(repositoryRoot, 'scripts', 'conversation-pty-prerequisite.ts');
+const runtimeLifecycleFile = path.join(repositoryRoot, 'scripts', 'conversation-runtime-lifecycle.ts');
 const runtimeIntegrityFile = path.join(repositoryRoot, 'scripts', 'conversation-runtime-integrity.ts');
 const runnerFile = path.join(repositoryRoot, 'scripts', 'run-conversation-soak.ts');
 const defaultManifest = path.join(repositoryRoot, 'evals', 'conversation', 'manifest.v1.json');
+const rawRuntimeStorageRoot = path.join(
+  os.tmpdir(),
+  `mimi-conversation-raw-runtimes-v1-${process.getuid?.() ?? 'portable'}`,
+);
+const rawRuntimeStagingGraceMs = 60 * 60_000;
+const rawRuntimeQuarantineGraceMs = 7 * 24 * 60 * 60_000;
+const exactEmptyConnectorConfig = '{"connectors":{}}\n';
 const terminalTaskStates = new Set(['completed', 'failed', 'cancelled', 'dead_letter', 'paused', 'blocked']);
 
 type RunMode = 'validate' | 'calibrate' | 'pty-smoke' | 'soak';
@@ -71,7 +113,6 @@ interface RunnerOptions {
   output?: string;
   resume: boolean;
   skipBuild: boolean;
-  retainRuntime: boolean;
   sceneIds: string[];
   lane?: ConversationLane;
   calibrationTurns: number;
@@ -90,20 +131,29 @@ interface RunnerOptions {
   outputUsdPerMillion?: number;
 }
 
-interface IsolatedRuntime {
-  root: string;
+interface IsolatedRuntimeSetup {
   workspace: string;
   dataRoot: string;
   daemonRoot: string;
   environmentFile: string;
   credential: EphemeralCredentialFile;
+  connectorsFile: string;
+  connectorConfigDigest: string;
   env: NodeJS.ProcessEnv;
   secretNames: string[];
   secrets: string[];
   daemon: ChildProcess;
-  exited: Promise<void>;
+  spawnFailure: { value?: Error };
   logs: Buffer[];
+}
+
+interface IsolatedRuntime extends IsolatedRuntimeSetup {
+  controlledRuntime: ControlledRawRuntime;
+  root: string;
+  pythonInterpreter: PythonInterpreterIdentity;
   forcedShardKill: boolean;
+  rawRuntimeReservationBytes: number;
+  rawRuntimeReservationSettled: boolean;
 }
 
 interface RunSummary {
@@ -121,6 +171,20 @@ interface ProcessCapture {
   overflow: boolean;
 }
 
+interface RuntimeStopResult {
+  rawRuntimeDeleted: boolean;
+  retainedExternally: boolean;
+  quarantinedExternally: boolean;
+  finalizationProven: boolean;
+  forcedShardKill: boolean;
+  retentionId?: string;
+  quarantineDigest?: string;
+  quarantineBytes?: number;
+  quarantineFiles?: number;
+  retentionReason?: RawRuntimeRetentionReason;
+  failure?: Error;
+}
+
 interface AggregateUsage {
   inputTokens: number;
   outputTokens: number;
@@ -134,6 +198,7 @@ interface RunContext {
   manifest: ConversationManifest;
   manifestDigest: string;
   outputRoot: string;
+  evidenceRoot: ConversationEvidenceRoot;
   journalFile: string;
   checkpointFile: string;
   journalWriter: DurableJournalWriter;
@@ -142,9 +207,18 @@ interface RunContext {
   checkpointWriteTail: Promise<void>;
   buildDigest: string;
   runtimeDependencies?: RuntimeDependencySnapshot;
+  pythonInterpreter: PythonInterpreterIdentity;
+  rawRuntimeStorageRoot: string;
+  runtimeRecovery?: RuntimeRecoveryReport;
+  rawRuntimeQuotaBytes: number;
+  rawRuntimeReservationBytes: number;
+  rawRuntimeKnownBytes: number;
+  rawRuntimeReservedBytes: number;
   sourceSnapshot: SourceSnapshot;
   startedAt: number;
   aggregate: AggregateUsage;
+  privateEvidenceNeedles: PrivateEvidenceNeedle[];
+  pendingPtyProof?: Record<string, unknown>;
   globalStopReason?: string;
 }
 
@@ -164,6 +238,19 @@ interface EvidenceArtifact {
 interface RuntimeClosureIdentity {
   digest: string;
   dependencies: RuntimeDependencySnapshot;
+  pythonInterpreter: PythonInterpreterIdentity;
+}
+
+interface PythonInterpreterIdentity {
+  schemaVersion: 1;
+  path: string;
+  sha256: string;
+  bytes: number;
+  dev: string;
+  ino: string;
+  mtimeNs: string;
+  mode: string;
+  uid: string;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -198,6 +285,9 @@ function optionalPositiveEnvironment(name: string): number | undefined {
 }
 
 function parseOptions(): RunnerOptions {
+  if (process.argv.includes('--retain-runtime')) {
+    throw new Error('--retain-runtime is forbidden; only failed or forced shards may remain in private quarantine');
+  }
   const mode = (argument('--mode') ?? 'validate') as RunMode;
   if (!['validate', 'calibrate', 'pty-smoke', 'soak'].includes(mode)) {
     throw new Error('--mode must be validate, calibrate, pty-smoke, or soak');
@@ -211,7 +301,6 @@ function parseOptions(): RunnerOptions {
     output: argument('--output') ? path.resolve(argument('--output')!) : undefined,
     resume: process.argv.includes('--resume'),
     skipBuild: process.argv.includes('--skip-build'),
-    retainRuntime: process.argv.includes('--retain-runtime'),
     sceneIds,
     lane,
     calibrationTurns: integerArgument('--turns', 5, 1, 30),
@@ -272,6 +361,22 @@ async function writeEvidenceJson(
     path: path.relative(outputRoot, file),
     sha256: sha256(contents),
     bytes: Buffer.byteLength(contents),
+  };
+}
+
+async function writeEvidenceBytes(
+  outputRoot: string,
+  file: string,
+  value: string | Buffer,
+  kind: string,
+): Promise<EvidenceArtifact> {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value, 'utf8');
+  await writeExclusive(file, bytes);
+  return {
+    kind,
+    path: path.relative(outputRoot, file),
+    sha256: sha256(bytes),
+    bytes: bytes.byteLength,
   };
 }
 
@@ -413,16 +518,131 @@ async function digestTree(root: string): Promise<string> {
   return digest.digest('hex');
 }
 
+function pythonInterpreterReceipt(identity: PythonInterpreterIdentity): Omit<PythonInterpreterIdentity, 'path'> & {
+  pathSha256: string;
+} {
+  const { path: interpreterPath, ...stable } = identity;
+  return { ...stable, pathSha256: sha256(interpreterPath) };
+}
+
+function samePythonInterpreter(
+  left: PythonInterpreterIdentity,
+  right: PythonInterpreterIdentity,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+async function inspectPythonInterpreter(interpreterPath: string): Promise<PythonInterpreterIdentity> {
+  if (!path.isAbsolute(interpreterPath) || path.normalize(interpreterPath) !== interpreterPath) {
+    throw new Error('Python interpreter path must be absolute and normalized');
+  }
+  const canonical = await realpath(interpreterPath);
+  if (canonical !== interpreterPath) throw new Error('Python interpreter path is not its physical realpath');
+  const pathBefore = await lstat(canonical, { bigint: true });
+  const currentUid = process.getuid?.();
+  if (currentUid === undefined) throw new Error('Python interpreter owner cannot be verified on this host');
+  if (!pathBefore.isFile() || pathBefore.isSymbolicLink()) {
+    throw new Error('Python interpreter is not a regular file');
+  }
+  if (pathBefore.uid !== BigInt(currentUid)) throw new Error('Python interpreter is not owned by the current uid');
+  if ((pathBefore.mode & 0o111n) === 0n) throw new Error('Python interpreter is not executable');
+  if (pathBefore.nlink !== 1n) throw new Error('Python interpreter must have exactly one hard link');
+  if (pathBefore.size < 1n || pathBefore.size > 128n * 1024n * 1024n) {
+    throw new Error('Python interpreter exceeds its bounded byte size');
+  }
+
+  const handle = await open(canonical, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const openedBefore = await handle.stat({ bigint: true });
+    const stable = (left: typeof openedBefore, right: typeof openedBefore): boolean => (
+      left.dev === right.dev
+      && left.ino === right.ino
+      && left.size === right.size
+      && left.mtimeNs === right.mtimeNs
+      && left.mode === right.mode
+      && left.uid === right.uid
+      && left.nlink === right.nlink
+    );
+    if (!openedBefore.isFile() || !stable(pathBefore, openedBefore)) {
+      throw new Error('Python interpreter changed before identity capture');
+    }
+    const digest = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(64 * 1024);
+    let bytes = 0;
+    while (true) {
+      const result = await handle.read(buffer, 0, buffer.length, null);
+      if (result.bytesRead === 0) break;
+      digest.update(buffer.subarray(0, result.bytesRead));
+      bytes += result.bytesRead;
+    }
+    const openedAfter = await handle.stat({ bigint: true });
+    const pathAfter = await lstat(canonical, { bigint: true });
+    if (BigInt(bytes) !== openedBefore.size
+      || !stable(openedBefore, openedAfter)
+      || !stable(openedBefore, pathAfter)) {
+      throw new Error('Python interpreter changed during identity capture');
+    }
+    return {
+      schemaVersion: 1,
+      path: canonical,
+      sha256: digest.digest('hex'),
+      bytes,
+      dev: String(openedBefore.dev),
+      ino: String(openedBefore.ino),
+      mtimeNs: String(openedBefore.mtimeNs),
+      mode: String(openedBefore.mode),
+      uid: String(openedBefore.uid),
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function resolvePythonInterpreter(): Promise<PythonInterpreterIdentity> {
+  const configured = process.env.MIMI_CONVERSATION_PYTHON?.trim();
+  let candidates: string[];
+  if (configured) {
+    if (!path.isAbsolute(configured) || path.normalize(configured) !== configured) {
+      throw new Error('MIMI_CONVERSATION_PYTHON must be an absolute normalized path');
+    }
+    candidates = [configured];
+  } else {
+    candidates = (process.env.PATH ?? '').split(path.delimiter)
+      .filter((directory) => path.isAbsolute(directory) && path.normalize(directory) === directory)
+      .map((directory) => path.join(directory, 'python3'));
+  }
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, fsConstants.X_OK);
+      return inspectPythonInterpreter(await realpath(candidate));
+    } catch {
+      // Search only happens during initialization. Dispatch uses the frozen path.
+    }
+  }
+  throw new Error('a private, regular Python 3 interpreter could not be resolved during initialization');
+}
+
+async function assertPythonInterpreterIdentity(expected: PythonInterpreterIdentity): Promise<void> {
+  const actual = await inspectPythonInterpreter(expected.path);
+  if (!samePythonInterpreter(expected, actual)) throw new Error('Python interpreter identity changed');
+}
+
 async function runtimeClosureDigest(
   distDigest: string,
   manifestFile: string,
   dependencies: RuntimeDependencySnapshot,
+  pythonInterpreter: PythonInterpreterIdentity,
 ): Promise<string> {
   const files = [
     runnerFile,
     contractFile,
     durableIoFile,
     providerConfigFile,
+    evidenceFinalizationFile,
+    evidenceIntegrityFile,
+    evidenceSealFile,
+    ptyPrerequisiteFile,
+    runtimeLifecycleFile,
     runtimeIntegrityFile,
     ptyHelper,
     manifestFile,
@@ -444,25 +664,33 @@ async function runtimeClosureDigest(
     distDigest,
     dependencies,
     runtimeExecutable,
+    pythonInterpreter: pythonInterpreterReceipt(pythonInterpreter),
     closure,
   }));
 }
 
-async function captureRuntimeClosure(manifestFile: string): Promise<RuntimeClosureIdentity> {
-  const [distDigest, dependencies] = await Promise.all([
+async function captureRuntimeClosure(
+  manifestFile: string,
+  expectedPythonInterpreter?: PythonInterpreterIdentity,
+): Promise<RuntimeClosureIdentity> {
+  const [distDigest, dependencies, pythonInterpreter] = await Promise.all([
     digestTree(path.join(repositoryRoot, 'dist')),
     snapshotRuntimeDependencyTree(path.join(repositoryRoot, 'node_modules')),
+    expectedPythonInterpreter
+      ? assertPythonInterpreterIdentity(expectedPythonInterpreter).then(() => expectedPythonInterpreter)
+      : resolvePythonInterpreter(),
   ]);
   return {
-    digest: await runtimeClosureDigest(distDigest, manifestFile, dependencies),
+    digest: await runtimeClosureDigest(distDigest, manifestFile, dependencies, pythonInterpreter),
     dependencies,
+    pythonInterpreter,
   };
 }
 
 async function assertRuntimeClosure(context: RunContext): Promise<void> {
   const expected = context.runtimeDependencies;
   if (!expected) throw new Error('runtime dependency snapshot is unavailable');
-  const current = await captureRuntimeClosure(context.options.manifestFile);
+  const current = await captureRuntimeClosure(context.options.manifestFile, context.pythonInterpreter);
   assertRuntimeDependencySnapshot(expected, current.dependencies);
   if (current.digest !== context.buildDigest) throw new Error('runtime closure digest changed');
 }
@@ -504,7 +732,7 @@ async function cleanBuild(outputRoot: string, manifestFile: string): Promise<Run
   return captureRuntimeClosure(manifestFile);
 }
 
-async function isolatedProviderEnvironment(configRoot: string, reuse: boolean): Promise<{
+async function isolatedProviderEnvironment(configRoot: string): Promise<{
   values: NodeJS.ProcessEnv;
   secretNames: string[];
   secrets: string[];
@@ -524,14 +752,7 @@ async function isolatedProviderEnvironment(configRoot: string, reuse: boolean): 
   const projection = projectConversationProviderConfigJson(await readFile(source, 'utf8'));
   const { providerId, modelId, apiKeyEnv: secretName } = projection;
   const projectedContents = projection.contents;
-  if (reuse) {
-    if (!await exists(modelsFile)) throw new Error('resume runtime bundle is missing models.json');
-    if (sha256(projectedContents) !== sha256(await readFile(modelsFile))) {
-      throw new Error('resume Provider model config digest changed');
-    }
-  } else {
-    await writeExclusive(modelsFile, projectedContents);
-  }
+  await writeExclusive(modelsFile, projectedContents);
   await chmod(modelsFile, 0o600);
 
   const credentialSource = path.resolve(
@@ -578,142 +799,238 @@ async function startIsolatedRuntime(context: RunContext, scenario: ConversationS
     context.globalStopReason = `P0 source changed before Daemon startup: ${changedBeforeDaemon.slice(0, 20).join(', ')}`;
     throw new Error(context.globalStopReason);
   }
-  const bundlesRoot = path.join(context.outputRoot, 'runtime-bundles');
-  await mkdir(bundlesRoot, { recursive: true, mode: 0o700 });
-  await chmod(bundlesRoot, 0o700);
-  const root = path.join(bundlesRoot, scenario.scenarioId);
-  const markerFile = path.join(root, 'bundle.json');
-  const reuse = await exists(markerFile);
-  if (!reuse) {
-    if (await exists(root)) throw new Error(`incomplete runtime bundle exists without marker: ${root}`);
-    await mkdir(root, { recursive: false, mode: 0o700 });
-  } else if (!context.options.resume) {
-    throw new Error(`runtime bundle already exists without --resume: ${root}`);
+  if (context.rawRuntimeKnownBytes + context.rawRuntimeReservedBytes
+    + context.rawRuntimeReservationBytes > context.rawRuntimeQuotaBytes) {
+    throw new Error('raw runtime quota is exhausted before Daemon startup');
   }
-  await chmod(root, 0o700);
-  const workspace = path.join(root, 'workspace');
-  const dataRoot = path.join(root, 'data');
-  const daemonRoot = path.join(root, 'daemon');
-  const home = path.join(root, 'home');
-  const temporary = path.join(root, 'tmp');
-  const configRoot = path.join(root, 'config');
-  for (const directory of [workspace, dataRoot, daemonRoot, home, temporary, configRoot]) {
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    await chmod(directory, 0o700);
-  }
-  const connectorsFile = path.join(configRoot, 'connectors.json');
-  const assistantFile = path.join(configRoot, 'assistant.json');
-  const mcpFile = path.join(configRoot, 'mcp.json');
-  if (!reuse) {
-    await Promise.all([
-      writeExclusiveJson(connectorsFile, { backgroundDefaultsVersion: 0, connectors: {} }),
-      writeExclusiveJson(mcpFile, { mcpServers: {} }),
-    ]);
-  } else {
-    for (const required of [connectorsFile, mcpFile]) {
-      if (!await exists(required)) throw new Error(`resume runtime bundle is missing ${path.basename(required)}`);
-      await chmod(required, 0o600);
-    }
-  }
-  const provider = await isolatedProviderEnvironment(configRoot, reuse);
-  const security = securityFor(scenario.lane);
-  const marker = {
-    schemaVersion: 1,
-    scenarioId: scenario.scenarioId,
-    manifestDigest: context.manifestDigest,
-    buildDigest: context.buildDigest,
-    runtimeContract: scenario.runtimeContract,
-    providerConfigDigest: provider.configDigest,
-    providerSecretNames: [...provider.secretNames].sort(),
-  };
-  if (reuse) {
-    const existing = record(await readJson(markerFile));
-    if (JSON.stringify(existing) !== JSON.stringify(marker)) {
-      throw new Error(`resume runtime bundle identity changed for ${scenario.scenarioId}`);
-    }
-  } else {
-    await writeExclusiveJson(markerFile, marker);
-  }
-  const credential = await createEphemeralCredentialFile(provider.environmentContents, {
-    excludedRoot: context.outputRoot,
-  });
-  const environmentFile = credential.file;
-  const baseNames = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'TERM'];
-  const env: NodeJS.ProcessEnv = {
-    ...Object.fromEntries(baseNames.flatMap((name) => process.env[name] ? [[name, process.env[name]!]] : [])),
-    ...provider.values,
-    HOME: home,
-    TMPDIR: temporary,
-    MIMI_CONFIG_VERSION: '4',
-    MIMI_WORKSPACE: workspace,
-    MIMI_DATA_DIR: dataRoot,
-    MIMI_DAEMON_DATA_DIR: daemonRoot,
-    MIMI_DAEMON_SUPERVISOR: 'foreground',
-    MIMI_ENV_FILE: environmentFile,
-    MIMI_MODELS_CONFIG: provider.modelsFile,
-    MIMI_CONNECTORS_CONFIG: connectorsFile,
-    MIMI_ASSISTANT_CONFIG: assistantFile,
-    MIMI_MCP_CONFIG: mcpFile,
-    MIMI_SKILLS_DIR: path.join(workspace, 'skills'),
-    MIMI_COMPUTER_BACKEND: 'off',
-    MIMI_SECURITY_PROFILE: security.profile,
-    MIMI_PERMISSION_MODE: security.permission,
-    MIMI_SESSION_MAX_CONCURRENCY: '1',
-    MIMI_MEMORY_RETRIEVAL_MODE: 'lexical',
-    MIMI_CONVERSATION_RUN_POLICY: 'benchmark-no-tools-v1',
-    MIMI_CONVERSATION_SECRET_NAMES: provider.secretNames.join(','),
-  };
-  const logs: Buffer[] = [];
-  let daemon: ChildProcess;
+  context.rawRuntimeReservedBytes += context.rawRuntimeReservationBytes;
+  let setup: { runtime: ControlledRawRuntime; value: IsolatedRuntimeSetup };
   try {
-    daemon = spawn(process.execPath, [mimiEntry, 'daemon', 'run'], {
-      cwd: workspace,
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
+    setup = await setupControlledRawRuntime({ storageRoot: context.rawRuntimeStorageRoot }, async (controlled) => {
+      const root = controlled.root;
+      const runtimeRelativeToEvidence = path.relative(context.outputRoot, root);
+      if (runtimeRelativeToEvidence === '' || (!runtimeRelativeToEvidence.startsWith(`..${path.sep}`)
+        && runtimeRelativeToEvidence !== '..' && !path.isAbsolute(runtimeRelativeToEvidence))) {
+        throw new Error('isolated runtime root must stay outside retained evidence');
+      }
+      const markerFile = path.join(root, 'bundle.json');
+      const workspace = path.join(root, 'workspace');
+      const dataRoot = path.join(root, 'data');
+      const daemonRoot = path.join(root, 'daemon');
+      const home = path.join(root, 'home');
+      const temporary = path.join(root, 'tmp');
+      const configRoot = path.join(root, 'config');
+      for (const directory of [workspace, dataRoot, daemonRoot, home, temporary, configRoot]) {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await chmod(directory, 0o700);
+      }
+      const connectorsFile = path.join(configRoot, 'connectors.json');
+      const assistantFile = path.join(configRoot, 'assistant.json');
+      const mcpFile = path.join(configRoot, 'mcp.json');
+      const connectorConfigDigest = sha256(exactEmptyConnectorConfig);
+      await Promise.all([
+        writeExclusive(connectorsFile, exactEmptyConnectorConfig),
+        writeExclusiveJson(mcpFile, { mcpServers: {} }),
+      ]);
+      const provider = await isolatedProviderEnvironment(configRoot);
+      const security = securityFor(scenario.lane);
+      await writeExclusiveJson(markerFile, {
+        schemaVersion: 1,
+        scenarioId: scenario.scenarioId,
+        manifestDigest: context.manifestDigest,
+        buildDigest: context.buildDigest,
+        runtimeContract: scenario.runtimeContract,
+        connectorConfigMode: 'exact',
+        providerConfigDigest: provider.configDigest,
+        providerSecretNames: [...provider.secretNames].sort(),
+      });
+      let credential: EphemeralCredentialFile | undefined;
+      let daemon: ChildProcess | undefined;
+      try {
+        credential = await createEphemeralCredentialFile(provider.environmentContents, {
+          excludedRoot: context.outputRoot,
+        });
+        const baseNames = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'TERM'];
+        const env: NodeJS.ProcessEnv = {
+          ...Object.fromEntries(baseNames.flatMap((name) => process.env[name] ? [[name, process.env[name]!]] : [])),
+          ...provider.values,
+          HOME: home,
+          TMPDIR: temporary,
+          MIMI_CONFIG_VERSION: '4',
+          MIMI_WORKSPACE: workspace,
+          MIMI_DATA_DIR: dataRoot,
+          MIMI_DAEMON_DATA_DIR: daemonRoot,
+          MIMI_DAEMON_SUPERVISOR: 'foreground',
+          MIMI_ENV_FILE: credential.file,
+          MIMI_MODELS_CONFIG: provider.modelsFile,
+          MIMI_CONNECTORS_CONFIG: connectorsFile,
+          MIMI_CONNECTORS_CONFIG_MODE: 'exact',
+          MIMI_ASSISTANT_CONFIG: assistantFile,
+          MIMI_MCP_CONFIG: mcpFile,
+          MIMI_SKILLS_DIR: path.join(workspace, 'skills'),
+          MIMI_COMPUTER_BACKEND: 'off',
+          MIMI_SECURITY_PROFILE: security.profile,
+          MIMI_PERMISSION_MODE: security.permission,
+          MIMI_SESSION_MAX_CONCURRENCY: '1',
+          MIMI_MEMORY_RETRIEVAL_MODE: 'lexical',
+          MIMI_CONVERSATION_RUN_POLICY: 'benchmark-no-tools-v1',
+          MIMI_CONVERSATION_SECRET_NAMES: provider.secretNames.join(','),
+        };
+        const logs: Buffer[] = [];
+        const spawnFailure: { value?: Error } = {};
+        daemon = spawn(process.execPath, [mimiEntry, 'daemon', 'run'], {
+          cwd: workspace,
+          env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: true,
+        });
+        daemon.once('error', (error) => { spawnFailure.value = error; });
+        const daemonPid = daemon.pid ?? await new Promise<number>((resolve, reject) => {
+          const spawned = () => {
+            cleanup();
+            if (daemon?.pid === undefined) reject(new Error('isolated Daemon spawn has no pid'));
+            else resolve(daemon.pid);
+          };
+          const failed = (error: Error) => {
+            cleanup();
+            reject(error);
+          };
+          const cleanup = () => {
+            daemon?.off('spawn', spawned);
+            daemon?.off('error', failed);
+          };
+          daemon?.once('spawn', spawned);
+          daemon?.once('error', failed);
+        });
+        await bindControlledRawRuntimeDaemon(controlled, daemonPid);
+        const append = (chunk: Buffer) => {
+          logs.push(Buffer.from(chunk));
+          while (Buffer.concat(logs).byteLength > 4 * 1024 * 1024) logs.shift();
+        };
+        daemon.stdout?.on('data', append);
+        daemon.stderr?.on('data', append);
+        return {
+          workspace,
+          dataRoot,
+          daemonRoot,
+          environmentFile: credential.file,
+          credential,
+          connectorsFile,
+          connectorConfigDigest,
+          env,
+          secretNames: provider.secretNames,
+          secrets: provider.secrets,
+          daemon,
+          spawnFailure,
+          logs,
+        };
+      } catch (setupError) {
+        const cleanupErrors: unknown[] = [];
+        if (daemon) {
+          try {
+            const termination = await terminateProcessWithDeadlines(daemon, {
+              gracefulWaitMs: 2_000,
+              killWaitMs: 2_000,
+            });
+            if (!termination.exited) {
+              cleanupErrors.push(new Error('isolated Daemon setup cleanup did not reach process exit'));
+            }
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+          }
+        }
+        if (credential) {
+          try {
+            await cleanupEphemeralCredentialFile(credential);
+          } catch (cleanupError) {
+            cleanupErrors.push(cleanupError);
+          }
+        }
+        if (cleanupErrors.length > 0) {
+          throw new AggregateError(
+            [setupError, ...cleanupErrors],
+            'isolated runtime setup and cleanup both failed',
+          );
+        }
+        throw setupError;
+      }
     });
   } catch (error) {
-    await cleanupEphemeralCredentialFile(credential);
+    context.rawRuntimeReservedBytes -= context.rawRuntimeReservationBytes;
     throw error;
   }
-  const append = (chunk: Buffer) => {
-    logs.push(Buffer.from(chunk));
-    while (Buffer.concat(logs).byteLength > 4 * 1024 * 1024) logs.shift();
-  };
-  daemon.stdout?.on('data', append);
-  daemon.stderr?.on('data', append);
-  const exited = new Promise<void>((resolve) => daemon.once('exit', () => resolve()));
   const runtime: IsolatedRuntime = {
-    root,
-    workspace,
-    dataRoot,
-    daemonRoot,
-    environmentFile,
-    credential,
-    env,
-    secretNames: provider.secretNames,
-    secrets: provider.secrets,
-    daemon,
-    exited,
-    logs,
+    controlledRuntime: setup.runtime,
+    root: setup.runtime.root,
+    ...setup.value,
+    pythonInterpreter: context.pythonInterpreter,
     forcedShardKill: false,
+    rawRuntimeReservationBytes: context.rawRuntimeReservationBytes,
+    rawRuntimeReservationSettled: false,
   };
+  context.privateEvidenceNeedles.push(
+    ...runtime.secrets.map((value) => ({ kind: 'provider-secret' as const, value })),
+    { kind: 'private-home', value: os.homedir() },
+    { kind: 'credential-root', value: runtime.credential.root },
+    { kind: 'credential-file', value: runtime.credential.file },
+    { kind: 'runtime-root', value: runtime.controlledRuntime.storageRoot },
+    { kind: 'runtime-root', value: runtime.root },
+  );
   try {
     for (let attempt = 0; attempt < 150; attempt += 1) {
-      if (daemon.exitCode !== null) break;
+      if (runtime.spawnFailure.value) throw runtime.spawnFailure.value;
+      if (runtime.daemon.exitCode !== null) break;
       try {
         const status = record(await mimiJson(runtime, ['daemon', 'status', '--json'], 1_000));
-        if (typeof status?.pid === 'number') return runtime;
+        if (typeof status?.pid === 'number') {
+          await assertBenchmarkConnectorIsolation(runtime, status);
+          return runtime;
+        }
       } catch {
         // The socket is not ready yet.
       }
       await delay(100);
     }
-    const sanitized = redactTerminalSecrets(Buffer.concat(logs).toString('utf8'), runtime.secrets).text;
+    const sanitized = redactTerminalSecrets(Buffer.concat(runtime.logs).toString('utf8'), runtime.secrets).text;
     throw new Error(`isolated foreground Daemon did not become ready: ${sanitized.slice(-4_000)}`);
   } catch (error) {
-    await stopIsolatedRuntime(runtime, true);
+    const stopped = await stopIsolatedRuntime(context, runtime, 'startup-failure');
+    await appendJournal(context, {
+      kind: 'runtime_cleanup',
+      occurredAt: new Date().toISOString(),
+      scenarioId: scenario.scenarioId,
+      rawRuntimeDeleted: stopped.rawRuntimeDeleted,
+      rawRuntimeRetainedExternally: stopped.retainedExternally,
+      rawRuntimeQuarantinedExternally: stopped.quarantinedExternally,
+      rawRuntimeFinalizationProven: stopped.finalizationProven,
+      retentionId: stopped.retentionId,
+      quarantineDigest: stopped.quarantineDigest,
+      quarantineBytes: stopped.quarantineBytes,
+      quarantineFiles: stopped.quarantineFiles,
+      retentionReason: stopped.retentionReason,
+      forcedShardKill: stopped.forcedShardKill,
+      proofEligible: false,
+      denominatorEligible: false,
+    });
+    if (stopped.failure) {
+      throw new AggregateError([error, stopped.failure], 'Daemon startup and raw runtime cleanup failed');
+    }
     throw error;
+  }
+}
+
+async function assertBenchmarkConnectorIsolation(
+  runtime: IsolatedRuntime,
+  statusValue?: unknown,
+): Promise<void> {
+  const contents = await readFile(runtime.connectorsFile);
+  if (sha256(contents) !== runtime.connectorConfigDigest
+    || !contents.equals(Buffer.from(exactEmptyConnectorConfig))) {
+    throw new Error('benchmark exact-empty connector config changed');
+  }
+  const status = record(statusValue ?? await mimiJson(runtime, ['daemon', 'status', '--json'], 2_000));
+  if (status?.connectorCount !== 0) {
+    throw new Error('benchmark isolated Daemon advertised one or more Connectors');
   }
 }
 
@@ -726,23 +1043,122 @@ function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   }
 }
 
-async function stopIsolatedRuntime(runtime: IsolatedRuntime, retain: boolean): Promise<void> {
+async function removeStoppedDaemonSocket(runtime: IsolatedRuntime): Promise<void> {
+  const socket = path.join(runtime.daemonRoot, 'mimi.sock');
   try {
-    try {
-      await mimiText(runtime, ['daemon', 'stop'], 15_000);
-    } catch {
-      signalGroup(runtime.daemon, 'SIGTERM');
-    }
-    await Promise.race([runtime.exited, delay(15_000)]);
-    if (runtime.daemon.exitCode === null && runtime.daemon.signalCode === null) {
-      runtime.forcedShardKill = true;
-      signalGroup(runtime.daemon, 'SIGKILL');
-      await runtime.exited;
-    }
-  } finally {
-    await cleanupEphemeralCredentialFile(runtime.credential);
+    const metadata = await lstat(socket);
+    if (metadata.isSocket()) await rm(socket);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  if (!retain) throw new Error('runtime bundle deletion is disabled until durable evidence archival is proven');
+}
+
+function settleRawRuntimeReservation(
+  context: RunContext,
+  runtime: IsolatedRuntime,
+  finalized: RawRuntimeFinalization | undefined,
+): void {
+  if (runtime.rawRuntimeReservationSettled) return;
+  runtime.rawRuntimeReservationSettled = true;
+  context.rawRuntimeReservedBytes = Math.max(
+    0,
+    context.rawRuntimeReservedBytes - runtime.rawRuntimeReservationBytes,
+  );
+  if (!finalized) {
+    context.rawRuntimeKnownBytes = context.rawRuntimeQuotaBytes;
+    return;
+  }
+  if (finalized?.state === 'deleted') return;
+  const retainedBytes = finalized?.state === 'quarantined'
+    ? finalized.bytes + 64 * 1024
+    : runtime.rawRuntimeReservationBytes;
+  context.rawRuntimeKnownBytes += Math.max(runtime.rawRuntimeReservationBytes, retainedBytes);
+}
+
+function aggregateRuntimeStopFailure(errors: unknown[]): Error | undefined {
+  if (errors.length === 0) return undefined;
+  if (errors.length === 1 && errors[0] instanceof Error) return errors[0];
+  return new AggregateError(errors, 'isolated runtime stop or finalization failed');
+}
+
+async function stopIsolatedRuntime(
+  context: RunContext,
+  runtime: IsolatedRuntime,
+  retentionReason?: 'startup-failure' | 'functional-failure',
+): Promise<RuntimeStopResult> {
+  const errors: unknown[] = [];
+  let processExited = runtime.daemon.exitCode !== null
+    || runtime.daemon.signalCode !== null
+    || (runtime.spawnFailure.value !== undefined && runtime.daemon.pid === undefined);
+  try {
+    await mimiText(runtime, ['daemon', 'stop'], 15_000).catch(() => undefined);
+    const termination = await terminateProcessWithDeadlines(runtime.daemon, {
+      gracefulWaitMs: 15_000,
+      killWaitMs: 5_000,
+    });
+    runtime.forcedShardKill ||= termination.forced;
+    processExited = termination.exited;
+    if (termination.killTimedOut) {
+      errors.push(new Error('isolated Daemon did not exit before the post-SIGKILL hard deadline'));
+    }
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    await cleanupEphemeralCredentialFile(runtime.credential);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    const connectorBytes = await readFile(runtime.connectorsFile);
+    if (sha256(connectorBytes) !== runtime.connectorConfigDigest
+      || !connectorBytes.equals(Buffer.from(exactEmptyConnectorConfig))) {
+      throw new Error('benchmark connector config changed while the isolated Daemon was running');
+    }
+  } catch (error) {
+    errors.push(error);
+  }
+  if (processExited) {
+    try {
+      await removeStoppedDaemonSocket(runtime);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  let reason: RawRuntimeRetentionReason | undefined = runtime.forcedShardKill
+    ? 'forced-shard-kill'
+    : retentionReason ?? (errors.length > 0 ? 'functional-failure' : undefined);
+  let finalized: RawRuntimeFinalization | undefined;
+  if (processExited) {
+    try {
+      finalized = await finalizeControlledRawRuntime(
+        runtime.controlledRuntime,
+        reason ? { reason } : undefined,
+      );
+    } catch (error) {
+      errors.push(error);
+      reason ??= 'functional-failure';
+    }
+  }
+  settleRawRuntimeReservation(context, runtime, finalized);
+  const quarantined = finalized?.state === 'quarantined' ? finalized : undefined;
+  return {
+    rawRuntimeDeleted: finalized?.state === 'deleted',
+    retainedExternally: finalized?.state !== 'deleted',
+    quarantinedExternally: quarantined !== undefined,
+    finalizationProven: finalized !== undefined,
+    forcedShardKill: runtime.forcedShardKill,
+    ...(finalized?.state !== 'deleted' ? { retentionId: runtime.controlledRuntime.identity } : {}),
+    ...(quarantined ? {
+      quarantineDigest: quarantined.treeDigest,
+      quarantineBytes: quarantined.bytes,
+      quarantineFiles: quarantined.fileCount,
+      retentionReason: quarantined.reason,
+    } : reason ? {
+      retentionReason: reason,
+    } : {}),
+    failure: aggregateRuntimeStopFailure(errors),
+  };
 }
 
 async function mimiText(runtime: IsolatedRuntime, args: string[], timeoutMs = 30_000): Promise<string> {
@@ -865,6 +1281,7 @@ async function cancelTimedOutTask(
   previousIds: Set<string>,
   cancelGraceMs: number,
 ): Promise<void> {
+  await assertPythonInterpreterIdentity(runtime.pythonInterpreter);
   const current = await findNewRun(runtime, sessionId, previousIds);
   if (!current?.taskId) throw new Error('timed-out CLI did not expose a Task id for cancellation');
   const controlRoot = path.join(runtime.root, 'control', randomUUID());
@@ -881,8 +1298,9 @@ async function cancelTimedOutTask(
     },
     { kind: 'terminal_action', text: '/exit', waitForExit: true, timeoutMs: cancelGraceMs },
   ]);
-  await execFileAsync('python3', [
+  await execFileAsync(runtime.pythonInterpreter.path, [
     ptyHelper,
+    '--purpose', 'control',
     '--actions', actions,
     '--transcript', transcript,
     '--result', result,
@@ -979,7 +1397,11 @@ async function enforceDispatchBudget(context: RunContext): Promise<void> {
     && context.aggregate.estimatedUsd >= context.options.maxEstimatedUsd * 0.9) {
     context.globalStopReason = 'explicit estimated USD stop-loss reached 90%';
   }
-  if (await directoryBytes(context.outputRoot) >= context.options.maxDiskBytes * 0.9) {
+  const [evidenceBytes, rawRuntimeBytes] = await Promise.all([
+    directoryBytes(context.outputRoot),
+    directoryBytes(context.rawRuntimeStorageRoot),
+  ]);
+  if (evidenceBytes + rawRuntimeBytes >= context.options.maxDiskBytes * 0.9) {
     context.globalStopReason = 'disk stop-loss reached 90%';
   }
   if (context.globalStopReason) throw new Error(context.globalStopReason);
@@ -993,6 +1415,7 @@ async function runHeadlessTurn(
   sessionId: string,
 ): Promise<void> {
   await enforceDispatchBudget(context);
+  await assertBenchmarkConnectorIsolation(runtime);
   const beforeSourceSnapshot = await captureSourceSnapshot();
   const changedBeforeDispatch = changedSourcePaths(context.sourceSnapshot, beforeSourceSnapshot);
   if (changedBeforeDispatch.length) {
@@ -1059,6 +1482,7 @@ async function runHeadlessTurn(
   const afterItems = protocolItems(afterSession);
   const sessionDelta = afterItems.slice(beforeItems.length);
   const traces = traceDelta(beforeTrace, await traceSnapshot(runtime, sessionId));
+  await assertBenchmarkConnectorIsolation(runtime);
   const currentSourceSnapshot = await captureSourceSnapshot();
   const changedPaths = changedSourcePaths(context.sourceSnapshot, currentSourceSnapshot);
   const sourceTreeChanged = changedPaths.length > 0;
@@ -1197,6 +1621,7 @@ function selectedCalibrationScenarios(manifest: ConversationManifest, options: R
 async function runScenarioCalibration(context: RunContext, scenario: ConversationScenario): Promise<void> {
   const runtime = await startIsolatedRuntime(context, scenario);
   let failed = false;
+  let operationError: unknown;
   const sessionId = `benchmark-${scenario.scenarioId}-${context.manifestDigest.slice(0, 8)}`;
   try {
     const planned = Array.from({ length: context.options.calibrationTurns }, (_, index) => (
@@ -1238,33 +1663,36 @@ async function runScenarioCalibration(context: RunContext, scenario: Conversatio
       }
     }
     if (failed) throw new Error(`scenario ${scenario.scenarioId} has one or more unproven calibration turns`);
-  } finally {
-    await stopIsolatedRuntime(runtime, true);
-    await appendJournal(context, {
-      kind: 'runtime_retained',
-      occurredAt: new Date().toISOString(),
-      scenarioId: scenario.scenarioId,
-      runtimePath: path.relative(context.outputRoot, runtime.root),
-      failed,
-      forcedShardKill: runtime.forcedShardKill,
-    });
+  } catch (error) {
+    failed = true;
+    operationError = error;
   }
-}
-
-async function runWithConcurrency<T>(
-  values: readonly T[],
-  concurrency: number,
-  operation: (value: T) => Promise<void>,
-): Promise<void> {
-  let next = 0;
-  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
-    while (next < values.length) {
-      const index = next;
-      next += 1;
-      await operation(values[index]!);
-    }
+  const stopped = await stopIsolatedRuntime(context, runtime, failed ? 'functional-failure' : undefined);
+  await appendJournal(context, {
+    kind: 'runtime_cleanup',
+    occurredAt: new Date().toISOString(),
+    scenarioId: scenario.scenarioId,
+    rawRuntimeDeleted: stopped.rawRuntimeDeleted,
+    rawRuntimeRetainedExternally: stopped.retainedExternally,
+    rawRuntimeQuarantinedExternally: stopped.quarantinedExternally,
+    rawRuntimeFinalizationProven: stopped.finalizationProven,
+    retentionId: stopped.retentionId,
+    quarantineDigest: stopped.quarantineDigest,
+    quarantineBytes: stopped.quarantineBytes,
+    quarantineFiles: stopped.quarantineFiles,
+    retentionReason: stopped.retentionReason,
+    failed,
+    forcedShardKill: stopped.forcedShardKill,
   });
-  await Promise.all(workers);
+  if (stopped.forcedShardKill && operationError === undefined) {
+    operationError = new Error(`scenario ${scenario.scenarioId} required a forced shard kill`);
+  }
+  if (!failed && (!stopped.finalizationProven || !stopped.rawRuntimeDeleted
+    || stopped.retainedExternally)) {
+    operationError ??= new Error(`scenario ${scenario.scenarioId} raw runtime was not cleanly deleted`);
+  }
+  operationError ??= stopped.failure;
+  if (operationError) throw operationError;
 }
 
 async function runPtySmoke(context: RunContext): Promise<void> {
@@ -1273,6 +1701,7 @@ async function runPtySmoke(context: RunContext): Promise<void> {
   if (!scenario) throw new Error('manifest does not contain an eligible persistent PTY scenario');
   const runtime = await startIsolatedRuntime(context, scenario);
   let passed = false;
+  let operationError: unknown;
   try {
     const sessionId = `benchmark-pty-${context.manifestDigest.slice(0, 8)}`;
     const turns = [1, 2].map((number) => {
@@ -1287,6 +1716,8 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       };
     });
     const actions = path.join(runtime.root, 'pty-actions.json');
+    const stagedRawFile = path.join(runtime.root, 'pty-smoke.terminal.original.ansi');
+    const stagedResultFile = path.join(runtime.root, 'pty-smoke.helper.original.json');
     const rawFile = path.join(context.outputRoot, 'pty-smoke.terminal.ansi');
     const resultFile = path.join(context.outputRoot, 'pty-smoke.helper.json');
     const normalizedFile = path.join(context.outputRoot, 'pty-smoke.terminal.txt');
@@ -1309,12 +1740,15 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       },
     ]);
     const beforeRuns = await listRuns(runtime);
+    await assertBenchmarkConnectorIsolation(runtime);
     const beforeRunIds = new Set(beforeRuns.map((item) => item.id).filter((id): id is string => Boolean(id)));
-    const child = await execFileAsync('python3', [
+    await enforceRuntimeClosure(context, 'before PTY helper dispatch');
+    const child = await execFileAsync(context.pythonInterpreter.path, [
       ptyHelper,
+      '--purpose', 'proof',
       '--actions', actions,
-      '--transcript', rawFile,
-      '--result', resultFile,
+      '--transcript', stagedRawFile,
+      '--result', stagedResultFile,
       '--journal', context.journalFile,
       '--startup-timeout-ms', '30000',
       '--', process.execPath, mimiEntry,
@@ -1328,6 +1762,7 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       exitCode: Number((error as { code?: number }).code ?? 1),
     }));
     const afterSourceSnapshot = await captureSourceSnapshot();
+    await assertBenchmarkConnectorIsolation(runtime);
     const changedSourcePathsAfterPty = changedSourcePaths(context.sourceSnapshot, afterSourceSnapshot);
     let runtimeClosureChanged = false;
     try {
@@ -1343,23 +1778,167 @@ async function runPtySmoke(context: RunContext): Promise<void> {
         changedSourcePathsAfterPty.slice(0, 20).join(', ')
       }`;
     }
-    const helper = record(await readJson(resultFile));
-    const rawBytes = await readFile(rawFile);
+    const stagedHelperBytes = await readFile(stagedResultFile);
+    const stagedHelper = record(JSON.parse(stagedHelperBytes.toString('utf8')) as unknown);
+    const stagedRawBytes = await readFile(stagedRawFile);
+    const sourceHelperTranscriptProven = stagedHelper?.transcriptBytes === stagedRawBytes.byteLength
+      && stagedHelper?.transcriptSha256 === sha256(stagedRawBytes);
+    const transformedRaw = redactPrivateEvidenceNeedlesEqualLength(
+      stagedRawBytes,
+      context.privateEvidenceNeedles,
+    );
+    const retainedHelper = {
+      ...stagedHelper,
+      transcriptBytes: transformedRaw.bytes.byteLength,
+      transcriptSha256: sha256(transformedRaw.bytes),
+      retainedTranscriptTransform: {
+        schemaVersion: 1,
+        algorithm: 'equal-byte-private-needle-v1',
+        replacementCounts: transformedRaw.replacementCounts,
+      },
+    };
+    const transformedHelper = redactPrivateEvidenceNeedlesEqualLength(
+      Buffer.from(`${JSON.stringify(retainedHelper, null, 2)}\n`, 'utf8'),
+      context.privateEvidenceNeedles,
+    );
+    const helperBytes = transformedHelper.bytes;
+    const helper = record(JSON.parse(helperBytes.toString('utf8')) as unknown);
+    const rawBytes = transformedRaw.bytes;
+    const helperTranscriptProven = sourceHelperTranscriptProven
+      && helper?.transcriptBytes === rawBytes.byteLength
+      && helper?.transcriptSha256 === sha256(rawBytes);
+    const privatePathTransformProven = transformedRaw.bytes.byteLength === stagedRawBytes.byteLength
+      && transformedHelper.bytes.byteLength === Buffer.byteLength(`${JSON.stringify(retainedHelper, null, 2)}\n`);
+    await Promise.all([
+      writeExclusive(rawFile, rawBytes),
+      writeExclusive(resultFile, helperBytes),
+    ]);
     const raw = rawBytes.toString('utf8');
     const normalized = stripTerminalControl(raw);
     await writeExclusive(normalizedFile, normalized);
-    const session = await sessionSnapshot(runtime, sessionId);
+    const helperArtifact: EvidenceArtifact = {
+      kind: 'pty-helper-result',
+      path: path.relative(context.outputRoot, resultFile),
+      sha256: sha256(helperBytes),
+      bytes: helperBytes.byteLength,
+    };
+    const rawTerminalArtifact: EvidenceArtifact = {
+      kind: 'pty-terminal-raw',
+      path: path.relative(context.outputRoot, rawFile),
+      sha256: sha256(rawBytes),
+      bytes: rawBytes.byteLength,
+    };
+    const normalizedTerminalArtifact: EvidenceArtifact = {
+      kind: 'pty-terminal-normalized',
+      path: path.relative(context.outputRoot, normalizedFile),
+      sha256: sha256(normalized),
+      bytes: Buffer.byteLength(normalized),
+    };
+    const sessionBytes = await readFile(path.join(runtime.dataRoot, 'sessions', `${sessionId}.json`));
+    const session = record(JSON.parse(sessionBytes.toString('utf8')) as unknown) ?? {};
     const items = protocolItems(session);
-    const trace = (await traceSnapshot(runtime, sessionId)).split('\n').filter(Boolean)
+    const traceBytes = await readFile(path.join(runtime.dataRoot, 'traces', `${sessionId}.jsonl`));
+    const trace = traceBytes.toString('utf8').split('\n').filter(Boolean)
       .map((line) => JSON.parse(line) as unknown);
     const runs = (await listRuns(runtime)).filter((item) => item.id && !beforeRunIds.has(item.id)
       && item.sessionKey === sessionId);
     const runDetails = await Promise.all(runs.map((run) => mimiJson(runtime, ['daemon', 'show', 'run', run.id!]))) ;
     const actionsResult = Array.isArray(helper?.actions) ? helper.actions.map(record).filter(Boolean) : [];
     const modelActions = actionsResult.filter((item) => item?.kind === 'model_turn');
+    if (modelActions.length !== turns.length) {
+      throw new Error('PTY canonical export requires exactly one model action per requested turn');
+    }
+    const assistantTexts = turns.map((turn) => assistantTextForNonce(items, turn.nonce));
+    const canonicalDirectory = path.join(context.outputRoot, 'pty-smoke-canonical');
+    const [sessionArtifact, traceArtifact] = await Promise.all([
+      writeEvidenceBytes(
+        context.outputRoot,
+        path.join(canonicalDirectory, 'session.json'),
+        sessionBytes,
+        'canonical-session-json',
+      ),
+      writeEvidenceBytes(
+        context.outputRoot,
+        path.join(canonicalDirectory, 'trace.jsonl'),
+        traceBytes,
+        'canonical-trace-jsonl',
+      ),
+    ]);
+    const canonicalTurns = await Promise.all(turns.map(async (turn, index) => {
+      const modelRun = record(modelActions[index]?.modelRun);
+      const daemonRunId = typeof modelRun?.daemonRunId === 'string' ? modelRun.daemonRunId : undefined;
+      const summary = runs.find((run) => run.id === daemonRunId);
+      if (!summary?.id || !summary.taskId) {
+        throw new Error(`PTY canonical export cannot bind turn ${turn.turn} to one Daemon Run and Task`);
+      }
+      if (modelRun?.taskId !== summary.taskId) {
+        throw new Error(`PTY helper Task receipt disagrees with Daemon Run for turn ${turn.turn}`);
+      }
+      const run = runDetails[runs.indexOf(summary)];
+      if (run === undefined) throw new Error(`PTY canonical export is missing Run ${summary.id}`);
+      const task = await mimiJson(runtime, ['daemon', 'show', 'task', summary.taskId]);
+      const eventId = conversationTaskEvidenceIdentity(task).eventId;
+      if (!eventId) throw new Error(`PTY canonical export is missing Event provenance for turn ${turn.turn}`);
+      const event = await mimiJson(runtime, ['daemon', 'show', 'event', eventId]);
+      const prefix = `turn-${String(turn.turn).padStart(2, '0')}`;
+      const [eventArtifact, taskArtifact, runArtifact] = await Promise.all([
+        writeEvidenceJson(context.outputRoot, path.join(canonicalDirectory, `${prefix}.event.json`), event),
+        writeEvidenceJson(context.outputRoot, path.join(canonicalDirectory, `${prefix}.task.json`), task),
+        writeEvidenceJson(context.outputRoot, path.join(canonicalDirectory, `${prefix}.daemon-run.json`), run),
+      ]);
+      const chain = auditPtyCanonicalChain({
+        event,
+        task,
+        run,
+        trace,
+        sessionId,
+        prompt: turn.prompt,
+        nonce: turn.nonce,
+        assistantText: assistantTexts[index],
+        sessionItems: items,
+        daemonRunId: summary.id,
+        taskId: summary.taskId,
+      });
+      return {
+        turn: turn.turn,
+        nonce: turn.nonce,
+        eventId,
+        taskId: summary.taskId,
+        daemonRunId: summary.id,
+        runtimeRunId: chain.runtimeRunId,
+        chainProof: chain,
+        artifacts: { event: eventArtifact, task: taskArtifact, run: runArtifact },
+      };
+    }));
+    const canonicalIndex = await writeEvidenceJson(
+      context.outputRoot,
+      path.join(context.outputRoot, 'pty-smoke.canonical-index.json'),
+      {
+        schemaVersion: 1,
+        kind: 'persistent-pty-canonical-evidence-index',
+        scenarioId: scenario.scenarioId,
+        sessionId,
+        artifacts: {
+          session: sessionArtifact,
+          trace: traceArtifact,
+          helper: helperArtifact,
+          rawTerminal: rawTerminalArtifact,
+          normalizedTerminal: normalizedTerminalArtifact,
+        },
+        turns: canonicalTurns,
+      },
+    );
     const startupObserved = helper?.startupObserved === true;
     const tty = helper?.tty === true && helper?.childTtyChecked === true;
-    const assistantTexts = turns.map((turn) => assistantTextForNonce(items, turn.nonce));
+    const connectorIsolationProven = modelActions.length === turns.length
+      && modelActions.every((item) => {
+        const isolation = record(item?.connectorIsolation);
+        return isolation?.proven === true
+          && isolation.connectorCount === 0
+          && isolation.configSha256 === runtime.connectorConfigDigest;
+      });
+    const canonicalChainProven = canonicalTurns.length === turns.length
+      && canonicalTurns.every((turn) => turn.chainProof.proven);
     const assistantVisible = modelActions.length === turns.length && modelActions.every((item, index) => {
       const start = typeof item?.startRawOffset === 'number' ? item.startRawOffset : -1;
       const end = typeof item?.endRawOffset === 'number' ? item.endRawOffset : -1;
@@ -1402,8 +1981,11 @@ async function runPtySmoke(context: RunContext): Promise<void> {
     const secretHits = typeof helper?.secretHits === 'number' ? helper.secretHits : 1;
     passed = child.exitCode === 0
       && helper?.passed === true
+      && helperTranscriptProven
+      && privatePathTransformProven
       && tty
       && startupObserved
+      && connectorIsolationProven
       && transportChunksObserved
       && noncesInSession
       && noncesInTerminal
@@ -1412,6 +1994,7 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       && toolSurfaceProven
       && traceEnds >= turns.length
       && usageProven
+      && canonicalChainProven
       && modelActions.every((item) => runs.some((run) => run.id === record(item?.modelRun)?.daemonRunId))
       && secretHits === 0
       && changedSourcePathsAfterPty.length === 0
@@ -1425,11 +2008,21 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       sessionId,
       tty,
       startupObserved,
+      helperTranscriptProven,
+      privatePathTransform: {
+        schemaVersion: 1,
+        algorithm: 'equal-byte-private-needle-v1',
+        transcriptReplacementCounts: transformedRaw.replacementCounts,
+        helperReplacementCounts: transformedHelper.replacementCounts,
+        offsetsPreserved: privatePathTransformProven,
+      },
+      connectorIsolationProven,
       transportChunksObserved,
       assistantOutputVisibleAfterInputEcho: assistantVisible,
       cliExitCode: child.exitCode,
       runCount: runs.length,
       usageProven,
+      canonicalChainProven,
       trace: {
         starts: traceStarts,
         bindings: traceBindings,
@@ -1451,10 +2044,11 @@ async function runPtySmoke(context: RunContext): Promise<void> {
         path: path.relative(context.outputRoot, normalizedFile),
         sha256: sha256(normalized),
       },
+      canonicalEvidenceIndex: canonicalIndex,
       passed,
       denominatorEligible: false,
     });
-    await writeExclusiveJson(path.join(context.outputRoot, 'pty-smoke.proof.json'), {
+    context.pendingPtyProof = {
       schemaVersion: 1,
       kind: 'persistent-pty-prerequisite',
       manifestDigest: context.manifestDigest,
@@ -1462,29 +2056,86 @@ async function runPtySmoke(context: RunContext): Promise<void> {
       passed,
       tty,
       startupObserved,
+      helperTranscriptProven,
+      privatePathTransformProven,
+      connectorIsolationProven,
       transportChunksObserved,
       assistantOutputVisibleAfterInputEcho: assistantVisible,
+      toolSurfaceProven,
+      usageProven,
+      noncesInSession,
+      noncesInTerminal,
+      secretHits,
       exitCode: child.exitCode,
       turns: turns.length,
       sourceTreeChanged: changedSourcePathsAfterPty.length > 0,
       runtimeClosureChanged,
       generatedAt: new Date().toISOString(),
-    });
+      retainedEvidenceIntegrityRequired: true,
+      canonicalEvidenceIndex: canonicalIndex,
+      canonicalChainProven,
+    };
     if (!passed) throw new Error('persistent PTY smoke did not satisfy its proof contract');
-  } finally {
-    await stopIsolatedRuntime(runtime, true);
+  } catch (error) {
+    operationError = error;
   }
+  const stopped = await stopIsolatedRuntime(context, runtime, operationError ? 'functional-failure' : undefined);
+  if (context.pendingPtyProof) {
+    context.pendingPtyProof.rawRuntimeDeleted = stopped.rawRuntimeDeleted;
+    context.pendingPtyProof.rawRuntimeRetainedExternally = stopped.retainedExternally;
+    context.pendingPtyProof.rawRuntimeQuarantinedExternally = stopped.quarantinedExternally;
+    context.pendingPtyProof.rawRuntimeFinalizationProven = stopped.finalizationProven;
+    context.pendingPtyProof.retentionId = stopped.retentionId;
+    context.pendingPtyProof.quarantineDigest = stopped.quarantineDigest;
+    context.pendingPtyProof.quarantineBytes = stopped.quarantineBytes;
+    context.pendingPtyProof.quarantineFiles = stopped.quarantineFiles;
+    context.pendingPtyProof.retentionReason = stopped.retentionReason;
+    context.pendingPtyProof.forcedShardKill = stopped.forcedShardKill;
+    if (stopped.forcedShardKill || stopped.failure
+      || !stopped.finalizationProven || !stopped.rawRuntimeDeleted) {
+      context.pendingPtyProof.passed = false;
+    }
+  }
+  await appendJournal(context, {
+    kind: 'runtime_cleanup',
+    occurredAt: new Date().toISOString(),
+    scenarioId: scenario.scenarioId,
+    rawRuntimeDeleted: stopped.rawRuntimeDeleted,
+    rawRuntimeRetainedExternally: stopped.retainedExternally,
+    rawRuntimeQuarantinedExternally: stopped.quarantinedExternally,
+    rawRuntimeFinalizationProven: stopped.finalizationProven,
+    retentionId: stopped.retentionId,
+    quarantineDigest: stopped.quarantineDigest,
+    quarantineBytes: stopped.quarantineBytes,
+    quarantineFiles: stopped.quarantineFiles,
+    retentionReason: stopped.retentionReason,
+    forcedShardKill: stopped.forcedShardKill,
+    denominatorEligible: false,
+  });
+  if (stopped.forcedShardKill && operationError === undefined) {
+    operationError = new Error('persistent PTY smoke required a forced shard kill');
+  }
+  operationError ??= stopped.failure;
+  if (operationError) throw operationError;
 }
 
 async function verifyPtyPrerequisite(context: RunContext): Promise<void> {
   if (!context.options.ptyEvidence) throw new Error('formal soak requires --pty-evidence from pty-smoke mode');
-  const proof = record(await readJson(context.options.ptyEvidence));
-  if (proof?.kind !== 'persistent-pty-prerequisite'
-    || proof.passed !== true
-    || proof.tty !== true
-    || proof.manifestDigest !== context.manifestDigest
-    || proof.buildDigest !== context.buildDigest) {
-    throw new Error('PTY prerequisite is missing, failed, or belongs to a different manifest/build');
+  await verifyConversationPtyPrerequisite({
+    proofFile: context.options.ptyEvidence,
+    manifestDigest: context.manifestDigest,
+    buildDigest: context.buildDigest,
+  });
+}
+
+async function retainedEvidenceScan(context: RunContext, phase: string): Promise<RetainedEvidenceScan> {
+  try {
+    return await scanRetainedEvidenceTree(context.outputRoot, context.privateEvidenceNeedles);
+  } catch (error) {
+    context.globalStopReason = `P0 retained evidence privacy gate failed ${phase}: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    throw error;
   }
 }
 
@@ -1495,24 +2146,29 @@ async function initializeRun(
 ): Promise<RunContext> {
   const manifestDigest = sha256(manifestRaw);
   const runName = `mimi-conversation-${new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-')}-${manifestDigest.slice(0, 8)}`;
-  const outputRoot = options.output ?? path.join(os.tmpdir(), runName);
-  const outputRelative = path.relative(repositoryRoot, outputRoot);
+  const requestedOutputRoot = options.output ?? path.join(os.tmpdir(), runName);
+  const outputRelative = path.relative(repositoryRoot, requestedOutputRoot);
   if (outputRelative === '' || (!outputRelative.startsWith(`..${path.sep}`)
     && outputRelative !== '..' && !path.isAbsolute(outputRelative))) {
     throw new Error('conversation evidence output must stay outside the repository');
   }
+  if (options.resume) throw new Error('real evidence-root resume is not implemented');
+  await mkdir(requestedOutputRoot, { recursive: false, mode: 0o700 });
+  await chmod(requestedOutputRoot, 0o700);
+  const evidenceRoot = await initializeConversationEvidenceRoot(requestedOutputRoot);
+  const outputRoot = evidenceRoot.root;
   const journalFile = path.join(outputRoot, 'evidence.jsonl');
   const checkpointFile = path.join(outputRoot, 'checkpoint.json');
-  if (!options.resume) {
-    await mkdir(outputRoot, { recursive: false, mode: 0o700 });
-    await chmod(outputRoot, 0o700);
+  let buildDigest = sha256('conversation-build-not-completed');
+  try {
     await writeExclusive(path.join(outputRoot, 'manifest.json'), manifestRaw);
-  } else {
-    const metadata = record(await readJson(path.join(outputRoot, 'run.json')));
-    if (metadata?.manifestDigest !== manifestDigest) throw new Error('resume manifest digest does not match');
+    let runtimeDependencies: RuntimeDependencySnapshot | undefined;
+    let runtimeIdentity: RuntimeClosureIdentity | undefined;
+  const rawRuntimeQuotaBytes = Math.floor(options.maxDiskBytes * 0.9);
+  if (!Number.isSafeInteger(rawRuntimeQuotaBytes) || rawRuntimeQuotaBytes <= 0) {
+    throw new Error('raw runtime quota is invalid');
   }
-  let buildDigest = 'not-built';
-  let runtimeDependencies: RuntimeDependencySnapshot | undefined;
+  let runtimeRecovery: RuntimeRecoveryReport | undefined;
   let credentialRecovery: EphemeralCredentialRecoveryResult = {
     scanned: 0,
     recovered: 0,
@@ -1530,6 +2186,15 @@ async function initializeRun(
         'an estimated USD cap, and explicit input/output USD-per-million ceiling rates',
       ].join(' '));
     }
+    runtimeRecovery = await recoverControlledRawRuntimes({
+      storageRoot: rawRuntimeStorageRoot,
+      stagingGraceMs: rawRuntimeStagingGraceMs,
+      quarantineGraceMs: rawRuntimeQuarantineGraceMs,
+      quotaBytes: rawRuntimeQuotaBytes,
+    });
+    if (runtimeRecovery.quotaExceeded || runtimeRecovery.usedBytes >= rawRuntimeQuotaBytes) {
+      throw new Error('raw runtime quota is exhausted before Daemon startup');
+    }
     await assertCleanRepository();
     credentialRecovery = await recoverEphemeralCredentialFiles({ temporaryRoot: os.tmpdir() });
     let identity: RuntimeClosureIdentity;
@@ -1540,6 +2205,15 @@ async function initializeRun(
     }
     buildDigest = identity.digest;
     runtimeDependencies = identity.dependencies;
+    runtimeIdentity = identity;
+  }
+  if (!runtimeIdentity) throw new Error('runtime closure identity was not initialized');
+  const rawRuntimeKnownBytes = runtimeRecovery?.usedBytes ?? 0;
+  const rawRuntimeReservationBytes = Math.floor(
+    (rawRuntimeQuotaBytes - rawRuntimeKnownBytes) / options.concurrency,
+  );
+  if (rawRuntimeReservationBytes <= 0) {
+    throw new Error('raw runtime quota is exhausted before Daemon startup');
   }
   const sourceSnapshot = await captureSourceSnapshot();
   const context: RunContext = {
@@ -1547,6 +2221,7 @@ async function initializeRun(
     manifest,
     manifestDigest,
     outputRoot,
+    evidenceRoot,
     journalFile,
     checkpointFile,
     journalWriter: new DurableJournalWriter(journalFile),
@@ -1555,9 +2230,20 @@ async function initializeRun(
     checkpointWriteTail: Promise.resolve(),
     buildDigest,
     runtimeDependencies,
+    pythonInterpreter: runtimeIdentity.pythonInterpreter,
+    rawRuntimeStorageRoot,
+    runtimeRecovery,
+    rawRuntimeQuotaBytes,
+    rawRuntimeReservationBytes,
+    rawRuntimeKnownBytes,
+    rawRuntimeReservedBytes: 0,
     sourceSnapshot,
     startedAt: Date.now(),
     aggregate: { inputTokens: 0, outputTokens: 0, provenTurns: 0, unprovenTurns: 0 },
+    privateEvidenceNeedles: [
+      { kind: 'private-home', value: os.homedir() },
+      { kind: 'runtime-root', value: rawRuntimeStorageRoot },
+    ],
   };
   if (!options.resume) {
     await writeExclusiveJson(path.join(outputRoot, 'run.json'), {
@@ -1568,7 +2254,15 @@ async function initializeRun(
       manifestDigest,
       buildDigest,
       runtimeDependencies,
+      pythonInterpreter: pythonInterpreterReceipt(runtimeIdentity.pythonInterpreter),
       credentialRecovery,
+      rawRuntimeRecovery: runtimeRecovery,
+      rawRuntimeQuotaBytes,
+      rawRuntimeReservationBytes,
+      rawRuntimeRetentionPolicy: {
+        stagingGraceMs: rawRuntimeStagingGraceMs,
+        quarantineGraceMs: rawRuntimeQuarantineGraceMs,
+      },
       sourceSnapshot: {
         schemaVersion: sourceSnapshot.schemaVersion,
         digest: sourceSnapshot.digest,
@@ -1596,7 +2290,27 @@ async function initializeRun(
       seed: manifest.seed,
     });
   }
-  return context;
+    return context;
+  } catch (initializationError) {
+    try {
+      await finalizeConversationEvidence({
+        root: evidenceRoot,
+        privateEvidenceNeedles: [
+          { kind: 'private-home', value: os.homedir() },
+          { kind: 'runtime-root', value: rawRuntimeStorageRoot },
+        ],
+        manifestDigest,
+        buildDigest,
+        proofEligible: false,
+      });
+    } catch (finalizationError) {
+      throw new AggregateError(
+        [initializationError, finalizationError],
+        'run initialization and failure evidence finalization both failed',
+      );
+    }
+    throw initializationError;
+  }
 }
 
 async function main(): Promise<void> {
@@ -1636,12 +2350,14 @@ async function main(): Promise<void> {
     throw new Error('only S-lane no-tools calibration is enabled; W/F/V/L remain fail-closed');
   }
   const context = await initializeRun(options, manifest, manifestRaw);
+  let operationError: unknown;
+  let proofEligible = false;
   try {
     if (options.mode === 'pty-smoke') {
       await runPtySmoke(context);
     } else if (options.mode === 'calibrate') {
       const scenarios = selectedCalibrationScenarios(manifest, options);
-      await runWithConcurrency(scenarios, options.concurrency, (scenario) => (
+      await runFailStopConcurrency(scenarios, options.concurrency, (scenario) => (
         runScenarioCalibration(context, scenario)
       ));
       const requestedTurns = scenarios.length * options.calibrationTurns;
@@ -1653,6 +2369,10 @@ async function main(): Promise<void> {
     } else {
       await verifyPtyPrerequisite(context);
     }
+    await retainedEvidenceScan(context, 'before proof finalization');
+    if (context.pendingPtyProof) {
+      await writeExclusiveJson(path.join(context.outputRoot, 'pty-smoke.proof.json'), context.pendingPtyProof);
+    }
     await appendJournal(context, {
       kind: 'run_finished',
       occurredAt: new Date().toISOString(),
@@ -1660,9 +2380,33 @@ async function main(): Promise<void> {
       globalStopReason: context.globalStopReason,
       denominatorEligible: false,
     });
+    proofEligible = true;
+  } catch (error) {
+    operationError = error;
   } finally {
-    await writeCheckpoint(context);
+    try {
+      await writeCheckpoint(context);
+    } catch (error) {
+      operationError ??= error;
+    }
   }
+  try {
+    const finalizedEvidence = await finalizeConversationEvidence({
+      root: context.evidenceRoot,
+      privateEvidenceNeedles: context.privateEvidenceNeedles,
+      manifestDigest: context.manifestDigest,
+      buildDigest: context.buildDigest,
+      proofEligible: proofEligible && operationError === undefined,
+    });
+    if (!finalizedEvidence.outcome.proofEligible && operationError === undefined) {
+      operationError = new Error('retained evidence privacy gate revoked proof eligibility');
+    }
+  } catch (error) {
+    operationError = operationError === undefined
+      ? error
+      : new AggregateError([operationError, error], 'run and evidence finalization both failed');
+  }
+  if (operationError) throw operationError;
   process.stdout.write(`${JSON.stringify({
     output: context.outputRoot,
     mode: options.mode,

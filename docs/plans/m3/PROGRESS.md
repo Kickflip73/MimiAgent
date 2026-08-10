@@ -49,8 +49,10 @@
   transcription/VAD-only `createResponse=false`、Provider output audio 禁止，以及 final transcript
   进入 canonical Host Run、canonical answer 交给 Mimi TTS 的合同。它没有 CLI/Daemon/设备
   composition root，真实实时语音轮次仍为 0。
-- conversation manifest 当前为 103 scenarios / 3090 declared turns / 10 suites；runner 校验会
-  报告 `realProviderTurnsExecuted=0`。专用 `benchmark-no-tools-v1` RunPolicy 现已从认证
+- conversation manifest 当前为 103 scenarios / 3090 declared turns / 10 suites；当时只运行的
+  manifest validation 命令报告 `realProviderTurnsExecuted=0`，该字段只描述那一次 validation
+  没有派发模型，不能解释为整个 M3 历史从未调用真实 Provider。专用
+  `benchmark-no-tools-v1` RunPolicy 现已从认证
   local-cli owner Event 贯穿到冻结 Run，并在模型派发前把精确 `advertisedTools=[]`、Run/Session
   归属和摘要写入 Trace；只有 S-lane no-tools calibration 因此解除工程门禁。它还没有真实执行，
   也不是 PTY smoke 或正式 benchmark，正式分母仍为 0。
@@ -148,8 +150,9 @@
   不改变正式 100×30 分母 0 或产品门禁状态。
 - 本 tranche 门禁已完成：`npm run check` 退出 0；完整 `npm test` 为 1062/1062、0 fail，耗时
   116.2 秒；`npm run build` 与 `npm run test:package` 均退出 0。conversation manifest 校验仍为
-  103 scenarios / 3090 declared turns，`realProviderTurnsExecuted=0` 且 formal `NO-GO`；这些
-  工程/fixture 测试不计 live 图片验收或 100×30 正式轮次。
+  103 scenarios / 3090 declared turns；该次 validation 的
+  `realProviderTurnsExecuted=0` 仅表示该命令没有派发模型。formal 仍为 `NO-GO`，这些工程/
+  fixture 测试不计 live 图片验收或 100×30 正式轮次。
 - 最终文件集的 `npm run ci` 也退出 0：repository hygiene、release consistency、依赖方向与
   asset boundary 均通过，coverage 套件 1062/1062，整体 line/branch/function 覆盖率分别为
   89.27% / 79.18% / 85.64%，随后 clean build 与 packed-package smoke 通过。ARC-303
@@ -192,9 +195,63 @@
   `npm run check` 与 `npm test` 1110/1110 均通过；完整 `npm run ci` 也退出 0，coverage
   line/branch/function 分别为 89.37% / 79.26% / 85.82%，随后 clean build 与 packed-package
   smoke 通过。完整测试耗时约 122.7 秒；这些仍是工程/fixture 证据，不计真实 Provider 轮次。
-- 完整 resume、逐场景 action/fixture/oracle 执行与 W/F 强制 Tool policy 仍未闭环；本轮没有
-  发起新的真实 Provider calibration 或 formal soak，`realProviderTurnsExecuted=0`、正式分母
-  保持 0。
+- 完整 resume、逐场景 action/fixture/oracle 执行与 W/F 强制 Tool policy 仍未闭环；该 PCM WAV/
+  durability tranche 自身没有发起新的真实 Provider calibration 或 formal soak。累计真实调用
+  与正式分母使用下节的独立计数，不能以某次 validation 的零值覆盖历史执行事实。
+
+## 2026-08-10 `4bf889e` 后的真实 PTY 审计纠正
+
+- 固定提交 `4bf889e` 上的新隔离持久 PTY 确实走完两个真实 Provider turn：同一 Session 的两个
+  canonical Run 均 completed，usage 分别为 3010/122 与 3132/68 input/output tokens；TTY 启动、
+  输入、assistant 可见输出、prompt-ready、正常退出、精确空 Tool surface，以及
+  Event -> Task -> Daemon Run -> runtime Run -> Session/Trace 实体链均通过功能核验。
+- 随后的 retention 审计发现证据根中的 raw runtime bundle 保留了 Daemon `control.token`，初始化
+  后的 `connectors.json` 也含私人绝对 Connector command/args 路径。Provider key 本身没有被据此
+  追认为泄露，但该 bundle 不是合格的去敏、可移交证据，因此整次 PTY 不能计为 proven。
+- 该事实以 append-only 的 `audit-correction.json` generation 1 记录；correction 不回填、不改写
+  原始证据，也不改写固定提交 `2cc22fb` 的历史 PTY prerequisite。`4bf889e` 这两轮统一分类为
+  `unproven`，正式 100×30 分母仍为 0。
+- 截至该 correction，本文逐次列出的 calibration/prerequisite 尝试共有
+  `actualRealProviderTurnsExecuted=20`：其中 `provenCalibrationTurns=13`（持久 PTY prerequisite
+  2 轮、headless 1×1 的 1 轮、2×5 的 10 轮），另有 7 个实际调用但整体证据为 `unproven` 的
+  turn。三者都不是正式 100×30 场景轮次，因此 `formalDenominatorTurns=0`。这组累计计数与某次
+  manifest validation 输出的 `realProviderTurnsExecuted=0` 不是同一口径。
+- 后续修复已将 Daemon exact Connector config mode 改为禁止默认 Connector 本地化，将 raw runtime
+  移到 evidence 根外，并让归档只保留可逐字节重算哈希的 canonical
+  Event/Task/Daemon Run/runtime Run/Session/Trace/terminal 证据。本批工程验证已完成，但没有运行
+  新的真实 PTY，因此不能用本段宣称新的 evidence 或产品门禁已关闭。
+
+## 2026-08-10 PTY evidence hardening engineering checkpoint
+
+- exact Connector mode 的实现与聚焦回归已加入：显式 `exact` 只接受已存在、严格、私有的配置，
+  不补默认 Connector、不做本地路径改写；未知 mode 失败关闭，省略该变量仍保留既有 managed
+  语义。LaunchAgent 只在显式 exact 时透传该值。本批没有产生新的 proven PTY。
+- raw Daemon runtime 改为 evidence 根外的受控私有 staging/quarantine 生命周期：root 的
+  device/inode、owner 与 foreground Daemon 的 PID/process-start identity 用于恢复判断；确定性
+  回归覆盖 owner 消失但 Daemon 仍活时保留、Daemon 终止后再回收，以及 TERM/KILL 双 deadline、
+  配额、link/特殊文件拒绝和只含 opaque id/hash/bytes 的 path-free quarantine 元数据。该回归不是
+  长期 Daemon soak 或掉电证据。
+- PTY Python 解释器现在在初始化时解析到物理绝对路径，并冻结 regular/current-uid/executable/
+  single-link、dev/ino/mtime/size 与完整字节 SHA-256；路径只以摘要进入 receipt，解释器身份进入
+  runtime closure，并在后续复核，不再在每次派发时从 `PATH` 重新选择。PTY helper 对 timeout、
+  `SIGTERM` 和 `SIGINT` 都终止整个 child process group、按 bounded `waitpid` 回收后才退出；
+  `purpose=control` 只接受 `terminal_action`，即使成功也固定 `modelProofEligible=false`，不能借控制
+  会话伪装模型证明。
+- 归档前只对私人路径 needle 做等字节替换：replacement 只依赖 kind 与原字节长度，不含路径
+  digest，因而 raw terminal 的字节长度和 assistant offset 保持不变；Provider secret 仍由 PTY
+  内存脱敏和最终 privacy scan 独立检查。helper 声明的 transcript bytes/hash 必须与归档 raw
+  terminal 逐字节一致。
+- evidence root 使用物理 root handle；privacy 命中先 durable revoke，再覆盖、`fsync`、删除并只留
+  hash tombstone。canonical index 与完整树由 generation-0 detached seal 绑定。strict PTY
+  prerequisite 会在读取前后验证同一 seal，并重新读取/重算 helper、raw/normalized terminal、
+  Event、Task、Daemon Run、runtime Run、Session 与 Trace；还要求至少两个唯一 turn、每轮正 usage、
+  精确空 Tool surface、exact-empty Connector receipt、输入后 assistant 字节区间、正常退出、零
+  privacy failure，以及 raw runtime 已确认删除且未 forced kill。重复 turn、零 usage、transcript
+  hash/offset 或任一实体绑定不一致均失败关闭。本批已通过 97/97 聚焦回归、2/2 architecture
+  budget、`npm run check`、`npm run bench:conversation:validate`（103 场景、3090 声明轮次、正式
+  门禁 `NO-GO`）、`npm test`（1173/1173）与 `npm run build`。未运行 package smoke、完整 CI 或
+  新的真实 PTY；这组工程验证不改变 `actualRealProviderTurnsExecuted=20`、
+  `provenCalibrationTurns=13`、`formalDenominatorTurns=0`。
 
 ## M3 能力审计
 
@@ -227,7 +284,9 @@
   真实用户音频或实时语音轮次；实时语音真实轮次为 0。
 - 100×30 全产品真实终端基准：103 场景/3090 轮 manifest 仅完成静态声明与验证，
   no-tools S-lane 已完成持久 PTY prerequisite 与 1×1/2×5 calibration，但这些 calibration-only
-  轮次不计正式分母；`realProviderTurnsExecuted=0`、正式分母为 0。现有
+  轮次不计正式分母；截至 `4bf889e` correction 的累计口径为
+  `actualRealProviderTurnsExecuted=20`、`provenCalibrationTurns=13`、
+  `formalDenominatorTurns=0`。现有
   `bench:capacity` 的 100 rounds 不走真实 Provider，永不计入该分母。
 
 后续每次长跑应追加记录 manifest digest、build identity、seed、场景/轮次分母、Provider/model、

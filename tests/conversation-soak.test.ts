@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,7 +14,9 @@ import {
   estimateConversationUsd,
   materializeConversationTurn,
   parseConversationManifest,
+  redactPrivateEvidenceNeedlesEqualLength,
   redactTerminalSecrets,
+  runFailStopConcurrency,
   sha256,
   stripTerminalControl,
   terminalBytesContainAssistant,
@@ -24,6 +26,30 @@ import {
 const repositoryRoot = path.resolve(import.meta.dirname, '..');
 const manifestFile = path.join(repositoryRoot, 'evals', 'conversation', 'manifest.v1.json');
 const execFileAsync = promisify(execFile);
+
+async function waitForFile(file: string, timeoutMs = 5_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      return await readFile(file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`timed out waiting for ${file}`);
+}
+
+async function waitForChildExit(child: ReturnType<typeof spawn>, timeoutMs = 5_000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await Promise.race([
+    new Promise<void>((resolve) => child.once('close', () => resolve())),
+    new Promise<never>((_resolve, reject) => setTimeout(
+      () => reject(new Error('PTY helper did not exit within its cleanup deadline')),
+      timeoutMs,
+    )),
+  ]);
+}
 
 async function manifest() {
   return parseConversationManifest(JSON.parse(await readFile(manifestFile, 'utf8')) as unknown);
@@ -187,6 +213,32 @@ test('resume excludes every dispatched turn and exposes incomplete dispatch as u
     journal[0]!,
     { kind: 'turn_dispatch_started', scenarioId: scenario.scenarioId, turn: 1 },
   ]), /re-dispatched/);
+});
+
+test('concurrent calibration stops assigning work after the first failure and drains active shards', async () => {
+  let releaseSecond!: () => void;
+  const secondActive = new Promise<void>((resolve) => { releaseSecond = resolve; });
+  let allowSecondToFinish!: () => void;
+  const secondCanFinish = new Promise<void>((resolve) => { allowSecondToFinish = resolve; });
+  const started: number[] = [];
+  let settled = false;
+  const run = runFailStopConcurrency([1, 2, 3, 4], 2, async (value) => {
+    started.push(value);
+    if (value === 1) {
+      await secondActive;
+      throw new Error('synthetic shard failure');
+    }
+    if (value === 2) {
+      releaseSecond();
+      await secondCanFinish;
+    }
+  }).finally(() => { settled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, 'the coordinator must wait for the already-active shard cleanup');
+  assert.deepEqual(started, [1, 2]);
+  allowSecondToFinish();
+  await assert.rejects(run, /synthetic shard failure/u);
+  assert.deepEqual(started, [1, 2], 'no later scenario may start after the first observed failure');
 });
 
 test('a turn is proven only with CLI, Run usage, Trace order, Session protocol, and leak evidence', async () => {
@@ -385,6 +437,57 @@ test('PTY assistant proof uses protocol text and byte offsets instead of metadat
   ), false);
 });
 
+test('PTY retained private-path transform preserves raw byte offsets and handles Buffer needles', () => {
+  const privateRoot = '/private/runtime/root';
+  const nestedRoot = `${privateRoot}/workspace`;
+  const unicodeRoot = '/private/运行态/根';
+  const credential = Buffer.from('/private/credential.env', 'utf8');
+  const skippedProviderSecret = Buffer.from('synthetic-provider-secret', 'utf8');
+  const assistant = Buffer.from('assistant-visible-after-banner', 'utf8');
+  const raw = Buffer.concat([
+    Buffer.from(`MimiAgent v-test\r\n${privateRoot}\r\n${nestedRoot}\r\n${privateRoot}\r\n${unicodeRoot}\r\n`, 'utf8'),
+    credential,
+    Buffer.from('\r\n', 'utf8'),
+    skippedProviderSecret,
+    Buffer.from('\r\n', 'utf8'),
+    assistant,
+  ]);
+  const assistantOffset = raw.indexOf(assistant);
+  const transformed = redactPrivateEvidenceNeedlesEqualLength(raw, [
+    { kind: 'runtime-root', value: privateRoot },
+    { kind: 'runtime-root', value: nestedRoot },
+    { kind: 'private-home', value: unicodeRoot },
+    { kind: 'credential-file', value: credential },
+    { kind: 'provider-secret', value: skippedProviderSecret },
+  ]);
+  assert.equal(transformed.bytes.byteLength, raw.byteLength);
+  assert.deepEqual(transformed.replacementCounts, [
+    { kind: 'credential-file', count: 1 },
+    { kind: 'private-home', count: 1 },
+    { kind: 'runtime-root', count: 3 },
+  ]);
+  assert.equal(transformed.bytes.includes(Buffer.from(privateRoot)), false);
+  assert.equal(transformed.bytes.includes(Buffer.from(nestedRoot)), false);
+  assert.equal(transformed.bytes.includes(Buffer.from(unicodeRoot)), false);
+  assert.equal(transformed.bytes.includes(credential), false);
+  assert.equal(transformed.bytes.includes(skippedProviderSecret), true);
+  assert.equal(
+    transformed.bytes.subarray(assistantOffset, assistantOffset + assistant.length).equals(assistant),
+    true,
+  );
+
+  const equalLengthLeft = redactPrivateEvidenceNeedlesEqualLength(
+    Buffer.from('/private/path-A'),
+    [{ kind: 'runtime-root', value: '/private/path-A' }],
+  );
+  const equalLengthRight = redactPrivateEvidenceNeedlesEqualLength(
+    Buffer.from('/private/path-B'),
+    [{ kind: 'runtime-root', value: '/private/path-B' }],
+  );
+  assert.deepEqual(equalLengthLeft.bytes, equalLengthRight.bytes,
+    'replacement bytes must depend only on kind and length, never a path digest');
+});
+
 test('runner uses only the built CLI boundary and Python stdlib PTY helper', async () => {
   const [runner, pty] = await Promise.all([
     readFile(path.join(repositoryRoot, 'scripts', 'run-conversation-soak.ts'), 'utf8'),
@@ -400,6 +503,8 @@ test('runner uses only the built CLI boundary and Python stdlib PTY helper', asy
   assert.match(pty, /write_all\(master_fd, BRACKETED_PASTE_START\)[\s\S]+write_all\(master_fd, BRACKETED_PASTE_END\)[\s\S]+time\.sleep\(0\.05\)[\s\S]+write_all\(master_fd, b"\\r"\)/u);
   assert.match(pty, /def write_all\(descriptor, value\):/u);
   assert.match(pty, /def dispatch_action\(master_fd, action, args\):[\s\S]+append_dispatch_started\(args\.journal, action\)[\s\S]+submit_action\(master_fd, action\)/u);
+  assert.match(pty, /if action\["kind"\] == "model_turn":[\s\S]+assert_connector_isolation\(args\.command\)[\s\S]+before_ids =[\s\S]+dispatch_action\(master_fd, action, args\)/u);
+  assert.match(pty, /MIMI_CONNECTORS_CONFIG_MODE[\s\S]+exact[\s\S]+connectorCount/u);
   assert.match(pty, /os\.O_WRONLY \| os\.O_CREAT \| os\.O_APPEND/u);
   assert.match(pty, /os\.fsync\(descriptor\)[\s\S]+os\.fsync\(directory\)/u);
   assert.match(runner, /MIMI_CONVERSATION_RUN_POLICY: 'benchmark-no-tools-v1'/u);
@@ -418,13 +523,203 @@ test('runner uses only the built CLI boundary and Python stdlib PTY helper', asy
   assert.match(runner, /digestTree\(path\.join\(repositoryRoot, 'dist'\)\)/u);
   assert.match(runner, /durableIoFile/u);
   assert.match(runner, /providerConfigFile/u);
+  assert.match(runner, /evidenceFinalizationFile/u);
+  assert.match(runner, /evidenceSealFile/u);
+  assert.match(runner, /ptyPrerequisiteFile/u);
+  assert.match(runner, /initializeConversationEvidenceRoot/u);
+  assert.match(runner, /finalizeConversationEvidence/u);
+  assert.match(runner, /verifyConversationPtyPrerequisite/u);
+  assert.doesNotMatch(runner, /retained-evidence-privacy-attestation/u);
+  assert.match(runner, /helperTranscriptProven/u);
+  assert.match(runner, /const sessionBytes = await readFile[\s\S]+protocolItems\(session\)[\s\S]+writeEvidenceBytes\([\s\S]+sessionBytes/u);
+  assert.match(runner, /const traceBytes = await readFile[\s\S]+traceBytes\.toString[\s\S]+writeEvidenceBytes\([\s\S]+traceBytes/u);
   assert.match(runner, /runtimeIntegrityFile/u);
   assert.match(runner, /snapshotRuntimeDependencyTree/u);
   assert.match(runner, /assertRuntimeDependencySnapshot/u);
   assert.match(runner, /P0 runtime closure changed/u);
+  assert.match(runner, /resolvePythonInterpreter/u);
+  assert.match(runner, /O_NOFOLLOW/u);
+  assert.match(runner, /pythonInterpreter/u);
+  assert.match(runner, /runtimeClosureDigest[\s\S]+pythonInterpreter/u);
+  assert.doesNotMatch(runner, /execFileAsync\('python3'/u);
   assert.match(runner, /real Provider modes require a clean build; --skip-build is forbidden/u);
   assert.doesNotMatch(runner, /streamCandidateObserved/u);
   assert.match(pty, /transportChunksObserved/u);
+  assert.match(pty, /signal\.SIGTERM/u);
+  assert.match(pty, /signal\.SIGINT/u);
+  assert.match(pty, /os\.waitpid\(pid, os\.WNOHANG\)/u);
+});
+
+test('Node timeout, SIGTERM, and SIGINT reap the forked PTY CLI before helper exit', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-pty-process-identity-'));
+  try {
+    const helper = path.join(repositoryRoot, 'scripts', 'run-conversation-pty.py');
+    const fakeCli = path.join(root, 'fake-cli.mjs');
+    const actions = path.join(root, 'actions.json');
+    const credential = path.join(root, 'provider.env');
+    await writeFile(fakeCli, [
+      "import { appendFileSync, writeFileSync } from 'node:fs';",
+      "const pidFile = process.env.PTY_TEST_PID_FILE;",
+      "const heartbeatFile = process.env.PTY_TEST_HEARTBEAT_FILE;",
+      "if (!pidFile || !heartbeatFile) process.exit(97);",
+      "writeFileSync(pidFile, `${process.pid}\\n`, { mode: 0o600 });",
+      "process.stdout.write('MimiAgent v-test\\r\\n· 模式 test\\r\\n');",
+      "setInterval(() => appendFileSync(heartbeatFile, 'tick\\n'), 20);",
+    ].join('\n'), { mode: 0o600 });
+    await writeFile(actions, JSON.stringify([
+      {
+        kind: 'terminal_action',
+        text: 'keep-running',
+        waitFor: 'this-marker-never-arrives',
+        timeoutMs: 60_000,
+      },
+      { kind: 'terminal_action', text: '/exit', waitForExit: true },
+    ]), { mode: 0o600 });
+    await writeFile(credential, 'TEST_PROVIDER_KEY="synthetic-test-provider-key"\n', { mode: 0o600 });
+
+    for (const termination of ['timeout', 'SIGTERM', 'SIGINT'] as const) {
+      const pidFile = path.join(root, `${termination}.pid`);
+      const heartbeatFile = path.join(root, `${termination}.heartbeat`);
+      const transcript = path.join(root, `${termination}.terminal`);
+      const result = path.join(root, `${termination}.result.json`);
+      const args = [
+        helper,
+        '--purpose', 'control',
+        '--actions', actions,
+        '--transcript', transcript,
+        '--result', result,
+        '--session-id', 'test-session',
+        '--startup-timeout-ms', '5000',
+        '--', process.execPath, fakeCli,
+      ];
+      const env = {
+        ...process.env,
+        MIMI_CONVERSATION_SECRET_NAMES: 'TEST_PROVIDER_KEY',
+        MIMI_ENV_FILE: credential,
+        PTY_TEST_PID_FILE: pidFile,
+        PTY_TEST_HEARTBEAT_FILE: heartbeatFile,
+      };
+
+      if (termination === 'timeout') {
+        const completion = execFileAsync('python3', args, {
+          cwd: root,
+          env,
+          encoding: 'utf8',
+          timeout: 1_000,
+        });
+        await waitForFile(pidFile);
+        await waitForFile(heartbeatFile);
+        await assert.rejects(completion);
+      } else {
+        const child = spawn('python3', args, { cwd: root, env, stdio: 'ignore' });
+        await waitForFile(pidFile);
+        await waitForFile(heartbeatFile);
+        assert.equal(child.kill(termination), true);
+        await waitForChildExit(child);
+      }
+
+      const childPid = Number((await readFile(pidFile, 'utf8')).trim());
+      assert.ok(Number.isSafeInteger(childPid) && childPid > 0);
+      assert.throws(
+        () => process.kill(childPid, 0),
+        (error: NodeJS.ErrnoException) => error.code === 'ESRCH',
+        `${termination} left the forked PTY child alive`,
+      );
+      const settledHeartbeat = await readFile(heartbeatFile, 'utf8');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(await readFile(heartbeatFile, 'utf8'), settledHeartbeat,
+        `${termination} allowed raw runtime writes after helper exit`);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('PTY control purpose proves terminal receipts without masquerading as model proof', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-pty-control-purpose-'));
+  try {
+    const helper = path.join(repositoryRoot, 'scripts', 'run-conversation-pty.py');
+    const fakeCli = path.join(root, 'fake-control-cli.sh');
+    const credential = path.join(root, 'provider.env');
+    await writeFile(fakeCli, [
+      "printf 'MimiAgent v-test\\r\\n· 模式 test\\r\\n'",
+      'sleep 0.2',
+      'exit 0',
+    ].join('\n'), { mode: 0o600 });
+    await writeFile(credential, 'TEST_PROVIDER_KEY="synthetic-test-provider-key"\n', { mode: 0o600 });
+    const env = {
+      ...process.env,
+      MIMI_CONVERSATION_SECRET_NAMES: 'TEST_PROVIDER_KEY',
+      MIMI_ENV_FILE: credential,
+    };
+    const invoke = async (name: string, actionsValue: unknown[]) => {
+      const actions = path.join(root, `${name}.actions.json`);
+      const transcript = path.join(root, `${name}.terminal`);
+      const result = path.join(root, `${name}.result.json`);
+      await writeFile(actions, JSON.stringify(actionsValue), { mode: 0o600 });
+      const completion = execFileAsync('python3', [
+        helper,
+        '--purpose', 'control',
+        '--actions', actions,
+        '--transcript', transcript,
+        '--result', result,
+        '--session-id', 'control-session',
+        '--startup-timeout-ms', '5000',
+        '--', '/bin/sh', fakeCli,
+      ], { cwd: root, env, encoding: 'utf8', timeout: 5_000 });
+      return { completion, result };
+    };
+
+    const successful = await invoke('success', [{
+      kind: 'terminal_action', text: '/exit', waitForExit: true, timeoutMs: 2_000,
+    }]);
+    await successful.completion.catch(async (error: unknown) => {
+      const details = await readFile(successful.result, 'utf8').catch(() => 'missing result');
+      throw new Error(`control helper failed: ${details}`, { cause: error });
+    });
+    const receipt = JSON.parse(await readFile(successful.result, 'utf8')) as Record<string, unknown>;
+    assert.equal(receipt.kind, 'mimi-pty-control-session');
+    assert.equal(receipt.purpose, 'control');
+    assert.equal(receipt.passed, true);
+    assert.equal(receipt.modelProofEligible, false);
+
+    const mixed = await invoke('mixed', [
+      {
+        kind: 'model_turn', text: 'forbidden', scenarioId: 'conv-test', turn: 1,
+        nonce: 'nonce-test', sessionId: 'control-session', evidenceKind: 'soak',
+      },
+      { kind: 'terminal_action', text: '/exit', waitForExit: true },
+    ]);
+    await assert.rejects(mixed.completion, /control purpose accepts only terminal_action/u);
+
+    const noExit = await invoke('no-exit', [{
+      kind: 'terminal_action', text: 'status', waitFor: 'never', timeoutMs: 100,
+    }]);
+    await assert.rejects(noExit.completion, /must end with an explicit \/exit/u);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('runner owns every raw runtime through recovery, bounded termination, and path-free quarantine', async () => {
+  const runner = await readFile(
+    path.join(repositoryRoot, 'scripts', 'run-conversation-soak.ts'),
+    'utf8',
+  );
+  assert.match(runner, /setupControlledRawRuntime/u);
+  assert.match(runner, /bindControlledRawRuntimeDaemon\(controlled, daemonPid\)/u);
+  assert.match(runner, /recoverControlledRawRuntimes/u);
+  assert.match(runner, /terminateProcessWithDeadlines/u);
+  assert.match(runner, /finalizeControlledRawRuntime/u);
+  assert.equal((runner.match(/recoverControlledRawRuntimes\(\{/gu) ?? []).length, 1);
+  assert.doesNotMatch(runner, /mkdtemp\(path\.join\(os\.tmpdir\(\), 'mimi-cr-'\)\)/u);
+  assert.doesNotMatch(runner, /finalizeExternalRawRuntime/u);
+  assert.match(runner, /killTimedOut[\s\S]+post-SIGKILL hard deadline/u);
+  assert.match(runner, /cleanupEphemeralCredentialFile\(runtime\.credential\)[\s\S]+connectorBytes[\s\S]+finalizeControlledRawRuntime/u);
+  assert.match(runner, /rawRuntimeFinalizationProven/u);
+  assert.match(runner, /quarantineBytes/u);
+  assert.match(runner, /quarantineFiles/u);
+  assert.match(runner, /raw runtime quota is exhausted before Daemon startup/u);
 });
 
 test('real Provider runner modes reject --skip-build before credentials or dispatch', async () => {
@@ -570,6 +865,47 @@ print(json.dumps({"hits": hits, "leaked": secrets[0] in sanitized, "passed": pas
       }),
       /exactly one valid declared Provider secret name/u,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('PTY per-turn Connector gate requires exact-empty bytes and a zero live count', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-pty-connector-gate-'));
+  const helper = path.join(repositoryRoot, 'scripts', 'run-conversation-pty.py');
+  const connectors = path.join(root, 'connectors.json');
+  const probe = [
+    'import importlib.util, json, sys',
+    'spec = importlib.util.spec_from_file_location("mimi_pty", sys.argv[1])',
+    'module = importlib.util.module_from_spec(spec)',
+    'spec.loader.exec_module(module)',
+    'module.management_json = lambda command, args: {"connectorCount": 0}',
+    'print(json.dumps(module.assert_connector_isolation(["node", "dist/index.js"])))',
+  ].join('\n');
+  const env = {
+    ...process.env,
+    MIMI_CONNECTORS_CONFIG_MODE: 'exact',
+    MIMI_CONNECTORS_CONFIG: connectors,
+  };
+  try {
+    await writeFile(connectors, '{"connectors":{}}\n', { mode: 0o600 });
+    const accepted = await execFileAsync('python3', ['-c', probe, helper], {
+      cwd: root,
+      env,
+      encoding: 'utf8',
+    });
+    assert.deepEqual(JSON.parse(accepted.stdout), {
+      proven: true,
+      connectorCount: 0,
+      configSha256: sha256('{"connectors":{}}\n'),
+    });
+
+    await writeFile(connectors, '{"connectors":{"unexpected":{}}}\n', { mode: 0o600 });
+    await assert.rejects(execFileAsync('python3', ['-c', probe, helper], {
+      cwd: root,
+      env,
+      encoding: 'utf8',
+    }), /Connector configuration is not exact-empty/u);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

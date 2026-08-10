@@ -47,6 +47,8 @@ interface InitializeOptions {
   runtimeRoot?: string;
 }
 
+type ConnectorConfigMode = 'managed' | 'exact';
+
 interface ConnectorScriptIdentity {
   canonicalPath: string;
   device?: bigint;
@@ -56,6 +58,13 @@ interface ConnectorScriptIdentity {
 
 export function runtimeRoot(): string {
   return path.resolve(fileURLToPath(new URL('../../', import.meta.url)));
+}
+
+function connectorConfigMode(): ConnectorConfigMode {
+  const value = process.env.MIMI_CONNECTORS_CONFIG_MODE;
+  if (value === undefined) return 'managed';
+  if (value === 'exact') return value;
+  throw new Error('MIMI_CONNECTORS_CONFIG_MODE 只接受 exact；省略该变量时使用 managed 模式');
 }
 
 function localConnectorConfig(
@@ -260,28 +269,40 @@ export async function initializeMimi(
   config: AppConfig,
   options: InitializeOptions = {},
 ) {
+  const configMode = connectorConfigMode();
   const paths = mimiPaths(config);
   const root = path.resolve(options.runtimeRoot ?? runtimeRoot());
   const platform = options.platform ?? process.platform;
+  if (configMode === 'exact' && !await pathExists(paths.connectorsConfig)) {
+    throw new Error(`MIMI_CONNECTORS_CONFIG exact 配置不存在：${paths.connectorsConfig}`);
+  }
   await mkdir(paths.root, { recursive: true, mode: 0o700 });
   await chmod(paths.root, 0o700);
   await ensureControlToken(paths.socket);
 
-  const templateFile = path.join(root, 'mimi.connectors.example.json');
-  const template = parseConnectorConfig(JSON.parse(await readFile(templateFile, 'utf8')) as unknown);
-  const localTemplate = localConnectorConfig(template, root, platform);
-  const connectorCreated = !await pathExists(paths.connectorsConfig)
-    && await writeExclusiveJson(paths.connectorsConfig, localTemplate);
-  let connectorConfig = parseConnectorConfig(
-    JSON.parse(await readFile(paths.connectorsConfig, 'utf8')) as unknown,
-  );
+  let connectorCreated = false;
   let updatedActions = 0;
   let removedRetired = 0;
-  if (!connectorCreated) {
-    const merged = await mergeTemplateActions(connectorConfig, localTemplate);
-    connectorConfig = merged.config;
-    ({ updatedActions, removedRetired } = merged);
-    if (merged.changed) await writeAtomicJson(paths.connectorsConfig, connectorConfig);
+  let connectorConfig: ConnectorFileConfig;
+  if (configMode === 'exact') {
+    connectorConfig = parseConnectorConfig(
+      JSON.parse(await readFile(paths.connectorsConfig, 'utf8')) as unknown,
+    );
+  } else {
+    const templateFile = path.join(root, 'mimi.connectors.example.json');
+    const template = parseConnectorConfig(JSON.parse(await readFile(templateFile, 'utf8')) as unknown);
+    const localTemplate = localConnectorConfig(template, root, platform);
+    connectorCreated = !await pathExists(paths.connectorsConfig)
+      && await writeExclusiveJson(paths.connectorsConfig, localTemplate);
+    connectorConfig = parseConnectorConfig(
+      JSON.parse(await readFile(paths.connectorsConfig, 'utf8')) as unknown,
+    );
+    if (!connectorCreated) {
+      const merged = await mergeTemplateActions(connectorConfig, localTemplate);
+      connectorConfig = merged.config;
+      ({ updatedActions, removedRetired } = merged);
+      if (merged.changed) await writeAtomicJson(paths.connectorsConfig, connectorConfig);
+    }
   }
   await chmod(paths.connectorsConfig, 0o600);
 

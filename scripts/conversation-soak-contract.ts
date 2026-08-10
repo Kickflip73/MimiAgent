@@ -464,6 +464,73 @@ export function sha256(value: string | Buffer): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+export interface EqualLengthPrivateNeedle {
+  kind: string;
+  value: string | Buffer;
+}
+
+export interface EqualLengthPrivateTransform {
+  bytes: Buffer;
+  replacementCounts: Array<{ kind: string; count: number }>;
+}
+
+function equalLengthPrivateReplacement(length: number, kind: string): Buffer {
+  const safeKind = kind.replaceAll(/[^A-Za-z0-9-]/gu, '-');
+  const label = Buffer.from(`<mimi-${safeKind}>`, 'ascii');
+  const output = Buffer.alloc(length, 0x5f);
+  for (let offset = 0; offset < length; offset += label.length) {
+    label.copy(output, offset, 0, Math.min(label.length, length - offset));
+  }
+  return output;
+}
+
+export function redactPrivateEvidenceNeedlesEqualLength(
+  input: Buffer,
+  needles: EqualLengthPrivateNeedle[],
+): EqualLengthPrivateTransform {
+  const unique = new Map<string, { kinds: Set<string>; value: Buffer }>();
+  for (const needle of needles) {
+    if (needle.kind === 'provider-secret' || needle.value.length === 0) continue;
+    const encoded = Buffer.isBuffer(needle.value)
+      ? Buffer.from(needle.value)
+      : Buffer.from(needle.value, 'utf8');
+    const key = encoded.toString('hex');
+    const existing = unique.get(key);
+    if (existing) existing.kinds.add(needle.kind);
+    else unique.set(key, { kinds: new Set([needle.kind]), value: encoded });
+  }
+  const ordered = [...unique.values()].sort((left, right) => (
+    right.value.length - left.value.length || left.value.compare(right.value)
+  ));
+  const output = Buffer.from(input);
+  const counts = new Map<string, number>();
+  for (const needle of ordered) {
+    const kind = [...needle.kinds].sort()[0]!;
+    const replacement = equalLengthPrivateReplacement(needle.value.length, kind);
+    let offset = 0;
+    while (offset <= output.length - needle.value.length) {
+      const found = output.indexOf(needle.value, offset);
+      if (found < 0) break;
+      replacement.copy(output, found);
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+      offset = found + needle.value.length;
+    }
+  }
+  for (const needle of ordered) {
+    if (output.includes(needle.value)) {
+      throw new Error(`retained PTY private-path transform missed ${[...needle.kinds].sort()[0]}`);
+    }
+  }
+  if (output.byteLength !== input.byteLength) {
+    throw new Error('retained PTY private-path transform changed byte offsets');
+  }
+  return {
+    bytes: output,
+    replacementCounts: [...counts].sort(([left], [right]) => left.localeCompare(right))
+      .map(([kind, count]) => ({ kind, count })),
+  };
+}
+
 export function estimateConversationUsd(
   inputTokens: number,
   outputTokens: number,
@@ -573,6 +640,33 @@ export function deriveConversationResumeState(
     uncertain: planned.filter((turn) => started.has(turn.key) && !terminal.has(turn.key)),
     terminal: planned.filter((turn) => terminal.has(turn.key)),
   };
+}
+
+export async function runFailStopConcurrency<T>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T) => Promise<void>,
+): Promise<void> {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new Error('conversation worker concurrency must be a positive integer');
+  }
+  let next = 0;
+  let stopped = false;
+  let firstError: unknown;
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (!stopped && next < values.length) {
+      const index = next;
+      next += 1;
+      try {
+        await operation(values[index]!);
+      } catch (error) {
+        firstError ??= error;
+        stopped = true;
+      }
+    }
+  });
+  await Promise.all(workers);
+  if (firstError !== undefined) throw firstError;
 }
 
 function itemType(value: unknown): string | undefined {

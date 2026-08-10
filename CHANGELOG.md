@@ -63,6 +63,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   executable scenario actions/fixtures/oracles and W/F Tool policies remain explicit
   blockers, no new real-Provider calibration was run for this tranche, and the formal
   100-by-30 denominator remains zero
+- record the post-checkpoint audit correction for the real two-turn persistent PTY run
+  at `4bf889e`: both canonical Runs completed with 3010/122 and 3132/68 input/output
+  tokens, an empty advertised Tool surface, and the exact Event/Task/Daemon Run/runtime
+  Run/Session/Trace chain, but the retained raw runtime bundle still contained the
+  Daemon `control.token` and private absolute paths in the initialized Connector config.
+  The append-only generation-1 `audit-correction.json` therefore classifies the whole
+  attempt as `unproven`; it does not backfill the original evidence, does not replace
+  the earlier `2cc22fb` PTY record, and leaves the formal denominator at zero. Exact
+  Connector config mode plus an external raw runtime and canonical hash archive were
+  subsequently implemented and locally verified, without claiming a new PTY run. Through that correction, the
+  documented attempts total 20 actual real-Provider turns: 13 proven calibration-only
+  turns and 7 actual-but-unproven turns, while `formalDenominatorTurns` remains zero;
+  a validation command's `realProviderTurnsExecuted=0` is not a cumulative counter
+- add the next PTY evidence engineering checkpoint: strict exact-empty
+  Connector initialization; an external private raw-runtime lifecycle with foreground
+  Daemon process-start identity recovery and bounded termination; a physical,
+  byte-hashed Python interpreter identity in the runtime closure; timeout, SIGTERM and
+  SIGINT child-process-group reaping plus a control-only PTY purpose that can never
+  produce model proof; equal-byte private-path replacement that preserves transcript
+  offsets without encoding path digests; and a canonical-indexed generation-zero
+  detached seal whose prerequisite verifier replays the helper/terminal and exact
+  Event/Task/Run/Session/Trace chain with positive usage, unique identities, an empty
+  Tool surface and exact Connector receipts. The tranche passed 97 focused tests,
+  architecture budgets, typecheck, all 1173 unit tests, manifest validation and build;
+  package smoke/full CI were not run, and it has not produced a new proven PTY
 - add an authenticated local-only no-tools calibration policy with an exact empty
   SDK Tool surface, a synchronous pre-provider Trace receipt, single-provider
   credential isolation, content-bound runtime identity, and byte-verified

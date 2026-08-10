@@ -148,9 +148,34 @@ userinfo，并只复制一个选中的 key；PTY 只从外置 `0600` env 文件�
 每轮前后及 PTY 整体前后复核。PTY 当前只有逐轮 durable journal，closure 仍是整个 PTY smoke
 前后复核，不应写成逐轮 closure 证明。
 
+本计划统一使用三套不可互换的计数：`actualRealProviderTurnsExecuted` 统计确实到达真实 Provider
+的调用，不论最终证据 proven 与否；`provenCalibrationTurns` 只统计通过完整 calibration/
+prerequisite 审计、但明确不进入正式场景分母的轮次；`formalDenominatorTurns` 只统计通过正式
+100×30 场景合同的轮次。某次 manifest validation 输出的 `realProviderTurnsExecuted=0` 仅说明该
+validation 命令没有派发模型，不能作为累计历史计数。
+
+固定提交 `4bf889e` 后曾执行一次新的真实两轮持久 PTY：两个 canonical Run 的 input/output
+usage 分别为 3010/122 与 3132/68，空 Tool surface 与
+Event -> Task -> Daemon Run -> runtime Run -> Session/Trace 精确链路均通过功能核验。但 post-run
+审计发现 evidence bundle 仍保留 raw Daemon `control.token`，且初始化后的 Connector config
+包含私人绝对路径，因此该整次尝试通过 append-only、generation 1 的 `audit-correction.json`
+判为 `unproven`，不回填原始 evidence，也不计任何正式轮次。该结论不改写固定提交 `2cc22fb`
+已经关闭的历史 PTY prerequisite。截至该 correction，累计
+`actualRealProviderTurnsExecuted=20`、`provenCalibrationTurns=13`，而
+`formalDenominatorTurns=0`。
+
+修复方向为 exact Connector config mode、evidence 根外的 raw runtime，以及只导出可重算哈希的
+canonical Event/Task/Run/Session/Trace/terminal archive。当前 engineering checkpoint 已加入物理且
+内容绑定的 Python interpreter identity；timeout/`SIGTERM`/`SIGINT` 后 bounded child process-group
+reap；只允许 terminal action、且永不产生 model proof 的 PTY control purpose；保持 terminal
+字节长度与 assistant offset 的私人路径等字节替换；foreground Daemon PID/process-start identity
+恢复；以及 generation-0 detached seal 后重新逐字节/逐实体核验的 strict PTY prerequisite。本批
+已通过 97 项聚焦回归、2 项 architecture budget、`npm run check`、1173 项完整单测、manifest
+validation 和 `npm run build`；没有执行新的真实 PTY 或 Provider 调用，因此不增加 proven 计数。
+
 完整 resume、逐场景 action/fixture/oracle 执行和 W/F 强制 Tool policy 仍未闭环；正式
-Provider soak 因此保持 `NO-GO`。本轮 durability WIP 未发起新的真实 Provider calibration，
-`realProviderTurnsExecuted=0`、正式分母为 0；manifest 校验、PTY helper 和既有 calibration-only
-证据均不计入正式轮次。
+Provider soak 因此保持 `NO-GO`。上述 `4bf889e` 两轮为 post-run 审计不成立的 `unproven`
+尝试；既有 calibration-only 证据与该失败尝试均不计入正式轮次，
+`formalDenominatorTurns=0`。
 
 进度与客观阻断分别记录在 [PROGRESS.md](PROGRESS.md) 和 [BLOCKED.md](BLOCKED.md)。

@@ -36,6 +36,13 @@ EVIDENCE_KINDS = {"fixture", "readiness", "live_action", "soak"}
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
 ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 MAX_CREDENTIAL_BYTES = 64 * 1024
+EXACT_CONNECTOR_CONFIG = b'{"connectors":{}}\n'
+
+
+class HelperTerminationRequested(BaseException):
+    def __init__(self, signum):
+        super().__init__(f"received signal {signum}")
+        self.signum = signum
 
 
 def iso_now():
@@ -145,21 +152,49 @@ def proof_passed(error, exit_code, startup_observed, secret_hits, model_actions)
         and startup_observed
         and secret_hits == 0
         and len(model_actions) > 0
+        and all(item["connectorIsolation"]["proven"] for item in model_actions)
         and all(item["modelRun"]["provenTerminal"] for item in model_actions)
+    )
+
+
+def control_passed(error, exit_code, startup_observed, secret_hits, action_results):
+    return (
+        error is None
+        and exit_code == 0
+        and startup_observed
+        and secret_hits == 0
+        and len(action_results) > 0
+        and all(
+            item["kind"] == "terminal_action"
+            and isinstance(item.get("terminalAction"), dict)
+            and item["terminalAction"].get("matched") is True
+            for item in action_results
+        )
+        and action_results[-1]["terminalAction"].get("exited") is True
     )
 
 
 def exclusive_write(file_name, data):
     descriptor = os.open(file_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.write(descriptor, data)
+        write_all(descriptor, data)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    parent = os.path.dirname(file_name) or "."
+    directory_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    if hasattr(os, "O_DIRECTORY"):
+        directory_flags |= os.O_DIRECTORY
+    directory = os.open(parent, directory_flags)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--purpose", choices=("proof", "control"), default="proof")
     parser.add_argument("--actions", required=True)
     parser.add_argument("--transcript", required=True)
     parser.add_argument("--result", required=True)
@@ -196,7 +231,7 @@ def validate_model_action(action, index, session_id):
         raise ValueError(f"model action {index} evidenceKind is invalid")
 
 
-def read_actions(file_name, session_id):
+def read_actions(file_name, session_id, purpose="proof"):
     with open(file_name, "r", encoding="utf-8") as source:
         value = json.load(source)
     if not isinstance(value, list) or not value:
@@ -220,24 +255,112 @@ def read_actions(file_name, session_id):
             raise ValueError(f"model action {index} cannot use textual waitFor completion")
         if action["kind"] == "model_turn":
             validate_model_action(action, index, session_id)
+    if purpose == "control" and any(action["kind"] != "terminal_action" for action in value):
+        raise ValueError("control purpose accepts only terminal_action records")
+    if purpose == "proof" and not any(action["kind"] == "model_turn" for action in value):
+        raise ValueError("proof purpose requires at least one model_turn")
+    final_action = value[-1]
+    if (
+        final_action["kind"] != "terminal_action"
+        or final_action["text"].strip() != "/exit"
+        or final_action.get("waitForExit") is not True
+    ):
+        raise ValueError(f"{purpose} purpose must end with an explicit /exit waitForExit action")
     return value
 
 
+def process_group_exists(pid):
+    try:
+        os.killpg(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError as error:
+        raise RuntimeError("cannot verify the PTY child process group") from error
+
+
+def wait_for_child_process_group(pid, deadline):
+    while time.monotonic() < deadline:
+        try:
+            if os.getpgid(pid) == pid:
+                return True
+        except ProcessLookupError:
+            return False
+        time.sleep(0.01)
+    return False
+
+
+def wait_group_bounded(pid, deadline, leader_reaped=False):
+    while time.monotonic() < deadline:
+        if not leader_reaped:
+            try:
+                waited, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                leader_reaped = True
+            except InterruptedError:
+                continue
+            else:
+                leader_reaped = waited == pid
+        if leader_reaped and not process_group_exists(pid):
+            return True
+        time.sleep(0.02)
+    return False
+
+
 def terminate_group(pid, grace_seconds=2.0):
+    leader_reaped = False
+    try:
+        waited, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        leader_reaped = True
+    except InterruptedError:
+        waited = 0
+    else:
+        leader_reaped = waited == pid
+    if leader_reaped:
+        if not process_group_exists(pid):
+            return
+    else:
+        try:
+            child_group = os.getpgid(pid)
+        except ProcessLookupError:
+            child_group = None
+        if child_group != pid:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            if wait_group_bounded(pid, time.monotonic() + grace_seconds, leader_reaped):
+                return
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            if not wait_group_bounded(pid, time.monotonic() + grace_seconds, leader_reaped):
+                raise TimeoutError("PTY child did not exit after direct SIGKILL")
+            return
+    if not process_group_exists(pid):
+        return
     try:
         os.killpg(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
+        pass
+    except PermissionError as error:
+        raise RuntimeError("cannot terminate the PTY child process group") from error
+    if wait_group_bounded(pid, time.monotonic() + grace_seconds, leader_reaped):
         return
-    deadline = time.monotonic() + grace_seconds
-    while time.monotonic() < deadline:
-        waited, _ = os.waitpid(pid, os.WNOHANG)
-        if waited == pid:
-            return
-        time.sleep(0.05)
     try:
         os.killpg(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
         pass
+    except PermissionError as error:
+        raise RuntimeError("cannot kill the PTY child process group") from error
+    if not wait_group_bounded(pid, time.monotonic() + grace_seconds, leader_reaped):
+        raise TimeoutError("PTY child process group did not exit after SIGKILL")
+
+
+def request_helper_termination(signum, _frame):
+    raise HelperTerminationRequested(signum)
 
 
 def drain(master_fd, transcript, max_bytes, timeout=0.1):
@@ -342,6 +465,62 @@ def management_json(command, args, timeout=5):
     return json.loads(completed.stdout.decode("utf-8"))
 
 
+def assert_connector_isolation(command):
+    if os.environ.get("MIMI_CONNECTORS_CONFIG_MODE") != "exact":
+        raise RuntimeError("PTY requires exact Connector configuration mode")
+    file_name = os.environ.get("MIMI_CONNECTORS_CONFIG", "")
+    if not file_name or not os.path.isabs(file_name) or os.path.abspath(file_name) != file_name:
+        raise RuntimeError("PTY Connector configuration path must be absolute and normalized")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(file_name, flags)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise RuntimeError("PTY Connector configuration is not a regular file")
+        if stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1:
+            raise RuntimeError("PTY Connector configuration permissions or link count are invalid")
+        if hasattr(os, "getuid") and before.st_uid != os.getuid():
+            raise RuntimeError("PTY Connector configuration owner is invalid")
+        if before.st_size != len(EXACT_CONNECTOR_CONFIG):
+            raise RuntimeError("PTY Connector configuration is not exact-empty")
+        contents = b""
+        while len(contents) <= len(EXACT_CONNECTOR_CONFIG):
+            chunk = os.read(descriptor, len(EXACT_CONNECTOR_CONFIG) + 1 - len(contents))
+            if not chunk:
+                break
+            contents += chunk
+        after = os.fstat(descriptor)
+        if (
+            before.st_dev != after.st_dev
+            or before.st_ino != after.st_ino
+            or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_mode != after.st_mode
+            or before.st_nlink != after.st_nlink
+        ):
+            raise RuntimeError("PTY Connector configuration changed while reading")
+        current = os.lstat(file_name)
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_dev != before.st_dev
+            or current.st_ino != before.st_ino
+            or current.st_nlink != 1
+        ):
+            raise RuntimeError("PTY Connector configuration path changed while reading")
+    finally:
+        os.close(descriptor)
+    if contents != EXACT_CONNECTOR_CONFIG:
+        raise RuntimeError("PTY Connector configuration is not exact-empty")
+    status = management_json(command, ["status", "--json"])
+    if not isinstance(status, dict) or status.get("connectorCount") != 0:
+        raise RuntimeError("PTY Daemon advertised one or more Connectors")
+    return {
+        "proven": True,
+        "connectorCount": 0,
+        "configSha256": hashlib.sha256(contents).hexdigest(),
+    }
+
+
 def session_runs(command, session_id):
     value = management_json(command, ["runs", "100"])
     if not isinstance(value, list):
@@ -431,7 +610,7 @@ def wait_terminal_action(master_fd, transcript, start_offset, action, args):
 
 def main():
     args = parse_args()
-    actions = read_actions(args.actions, args.session_id)
+    actions = read_actions(args.actions, args.session_id, args.purpose)
     if any(action["kind"] == "model_turn" for action in actions) and not args.journal:
         raise ValueError("--journal is required for model_turn actions")
     # Validate and load the one selected secret before forking the PTY. A missing,
@@ -445,6 +624,7 @@ def main():
     error = None
     startup_observed = False
     child_tty_checked = False
+    master_fd = None
     started_at = iso_now()
     try:
         pid, master_fd = pty.fork()
@@ -452,6 +632,10 @@ def main():
             if not os.isatty(0) or not os.isatty(1) or not os.isatty(2):
                 os._exit(125)
             os.execvpe(args.command[0], args.command, os.environ)
+        signal.signal(signal.SIGTERM, request_helper_termination)
+        signal.signal(signal.SIGINT, request_helper_termination)
+        if not wait_for_child_process_group(pid, time.monotonic() + 1.0):
+            raise RuntimeError("PTY child does not own its process group")
         args.child_pid = pid
         child_tty_checked = True
         startup_observed = wait_startup(
@@ -462,7 +646,14 @@ def main():
         for index, action in enumerate(actions):
             action_start = len(transcript)
             action_started_at = iso_now()
-            before_ids = {item.get("id") for item in session_runs(args.command, args.session_id)}
+            connector_isolation = None
+            before_ids = set()
+            if action["kind"] == "model_turn":
+                # This gate is deliberately before the durable dispatch marker and
+                # before writing any input to the PTY. A changed config or live
+                # Connector therefore stops this turn at the Provider boundary.
+                connector_isolation = assert_connector_isolation(args.command)
+                before_ids = {item.get("id") for item in session_runs(args.command, args.session_id)}
             dispatch_action(master_fd, action, args)
             model_run = None
             terminal_action = None
@@ -488,6 +679,7 @@ def main():
                 "completedAt": iso_now(),
                 "startRawOffset": action_start,
                 "endRawOffset": len(transcript),
+                "connectorIsolation": connector_isolation,
                 "modelRun": model_run,
                 "terminalAction": terminal_action,
             })
@@ -500,13 +692,23 @@ def main():
     except BaseException as caught:
         error = f"{type(caught).__name__}: {caught}"
         if pid:
-            terminate_group(pid)
+            try:
+                terminate_group(pid)
+            except BaseException as cleanup_error:
+                error = f"{error}; cleanup failed: {type(cleanup_error).__name__}: {cleanup_error}"
+    finally:
+        if master_fd is not None:
+            try:
+                os.close(master_fd)
+            except OSError:
+                pass
     sanitized, secret_hits = redact(bytes(transcript), secrets)
     exclusive_write(args.transcript, sanitized)
     model_actions = [item for item in action_results if item["kind"] == "model_turn"]
     result = {
         "schemaVersion": 2,
-        "kind": "mimi-persistent-pty-smoke",
+        "kind": "mimi-persistent-pty-smoke" if args.purpose == "proof" else "mimi-pty-control-session",
+        "purpose": args.purpose,
         "tty": True,
         "childTtyChecked": child_tty_checked,
         "startupObserved": startup_observed,
@@ -518,10 +720,15 @@ def main():
         "transcriptSha256": hashlib.sha256(sanitized).hexdigest(),
         "actions": action_results,
         "error": error,
-        "passed": proof_passed(
+        "modelProofEligible": args.purpose == "proof" and proof_passed(
             error, exit_code, startup_observed, secret_hits, model_actions
         ),
     }
+    result["passed"] = (
+        result["modelProofEligible"]
+        if args.purpose == "proof"
+        else control_passed(error, exit_code, startup_observed, secret_hits, action_results)
+    )
     exclusive_write(args.result, (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode())
     return 0 if result["passed"] else 1
 

@@ -28,12 +28,20 @@
 
 - 当前没有已证明的 M3 live 媒体会话、实时语音轮次或 100×30 正式终端轮次。S-lane no-tools
   持久 PTY prerequisite、1×1 与 2×5 calibration 已有独立的真实 Provider 原始证据，但都标为
-  calibration-only，不计正式分母；`realProviderTurnsExecuted=0` 继续表示正式 100×30 未执行。
+  calibration-only，不计正式分母。截至 `4bf889e` correction，累计
+  `actualRealProviderTurnsExecuted=20`、`provenCalibrationTurns=13`，但
+  `formalDenominatorTurns=0`。某次 manifest validation 中的 `realProviderTurnsExecuted=0` 只表示
+  该 validation 命令没有派发模型，不能覆盖上述累计事实。
 - `bench:capacity`、直接调用内部函数、静态 fixture、合成 transcript、readiness probe 和
   单次 Browser/Computer E2E 都不能计入 3000 个真实 user turns。
 - 自动化 headless CLI lane 必须走 CLI -> Daemon -> 真实 Provider 并保留 Run/Trace/Session/
   usage 证据；它仍不能被称为 `tty:true` 持久 PTY。固定提交 `2cc22fb` 的真实持久 PTY 已关闭
   正式 soak 的这一 prerequisite，但不替代任何 100×30 正式轮次。
+- 固定提交 `4bf889e` 后的另一轮真实持久 PTY 虽完成两个 canonical Run（usage 3010/122 与
+  3132/68）、空 Tool surface 和精确 Event→Task→Daemon Run→runtime Run→Session/Trace 链，
+  post-run 审计却发现保留的 raw runtime 含 Daemon `control.token` 与 Connector 私人绝对路径。
+  generation 1 `audit-correction.json` 因而把整次尝试判为 `unproven`，且不回填原始 evidence；
+  它不推翻上述 `2cc22fb` 历史证据，也不进入正式分母。
 - fixture、readiness、live_action 和 soak 分层独立；blocked、ineligible、skipped、failed、
   uncertain 和 unproven 均不得从分母静默删除。
 - 外部能力阻断只隔离相应 scene/lane。除非所有安全替代路径都耗尽，否则继续执行其余场景。
@@ -63,8 +71,8 @@
   RunPolicy、模型派发前空 Tool surface receipt 及 Event→Task→Run→Session/Trace/终端文件
   绑定已允许并完成隔离 S-lane PTY/1×1/2×5 calibration；W/F fixture、逐场景 action/oracle、
   完整 resume 与正式 100×30 soak 仍保持 Provider 前 `NO-GO`。
-  `realProviderTurnsExecuted=0`、正式分母为 0，直到
-  正式场景证据通过审计后才可更新前者；现有校准轮次不计入正式分母。
+  `formalDenominatorTurns=0`，直到正式场景证据通过审计后才可更新；现有 calibration 与
+  unproven 实际调用均不计入该正式分母。
 - formal runner 的 headless 与持久 PTY model-turn 均已在输入前 durable `fsync`
   `turn_dispatch_started`；journal 首错永久 poison 并通过 dispatch barrier fail-stop，checkpoint
   由 single-writer `generation + sequence` 保证单调。SIGKILL 外置 credential owner/recovery、
@@ -75,8 +83,19 @@
   manifest，在启动前与 headless 每轮前后复核；PTY 当前仅在整体前后复核 closure，逐轮只有
   dispatch journal，不能扩大为逐轮 runtime identity 证据。
 - 完整 resume、逐场景 action/fixture/oracle 的真实执行与 W/F 强制 Tool policy 仍未闭环，因而
-  正式 100×30 soak 继续 `NO-GO`。本轮 WIP 没有运行新的真实 Provider calibration；既有
-  calibration-only 证据不计正式轮次，`realProviderTurnsExecuted=0`、正式分母仍为 0。
+  正式 100×30 soak 继续 `NO-GO`。exact Connector mode、evidence 根外 raw runtime 与 canonical
+  hash archive 已完成本地工程验证，但没有产生新的 proven PTY；固定提交 `4bf889e` 后运行的
+  两轮已按上述 retention 审计归为 `unproven`。既有 calibration-only 证据和该失败尝试均不计
+  正式轮次，`formalDenominatorTurns=0`。
+- 当前 checkpoint 已在代码与回归中加入：exact-empty Connector 初始化；evidence 根外 raw runtime
+  owner/foreground-Daemon PID process-start identity 恢复与 bounded TERM/KILL；物理、内容绑定且纳入
+  closure 的 Python interpreter identity；PTY timeout/`SIGTERM`/`SIGINT` child reap；永不产生 model
+  proof 的 control-only purpose；保持 raw terminal 长度与 assistant offset 的私人路径等字节替换；
+  以及 canonical index + generation-0 detached seal 后重新验证正 usage、唯一实体链、空 Tool
+  surface、Connector receipt、helper/raw transcript 与 terminal byte range 的 strict prerequisite。
+  这些工程事实已通过 97/97 聚焦回归、2/2 architecture budget、`npm run check`、1173/1173
+  完整单测、manifest validation 与 `npm run build`；未运行 package smoke、完整 CI 或新的真实
+  PTY，所以不得据此关闭 evidence 或 formal soak 门禁。
 - CAS owner/ref/GC 已进入 production attachment path，并通过完整单测/coverage CI 以及进程
   终止、锁恢复、并发 owner、启动 reconcile 等确定性 fault-injection；真实掉电与长期配额/GC
   soak 仍未形成 promotion 证据。发生不确定恢复状态时必须保留 ref 并失败关闭，不能用 unit

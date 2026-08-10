@@ -13,6 +13,10 @@ export const MIMI_LAUNCH_AGENT_LABEL = 'com.mimiagent.daemon';
 export function daemonLaunchEnvironment(config: AppConfig): Record<string, string> {
   const paths = mimiPaths(config);
   const session = preferredEnvironmentValue('MIMI_SESSION', 'AGENT_SESSION') ?? 'mimi-system';
+  const connectorConfigMode = preferredEnvironmentValue('MIMI_CONNECTORS_CONFIG_MODE');
+  if (connectorConfigMode !== undefined && connectorConfigMode !== 'exact') {
+    throw new Error('MIMI_CONNECTORS_CONFIG_MODE 只接受 exact；省略该变量时使用 managed 模式');
+  }
   const environment: Record<string, string> = {
     MIMI_MODEL_PROVIDER: config.provider,
     MIMI_CONFIG_VERSION: '4',
@@ -32,6 +36,7 @@ export function daemonLaunchEnvironment(config: AppConfig): Record<string, strin
     MIMI_CONNECTORS_CONFIG: paths.connectorsConfig,
     MIMI_ASSISTANT_CONFIG: paths.assistantConfig,
   };
+  if (connectorConfigMode === 'exact') environment.MIMI_CONNECTORS_CONFIG_MODE = connectorConfigMode;
   if (config.maxTurns !== null) environment.MIMI_MAX_TURNS = String(config.maxTurns);
   if (config.contextWindow !== undefined) environment.MIMI_CONTEXT_WINDOW = String(config.contextWindow);
   if (config.outputReserve !== undefined) environment.MIMI_OUTPUT_TOKEN_RESERVE = String(config.outputReserve);

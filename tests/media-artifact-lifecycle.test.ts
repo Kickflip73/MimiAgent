@@ -231,6 +231,9 @@ test('reopen promotes a crash-surviving claim when its durable Event is live', a
   const batch = await staging.stageBatch([{ path: 'photo.png', kind: 'image' }], root, {
     eventId: 'event-live-after-stage-crash',
   });
+  const claimNames = await readdir(path.join(artifacts, '.claims'));
+  assert.equal(claimNames.length, 1);
+  const claimMtimeMs = (await stat(path.join(artifacts, '.claims', claimNames[0]!))).mtimeMs;
   // SQLite commits the immutable Event, then the process dies before batch.commit().
   const databaseFile = path.join(root, 'mimi.db');
   const durable = new MimiStore(databaseFile);
@@ -247,7 +250,7 @@ test('reopen promotes a crash-surviving claim when its durable Event is live', a
   });
   durable.close();
   // Do not call commit/rollback: this is the process-death window after claims are fsynced.
-  now = new Date(now.getTime() + 101);
+  now = new Date(claimMtimeMs + 101);
   const reopened = new MediaArtifactStore(artifacts, { gcGraceMs: 100, now: () => now });
   const reopenedDatabase = new MimiStore(databaseFile);
   const repaired = await reopened.collectGarbage({
