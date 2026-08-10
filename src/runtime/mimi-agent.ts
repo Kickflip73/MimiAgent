@@ -355,7 +355,7 @@ export class MimiAgent {
       } : {
         ...(createOptions.restrictReadsToWorkspace ? { readablePaths: ['.'] } : {}),
         allowProtectedPathFileAccess: () => canAccessRuntimePaths(this.activeRun),
-        allowProtectedPathShellAccess: createOptions.protectRuntimePathsFromShell !== true && (() => canAccessRuntimePaths(this.activeRun)),
+        allowHostShellAccess: createOptions.protectRuntimePathsFromShell !== true && (() => canAccessRuntimePaths(this.activeRun)),
         allowShell: true,
         shellEnvironment: () => ({
           ...baseShellEnvironment,

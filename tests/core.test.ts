@@ -148,7 +148,7 @@ test('daemon read probes must pass runtime policy and cannot invent an unregiste
   }
 });
 
-test('only direct Full Owner conversations can use file tools on runtime paths', async () => {
+test('only direct Full Owner conversations can use runtime files and the native Host Shell', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-direct-owner-runtime-files-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const agent = await MimiAgent.create({
@@ -177,10 +177,16 @@ test('only direct Full Owner conversations can use file tools on runtime paths',
   try {
     await writeFile(path.join(dataRoot, 'owner-visible.txt'), 'OWNER_RUNTIME_SENTINEL');
     const read = agent.registeredTools().find((tool) => tool.name === 'read_file');
+    const shell = agent.registeredTools().find((tool) => tool.name === 'run_shell');
     assert.ok(read && 'invoke' in read);
+    assert.ok(shell && 'invoke' in shell);
     const invoke = async (): Promise<string> => String(await read.invoke(
       new RunContext({}),
       JSON.stringify({ path: '.mimi-agent/owner-visible.txt' }),
+    ));
+    const invokeShell = async (): Promise<string> => JSON.stringify(await shell.invoke(
+      new RunContext({}),
+      JSON.stringify({ command: 'printf owner-shell', timeoutSeconds: 5 }),
     ));
 
     runtimeAgent.activeRun = {
@@ -188,18 +194,23 @@ test('only direct Full Owner conversations can use file tools on runtime paths',
       options: { scenario: 'conversation.default' },
     };
     assert.match(await invoke(), /OWNER_RUNTIME_SENTINEL/u);
+    const ownerShell = await invokeShell();
+    assert.match(ownerShell, /owner-shell/u);
+    assert.doesNotMatch(ownerShell, /darwin-sandbox/u);
 
     runtimeAgent.activeRun = {
       scope: { cause: { eventId: 'owner-background', source: 'local-cli', trust: 'owner' } },
       options: { scenario: 'background.default' },
     };
     assert.match(await invoke(), /MimiAgent 私有运行数据（含旧目录）/);
+    if (process.platform === 'darwin') assert.match(await invokeShell(), /darwin-sandbox/u);
 
     runtimeAgent.activeRun = {
       scope: { cause: { eventId: 'external-work', source: 'connector:test', trust: 'external' } },
       options: { scenario: 'conversation.default' },
     };
     assert.match(await invoke(), /MimiAgent 私有运行数据（含旧目录）/);
+    if (process.platform === 'darwin') assert.match(await invokeShell(), /darwin-sandbox/u);
   } finally {
     runtimeAgent.activeRun = undefined;
     await agent.close();

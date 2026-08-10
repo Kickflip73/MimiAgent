@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- let authenticated local Full Owner conversations execute `run_shell` directly
+  on the Host so user-level `launchctl` and other native service operations are
+  not rejected by Darwin Seatbelt, while restricted sources keep the sandbox
 - make exact capability inspection return structured direct, deferred,
   source-mismatch, or unavailable states instead of turning recoverable routing
   mistakes into failed tool calls, and only instruct the model to use Browser

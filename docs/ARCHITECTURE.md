@@ -58,7 +58,7 @@ src/daemon/
 Connector、不保存正文；Connector cursor 仍由隔离进程维护，Event、Task 和副作用
 回执继续由现有 Store 与 ExecutionLedger 持有。
 
-可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 app-centric 的 `computer_observe` 与 `computer_act`。Host 按 Run 自动管理精确窗口、最新 Observation、动作/截图预算和 Driver Session；模型不接触 PID、window id、Observation id、投递模式或 Driver 状态。AX 优先，新窗口经有界 settle 仍无语义状态时才回退窗口截图；普通 UI 动作在同一 Tool 结果中直接返回 fresh state。GUI 写动作继续经过统一 Security、ExecutionLedger 与跨进程动作锁。Darwin 的通用 `run_shell` 无条件进入进程沙箱，拒绝 Apple Events、LaunchServices、Accessibility 和正式控制端口；Workstation 也使用这条沙箱 Shell。Terminal 可作为只读 Computer 观察目标但禁止动作和输入注入；Codex、IDE 等控制面应用不能成为 Computer 目标；`full-owner` 可自动发现已安装的 Cua Driver，Safe/Workstation 不会因此扩大权限。
+可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 app-centric 的 `computer_observe` 与 `computer_act`。Host 按 Run 自动管理精确窗口、最新 Observation、动作/截图预算和 Driver Session；模型不接触 PID、window id、Observation id、投递模式或 Driver 状态。AX 优先，新窗口经有界 settle 仍无语义状态时才回退窗口截图；普通 UI 动作在同一 Tool 结果中直接返回 fresh state。GUI 写动作继续经过统一 Security、ExecutionLedger 与跨进程动作锁。Darwin 的 Workstation、后台 Task 和非 Owner 来源 `run_shell` 进入进程沙箱，拒绝 Apple Events、LaunchServices、Accessibility 和正式控制端口；认证本机 Full Owner 的直接 Conversation Run 使用当前 OS 用户的原生 Host Shell，因此可以管理 `launchd` 等宿主服务。Terminal 可作为只读 Computer 观察目标但禁止动作和输入注入；Codex、IDE 等控制面应用不能成为 Computer 目标；`full-owner` 可自动发现已安装的 Cua Driver，Safe/Workstation 不会因此扩大权限。
 
 `src/agent.ts` 导出 `MimiAgent`；实现位于 `runtime/mimi-agent.ts`。
 
