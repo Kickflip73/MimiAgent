@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - add native local speech primitives for voice discovery, ChatTTS/Kokoro
   synthesis, ordered playback, and direct speaking, exposed through Host APIs,
   and one compact model tool backed by a single managed renderer without
-  rewriting caller text or falling back to TTS scripts and Skills
+  rewriting caller text or falling back to TTS scripts and Skills; expose stable
+  ChatTTS male/female speaker profiles with per-call switching and a male default
 - reorder the interactive status footer to show mode, effective Security profile,
   model, and context usage; make Shift+Tab cycle a real per-run Security ceiling,
   add mode cycling through terminal-reported Shift+Caps Lock with Shift+Up fallback,

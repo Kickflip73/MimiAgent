@@ -13,7 +13,8 @@ const speechParameters = z.object({
   input: z.string().max(20_000).optional()
     .describe('synthesize/speak: exact text; play: audioId returned by synthesize'),
   engine: z.enum(['auto', 'chattts', 'kokoro']).optional(),
-  voice: z.string().trim().min(1).max(80).optional(),
+  voice: z.string().trim().min(1).max(80).optional()
+    .describe('voice id returned by the voices action; may change on every call'),
   speed: z.number().min(0.5).max(2).optional(),
 }).strict();
 
@@ -21,7 +22,7 @@ export function createSpeechTools(speech: SpeechOutput): Tool[] {
   return [
     tool({
       name: 'speech',
-      description: 'The only supported local speech output interface. Never use Shell, scripts, or Skills for TTS. voices lists voices; synthesize uses input=<exact text>; play uses input=<audioId returned by synthesize>; speak uses input=<exact text> and plays it.',
+      description: 'The only supported local speech output interface. Never use Shell, scripts, or Skills for TTS. voices lists selectable voices and gender metadata; synthesize uses input=<exact text>; play uses input=<audioId returned by synthesize>; speak uses input=<exact text> and plays it. Select any returned voice id per synthesis or speaking call.',
       parameters: speechParameters,
       execute: ({ action, input, ...options }, _context, details) => {
         if (action === 'voices') {

@@ -548,7 +548,9 @@ MimiAgent 在 `agent.speech` 上原生提供 `listVoices()`、`setEnabled()`、
 一个紧凑的 `speech` 工具，其 action 可选 `voices`、`synthesize`、`play` 或
 `speak`。底层按调用方给出的原始文本合成，不解释
 Markdown 或回答结构。中文默认走持久 ChatTTS，失败自动降级 Kokoro；英文和
-日文走 Kokoro。`speech` 是模型唯一支持的 TTS 入口；模型不得通过 Shell、
+日文走 Kokoro。ChatTTS 提供 3 个男声和 3 个女声，默认使用男声
+`chattts:male-1`；模型可先调用 `voices`，再在每次合成时通过 `voice` 灵活切换。
+`speech` 是模型唯一支持的 TTS 入口；模型不得通过 Shell、
 脚本或 Skill 绕过它。播报内容、表达风格、分段和调用时机均由上层或模型决定。
 
 `/models` 展示私有 `models.json` 中已注册的精确
