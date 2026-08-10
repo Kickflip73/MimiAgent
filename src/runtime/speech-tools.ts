@@ -10,7 +10,8 @@ export function withoutSpeechTools(tools: Tool[]): Tool[] {
 
 const speechParameters = z.object({
   action: z.enum(['voices', 'synthesize', 'play', 'speak']),
-  input: z.string().max(20_000).optional(),
+  input: z.string().max(20_000).optional()
+    .describe('synthesize/speak: exact text; play: audioId returned by synthesize'),
   engine: z.enum(['auto', 'chattts', 'kokoro']).optional(),
   voice: z.string().trim().min(1).max(80).optional(),
   speed: z.number().min(0.5).max(2).optional(),
@@ -20,10 +21,13 @@ export function createSpeechTools(speech: SpeechOutput): Tool[] {
   return [
     tool({
       name: 'speech',
-      description: 'Speech: voices lists voices; for other actions input is exact text or audioId. synthesize makes WAV; play plays; speak makes and plays.',
+      description: 'The only supported local speech output interface. Never use Shell, scripts, or Skills for TTS. voices lists voices; synthesize uses input=<exact text>; play uses input=<audioId returned by synthesize>; speak uses input=<exact text> and plays it.',
       parameters: speechParameters,
       execute: ({ action, input, ...options }, _context, details) => {
-        if (action === 'voices') return { status: speech.status(), voices: speech.listVoices() };
+        if (action === 'voices') {
+          const { renderer: _renderer, playback: _playback, ...status } = speech.status();
+          return { status, voices: speech.listVoices() };
+        }
         if (action === 'play') {
           if (!input) throw new Error('speech play 需要 audioId input');
           return speech.play(input, details?.signal);

@@ -410,7 +410,7 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_OUTPUT_TOKEN_RESERVE` | 按模型 Profile | 未知 legacy 模型的输出 Token 兼容回退；不会覆盖内置 Profile |
 | `MIMI_OUTPUT_LEVEL` | `tools` | 启动时的事件展示等级：`answer`、`thinking`、`tools`、`trace` |
 | `MIMI_TTS_ENABLED` | `false` | 原生本机 TTS 总开关；Host 也可通过 `agent.speech.setEnabled()` 在运行时切换 |
-| `MIMI_TTS_COMMAND` | `~/.mimi-agent/render_tts.sh` | 统一 TTS 渲染器；接收输入文件、`--no-play` 和唯一 WAV 输出路径 |
+| `MIMI_TTS_COMMAND` | `~/.mimi-agent/runtime/tts/render` | 原生 SpeechOutput 的唯一受管渲染器；接收输入文件、`--no-play` 和唯一 WAV 输出路径 |
 | `MIMI_TTS_PLAYBACK_COMMAND` | `/usr/bin/afplay` | 本机音频播放命令 |
 | `MIMI_TTS_SYNTHESIS_TIMEOUT_MS` | `180000` | 单次语音合成超时 |
 | `MIMI_TTS_PLAYBACK_TIMEOUT_MS` | `600000` | 单次音频播放超时 |
@@ -548,7 +548,8 @@ MimiAgent 在 `agent.speech` 上原生提供 `listVoices()`、`setEnabled()`、
 一个紧凑的 `speech` 工具，其 action 可选 `voices`、`synthesize`、`play` 或
 `speak`。底层按调用方给出的原始文本合成，不解释
 Markdown 或回答结构。中文默认走持久 ChatTTS，失败自动降级 Kokoro；英文和
-日文走 Kokoro。播报内容、表达风格、分段和调用时机均由上层或模型决定。
+日文走 Kokoro。`speech` 是模型唯一支持的 TTS 入口；模型不得通过 Shell、
+脚本或 Skill 绕过它。播报内容、表达风格、分段和调用时机均由上层或模型决定。
 
 `/models` 展示私有 `models.json` 中已注册的精确
 `providerId/modelId`、能力和配置状态。`/model use <providerId/modelId>` 只更新当前
