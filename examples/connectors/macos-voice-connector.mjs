@@ -426,7 +426,10 @@ function startListener() {
       try {
         const message = JSON.parse(line);
         if (message?.type === 'ready') { listenerReady = true; listenerRestartCount = 0; listenerLastError = ''; }
-        else if (message?.type === 'error') listenerLastError = String(message.error || 'listener recognition error').slice(0, 1_000);
+        else if (message?.type === 'error') {
+          listenerLastError = String(message.error || 'listener recognition error').slice(0, 1_000);
+          if (!requireWakePhrase) write({ type: 'listener_error', error: listenerLastError });
+        }
         else transcriptMessage(message);
       } catch { listenerLastError = `listener returned invalid JSON: ${line.slice(0, 500)}`; }
     }

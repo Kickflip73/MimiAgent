@@ -211,6 +211,7 @@ interface ConnectorWaiter {
 export class MacOsVoiceConversationSource implements VoiceConversationSource {
   private child: ChildProcessWithoutNullStreams | undefined;
   private temporaryRoot: string | undefined;
+  private failure: Error | undefined;
   private stdout = '';
   private stderr = '';
   private readonly actions = new Map<string, ConnectorWaiter>();
@@ -224,6 +225,7 @@ export class MacOsVoiceConversationSource implements VoiceConversationSource {
 
   async start(): Promise<void> {
     if (this.child) return;
+    this.failure = undefined;
     this.temporaryRoot = await mkdtemp(path.join(os.tmpdir(), 'mimi-voice-'));
     await chmod(this.temporaryRoot, 0o700);
     const connector = fileURLToPath(new URL('../examples/connectors/macos-voice-connector.mjs', import.meta.url));
@@ -276,6 +278,7 @@ export class MacOsVoiceConversationSource implements VoiceConversationSource {
   }
 
   async nextTranscript(signal: AbortSignal): Promise<VoiceTranscript> {
+    if (this.failure) throw this.failure;
     const queued = this.transcripts.shift();
     if (queued) return queued;
     signal.throwIfAborted();
@@ -403,6 +406,10 @@ export class MacOsVoiceConversationSource implements VoiceConversationSource {
         this.fail(new Error('macOS voice connector 返回了无效 JSON'));
         return;
       }
+      if (message.type === 'listener_error') {
+        this.fail(new Error(message.error || 'macOS 语音识别失败'));
+        continue;
+      }
       if (message.id && this.actions.has(message.id)) {
         const waiter = this.actions.get(message.id)!;
         this.actions.delete(message.id);
@@ -422,6 +429,7 @@ export class MacOsVoiceConversationSource implements VoiceConversationSource {
   }
 
   private fail(error: Error): void {
+    this.failure ??= error;
     for (const waiter of this.actions.values()) waiter.reject(error);
     this.actions.clear();
     for (const waiter of this.transcriptWaiters.splice(0)) waiter.reject(error);

@@ -108,9 +108,14 @@ func authorizeMicrophone() throws {
     if !granted { throw VoiceFailure(description: "microphone permission not authorized") }
 }
 
-func recognizer(locale: String) throws -> SFSpeechRecognizer {
+func recognizer(locale: String, onDevice: Bool) throws -> SFSpeechRecognizer {
     guard let value = SFSpeechRecognizer(locale: Locale(identifier: locale)) else {
         throw VoiceFailure(description: "unsupported speech locale: \(locale)")
+    }
+    if onDevice && !value.supportsOnDeviceRecognition {
+        throw VoiceFailure(
+            description: "on-device speech recognition is unavailable for \(locale); retry with --allow-network-asr"
+        )
     }
     return value
 }
@@ -160,7 +165,7 @@ func transcribeFile(path: String, locale: String, onDevice: Bool, timeoutSeconds
     let request = SFSpeechURLRecognitionRequest(url: URL(fileURLWithPath: path))
     configure(request, onDevice: onDevice, contextual: contextual)
     let box = RecognitionBox()
-    let task = try recognizer(locale: locale).recognitionTask(with: request) { result, error in
+    let task = try recognizer(locale: locale, onDevice: onDevice).recognitionTask(with: request) { result, error in
         box.update(result: result, error: error)
     }
     if box.semaphore.wait(timeout: .now() + timeoutSeconds) == .timedOut {
@@ -201,7 +206,7 @@ func listenSegment(
     let request = SFSpeechAudioBufferRecognitionRequest()
     configure(request, onDevice: onDevice, contextual: contextual)
     let box = RecognitionBox()
-    let task = try recognizer(locale: locale).recognitionTask(with: request) { result, error in
+    let task = try recognizer(locale: locale, onDevice: onDevice).recognitionTask(with: request) { result, error in
         box.update(result: result, error: error)
     }
     input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
@@ -221,13 +226,17 @@ func listenSegment(
     engine.stop()
     request.endAudio()
     _ = box.semaphore.wait(timeout: .now() + 5)
+    let value = box.text.trimmingCharacters(in: .whitespacesAndNewlines)
     if let error = box.error {
         let nsError = error as NSError
-        if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110 { return nil }
-        throw error
+        if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 1110 {
+            if value.isEmpty { return nil }
+        } else { throw error }
     }
-    let value = box.text.trimmingCharacters(in: .whitespacesAndNewlines)
-    if value.isEmpty || !box.isFinal { return nil }
+    if value.isEmpty { return nil }
+    // Once Mimi closes the capture segment after stable silence or the hard
+    // deadline, the best partial result is the finalized user turn. Some
+    // on-device recognizers do not emit another isFinal callback after endAudio.
     return bounded(
         value,
         maxChars: maxChars,
@@ -269,6 +278,7 @@ do {
         let contextual = try argument(7, "contextual strings").split(separator: "\u{1f}").map(String.init)
         try authorizeSpeech()
         try authorizeMicrophone()
+        _ = try recognizer(locale: locale, onDevice: onDevice)
         try emit(["type": "ready", "locale": locale, "onDevice": onDevice])
         while true {
             do {

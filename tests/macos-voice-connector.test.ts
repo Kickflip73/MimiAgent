@@ -411,3 +411,48 @@ printf '%s\n' "$1" >> "$log"
     await stop(child);
   }
 });
+
+test('macOS direct voice mode reports recognition failures instead of waiting silently', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'macos-direct-voice-error-'));
+  const swift = path.join(root, 'mock-swift.sh');
+  const listenerState = path.join(root, 'listener.json');
+  await writeFile(swift, `#!/bin/sh
+if [ "$2" = "listen" ]; then
+  printf '%s\n' '{"type":"ready","locale":"zh-CN","onDevice":true}'
+  printf '%s\n' '{"type":"error","error":"on-device speech recognition unavailable"}'
+  exec /usr/bin/tail -f /dev/null
+fi
+`);
+  await chmod(swift, 0o755);
+  const connector = fileURLToPath(new URL('../examples/connectors/macos-voice-connector.mjs', import.meta.url));
+  const child = spawn(process.execPath, [connector], {
+    env: {
+      ...process.env,
+      MACOS_SWIFT_BIN: swift,
+      MACOS_SAY_BIN: '/usr/bin/true',
+      MACOS_VOICE_LISTEN: 'true',
+      MACOS_VOICE_REQUIRE_WAKE_PHRASE: 'false',
+      MACOS_VOICE_STATE_FILE: listenerState,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const messages: Message[] = [];
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+    while (stdout.includes('\n')) {
+      const newline = stdout.indexOf('\n');
+      const line = stdout.slice(0, newline).trim();
+      stdout = stdout.slice(newline + 1);
+      if (line) messages.push(JSON.parse(line) as Message);
+    }
+  });
+
+  try {
+    const failure = await waitFor(messages, (message) => message.type === 'listener_error');
+    assert.equal(failure.error, 'on-device speech recognition unavailable');
+  } finally {
+    await stop(child);
+  }
+});
