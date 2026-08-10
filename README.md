@@ -447,7 +447,7 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 
 通用 `AGENT_*`、模型与 MCP 变量仍按明确白名单作为后备别名。`MIMI_CONFIG_VERSION>=2` 用于区分显式 `workspace` 限制与早期模板默认值。
 
-本机认证 Owner 默认使用 **Full Owner**，直接获得当前 OS 用户权限下的 Shell、文件能力，以及已显式配置的 Computer Use 和受信工作区 MCP；不再要求每个 Session 单独选择安全档位。Owner 在直接命令中本轮提交、且被敏感数据治理识别的值，可以只在当前 Run 发送给当前配置的模型 Provider（配置了兼容备选路由时也包括该路由）。外部事件、后台 Task、SubAgent 和 Team worker 不继承这项 Owner 权限，仍按来源和任务策略隔离。
+本机认证 Owner 默认使用 **Full Owner**，直接获得当前 OS 用户权限下的原生 Host Shell、文件能力，以及已显式配置的 Computer Use 和受信工作区 MCP；`run_shell` 可以管理当前用户的 `launchd` 等宿主服务，不再被 Darwin capability sandbox 拦截，也不再要求每个 Session 单独选择安全档位。Owner 在直接命令中本轮提交、且被敏感数据治理识别的值，可以只在当前 Run 发送给当前配置的模型 Provider（配置了兼容备选路由时也包括该路由）。外部事件、后台 Task、SubAgent 和 Team worker 不继承这项 Owner 权限，仍按来源和任务策略隔离。
 
 临时敏感原值不会进入工具参数、进程命令行或执行账本。模型若误把原值拼进参数，工具会返回可重试拒绝，当前 Run 可立即改用 `MIMI_EPHEMERAL_SECRET_n` 环境变量继续，不再因此销毁整轮。Owner 本轮明确要求为指定本机 Provider 或集成持久配置 credential 时，主 Agent Shell 可通过该环境变量写入 owner-private 配置目标并保持 `0600`；其他文件、日志、Session、Memory、后台任务和委派仍不得继承原值。
 

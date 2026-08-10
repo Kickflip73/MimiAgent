@@ -295,7 +295,7 @@ test('opens the full shell boundary only after an explicit trusted opt-in', asyn
   await mkdir(runtime);
   await writeFile(path.join(runtime, 'trusted.txt'), 'TRUSTED_OK');
   const tools = createTools(root, false, [runtime], {
-    allowProtectedPathShellAccess: true,
+    allowHostShellAccess: true,
   });
   const shell = tools.find((item) => item.name === 'run_shell');
   assert.ok(shell && 'invoke' in shell);
@@ -400,6 +400,31 @@ test('Darwin Shell sandbox blocks direct and interpreter-mediated system automat
   );
   assert.equal(indirect.exitCode, 73);
   assert.equal(indirect.executionBoundary?.kind, 'darwin-sandbox');
+});
+
+test('explicit owner Host Shell execution bypasses the Darwin capability sandbox', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-host-shell-'));
+  const result = await runShellCommand(
+    root,
+    'printf host-shell',
+    5,
+    undefined,
+    [],
+    process.env,
+    undefined,
+    [],
+    [],
+    [],
+    true,
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, 'host-shell');
+  assert.equal(result.executionBoundary, undefined);
+  assert.deepEqual(result.executionEnvironment, {
+    kind: 'local-host',
+    performanceThrottled: false,
+  });
 });
 
 test('Darwin Shell sandbox rejects GUI application executables before launch', async () => {

@@ -83,7 +83,7 @@ export interface ToolAccessPolicy {
   allowWrite?: boolean;
   allowShell?: boolean;
   allowProtectedPathFileAccess?: boolean | (() => boolean);
-  allowProtectedPathShellAccess?: boolean | (() => boolean);
+  allowHostShellAccess?: boolean | (() => boolean);
   shellEnvironment?: NodeJS.ProcessEnv | (() => NodeJS.ProcessEnv);
   shellSensitiveValues?: () => readonly string[];
   shellDetachedProcessGroup?: boolean;
@@ -1266,8 +1266,10 @@ export async function runShellCommand(
   blockedUnixSocketPaths: string[] = [],
   blockedLocalTcpPorts: number[] = [],
   sensitiveValues: readonly string[] = [],
+  allowHostExecution = false,
 ): Promise<ShellCommandResult> {
-  const executionBoundary = process.platform === 'darwin'
+  const usesDarwinSandbox = process.platform === 'darwin' && !allowHostExecution;
+  const executionBoundary = usesDarwinSandbox
     ? {
         kind: 'darwin-sandbox' as const,
         purpose: 'capability-isolation' as const,
@@ -1318,8 +1320,8 @@ export async function runShellCommand(
   const localShell = process.platform === 'win32'
     ? (process.env.ComSpec ?? 'cmd.exe')
     : process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh';
-  const executable = process.platform === 'darwin' ? '/usr/bin/sandbox-exec' : localShell;
-  const args = process.platform === 'darwin'
+  const executable = usesDarwinSandbox ? '/usr/bin/sandbox-exec' : localShell;
+  const args = usesDarwinSandbox
     ? [
         '-p',
         sandboxProfile(
@@ -1736,7 +1738,7 @@ export function createTools(
   const shell = tool({
     name: 'run_shell',
     description:
-      '直接在用户本机 Shell 中执行工程命令，不经过虚拟机且不限制 CPU 或网络速度。macOS 安全边界只隔离 GUI、系统自动化、私有运行数据和控制通道；命令超时不表示沙箱限速。可用于搜索文件、Git、网络请求、安装依赖和运行代码；安装、编译等长任务可将超时设为最多 7200 秒（2 小时）。',
+      '本机 Shell 命令。Full Owner 直连 Host，可管理 launchd；Workstation 和受限来源走 macOS 沙箱。超时最多 7200 秒。',
     parameters: z.object({
       command: z.string().min(1),
       timeoutSeconds: z.number().int().min(1).max(7_200).default(60),
@@ -1747,7 +1749,7 @@ export function createTools(
         command,
         timeoutSeconds,
         details?.signal,
-        accessEnabled(access.allowProtectedPathShellAccess) ? [] : protectedPaths,
+        accessEnabled(access.allowHostShellAccess) ? [] : protectedPaths,
         typeof access.shellEnvironment === 'function'
           ? access.shellEnvironment()
           : access.shellEnvironment,
@@ -1755,6 +1757,7 @@ export function createTools(
         access.blockedUnixSocketPaths,
         access.blockedLocalTcpPorts,
         access.shellSensitiveValues?.(),
+        accessEnabled(access.allowHostShellAccess),
       ),
   });
 
