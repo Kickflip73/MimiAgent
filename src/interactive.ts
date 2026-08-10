@@ -99,8 +99,9 @@ export class InteractiveTerminal {
   private usedRows = 0;
   private outputOpen = false;
   private outputOpenWidth = 0;
-  private renderedRows = 0;
-  private cursorRenderedRow = 0;
+  private renderedLogicalRows: string[] = [];
+  private cursorRenderedLogicalRow = 0;
+  private cursorRenderedColumn = 0;
   private started = false;
   private closed = false;
   private bracketPaste = false;
@@ -353,8 +354,9 @@ export class InteractiveTerminal {
     this.cancelInputRedraw();
     this.outputOpen = false;
     this.outputOpenWidth = 0;
-    this.renderedRows = 0;
-    this.cursorRenderedRow = 0;
+    this.renderedLogicalRows = [];
+    this.cursorRenderedLogicalRow = 0;
+    this.cursorRenderedColumn = 0;
     this.writeRaw('\x1b[2J\x1b[H');
     if (content) {
       this.writeRaw(`${content}\n`);
@@ -615,11 +617,18 @@ export class InteractiveTerminal {
 
   private eraseUi(): void {
     if (this.closed || !this.started) return;
-    const rowsBelow = Math.max(0, this.renderedRows - this.cursorRenderedRow - 1);
+    const width = usableTerminalWidth(this.output.columns);
+    const renderedRows = this.physicalRows(this.renderedLogicalRows);
+    const rowsBeforeCursor = this.physicalRows(
+      this.renderedLogicalRows.slice(0, this.cursorRenderedLogicalRow),
+    );
+    const cursorRenderedRow = rowsBeforeCursor + Math.floor(this.cursorRenderedColumn / width);
+    const rowsBelow = Math.max(0, renderedRows - cursorRenderedRow - 1);
     this.writeRaw(`\r${rowsBelow ? `\x1b[${rowsBelow}B` : ''}\x1b[2K`);
-    for (let row = 1; row < this.renderedRows; row += 1) this.writeRaw('\x1b[1A\r\x1b[2K');
-    this.renderedRows = 0;
-    this.cursorRenderedRow = 0;
+    for (let row = 1; row < renderedRows; row += 1) this.writeRaw('\x1b[1A\r\x1b[2K');
+    this.renderedLogicalRows = [];
+    this.cursorRenderedLogicalRow = 0;
+    this.cursorRenderedColumn = 0;
   }
 
   private draw(): void {
@@ -684,10 +693,13 @@ export class InteractiveTerminal {
     rows.push(status);
 
     this.writeRaw(rows.join('\n'));
-    this.renderedRows = this.physicalRows(rows);
-    this.cursorRenderedRow = this.physicalRows(rows.slice(0, inputStartRow + input.cursorRow));
     const cursorColumn = 5 + input.cursorColumn;
-    const rowsUp = Math.max(0, this.renderedRows - this.cursorRenderedRow - 1);
+    this.renderedLogicalRows = [...rows];
+    this.cursorRenderedLogicalRow = inputStartRow + input.cursorRow;
+    this.cursorRenderedColumn = cursorColumn;
+    const renderedRows = this.physicalRows(rows);
+    const cursorRenderedRow = this.physicalRows(rows.slice(0, this.cursorRenderedLogicalRow));
+    const rowsUp = Math.max(0, renderedRows - cursorRenderedRow - 1);
     this.writeRaw(`\r${rowsUp ? `\x1b[${rowsUp}A` : ''}${cursorColumn ? `\x1b[${cursorColumn}C` : ''}`);
   }
 

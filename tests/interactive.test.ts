@@ -661,6 +661,33 @@ test('grows the input box across multiple rows and reflows it after resize', () 
   terminal.close();
 });
 
+test('erases terminal-reflowed queue rows before redrawing after resize', () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  output.columns = 140;
+  output.rows = 10;
+  const terminal = new InteractiveTerminal(
+    [],
+    input as never,
+    output as never,
+    { idleBlinkIntervalMs: 60_000 },
+  );
+  terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
+  terminal.setQueue([{ text: 'm'.repeat(300), intent: 'enqueue' }]);
+
+  output.value = '';
+  output.columns = 70;
+  output.emit('resize');
+
+  const nextQueue = output.value.indexOf('\x1b[2m↳');
+  assert.ok(nextQueue > 0);
+  const erase = output.value.slice(0, nextQueue);
+  assert.match(erase, /^\r\x1b\[4B\x1b\[2K/);
+  assert.equal((erase.match(/\x1b\[1A\r\x1b\[2K/g) ?? []).length, 13);
+  assert.equal((plainOutput(output.value).match(/↳ 排队/g) ?? []).length, 1);
+  terminal.close();
+});
+
 test('uses a readable fallback width while the TTY reports zero columns', () => {
   const input = new FakeInput();
   const output = new FakeOutput();

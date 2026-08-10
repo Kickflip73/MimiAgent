@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - keep raw-mode TTY output aligned with explicit terminal newlines, redraw the
   bottom input panel relative to its tracked cursor after scrolling, avoid the
-  duplicate startup frame, and dynamically reflow long input across multiple
-  rows as the terminal width changes
+  duplicate startup frame, dynamically reflow long input across multiple rows,
+  and fully erase queue, input, and status rows after terminal resizing
 - add a reachable macOS `mimi voice` loop that sends stable Speech Framework
   transcripts through one canonical Daemon Session and speaks the exact Mimi answer;
   default to on-device ASR plus system TTS, allow an explicit local Kokoro renderer,
