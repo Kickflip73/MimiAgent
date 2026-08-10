@@ -413,6 +413,23 @@ test('keeps queue and a self-updating runtime status around the bottom input box
   terminal.close();
 });
 
+test('keeps the busy animation and elapsed time moving without new renderer output', async () => {
+  const input = new FakeInput();
+  const output = new FakeOutput();
+  output.columns = 100;
+  const terminal = new InteractiveTerminal([], input as never, output as never);
+  terminal.start({ onLine: () => undefined, onEscape: () => undefined, onExit: () => undefined });
+  terminal.setBusy(true);
+
+  terminal.createWriter(output as never).write('\r\x1b[2K\x1b[90m^._.^~ 模型思考中 · 0秒\x1b[0m');
+  output.value = '';
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+
+  const animated = plainOutput(output.value);
+  assert.match(animated, /\^\S+\^[-~\\/|] 模型思考中 · 1秒/);
+  terminal.close();
+});
+
 test('uses the interactive TTY for renderer animation when stderr is redirected', () => {
   const input = new FakeInput();
   const output = new FakeOutput();
@@ -527,7 +544,7 @@ test('defers and coalesces input redraws outside the keypress callback for Apple
   terminal.close();
 });
 
-test('disables autonomous redraw animation in Apple Terminal IME-safe mode', async () => {
+test('keeps idle animation disabled but refreshes busy status in Apple Terminal IME-safe mode', async () => {
   const input = new FakeInput();
   const output = new FakeOutput();
   const terminal = new InteractiveTerminal(
@@ -550,7 +567,7 @@ test('disables autonomous redraw animation in Apple Terminal IME-safe mode', asy
   output.value = '';
   terminal.createWriter(output as never).write('\r\x1b[2K\x1b[90m^._?^- 模型思考中\x1b[0m');
   await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.equal(output.value, '', 'busy animation must not rewrite the screen while the IME may own marked text');
+  assert.match(plainOutput(output.value), /模型思考中 · 0秒/);
   terminal.close();
 });
 

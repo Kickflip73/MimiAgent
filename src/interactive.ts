@@ -77,6 +77,14 @@ function isAppleTerminal(): boolean {
   return process.platform === 'darwin' && process.env.TERM_PROGRAM === 'Apple_Terminal';
 }
 
+function transientRunLabel(value: string): string | undefined {
+  const withoutElapsed = value.replace(
+    /\s+·\s+(?:\d+小时 \d{2}分 \d{2}秒|\d+分 \d{2}秒|\d+秒)$/,
+    '',
+  );
+  return withoutElapsed.match(/^\^\S+\^[-~\\/|]\s+(.+)$/)?.[1]?.trim();
+}
+
 export class InteractiveTerminal {
   private buffer: string[] = [];
   private cursor = 0;
@@ -868,7 +876,12 @@ export class InteractiveTerminal {
     this.busyTimer = setTimeout(() => {
       if (!this.busy) return;
       this.busyFrame += 1;
-      if (!this.transient) this.redraw();
+      const elapsed = Date.now() - this.busyStartedAt;
+      const label = transientRunLabel(this.transient);
+      if (label) {
+        this.transient = `${renderMimiFrame('running', elapsed, this.busyFrame)} ${label} · ${formatRunDuration(elapsed)}`;
+      }
+      this.redraw();
       this.scheduleBusyRedraw();
     }, MIMI_TAIL_INTERVAL_MS);
     this.busyTimer.unref();

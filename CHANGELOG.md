@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- refresh the TUI busy footer on its own timer so the Mimi animation and elapsed
+  duration advance without requiring new streamed conversation output
 - reorder the interactive status footer to show mode, effective Security profile,
   model, and context usage; make Shift+Tab cycle a real per-run Security ceiling,
   add mode cycling through terminal-reported Shift+Caps Lock with Shift+Up fallback,
