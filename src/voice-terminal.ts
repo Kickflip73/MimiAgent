@@ -12,6 +12,9 @@ import {
   MimiChatClient,
   type AcceptedMimiEvent,
 } from './daemon/chat-client.js';
+import { VOICE_CONVERSATION_RUN_POLICY } from './daemon/local-run-policy.js';
+
+const DEFAULT_VOICE_TURN_TIMEOUT_MS = 120_000;
 
 export type VoiceTtsEngine = 'system' | 'kokoro';
 
@@ -47,6 +50,7 @@ export interface VoiceAgentPort {
 export type VoiceConversationEvent =
   | { type: 'ready'; sessionId: string }
   | { type: 'user'; text: string; turnId: string }
+  | { type: 'processing'; turnId: string }
   | { type: 'assistant'; text: string; turnId: string }
   | { type: 'error'; error: Error };
 
@@ -149,9 +153,14 @@ export async function runVoiceConversation(input: {
   agent: VoiceAgentPort;
   signal: AbortSignal;
   requestedSessionId?: string;
+  turnTimeoutMs?: number;
   onEvent?: (event: VoiceConversationEvent) => void;
 }): Promise<void> {
   const session = await input.agent.openSession(input.requestedSessionId);
+  const turnTimeoutMs = input.turnTimeoutMs ?? DEFAULT_VOICE_TURN_TIMEOUT_MS;
+  if (!Number.isSafeInteger(turnTimeoutMs) || turnTimeoutMs <= 0) {
+    throw new Error('语音轮次超时必须是正整数毫秒');
+  }
   let sourcePaused = false;
   try {
     await input.source.start();
@@ -169,16 +178,26 @@ export async function runVoiceConversation(input: {
       await input.source.pause();
       sourcePaused = true;
       input.onEvent?.({ type: 'user', text, turnId: turn.turnId });
+      input.onEvent?.({ type: 'processing', turnId: turn.turnId });
+      const turnController = new AbortController();
+      const timeoutError = new Error(`Mimi 语音回答等待超过 ${turnTimeoutMs}ms，已取消本轮`);
+      const timeout = setTimeout(() => turnController.abort(timeoutError), turnTimeoutMs);
+      const turnSignal = AbortSignal.any([input.signal, turnController.signal]);
       try {
-        const answer = (await input.agent.ask(text, session.sessionId, input.signal)).trim();
+        const answer = (await input.agent.ask(text, session.sessionId, turnSignal)).trim();
+        clearTimeout(timeout);
         if (!answer) throw new Error('MimiAgent 返回了空回答');
         input.onEvent?.({ type: 'assistant', text: answer, turnId: turn.turnId });
         await input.source.speak(answer, input.signal);
       } catch (error) {
         if (aborted(input.signal, error)) break;
+        if (turnController.signal.aborted) {
+          await input.agent.cancel(timeoutError).catch(() => undefined);
+        }
         const normalized = error instanceof Error ? error : new Error(String(error));
         input.onEvent?.({ type: 'error', error: normalized });
       } finally {
+        clearTimeout(timeout);
         if (sourcePaused && !input.signal.aborted) {
           await input.source.resume();
           sourcePaused = false;
@@ -465,7 +484,11 @@ export class MimiVoiceAgentPort implements VoiceAgentPort {
   async cancel(reason: Error): Promise<void> {
     const active = this.activeEvent;
     if (!active) return;
-    await this.client.cancel(active.eventId, reason.message);
+    try {
+      await this.client.cancel(active.eventId, reason.message);
+    } finally {
+      if (this.activeEvent?.eventId === active.eventId) this.activeEvent = undefined;
+    }
   }
 }
 
@@ -478,7 +501,9 @@ export async function runMimiVoice(config: AppConfig, args: string[]): Promise<v
   try {
     await runVoiceConversation({
       source: new MacOsVoiceConversationSource(options),
-      agent: new MimiVoiceAgentPort(new MimiChatClient(config)),
+      agent: new MimiVoiceAgentPort(new MimiChatClient(config, undefined, {
+        requestedRunPolicy: VOICE_CONVERSATION_RUN_POLICY,
+      })),
       signal: controller.signal,
       requestedSessionId: options.sessionId,
       onEvent: (event) => {
@@ -489,6 +514,8 @@ export async function runMimiVoice(config: AppConfig, args: string[]): Promise<v
           process.stdout.write('直接说话，等待转写和回答；按 Ctrl-C 退出。\n');
         } else if (event.type === 'user') {
           process.stdout.write(`\n你：${event.text}\n`);
+        } else if (event.type === 'processing') {
+          process.stdout.write('Mimi：正在处理...\n');
         } else if (event.type === 'assistant') {
           process.stdout.write(`Mimi：${event.text}\n`);
         } else {

@@ -55,6 +55,7 @@ test('voice conversation sends stable transcripts through one canonical Session 
     onEvent: (event) => {
       if (event.type === 'ready') events.push(`ready:${event.sessionId}`);
       if (event.type === 'user') events.push(`user:${event.text}`);
+      if (event.type === 'processing') events.push(`processing:${event.turnId}`);
       if (event.type === 'assistant') events.push(`assistant:${event.text}`);
     },
   });
@@ -62,8 +63,10 @@ test('voice conversation sends stable transcripts through one canonical Session 
   assert.deepEqual(events, [
     'ready:voice-session-1',
     'user:帮我总结今天的安排',
+    'processing:turn-1',
     'assistant:今天上午评审，下午写方案。',
     'user:把下午的事情再说一遍',
+    'processing:turn-2',
     'assistant:下午需要完成方案。',
   ]);
   assert.deepEqual(calls, [
@@ -79,6 +82,52 @@ test('voice conversation sends stable transcripts through one canonical Session 
     'agent:cancel',
     'source:stop',
   ]);
+});
+
+test('voice conversation cancels a model turn that exceeds the bounded deadline', async () => {
+  const controller = new AbortController();
+  const calls: string[] = [];
+  let emitted = false;
+  const source: VoiceConversationSource = {
+    start: async () => undefined,
+    nextTranscript: async (signal) => {
+      if (!emitted) {
+        emitted = true;
+        return { turnId: 'slow-turn', text: '请直接回答' };
+      }
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+      throw new Error('unreachable');
+    },
+    pause: async () => undefined,
+    resume: async () => { controller.abort(new Error('test complete')); },
+    speak: async () => { throw new Error('unreachable'); },
+    stop: async () => undefined,
+  };
+  const agent: VoiceAgentPort = {
+    openSession: async () => ({ sessionId: 'voice-session-1' }),
+    ask: async (_text, _sessionId, signal) => await new Promise<string>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+    cancel: async (reason) => {
+      if (!calls.length) calls.push(`cancel:${reason.message}`);
+    },
+  };
+  const errors: string[] = [];
+
+  await runVoiceConversation({
+    source,
+    agent,
+    signal: controller.signal,
+    turnTimeoutMs: 1,
+    onEvent: (event) => {
+      if (event.type === 'error') errors.push(event.error.message);
+    },
+  });
+
+  assert.deepEqual(errors, ['Mimi 语音回答等待超过 1ms，已取消本轮']);
+  assert.deepEqual(calls, ['cancel:Mimi 语音回答等待超过 1ms，已取消本轮']);
 });
 
 test('voice CLI defaults to private Apple ASR and immediate system TTS', () => {

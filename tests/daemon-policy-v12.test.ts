@@ -122,6 +122,29 @@ test('versioned local-owner no-tools metadata narrows the entire model capabilit
   assert.equal(untrusted.options?.policy?.allowSessionContext, false);
 });
 
+test('voice conversation policy answers from Session context without advertising tools', () => {
+  const requested = decideEvent(event({
+    source: 'local-cli',
+    trust: 'owner',
+    sessionKey: 'voice-session',
+    payload: {
+      prompt: '直接回答这一句',
+      requestedRunPolicy: 'voice-conversation-v1',
+    },
+  }));
+  assert.deepEqual(requested.options?.policy, {
+    allowedCapabilities: [],
+    allowedTools: [],
+    allowSideEffects: false,
+    allowedSideEffectTools: [],
+    allowUnknownTools: false,
+    allowMcp: false,
+    allowSessionContext: true,
+    computerAccess: 'none',
+  });
+  assert.match(requested.options?.hostInstructions ?? '', /实时语音对话/u);
+});
+
 test('run scenario follows the durable task kind instead of treating every Daemon cause as background', () => {
   const owner = event({
     source: 'local-cli',

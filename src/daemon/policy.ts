@@ -9,8 +9,9 @@ import type { ComputerAccess } from '../extensions/computer/types.js';
 import { assertSessionId, sessionIdSchema } from '../core/session-id.js';
 import type { EventEnvelope, TaskRecord } from './types.js';
 import {
-  BENCHMARK_NO_TOOLS_RUN_POLICY,
+  isNoToolsLocalRunPolicy,
   requestedLocalRunPolicyForEvent,
+  VOICE_CONVERSATION_RUN_POLICY,
 } from './local-run-policy.js';
 import {
   personalMessageAuthorizationFor,
@@ -342,9 +343,12 @@ export function decideEvent(
   const ownerDelegated = !forceRestricted && restrictedProvenance && ownerSourcePolicyAccess !== undefined;
   const mayAct = !restrictedProvenance || ownerDelegated;
   const backgroundTask = task !== undefined && task.type !== 'conversation';
-  const benchmarkNoTools = !backgroundTask
-    && requestedLocalRunPolicyForEvent(event) === BENCHMARK_NO_TOOLS_RUN_POLICY;
-  const computerAccess = benchmarkNoTools
+  const requestedRunPolicy = !backgroundTask
+    ? requestedLocalRunPolicyForEvent(event)
+    : undefined;
+  const noToolsConversation = isNoToolsLocalRunPolicy(requestedRunPolicy);
+  const voiceConversation = requestedRunPolicy === VOICE_CONVERSATION_RUN_POLICY;
+  const computerAccess = noToolsConversation
     ? 'none'
     : backgroundTask
     ? 'none'
@@ -426,6 +430,13 @@ export function decideEvent(
   ].filter(Boolean);
   const hostInstructions = [
     ...trustedContext,
+    voiceConversation
+      ? [
+          '## 实时语音对话',
+          '直接、简短、自然地回答用户当前这句话。不要尝试调用工具、检查文件、运行命令或代替用户做现场操作。',
+          '回答会被原样朗读，避免 Markdown 表格、代码块和冗长的过程说明。',
+        ].join('\n')
+      : '',
     '## MimiAgent 常驻执行契约',
     DAEMON_EXECUTION_CONTRACT,
     lifeEventPlaybook(event),
@@ -436,7 +447,7 @@ export function decideEvent(
     fileActivityPlaybook(event),
     backgroundTaskPlaybook(backgroundTask),
   ].filter(Boolean).join('\n');
-  const policy = benchmarkNoTools
+  const policy = noToolsConversation
     ? {
         allowedCapabilities: [] as const,
         allowedTools: [] as const,
@@ -579,7 +590,7 @@ export function decideEvent(
           personName: person.displayName,
         } : {}),
       },
-      ...(benchmarkNoTools ? { computerAccess: 'none' as const } : computerEnabled ? {
+      ...(noToolsConversation ? { computerAccess: 'none' as const } : computerEnabled ? {
         computerAccess,
         ...(ownerComputerApps ? { computerApps: ownerComputerApps } : {}),
       } : {}),
