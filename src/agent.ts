@@ -14,5 +14,14 @@ export type { HostedAgentRunRequest, HostCancelResult } from './runtime/mimi-hos
 export { AgentRunService } from './runtime/run-service.js';
 export type { AgentRunObserver, AgentRunRequest, AgentRunResult } from './runtime/run-service.js';
 export { loadConfig, loadEnvironment } from './config.js';
-export type { AgentPermissionMode, AppConfig } from './config.js';
+export type { AgentPermissionMode, AppConfig, TtsConfig } from './config.js';
+export { SpeechOutput, SPEECH_VOICES } from './runtime/speech-output.js';
+export type {
+  SpeechAudio,
+  SpeechEngine,
+  SpeechLanguage,
+  SpeechOutputStatus,
+  SpeechSynthesisOptions,
+  SpeechVoice,
+} from './runtime/speech-output.js';
 export * from './orchestration.js';

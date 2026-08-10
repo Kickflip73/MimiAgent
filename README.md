@@ -361,6 +361,11 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_CONTEXT_WINDOW` | 按模型 Profile | 未知 legacy 模型未声明窗口时的兼容回退；不会覆盖模型注册值或内置 Profile |
 | `MIMI_OUTPUT_TOKEN_RESERVE` | 按模型 Profile | 未知 legacy 模型的输出 Token 兼容回退；不会覆盖内置 Profile |
 | `MIMI_OUTPUT_LEVEL` | `tools` | 启动时的事件展示等级：`answer`、`thinking`、`tools`、`trace` |
+| `MIMI_TTS_ENABLED` | `false` | 原生本机 TTS 总开关；Host 也可通过 `agent.speech.setEnabled()` 在运行时切换 |
+| `MIMI_TTS_COMMAND` | `~/.mimi-agent/render_tts.sh` | 统一 TTS 渲染器；接收输入文件、`--no-play` 和唯一 WAV 输出路径 |
+| `MIMI_TTS_PLAYBACK_COMMAND` | `/usr/bin/afplay` | 本机音频播放命令 |
+| `MIMI_TTS_SYNTHESIS_TIMEOUT_MS` | `180000` | 单次语音合成超时 |
+| `MIMI_TTS_PLAYBACK_TIMEOUT_MS` | `600000` | 单次音频播放超时 |
 | `OPENAI_MODELS` / `DEEPSEEK_MODELS` | 内置常用模型 | 全局 `/model` 选择器中各 Provider 追加的逗号分隔模型列表 |
 | `MIMI_SESSION` | 未设置 | 显式进入已有 Session；未设置时 CLI 使用首次发言才落盘的新对话草稿 |
 | `MIMI_MODE` | `general` | 启动模式：`general`、`plan`、`ultra` |
@@ -489,6 +494,13 @@ Ultra Team 由主 Agent 担任 lead，将工作拆成 2～6 个 `explorer / arch
 | `trace` | 展示输入任务、思考、工具参数和工具完整结果 |
 
 `trace` 适合学习和排查 Agent 执行过程，例如 `read_file` 会显示读取到的文件内容。为避免意外输出超大内容，单条详情最多展示 20000 个字符；此限制只作用于终端显示，不改变工具实际返回给模型的数据。
+
+MimiAgent 在 `agent.speech` 上原生提供 `listVoices()`、`setEnabled()`、
+`synthesize()`、`play()` 和 `speak()` 原子能力，并向主 Agent 暴露
+一个紧凑的 `speech` 工具，其 action 可选 `voices`、`synthesize`、`play` 或
+`speak`。底层按调用方给出的原始文本合成，不解释
+Markdown 或回答结构。中文默认走持久 ChatTTS，失败自动降级 Kokoro；英文和
+日文走 Kokoro。播报内容、表达风格、分段和调用时机均由上层或模型决定。
 
 `/models` 展示私有 `models.json` 中已注册的精确
 `providerId/modelId`、能力和配置状态。`/model use <providerId/modelId>` 只更新当前

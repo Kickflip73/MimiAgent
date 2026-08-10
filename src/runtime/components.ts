@@ -23,6 +23,7 @@ import {
 import { ModelGateway } from './model-gateway.js';
 import { WorkUnitModelResolver } from './work-unit-model-resolver.js';
 import { createFileRuntimeStatePorts, type RuntimeStatePorts } from './state-ports.js';
+import { sharedSpeechOutput, type SpeechOutput } from './speech-output.js';
 
 export interface RuntimeComponents {
   modelRuntime: ModelRuntime;
@@ -36,6 +37,7 @@ export interface RuntimeComponents {
   skills: SkillLoader;
   state: RuntimeStatePorts;
   mcp: MCPManager;
+  speech: SpeechOutput;
   sessionId: string;
   computer?: ComputerManager;
 }
@@ -187,6 +189,13 @@ export async function createRuntimeComponents(
   const soul = new SoulLoader(resolveUserSoulFile(), packagedSoulFile);
   const preferences = new PreferenceStore(resolveUserPreferencesFile());
   const state = createFileRuntimeStatePorts(config, sessionId);
+  const speech = sharedSpeechOutput(config.tts ?? {
+    enabled: false,
+    command: path.join(os.homedir(), '.mimi-agent', 'render_tts.sh'),
+    playbackCommand: '/usr/bin/afplay',
+    synthesisTimeoutMs: 180_000,
+    playbackTimeoutMs: 10 * 60_000,
+  }, config.dataRoot);
   // Migrate side-effect state before MCP or any runtime executor can start.
   await state.executionLedger.store.initialize();
   const memory = createRoutedMemoryHub({
@@ -218,6 +227,7 @@ export async function createRuntimeComponents(
     skills,
     state,
     mcp,
+    speech,
     sessionId,
     ...(config.computer ? {
       computer: new ComputerManager(

@@ -105,7 +105,7 @@ import {
   createMimiPreferenceTools,
 } from './preference-tools.js';
 import { createModelControlTools } from './model-control-tools.js';
-import { createMediaTools, MediaRuntime } from './media-runtime.js';
+import { createMediaTools, createSpeechTools, MediaRuntime } from './media-runtime.js';
 import { ModelConfigStore } from './model-config.js';
 import {
   redactActiveEphemeralData,
@@ -228,7 +228,7 @@ function initialOutputLevel(): RuntimeOutputLevel {
 
 export class MimiAgent {
   readonly runner: Runner;
-  readonly components: RuntimeComponents;
+  readonly speech: RuntimeComponents['speech'];
   private readonly fileChanges: FileChangeJournal;
   readonly qqPersonalMessages?: QqPersonalMessageComputerAdapter;
   readonly hooks = new HookBus();
@@ -266,10 +266,10 @@ export class MimiAgent {
 
   private constructor(
     readonly config: AppConfig,
-    components: RuntimeComponents,
+    readonly components: RuntimeComponents,
     createOptions: MimiAgentCreateOptions = {},
   ) {
-    this.components = components;
+    this.speech = components.speech;
     this.fixedModelBinding = createOptions.modelBinding
       ? runModelBindingSchema.parse(structuredClone(createOptions.modelBinding))
       : undefined;
@@ -458,6 +458,7 @@ export class MimiAgent {
         runtime: () => new MediaRuntime(this.components.modelGateway, this.components.modelResolver),
         routeVersion: () => this.components.modelConfig.routeVersion,
       }),
+      ...createSpeechTools(components.speech),
       ...createMimiPreferenceTools(components.preferences),
     ];
   }

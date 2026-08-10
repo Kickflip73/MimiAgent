@@ -185,6 +185,7 @@ test('classifies the existing durable side-effect tools from one policy source',
     'cancel_interrupted_mimi_task',
     'set_team_tasks', 'claim_team_task', 'update_team_task', 'retry_team_task', 'run_team',
     'model_control',
+    'speech',
     'switch_model', 'switch_provider', 'switch_mode', 'set_output_level', 'switch_session', 'new_session',
     'clear_session', 'reload_mcp', 'request_exit',
   ];

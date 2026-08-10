@@ -2,7 +2,7 @@
 
 MimiAgent has two supported package entrypoints:
 
-- `mimi-agent` for the main host, run service, configuration, and orchestration API.
+- `mimi-agent` for the main host, run service, configuration, speech output, and orchestration API.
 - `mimi-agent/orchestration` for consumers that only need Team, SubAgent, Hook, model-port, and tool-policy contracts.
 
 Deep imports such as `mimi-agent/dist/...` or source imports under `src/` are internal and are not covered by compatibility guarantees.
