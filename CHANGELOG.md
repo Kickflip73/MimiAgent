@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - keep raw-mode TTY output aligned with explicit terminal newlines, redraw the
   bottom input panel relative to its tracked cursor after scrolling, avoid the
-  duplicate startup frame, and dynamically reflow long input across multiple
-  rows as the terminal width changes
+  duplicate startup frame, dynamically reflow long input across multiple rows,
+  and fully erase queue, input, and status rows after terminal resizing
 - identify Shell commands as unthrottled local-host execution, allow explicit
   deadlines up to two hours, report timeout, cancellation, and output-limit
   termination causes, and stop models from misattributing a tool deadline to
