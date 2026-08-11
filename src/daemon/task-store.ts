@@ -94,6 +94,11 @@ function sameTask(stored: TaskRecord, input: TaskInput): boolean {
     && stored.maxAttempts === (input.maxAttempts ?? 5);
 }
 
+export interface TaskListSelector {
+  type?: TaskRecord['type'];
+  idPrefix?: string;
+}
+
 export class TaskStore {
   constructor(private readonly database: DatabaseSync) {}
 
@@ -140,10 +145,22 @@ export class TaskStore {
     return row ? taskFromRow(row) : undefined;
   }
 
-  list(limit: number): TaskRecord[] {
+  list(limit: number, selector: TaskListSelector = {}): TaskRecord[] {
+    const clauses: string[] = [];
+    const parameters: Array<string | number> = [];
+    if (selector.type) {
+      clauses.push('type = ?');
+      parameters.push(selector.type);
+    }
+    if (selector.idPrefix) {
+      clauses.push('substr(id, 1, length(?)) = ?');
+      parameters.push(selector.idPrefix, selector.idPrefix);
+    }
+    parameters.push(limit);
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     return (this.database.prepare(`
-      SELECT * FROM tasks ORDER BY created_at DESC, rowid DESC LIMIT ?
-    `).all(limit) as Row[]).map(taskFromRow);
+      SELECT * FROM tasks ${where} ORDER BY created_at DESC, rowid DESC LIMIT ?
+    `).all(...parameters) as Row[]).map(taskFromRow);
   }
 
   listReady(selector: TaskSelector, timestamp: string, limit: number): TaskRecord[] {

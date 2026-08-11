@@ -36,7 +36,7 @@ import {
   hasFinalEventTaskV12Schema,
   hasLegacyEventTaskSchema,
 } from './persistence/schema/migrations/v12-event-task-cutover.js';
-import { TaskStore } from './task-store.js';
+import { TaskStore, type TaskListSelector } from './task-store.js';
 import { ActivityStore } from './activity-store.js';
 import { OutboxStore } from './outbox-store.js';
 import {
@@ -287,8 +287,8 @@ export class MimiStore extends ActivityStore {
     return this.taskStore.get(id);
   }
 
-  listTasks(limit = 50): TaskRecord[] {
-    return this.taskStore.list(managementLimit(limit));
+  listTasks(limit = 50, selector: TaskListSelector = {}): TaskRecord[] {
+    return this.taskStore.list(managementLimit(limit), selector);
   }
 
   runningTasks(selector: TaskSelector = {}, limit = 50): TaskRecord[] {
