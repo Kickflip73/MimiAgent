@@ -191,6 +191,7 @@ const appConfigSchema = z.object({
 export function taskWorkerConfig(config: AppConfig): z.infer<typeof appConfigSchema> {
   const workerConfig = { ...config };
   delete workerConfig.computer;
+  delete workerConfig.tts;
   return appConfigSchema.parse(workerConfig);
 }
 
