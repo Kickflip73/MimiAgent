@@ -89,6 +89,25 @@ test('repeated background delegation returns the same durable task', async () =>
     assert.equal(typeof first.taskId, 'string', JSON.stringify(first));
     assert.equal(repeated.taskId, first.taskId);
     assert.equal(store.taskChildCount(routed.task.id), 1);
+    const newerEventId = randomUUID();
+    store.ingestEvent({
+      id: newerEventId,
+      externalId: newerEventId,
+      source: 'test',
+      kind: 'command',
+      trust: 'owner',
+      payload: { prompt: 'newer foreground work' },
+      occurredAt: new Date(Date.now() + 1_000).toISOString(),
+      receivedAt: new Date(Date.now() + 1_000).toISOString(),
+      priority: 100,
+      profileId: 'owner',
+      sessionKey: 'newer-session',
+      replyRoute: { channel: 'system' },
+    });
+    const listed = await invoke(tools, 'list_background_tasks', { limit: 1 }) as Array<{
+      taskId: string;
+    }>;
+    assert.deepEqual(listed.map((task) => task.taskId), [first.taskId]);
     assert.equal(
       (store.getTask(first.taskId)?.objective as Record<string, unknown>).workspaceRoot,
       path.join(root, 'selected-workspace'),
@@ -173,15 +192,37 @@ test('repeated background delegation returns the same durable task', async () =>
     });
 
     const inspected = await invoke(tools, 'inspect_background_task', {
-      taskId: first.taskId,
+      taskId: first.taskId.slice(0, 8),
     }) as {
+      taskId?: string;
       codex?: { latestActivity?: string; recentEvents?: unknown[]; logUpdatedAt?: string };
       execution?: { leaseActive: boolean };
     };
+    assert.equal(inspected.taskId, first.taskId, JSON.stringify(inspected));
     assert.match(inspected.codex?.latestActivity ?? '', /file_change.*game\.ts/);
     assert.equal(inspected.codex?.recentEvents?.length, 1);
     assert.match(inspected.codex?.logUpdatedAt ?? '', /^\d{4}-/);
     assert.equal(inspected.execution?.leaseActive, true);
+
+    const collidingTaskId = `${first.taskId.slice(0, 8)}-0000-4000-8000-000000000001`;
+    store.enqueueTask({
+      id: collidingTaskId,
+      type: 'background',
+      idempotencyKey: 'delegate:short-id-collision',
+      triggerEventId: routed.event.id,
+      authorityEventId: routed.event.id,
+      parentTaskId: routed.task.id,
+      profileId: 'owner',
+      sessionKey: `mimi-task-${collidingTaskId}`,
+      objective: { objective: 'colliding task' },
+      executor: 'isolated_worker',
+      workspaceAccess: 'write',
+      priority: 70,
+    });
+    const ambiguous = await invoke(tools, 'inspect_background_task', {
+      taskId: first.taskId.slice(0, 8),
+    });
+    assert.match(JSON.stringify(ambiguous), /短 ID 不唯一.*完整 UUID/);
   } finally {
     store.close();
   }
