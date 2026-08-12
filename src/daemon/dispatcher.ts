@@ -101,6 +101,16 @@ export { eventFailureAttemptLimit } from './dispatcher-retry-policy.js';
 const TERMINAL_TASK_STATUSES = new Set<TaskRecord['status']>([
   'completed', 'failed', 'cancelled', 'dead_letter',
 ]);
+// run_shell owns its process group and turns AbortSignal into TERM/KILL cleanup.
+// Keep other tools behind the safe boundary until they provide equivalent guarantees.
+const INTERRUPTIBLE_ACTIVE_TOOLS = new Set(['run_shell']);
+
+function activeToolsAreInterruptible(active: ActiveExecution): boolean {
+  if (active.tools === 0) return true;
+  const pending = [...active.pendingToolCalls.values()];
+  return pending.length === active.tools
+    && pending.every((call) => INTERRUPTIBLE_ACTIVE_TOOLS.has(call.name));
+}
 
 function personalConnectorId(channel: PersonalMessageAuthorization['channel']): string {
   return `personal-${channel}`;
@@ -996,9 +1006,10 @@ export class MimiDispatcher {
 
   private abortForCancellationWhenSafe(active: ActiveExecution): void {
     const cancellation = active.cancelRequested;
-    if (!cancellation || active.tools > 0) return;
-    active.runController?.abort(new TerminalRunInterruptedError(cancellation.reason));
-    this.host.cancel(active.task.id, new TerminalRunInterruptedError(cancellation.reason));
+    if (!cancellation || !activeToolsAreInterruptible(active)) return;
+    const reason = new TerminalRunInterruptedError(cancellation.reason);
+    active.runController?.abort(reason);
+    this.host.cancel(active.task.id, reason);
   }
 
   private abortForPauseWhenSafe(active: ActiveExecution): void {

@@ -188,6 +188,81 @@ test('dispatcher control surface is idempotent for missing, queued, paused, and 
   }
 });
 
+test('dispatcher cancellation interrupts an active run_shell immediately', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-cancel-shell-'));
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  let reportToolStarted!: () => void;
+  const toolStarted = new Promise<void>((resolve) => { reportToolStarted = resolve; });
+  let releaseTool!: () => void;
+  const toolReleased = new Promise<void>((resolve) => { releaseTool = resolve; });
+  let runSignal: AbortSignal | undefined;
+  const agent = {
+    currentSessionId: 'owner',
+    currentCapabilitySnapshot: () => undefined,
+    completedExecution: async () => undefined,
+    finalizeExecutionLedger: async () => undefined,
+    reopenExecutionLedger: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, {
+    execute: async (request, observer) => {
+      runSignal = request.signal;
+      await observer?.onStreamEvent?.({
+        type: 'run_item_stream_event',
+        name: 'tool_called',
+        item: {
+          rawItem: {
+            callId: 'shell-call',
+            name: 'run_shell',
+            arguments: JSON.stringify({ command: 'mtdata query --sql ...' }),
+          },
+        },
+      } as never);
+      reportToolStarted();
+      await toolReleased;
+      await observer?.onStreamEvent?.({
+        type: 'run_item_stream_event',
+        name: 'tool_output',
+        item: {
+          rawItem: { callId: 'shell-call', name: 'run_shell' },
+          output: { exitCode: 1, termination: { reason: 'aborted' } },
+        },
+      } as never);
+      request.signal?.throwIfAborted();
+      return { answer: 'unexpected completion', effects: [] };
+    },
+  });
+  const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+  const dispatcher = new MimiDispatcher(store, host, attention);
+  let processing: Promise<boolean> | undefined;
+  try {
+    const now = new Date().toISOString();
+    const routed = store.ingestEvent({
+      id: 'cancel-shell-event',
+      externalId: 'cancel-shell-event',
+      source: 'local-cli',
+      kind: 'command',
+      trust: 'owner',
+      payload: { prompt: 'query database' },
+      occurredAt: now,
+      receivedAt: now,
+      priority: 100,
+      profileId: 'owner',
+      sessionKey: 'owner',
+    });
+    assert.ok(routed.task);
+
+    processing = dispatcher.processTaskById(routed.task.id);
+    await toolStarted;
+    assert.equal(dispatcher.status().activeToolCount, 1);
+    assert.deepEqual(dispatcher.cancel(routed.task.id, 'owner correction'), { state: 'cancelled' });
+    assert.equal(runSignal?.aborted, true);
+  } finally {
+    releaseTool();
+    await processing;
+    store.close();
+  }
+});
+
 test('dispatcher publishes completion only after host bookkeeping leaves the active boundary', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-dispatcher-completion-boundary-'));
   const store = new MimiStore(path.join(root, 'mimi.db'));
