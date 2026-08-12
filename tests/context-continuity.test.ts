@@ -152,6 +152,12 @@ test('short confirmations resolve against the immediately preceding assistant pr
   assert.match(BASE_INSTRUCTIONS, /明确待执行动作，就视为同意并继续/);
 });
 
+test('explicit owner tool and data-source choices cannot be silently substituted', () => {
+  assert.match(BASE_INSTRUCTIONS, /明确指定工具、命令、数据源或目标系统/);
+  assert.match(BASE_INSTRUCTIONS, /硬边界/);
+  assert.match(BASE_INSTRUCTIONS, /不得静默换路/);
+});
+
 test('memory recall reformulates irrelevant results before guessing', () => {
   assert.match(BASE_INSTRUCTIONS, /结果为空或明显不相关/);
   assert.match(BASE_INSTRUCTIONS, /空结果只表示当前查询未命中/);
