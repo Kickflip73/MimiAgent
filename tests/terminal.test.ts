@@ -5,6 +5,7 @@ import { formatRunDuration, parseRunEvent, renderAssistantAnswer, renderBanner, 
 
 class BufferWriter {
   isTTY = false;
+  columns?: number;
   value = '';
 
   write(chunk: string): void {
@@ -98,6 +99,63 @@ test('recognizes a streamed GFM table from its divider and preserves prose pipes
   assert.match(answer.value, /┌──────────┬───────┬───────┐/);
   assert.match(answer.value, /│ 获得激励 │ 42 家 │ 27\.3% │/);
   assert.doesNotMatch(answer.value, /状态 \| 数量 \| 占比/);
+});
+
+test('keeps delayed streamed rows inside their GFM table', async () => {
+  const status = new BufferWriter();
+  const answer = new BufferWriter();
+  answer.isTTY = true;
+  const renderer = new TerminalRenderer(status, answer);
+  renderer.start();
+  renderer.handle({
+    type: 'raw_model_stream_event',
+    data: {
+      type: 'output_text_delta',
+      delta: '| PR | 标题 | 结果 |\n| --- | --- | --- |\n| multica-ai/multica #6707',
+    },
+  } as RunStreamEvent);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  renderer.handle({
+    type: 'raw_model_stream_event',
+    data: {
+      type: 'output_text_delta',
+      delta: ' | 隐藏菜单 | 诊断获认可 |\n',
+    },
+  } as RunStreamEvent);
+  renderer.finish();
+
+  const plain = answer.value.replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(plain, /│ multica-ai\/multica #6707 │ 隐藏菜单 │ 诊断获认可 │/);
+  assert.equal((plain.match(/multica-ai\/multica #6707/g) ?? []).length, 1);
+  assert.doesNotMatch(plain, /^\| multica-ai\/multica #6707/m);
+});
+
+test('wraps wide streamed GFM tables to the terminal width', () => {
+  const status = new BufferWriter();
+  const answer = new BufferWriter();
+  answer.isTTY = true;
+  answer.columns = 48;
+  const renderer = new TerminalRenderer(status, answer);
+  renderer.start();
+  renderer.handle({
+    type: 'raw_model_stream_event',
+    data: {
+      type: 'output_text_delta',
+      delta: [
+        '| Project | Result |',
+        '| --- | --- |',
+        '| multica-ai/multica | This explanation is intentionally much wider than the terminal |',
+      ].join('\n'),
+    },
+  } as RunStreamEvent);
+  renderer.finish();
+
+  const plain = answer.value.replace(/\x1b\[[0-9;]*m/g, '');
+  const tableLines = plain.split('\n').filter((line) => /^[┌├└│]/u.test(line));
+  assert.ok(tableLines.length > 5);
+  assert.ok(tableLines.every((line) => line.length <= 48));
+  assert.match(plain, /intentionally/);
+  assert.match(plain, /terminal/);
 });
 
 test('collapses repeated blank lines in streamed terminal answers', () => {

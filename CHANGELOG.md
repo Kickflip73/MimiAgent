@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- keep delayed streamed GFM rows inside their table, wrap wide cells to the
+  terminal width, and preserve forward-compatible run-finalization fields when
+  switching between builds instead of quarantining a valid commit journal
 - let authenticated local Full Owner conversations execute `run_shell` directly
   on the Host so user-level `launchctl` and other native service operations are
   not rejected by Darwin Seatbelt, while restricted sources keep the sandbox

@@ -9,6 +9,7 @@ import {
 type Writable = {
   write(chunk: string): unknown;
   isTTY?: boolean;
+  columns?: number;
 };
 
 type StatusTone = 'agent' | 'thinking' | 'tool' | 'success' | 'failure';
@@ -290,25 +291,83 @@ function padTableCell(value: string, width: number, alignment: TableAlignment): 
   return `${value}${' '.repeat(remaining)}`;
 }
 
-function renderMarkdownTable(table: MarkdownTable, tty: boolean): string {
+function fitTableWidths(natural: number[], maxWidth?: number): number[] {
+  if (!maxWidth || !natural.length) return natural;
+  const contentBudget = maxWidth - (natural.length * 3) - 1;
+  if (contentBudget < natural.length) return natural;
+  if (natural.reduce((sum, width) => sum + width, 0) <= contentBudget) return natural;
+
+  const widths = natural.map(() => 1);
+  let remaining = contentBudget - widths.length;
+  while (remaining > 0) {
+    let candidate = -1;
+    let largestDeficit = 0;
+    for (const [index, width] of widths.entries()) {
+      const deficit = (natural[index] ?? 1) - width;
+      if (deficit > largestDeficit) {
+        candidate = index;
+        largestDeficit = deficit;
+      }
+    }
+    if (candidate < 0) break;
+    widths[candidate] = (widths[candidate] ?? 1) + 1;
+    remaining -= 1;
+  }
+  return widths;
+}
+
+function wrapTableCell(value: string, width: number): string[] {
+  if (terminalWidth(value) <= width) return [value];
+  const lines: string[] = [];
+  let line = '';
+  let lineWidth = 0;
+  let activeAnsi = '';
+  const tokens = value.match(/\x1b\[[0-9;]*m|./gsu) ?? [];
+  for (const token of tokens) {
+    if (token.startsWith('\x1b[')) {
+      line += token;
+      activeAnsi = token === ansi.reset ? '' : `${activeAnsi}${token}`;
+      continue;
+    }
+    const tokenWidth = terminalWidth(token);
+    if (lineWidth > 0 && lineWidth + tokenWidth > width) {
+      lines.push(activeAnsi ? `${line}${ansi.reset}` : line);
+      line = `${activeAnsi}${token}`;
+      lineWidth = tokenWidth;
+      continue;
+    }
+    line += token;
+    lineWidth += tokenWidth;
+  }
+  if (line || !lines.length) lines.push(line);
+  return lines;
+}
+
+function renderMarkdownTable(table: MarkdownTable, tty: boolean, maxWidth?: number): string {
   const renderedRows = table.rows.map((row) => row.map((cell) => inlineMarkdown(cell, tty)));
-  const widths = table.alignments.map((_, index) =>
+  const naturalWidths = table.alignments.map((_, index) =>
     Math.max(1, ...renderedRows.map((row) => terminalWidth(row[index] ?? ''))),
   );
+  const widths = fitTableWidths(naturalWidths, maxWidth ?? (tty ? process.stdout.columns : undefined));
   const border = (left: string, middle: string, right: string) =>
     `${left}${widths.map((width) => '─'.repeat(width + 2)).join(middle)}${right}`;
-  const row = (cells: string[], header = false) => {
-    const content = cells.map((cell, index) => {
-      const value = header && tty ? `${ansi.bold}${cell}${ansi.reset}` : cell;
-      return ` ${padTableCell(value, widths[index]!, table.alignments[index]!)} `;
+  const row = (cells: string[], header = false): string[] => {
+    const wrapped = widths.map((width, index) => wrapTableCell(cells[index] ?? '', width));
+    const height = Math.max(...wrapped.map((lines) => lines.length));
+    return Array.from({ length: height }, (_, lineIndex) => {
+      const content = wrapped.map((lines, index) => {
+        const cell = lines[lineIndex] ?? '';
+        const value = header && tty ? `${ansi.bold}${cell}${ansi.reset}` : cell;
+        return ` ${padTableCell(value, widths[index]!, table.alignments[index]!)} `;
+      });
+      return `│${content.join('│')}│`;
     });
-    return `│${content.join('│')}│`;
   };
   return [
     border('┌', '┬', '┐'),
-    row(renderedRows[0] ?? [], true),
+    ...row(renderedRows[0] ?? [], true),
     border('├', '┼', '┤'),
-    ...renderedRows.slice(1).map((cells) => row(cells)),
+    ...renderedRows.slice(1).flatMap((cells) => row(cells)),
     border('└', '┴', '┘'),
   ].join('\n');
 }
@@ -458,6 +517,7 @@ class MarkdownStream {
   private canFlushPartial(): boolean {
     const trimmed = this.buffer.trim();
     if (!trimmed) return false;
+    if (this.table || this.pendingTableHeader !== undefined || this.buffer.includes('|')) return false;
     if (/^#{1,6}$/.test(trimmed) || trimmed.startsWith('```')) return false;
     if (parseTableRow(this.buffer) || parseTableDivider(this.buffer)) return false;
     const boldMarkers = (this.buffer.match(/\*\*/g) ?? []).length;
@@ -510,7 +570,7 @@ class MarkdownStream {
 
   private flushPendingTable(newline = true): boolean {
     if (this.table) {
-      this.output.write(`${renderMarkdownTable(this.table, this.tty)}${newline ? '\n' : ''}`);
+      this.output.write(`${renderMarkdownTable(this.table, this.tty, this.output.columns)}${newline ? '\n' : ''}`);
       this.table = undefined;
       this.previousBlank = false;
       return true;

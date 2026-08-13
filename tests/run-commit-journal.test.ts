@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
   RunCommitJournal,
   runAnswerDigest,
+  runCommitJournalId,
 } from '../src/core/run-commit-journal.js';
 
 test('run commit journal advances durably without storing answer text', async () => {
@@ -139,4 +140,47 @@ test('one durable execution selects the latest attempt and finalizes every prior
   await journal.finalizeExecution('owner', 'event:retry');
   assert.equal((await journal.get('owner', 'attempt-1'))?.phase, 'finalized');
   assert.equal((await journal.get('owner', 'attempt-2'))?.phase, 'finalized');
+});
+
+test('preserves forward-compatible finalization media anchors when reopening a journal', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-run-commit-forward-compatible-'));
+  const file = path.join(root, 'journal.json');
+  const answerDigest = runAnswerDigest('answer');
+  const entryId = runCommitJournalId('owner', 'run-1');
+  await writeFile(file, `${JSON.stringify({
+    version: 1,
+    entries: {
+      [entryId]: {
+        id: entryId,
+        sessionId: 'owner',
+        runId: 'run-1',
+        phase: 'prepared',
+        answerDigest,
+        outcome: 'completed',
+        runtimeActions: [],
+        finalization: {
+          runId: 'run-1',
+          answerDigest,
+          outcome: 'completed',
+          evidenceRefs: [],
+          mediaAnchors: [{
+            evidenceId: 'media:audio:example',
+            anchor: { kind: 'time', startMs: 0, endMs: 1_000 },
+          }],
+          toolManifest: [],
+        },
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      },
+    },
+  }, null, 2)}\n`);
+
+  const journal = new RunCommitJournal(file);
+  assert.equal((await journal.get('owner', 'run-1'))?.runId, 'run-1');
+  await journal.advance('owner', 'run-1', 'receipt_committed');
+
+  const persisted = JSON.parse(await readFile(file, 'utf8')) as {
+    entries: Record<string, { finalization?: { mediaAnchors?: unknown[] } }>;
+  };
+  assert.equal(persisted.entries[entryId]?.finalization?.mediaAnchors?.length, 1);
+  assert.deepEqual(await readdir(root), ['journal.json']);
 });

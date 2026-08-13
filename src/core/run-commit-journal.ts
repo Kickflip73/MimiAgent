@@ -54,7 +54,13 @@ const entrySchema = z.object({
   outcome: z.enum(['completed', 'partial', 'blocked', 'interrupted', 'failed', 'uncertain']).optional(),
   completionDecision: z.enum(['pass', 'continue', 'blocked', 'uncertain']).optional(),
   runtimeActions: z.array(z.record(z.string(), z.unknown())),
-  finalization: runFinalizationRecordSchema.optional(),
+  // Preserve fields written by newer MimiAgent builds when users switch branches.
+  // This branch cannot interpret media anchors, but dropping them during an update
+  // would turn a compatible journal into data loss.
+  finalization: runFinalizationRecordSchema.extend({
+    mediaAnchors: z.array(z.unknown()).max(100).optional(),
+    mediaAnchorsTruncated: z.literal(true).optional(),
+  }).optional(),
   updatedAt: z.string(),
 });
 const journalSchema = z.object({
