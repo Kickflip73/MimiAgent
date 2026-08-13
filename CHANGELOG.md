@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- recover forward-compatible Session finalization evidence, count pre-dispatch
+  failures as known zero-token runs, and reclassify retained historical task
+  dead letters so they no longer block Briefing-driven Digest consumption
 - always release a Session's in-memory and process-level Run ownership when
   failure-finalization persistence throws, so later owner input is not blocked
   by a task that has already stopped

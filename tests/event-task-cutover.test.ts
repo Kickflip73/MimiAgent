@@ -596,6 +596,7 @@ test('v16 migrates only the known queued Briefing route and records unresolved c
     assert.equal(migrated.getTask('legacy-briefing')?.workspaceAccess, 'read');
     assert.equal(migrated.getTask('unresolved-briefing')?.executor, 'codex');
     assert.equal(migrated.getTask('unresolved-briefing')?.workspaceAccess, 'write');
+    assert.equal(migrated.getTask('unresolved-briefing')?.status, 'failed');
     assert.equal(migrated.getTask('unknown-historical-type')?.type, 'retired_worker_kind');
     assert.deepEqual(migrated.getTask('unresolved-briefing')?.failure, {
       code: 'historical.briefing.codex.retained_dead_letter',
@@ -608,9 +609,7 @@ test('v16 migrates only the known queued Briefing route and records unresolved c
       'historical.retired_worker_kind.isolated_worker.retained_failed',
     );
     assert.equal(migrated.activitySnapshot(20).failureClassification.unclassifiedDeadLetters, 0);
-    assert.deepEqual(migrated.activitySnapshot(20).failureClassification.deadLetters, [{
-      category: 'legacy_failure', disposition: 'manual_verify', count: 1,
-    }]);
+    assert.deepEqual(migrated.activitySnapshot(20).failureClassification.deadLetters, []);
     assert.equal(migrated.pendingDigestCount(), 2);
     assert.equal(
       migrated.listEventSummaries(200)
@@ -642,12 +641,14 @@ test('v16 migrates only the known queued Briefing route and records unresolved c
       collapsedHealthDigestItems: number;
       historicalTerminalTasks: number;
       backfilledFailureRecords: number;
+      reclassifiedHistoricalDeadLetters: number;
     };
   };
   assert.equal(auditData.after.unresolvedHistoricalCombinations, 2);
   assert.equal(auditData.after.collapsedHealthDigestItems, 1);
   assert.equal(auditData.after.historicalTerminalTasks, 2);
   assert.equal(auditData.after.backfilledFailureRecords, 2);
+  assert.equal(auditData.after.reclassifiedHistoricalDeadLetters, 1);
   verified.close();
   const backups = await readdir(path.join(root, 'backups'), { recursive: true });
   assert.equal(backups.some((entry) => entry.includes('task-executor-v16-')), true);
@@ -712,6 +713,11 @@ test('existing v16 databases backfill failure facts once with backup and audit',
       authorityEventId: authority.id, profileId: 'owner', objective: {},
       executor: 'isolated_worker', workspaceAccess: 'read', priority: 50,
     });
+    store.enqueueTask({
+      id: 'v16-actionable-dead', type: 'background', idempotencyKey: 'v16-actionable-dead',
+      authorityEventId: authority.id, profileId: 'owner', objective: {},
+      executor: 'isolated_worker', workspaceAccess: 'read', priority: 50,
+    });
   } finally {
     store.close();
   }
@@ -720,6 +726,15 @@ test('existing v16 databases backfill failure facts once with backup and audit',
     UPDATE tasks SET status='dead_letter', error='historical explanation', result_json=NULL
       WHERE id='v16-legacy-dead';
   `);
+  legacy.prepare(`
+    UPDATE tasks SET status='dead_letter', error='retryable failure', result_json=?
+      WHERE id='v16-actionable-dead'
+  `).run(JSON.stringify({
+    failure: {
+      code: 'provider.http_503',
+      disposition: { phase: 'provider', kind: 'transient', retryable: true, dispatchStarted: false },
+    },
+  }));
   assert.equal(needsTaskFailureFactsRepairV16(legacy), true);
   legacy.close();
 
@@ -729,6 +744,8 @@ test('existing v16 databases backfill failure facts once with backup and audit',
       repaired.getTask('v16-legacy-dead')?.failure?.code,
       'historical.background.isolated_worker.retained_dead_letter',
     );
+    assert.equal(repaired.getTask('v16-legacy-dead')?.status, 'failed');
+    assert.equal(repaired.getTask('v16-actionable-dead')?.status, 'dead_letter');
     assert.equal(repaired.activitySnapshot(10).failureClassification.unclassifiedDeadLetters, 0);
   } finally {
     repaired.close();

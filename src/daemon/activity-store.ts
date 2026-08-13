@@ -88,8 +88,8 @@ export class ActivityStore extends SqliteDomain {
       SELECT tasks.type,
         COALESCE(trigger_event.source, authority_event.source) AS source,
         COALESCE(trigger_event.trust, authority_event.trust) AS trust,
-        json_extract(runs.answer_json, '$.usage.runInputTokens') AS input_tokens,
-        json_extract(runs.answer_json, '$.usage.runOutputTokens') AS output_tokens
+        COALESCE(json_extract(runs.answer_json, '$.usage.runInputTokens'), CASE WHEN json_extract(tasks.result_json, '$.failure.disposition.dispatchStarted') = 0 THEN 0 END) AS input_tokens,
+        COALESCE(json_extract(runs.answer_json, '$.usage.runOutputTokens'), CASE WHEN json_extract(tasks.result_json, '$.failure.disposition.dispatchStarted') = 0 THEN 0 END) AS output_tokens
       FROM runs
       JOIN tasks ON tasks.id = runs.task_id
       LEFT JOIN events trigger_event ON trigger_event.id = tasks.trigger_event_id

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, chmod, mkdtemp, readdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -73,6 +73,31 @@ test('isolates a corrupt session instead of breaking the whole session list', as
 
   assert.deepEqual(summaries.map((item) => item.id), ['valid']);
   assert.ok((await readdir(root)).some((name) => name.startsWith('broken.json.corrupt-')));
+});
+
+test('preserves forward-compatible finalization media anchors in a Session', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-forward-finalization-'));
+  const timestamp = '2026-08-12T00:00:00.000Z';
+  await writeFile(path.join(root, 'demo.json'), JSON.stringify({
+    id: 'demo', createdAt: timestamp, updatedAt: timestamp, items: [],
+    checkpoint: {
+      runId: 'run-1', status: 'completed', input: 'test', phase: 'done',
+      startedAt: timestamp, updatedAt: timestamp,
+      finalization: {
+        runId: 'run-1', answerDigest: 'a'.repeat(64), outcome: 'completed',
+        evidenceRefs: [], toolManifest: [],
+        mediaAnchors: [{ evidenceId: 'media:audio:example', anchor: { kind: 'whole' } }],
+      },
+    },
+  }));
+  const session = new FileSession(root, 'demo');
+  assert.equal((await session.getCheckpoint())?.finalization?.mediaAnchors?.length, 1);
+  await session.addItems([{ role: 'user', content: 'keep compatibility data' }] as AgentInputItem[]);
+  const persisted = JSON.parse(await readFile(path.join(root, 'demo.json'), 'utf8')) as {
+    checkpoint: { finalization: { mediaAnchors: unknown[] } };
+  };
+  assert.equal(persisted.checkpoint.finalization.mediaAnchors.length, 1);
+  assert.deepEqual(await readdir(root), ['demo.json']);
 });
 
 test('uses runId CAS so late callbacks cannot overwrite a newer run', async () => {

@@ -30,6 +30,9 @@ export const runFinalizationRecordSchema = z.object({
   reason: z.string().trim().min(1).max(2_000).optional(),
   nextAction: z.string().trim().min(1).max(2_000).optional(),
   evidenceRefs: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  // Preserve durable evidence written by builds with the optional media subsystem.
+  mediaAnchors: z.array(z.unknown()).max(100).optional(),
+  mediaAnchorsTruncated: z.literal(true).optional(),
   completionDecision: z.enum(['pass', 'continue', 'blocked', 'uncertain']).optional(),
   toolManifest: z.array(toolExecutionManifestEntrySchema),
 }).strict();

@@ -47,7 +47,7 @@ function historicalTerminalRows(database: DatabaseSync): Row[] {
 function backfillHistoricalFailureRecords(
   database: DatabaseSync,
   timestamp: string,
-): { historicalTerminalTasks: number; backfilledFailureRecords: number } {
+): { historicalTerminalTasks: number; backfilledFailureRecords: number; reclassifiedHistoricalDeadLetters: number } {
   const rows = historicalTerminalRows(database);
   const updateFailure = database.prepare(`
     UPDATE tasks SET result_json = ?, updated_at = ? WHERE id = ?
@@ -70,11 +70,24 @@ function backfillHistoricalFailureRecords(
       JSON.stringify(result), timestamp, String(row.id),
     ).changes);
   }
-  return { historicalTerminalTasks: rows.length, backfilledFailureRecords };
+  const reclassifiedHistoricalDeadLetters = Number(database.prepare(`
+    UPDATE tasks SET status = 'failed'
+    WHERE status = 'dead_letter'
+      AND json_extract(result_json, '$.failure.code') LIKE 'historical.%.retained_dead_letter'
+      AND json_extract(result_json, '$.failure.disposition.kind') = 'unclassified'
+      AND json_extract(result_json, '$.failure.disposition.retryable') = 0
+      AND json_extract(result_json, '$.failure.disposition.dispatchStarted') = 0
+  `).run().changes);
+  return { historicalTerminalTasks: rows.length, backfilledFailureRecords, reclassifiedHistoricalDeadLetters };
 }
 
 export function needsTaskFailureFactsRepairV16(database: DatabaseSync): boolean {
-  return historicalTerminalRows(database).some((row) => !hasStructuredFailure(parsedResult(row.result_json)));
+  return historicalTerminalRows(database).some((row) => !hasStructuredFailure(parsedResult(row.result_json)))
+    || Boolean(database.prepare(`
+      SELECT 1 FROM tasks WHERE status = 'dead_letter'
+        AND json_extract(result_json, '$.failure.code') LIKE 'historical.%.retained_dead_letter'
+      LIMIT 1
+    `).get());
 }
 
 export function repairTaskFailureFactsV16(database: DatabaseSync): void {
