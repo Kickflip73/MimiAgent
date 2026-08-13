@@ -417,6 +417,43 @@ test('releases the active run when asynchronous Runner setup rejects', async () 
   }
 });
 
+test('releases the active run when failure finalization persistence also fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-failure-finalization-release-'));
+  const dataRoot = path.join(root, '.mimi-agent');
+  const agent = await MimiAgent.create({
+    provider: 'openai', workspaceRoot: root, dataRoot,
+    skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40, maxTurns: 20,
+  });
+  const runner = (agent as unknown as {
+    runner: { run: (...args: unknown[]) => Promise<unknown> };
+  }).runner;
+  runner.run = async () => ({
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: 'answer that cannot be finalized',
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() { /* no streamed events */ },
+  });
+  await writeFile(path.join(dataRoot, 'run-commit-journal.json'), '{broken');
+  const blockedSessionId = agent.currentSessionId;
+
+  try {
+    await assert.rejects(
+      new AgentRunService(agent).execute({ input: 'trigger finalization' }),
+      /状态文件损坏，已隔离/,
+    );
+    await assert.doesNotReject(agent.switchSession('after-finalization-failure'));
+    await assert.doesNotReject(
+      new FileSession(path.join(dataRoot, 'sessions'), blockedSessionId).beginRun('retry', 'retry-run'),
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
 test('returns unknown model tool calls to the model instead of aborting the run', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-unknown-tool-recovery-'));
   const agent = await MimiAgent.create({

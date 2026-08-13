@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- always release a Session's in-memory and process-level Run ownership when
+  failure-finalization persistence throws, so later owner input is not blocked
+  by a task that has already stopped
 - keep delayed streamed GFM rows inside their table, wrap wide cells to the
   terminal width, and preserve forward-compatible run-finalization fields when
   switching between builds instead of quarantining a valid commit journal

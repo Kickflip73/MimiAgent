@@ -266,69 +266,69 @@ export class RunCommitCoordinator {
   async fail(input: RunFailureInput): Promise<RunFinalizationRecord | undefined> {
     const run = this.port.activeRun;
     if (!run) return undefined;
-    const safeError = this.redactError(input.error, run.ephemeralSensitiveAccess);
-    const errorMessage = safeError instanceof Error ? safeError.message : String(safeError);
-    const safeInterruptedAnswer = input.interrupted && input.interruptedAnswer
-      ? redactActiveEphemeralText(input.interruptedAnswer, run.ephemeralSensitiveAccess)
-      : undefined;
-    const executionRunId = run.options?.executionKey ?? run.runId;
-    const calls = mergeRunCalls(
-      run.facts.calls(run.sessionId, executionRunId),
-      await this.port.components.state.executionLedger.store.listCalls(run.sessionId, executionRunId),
-    );
-    const decision = decideRunCommit({
-      draft: safeInterruptedAnswer ?? '',
-      calls,
-      sdk: input.interrupted ? 'interrupted' : 'failed',
-      reason: errorMessage,
-    });
-    const finalization = createRunFinalization({
-      runId: run.runId,
-      answer: decision.answer,
-      outcome: decision.outcome,
-      reason: decision.reason,
-      nextAction: decision.nextAction,
-      evidenceRefs: decision.evidenceRefs,
-      calls,
-    });
-    await this.port.components.state.runCommits.prepare({
-      sessionId: run.sessionId,
-      runId: run.runId,
-      ...(run.options?.executionKey ? { executionKey: run.options.executionKey } : {}),
-      answerDigest: finalization.answerDigest,
-      outcome: finalization.outcome,
-      runtimeActions: [],
-      finalization,
-    });
-    await this.port.components.state.traces.record(run.sessionId, 'run_finalization', finalization);
-    this.port.activeRun = undefined;
-    await this.port.components.computer?.endRun(run.runId).catch(() => undefined);
-    run.releaseOwner();
-    this.port.applyManifestActual(this.port.validUsage(input.usage, run.scope.modelBinding));
-    if (run.options?.retainExecutionLedger) {
-      await run.session.rollbackRunItems(run.runId, safeInterruptedAnswer).catch(() => undefined);
-    }
-    if (input.interrupted && isTerminalRunInterruption(safeError)) {
-      await run.session.clearRunCheckpoint(run.runId);
-    } else {
-      await run.session.failRun(
-        errorMessage,
-        decision.outcome === 'interrupted',
-        run.runId,
-        finalization,
+    try {
+      const safeError = this.redactError(input.error, run.ephemeralSensitiveAccess);
+      const errorMessage = safeError instanceof Error ? safeError.message : String(safeError);
+      const safeInterruptedAnswer = input.interrupted && input.interruptedAnswer
+        ? redactActiveEphemeralText(input.interruptedAnswer, run.ephemeralSensitiveAccess) : undefined;
+      const executionRunId = run.options?.executionKey ?? run.runId;
+      const calls = mergeRunCalls(
+        run.facts.calls(run.sessionId, executionRunId),
+        await this.port.components.state.executionLedger.store.listCalls(run.sessionId, executionRunId),
       );
+      const decision = decideRunCommit({
+        draft: safeInterruptedAnswer ?? '',
+        calls,
+        sdk: input.interrupted ? 'interrupted' : 'failed',
+        reason: errorMessage,
+      });
+      const finalization = createRunFinalization({
+        runId: run.runId,
+        answer: decision.answer,
+        outcome: decision.outcome,
+        reason: decision.reason,
+        nextAction: decision.nextAction,
+        evidenceRefs: decision.evidenceRefs,
+        calls,
+      });
+      await this.port.components.state.runCommits.prepare({
+        sessionId: run.sessionId,
+        runId: run.runId,
+        ...(run.options?.executionKey ? { executionKey: run.options.executionKey } : {}),
+        answerDigest: finalization.answerDigest,
+        outcome: finalization.outcome,
+        runtimeActions: [],
+        finalization,
+      });
+      await this.port.components.state.traces.record(run.sessionId, 'run_finalization', finalization);
+      this.port.applyManifestActual(this.port.validUsage(input.usage, run.scope.modelBinding));
+      if (run.options?.retainExecutionLedger) {
+        await run.session.rollbackRunItems(run.runId, safeInterruptedAnswer).catch(() => undefined);
+      }
+      if (input.interrupted && isTerminalRunInterruption(safeError)) {
+        await run.session.clearRunCheckpoint(run.runId);
+      } else {
+        await run.session.failRun(
+          errorMessage,
+          decision.outcome === 'interrupted',
+          run.runId,
+          finalization,
+        );
+      }
+      await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'session_committed');
+      await this.port.hooks.emit({
+        type: 'run_error',
+        sessionId: run.sessionId,
+        error: errorMessage,
+        interrupted: decision.outcome === 'interrupted',
+      });
+      if (!run.options?.retainExecutionLedger) await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'finalized');
+      return finalization;
+    } finally {
+      if (this.port.activeRun === run) this.port.activeRun = undefined;
+      await this.port.components.computer?.endRun(run.runId).catch(() => undefined);
+      run.releaseOwner();
     }
-    await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'session_committed');
-    await this.port.hooks.emit({
-      type: 'run_error',
-      sessionId: run.sessionId,
-      error: errorMessage,
-      interrupted: decision.outcome === 'interrupted',
-    });
-    if (!run.options?.retainExecutionLedger) {
-      await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'finalized');
-    }
-    return finalization;
   }
 
   evaluate(
