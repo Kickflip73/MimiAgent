@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
 import type { AddressInfo } from 'node:net';
-import { Agent, Runner } from '@openai/agents';
+import { Agent, Runner, type Model, type StreamEvent } from '@openai/agents';
 import { ModelGateway } from '../src/runtime/model-gateway.js';
 
 async function fakeProvider(label: string) {
@@ -214,6 +214,137 @@ test('OpenAI-compatible health reports an empty-body gateway rejection', async (
     });
     assert.equal(result.status, 'unhealthy');
     assert.match(result.error ?? '', /compatible\/bad-alias: HTTP 400/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('OpenAI-compatible streaming replays provider reasoning_content with tool calls', async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  const server = http.createServer((request, response) => {
+    let source = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => { source += chunk; });
+    request.on('end', () => {
+      const body = JSON.parse(source) as Record<string, unknown>;
+      requests.push(body);
+      const messages = body.messages as Array<Record<string, unknown>>;
+      if (requests.length === 2) {
+        const assistant = messages.find((message) => message.role === 'assistant');
+        if (assistant?.reasoning_content !== '先检查平台能力。') {
+          response.writeHead(400, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({
+            error: {
+              message: 'The `reasoning_content` in the thinking mode must be passed back to the API.',
+            },
+          }));
+          return;
+        }
+      }
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (requests.length === 1) {
+        response.write(`data: ${JSON.stringify({
+          id: 'reasoning-call',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: { reasoning_content: '先检查平台能力。' } }],
+        })}\n\n`);
+        response.write(`data: ${JSON.stringify({
+          id: 'reasoning-call',
+          object: 'chat.completion.chunk',
+          choices: [{
+            index: 0,
+            delta: {
+              tool_calls: [{
+                index: 0,
+                id: 'capability-call',
+                type: 'function',
+                function: { name: 'inspect_capabilities', arguments: '{}' },
+              }],
+            },
+          }],
+        })}\n\n`);
+        response.write(`data: ${JSON.stringify({
+          id: 'reasoning-call',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+        })}\n\n`);
+      } else {
+        response.write(`data: ${JSON.stringify({
+          id: 'final-answer',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: { content: '已核实。' } }],
+        })}\n\n`);
+        response.write(`data: ${JSON.stringify({
+          id: 'final-answer',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        })}\n\n`);
+      }
+      response.end('data: [DONE]\n\n');
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+  try {
+    const gateway = new ModelGateway({
+      providers: [{
+        id: 'reasoner',
+        label: 'Reasoning-compatible',
+        transport: 'openai-chat-completions',
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        apiKeyEnv: 'REASONER_KEY',
+        models: [{
+          target: { providerId: 'reasoner', modelId: 'reasoner-model' },
+          kind: 'agent',
+          capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+        }],
+      }],
+      environment: { REASONER_KEY: 'reasoner-secret' },
+    });
+    const model = gateway.createAgentRuntime(
+      { providerId: 'reasoner', modelId: 'reasoner-model' },
+    ).model as Model;
+    const request = {
+      input: '如何进入沙箱终端？',
+      modelSettings: {},
+      tools: [],
+      outputType: 'text' as const,
+      handoffs: [],
+      tracing: false as const,
+    };
+    let firstDone: Extract<StreamEvent, { type: 'response_done' }> | undefined;
+    for await (const event of model.getStreamedResponse(request)) {
+      if (event.type === 'response_done') firstDone = event;
+    }
+    assert.ok(firstDone);
+    assert.equal(firstDone.response.output[0]?.type, 'reasoning');
+    const functionCall = firstDone.response.output.find((item) => item.type === 'function_call');
+    assert.ok(functionCall);
+    assert.equal(functionCall.providerData?.reasoning_content, '先检查平台能力。');
+
+    let finalText = '';
+    for await (const event of model.getStreamedResponse({
+      ...request,
+      input: [
+        { role: 'user', content: '如何进入沙箱终端？' },
+        ...firstDone.response.output,
+        {
+          type: 'function_call_result',
+          name: 'inspect_capabilities',
+          callId: 'capability-call',
+          status: 'completed',
+          output: '{}',
+        },
+      ],
+    })) {
+      if (event.type === 'output_text_delta') finalText += event.delta;
+    }
+    assert.equal(finalText, '已核实。');
+    const replayedAssistant = (requests[1]!.messages as Array<Record<string, unknown>>)
+      .find((message) => message.role === 'assistant');
+    assert.equal(replayedAssistant?.reasoning_content, '先检查平台能力。');
+    assert.equal('reasoning' in (replayedAssistant ?? {}), false);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => error ? reject(error) : resolve()));

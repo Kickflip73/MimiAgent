@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- preserve OpenAI-compatible `reasoning_content` across streamed tool-call
+  continuations so thinking-mode providers do not reject the follow-up request
 - recover forward-compatible Session finalization evidence, count pre-dispatch
   failures as known zero-token runs, and reclassify retained historical task
   dead letters so they no longer block Briefing-driven Digest consumption
