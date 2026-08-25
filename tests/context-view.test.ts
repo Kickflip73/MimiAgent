@@ -214,6 +214,69 @@ test('safely checkpoints at the configured model-call limit without dropping pro
   }
 });
 
+test('terminates an exact alternating tool cycle at the shared model-call boundary', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-context-tool-cycle-'));
+  const dataRoot = path.join(root, '.mimi-agent');
+  const agent = await MimiAgent.create({
+    provider: 'openai',
+    workspaceRoot: root,
+    dataRoot,
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    contextWindow: 128_000,
+    maxTurns: null,
+  }, 'tool-cycle');
+  const session = (agent as unknown as { session: FileSession }).session;
+  const runner = (agent as unknown as {
+    runner: {
+      run: (
+        runtimeAgent: { instructions: string },
+        input: string,
+        options: {
+          session: FileSession;
+          sessionInputCallback: (
+            history: AgentInputItem[],
+            current: AgentInputItem[],
+          ) => Promise<AgentInputItem[]>;
+          callModelInputFilter: (args: {
+            modelData: { input: AgentInputItem[]; instructions?: string };
+          }) => Promise<{ input: AgentInputItem[]; instructions?: string }>;
+        },
+      ) => Promise<unknown>;
+    };
+  }).runner;
+  runner.run = async (runtimeAgent, input, options) => {
+    const items: AgentInputItem[] = [{ role: 'user', content: input } as AgentInputItem];
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      for (const issue of ['HXST-238', 'HXST-237']) {
+        const callId = `${issue}-${cycle}`;
+        items.push(
+          { type: 'function_call', name: 'run_shell', callId, arguments: JSON.stringify({ command: `issue get ${issue}` }) } as AgentInputItem,
+          { type: 'function_call_result', name: 'run_shell', callId, output: `${issue} description` } as AgentInputItem,
+        );
+      }
+    }
+    await options.session.addItems(items);
+    const modelInput = await options.sessionInputCallback(await options.session.getItems(), []);
+    await options.callModelInputFilter({
+      modelData: { input: modelInput, instructions: runtimeAgent.instructions },
+    });
+    return {};
+  };
+
+  try {
+    await assert.rejects(
+      agent.stream('读取两个 issue'),
+      /检测到工具调用在相同参数和相同结果间重复循环.*周期 2/,
+    );
+    assert.equal((await session.getCheckpoint())?.status, undefined);
+    assertNoOrphanToolUnits(await session.getItems());
+  } finally {
+    await agent.close();
+  }
+});
+
 test('does not stop a run based on cumulative model input or call count by default', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-context-unlimited-run-'));
   const dataRoot = path.join(root, '.mimi-agent');

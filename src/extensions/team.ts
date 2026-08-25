@@ -27,6 +27,7 @@ import {
   type AgentModel,
   type ModelUsageRecord,
 } from './model-port.js';
+import { assertNoRepeatedToolCycle } from '../runtime/tool-cycle-guard.js';
 
 const ROLE_INSTRUCTIONS: Record<TeamRole, string> = {
   explorer: '调查代码、资料与事实，给出证据、来源和明确结论；保持只读。',
@@ -276,6 +277,10 @@ async function defaultWorker(
   const result = await runner.run(agent, task.description, {
     maxTurns: null,
     signal,
+    callModelInputFilter: ({ modelData }) => {
+      assertNoRepeatedToolCycle(modelData.input);
+      return modelData;
+    },
     toolExecution: { maxFunctionToolConcurrency: task.role === 'builder' ? 1 : 2 },
   });
   return {

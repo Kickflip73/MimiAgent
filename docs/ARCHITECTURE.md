@@ -425,7 +425,7 @@ Completion Gate 只约束已经存在或本轮显式创建的持久 Goal。Goal 
 
 同一 Run 中连续出现完全相同的副作用工具与参数时，ExecutionLedger 复用第一次成功结果并向模型返回 `already_executed`，避免截断、重复思考或模型重试造成重复发送/启动。只有在其间发生了另一个副作用、客观状态可能已改变时，相同调用才获得新的逻辑执行序号。
 
-Agent、SubAgent 与 Team worker 默认不设置固定 turn 或工具调用次数上限。Run 由任务真实终态、显式取消/暂停、Daemon 空闲超时、租约失效、上下文预算或用户显式配置的 `MIMI_MAX_TURNS` 结束；重复外部动作由 ExecutionLedger 的 at-most-once 语义处理，不能用“重复若干次后中止”替代根因治理。
+Agent、SubAgent 与 Team worker 默认不设置固定 turn 或工具调用次数上限。Run 由任务真实终态、显式取消/暂停、Daemon 空闲超时、租约失效、上下文预算或用户显式配置的 `MIMI_MAX_TURNS` 结束；重复外部动作由 ExecutionLedger 的 at-most-once 语义处理。所有 Run 共用的模型调用边界还会检查当前用户回合的客观工具证据：只有工具名、语义参数和结果完全一致的短周期连续重复三次时，才判定为无进展循环并终止，外部状态或结果发生变化会立即打破周期。这不是固定 turn 上限，也不能替代具体工具或模型适配问题的根因治理。
 
 Completion Contract、报告和最近门控结果随 Run checkpoint 持久化，长任务 Contract 还随 Goal 持久化。Goal 只能由通过的 Completion Gate 标记完成，模型不能直接写入 completed；同一 Session 存在未完成 Goal 时，无关 Run 的 Plan/Goal/Team 修改会在工具授权层被拒绝，而不只依赖提示词隐藏。
 

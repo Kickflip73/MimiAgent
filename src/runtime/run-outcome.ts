@@ -13,6 +13,10 @@ export class TerminalRunInterruptedError extends RunInterruptedError {
   }
 }
 
+export class RunContextLimitReachedError extends Error {
+  readonly name = 'RunContextLimitReachedError';
+}
+
 export function assertRunCanComplete(
   result: { cancelled?: boolean; interruptions?: readonly unknown[] },
   signal?: AbortSignal,
