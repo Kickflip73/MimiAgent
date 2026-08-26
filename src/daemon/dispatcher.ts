@@ -72,6 +72,8 @@ export interface DispatcherOptions {
 }
 
 export function runStreamMakesObservableProgress(event: RunStreamEvent): boolean {
+  // Liveness must not depend on whether an SDK event deserves UI output.
+  if (event.type === 'run_item_stream_event' && event.name === 'reasoning_item_created') return true;
   const projection = projectRunStreamEvent(event);
   if (!projection) return false;
   return projection.kind === 'status' || projection.text.trim().length > 0;

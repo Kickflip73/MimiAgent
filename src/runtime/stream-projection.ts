@@ -60,9 +60,9 @@ export function projectRunStreamEvent(event: RunStreamEvent): RunStreamProjectio
         next: '模型继续思考',
       };
     }
-    if (event.name === 'reasoning_item_created') {
-      return { kind: 'status', tone: 'thinking', title: '推理阶段完成', next: '生成回答' };
-    }
+    // A reasoning item closes one model step, not the whole reasoning phase. In
+    // tool-using runs it can occur repeatedly before the final answer, so it is
+    // progress metadata rather than a user-visible status transition.
     return undefined;
   }
   if (event.type !== 'raw_model_stream_event') return undefined;

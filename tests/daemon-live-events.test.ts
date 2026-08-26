@@ -37,16 +37,11 @@ test('live event adapters preserve bounded model, tool, reasoning, and plan sema
   } as never);
   assert.equal(output?.kind, 'status');
   assert.equal(output && 'title' in output ? output.title : undefined, 'Ultra Team');
-  assert.deepEqual(mimiStreamEvent({
+  assert.equal(mimiStreamEvent({
     type: 'run_item_stream_event',
     name: 'reasoning_item_created',
     item: {},
-  } as never), {
-    kind: 'status',
-    tone: 'thinking',
-    title: '推理阶段完成',
-    next: '生成回答',
-  });
+  } as never), undefined);
   assert.equal(mimiStreamEvent({
     type: 'run_item_stream_event',
     name: 'unknown',

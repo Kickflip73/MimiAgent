@@ -31,6 +31,11 @@ test('parses text and DeepSeek reasoning deltas', () => {
     kind: 'reasoning',
     text: '分析中',
   });
+  assert.equal(parseRunEvent({
+    type: 'run_item_stream_event',
+    name: 'reasoning_item_created',
+    item: {},
+  } as RunStreamEvent), undefined);
 });
 
 test('renders non-TTY status and streamed answer without ANSI animation', () => {

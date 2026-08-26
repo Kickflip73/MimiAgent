@@ -42,6 +42,11 @@ test('dispatcher idle progress ignores provider keepalives without observable pr
   } as never), true);
   assert.equal(runStreamMakesObservableProgress({
     type: 'run_item_stream_event',
+    name: 'reasoning_item_created',
+    item: {},
+  } as never), true);
+  assert.equal(runStreamMakesObservableProgress({
+    type: 'run_item_stream_event',
     name: 'tool_output',
     item: { rawItem: { name: 'inspect_mimi_activity' }, output: { ok: true } },
   } as never), true);
