@@ -33,6 +33,16 @@ export interface SpeechAudio {
   createdAt: string;
 }
 
+type ValidatedSpeechOptions = Required<Pick<
+  SpeechSynthesisOptions,
+  'engine' | 'language' | 'speed'
+>> & Pick<SpeechSynthesisOptions, 'voice'>;
+
+type ResolvedSpeechOptions = Omit<ValidatedSpeechOptions, 'engine' | 'language'> & {
+  engine: Exclude<SpeechEngine, 'auto'>;
+  language: Exclude<SpeechLanguage, 'auto'>;
+};
+
 export interface SpeechOutputStatus {
   enabled: boolean;
   renderer: string;
@@ -44,21 +54,15 @@ export interface SpeechOutputStatus {
 
 export const SPEECH_VOICES: readonly SpeechVoice[] = Object.freeze(([
   { id: 'chattts:male-1', engine: 'chattts', language: 'zh', label: 'ChatTTS Male 1', gender: 'male' },
-  { id: 'chattts:male-2', engine: 'chattts', language: 'zh', label: 'ChatTTS Male 2', gender: 'male' },
   { id: 'chattts:male-3', engine: 'chattts', language: 'zh', label: 'ChatTTS Male 3', gender: 'male' },
-  { id: 'chattts:female-1', engine: 'chattts', language: 'zh', label: 'ChatTTS Female 1', gender: 'female' },
-  { id: 'chattts:female-2', engine: 'chattts', language: 'zh', label: 'ChatTTS Female 2', gender: 'female' },
   { id: 'chattts:female-3', engine: 'chattts', language: 'zh', label: 'ChatTTS Female 3', gender: 'female' },
-  { id: 'zf_xiaobei', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaobei', gender: 'female' },
-  { id: 'zf_xiaoni', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoni', gender: 'female' },
+  { id: 'chattts:young-lively', engine: 'chattts', language: 'zh', label: 'ChatTTS Young Lively Female', gender: 'female' },
+  { id: 'chattts:mature-steady', engine: 'chattts', language: 'zh', label: 'ChatTTS Mature Steady Female', gender: 'female' },
   { id: 'zf_xiaoxiao', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoxiao', gender: 'female' },
   { id: 'zf_xiaoyi', engine: 'kokoro', language: 'zh', label: 'Kokoro Xiaoyi', gender: 'female' },
   { id: 'zm_yunjian', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunjian', gender: 'male' },
-  { id: 'zm_yunxi', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunxi', gender: 'male' },
-  { id: 'zm_yunxia', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunxia', gender: 'male' },
   { id: 'zm_yunyang', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunyang', gender: 'male' },
   { id: 'am_echo', engine: 'kokoro', language: 'en', label: 'Kokoro Echo', gender: 'male' },
-  { id: 'jm_kumo', engine: 'kokoro', language: 'ja', label: 'Kokoro Kumo', gender: 'male' },
 ] satisfies SpeechVoice[]).map((voice) => Object.freeze(voice)));
 
 interface CommandResult {
@@ -95,10 +99,7 @@ function runCommand(
   });
 }
 
-function validateOptions(options: SpeechSynthesisOptions): Required<Pick<
-  SpeechSynthesisOptions,
-  'engine' | 'language' | 'speed'
->> & Pick<SpeechSynthesisOptions, 'voice'> {
+function validateOptions(options: SpeechSynthesisOptions): ValidatedSpeechOptions {
   let engine = options.engine ?? 'auto';
   let language = options.language ?? 'auto';
   const speed = options.speed ?? 1;
@@ -119,6 +120,20 @@ function validateOptions(options: SpeechSynthesisOptions): Required<Pick<
     if (language === 'auto' && catalogVoice) language = catalogVoice.language;
   }
   return { engine, language, speed, ...(voice ? { voice } : {}) };
+}
+
+function detectedLanguage(text: string): Exclude<SpeechLanguage, 'auto'> {
+  if (/[\u3040-\u30ff\u31f0-\u31ff]/u.test(text)) return 'ja';
+  if (/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(text)) return 'zh';
+  return 'en';
+}
+
+function resolveOptions(text: string, options: ValidatedSpeechOptions): ResolvedSpeechOptions {
+  const language = options.language === 'auto' ? detectedLanguage(text) : options.language;
+  const engine = options.engine === 'auto'
+    ? language === 'zh' ? 'chattts' : 'kokoro'
+    : options.engine;
+  return { ...options, engine, language };
 }
 
 function actualEngine(stdout: string, requested: SpeechEngine): Exclude<SpeechEngine, 'auto'> {
@@ -180,7 +195,7 @@ export class SpeechOutput {
     if (text.length > 20_000) throw new Error('单次 TTS 文本不能超过 20000 个字符');
     signal?.throwIfAborted();
     await this.assertCommandsAvailable(false);
-    const selected = validateOptions(options);
+    const selected = resolveOptions(text, validateOptions(options));
     await mkdir(this.outputDirectory, { recursive: true, mode: 0o700 });
     const id = randomUUID();
     const input = path.join(this.outputDirectory, `.${id}.txt`);

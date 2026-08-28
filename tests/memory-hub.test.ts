@@ -253,6 +253,23 @@ test('governance links create resolvable Obsidian relationships', async () => {
     ref: entity.ref,
     title: 'MimiAgent 项目',
   }]);
+
+  const current = await hub.read(decision.ref, ctx);
+  await hub.capture({
+    title: current.metadata.title,
+    content: 'GUI 自动化必须在后台执行。',
+    sourceRefs: current.metadata.sourceRefs,
+    kind: current.metadata.kind,
+    status: current.metadata.status,
+    confidence: current.metadata.confidence,
+    scope: 'private',
+    targetRef: current.ref,
+    links: [],
+    replaceLinks: true,
+    reasonCode: 'remove_stale_relationship',
+  }, ctx);
+
+  assert.deepEqual(await hub.links(decision.ref, ctx), []);
 });
 
 test('automatic semantic recall fails fast instead of retrying a slow embedding request', async () => {
@@ -558,6 +575,43 @@ test('repeated lint findings enter the bounded Error Book and maintenance log', 
   assert.match(await readFile(path.join(vault, '_error-book.md'), 'utf8'), /open · orphan/);
   assert.match(await readFile(path.join(vault, '_log.md'), 'utf8'), new RegExp(`## ${new Date().getUTCFullYear()}`));
   assert.match(await readFile(path.join(vault, '_log.md'), 'utf8'), /lint -/);
+});
+
+test('lint resolves current pages by title, alias, and stable page id', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-lint-links-'));
+  const dataRoot = path.join(root, 'data');
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot, profileId: 'owner' });
+  const ctx = context(root);
+  const target = await hub.remember({
+    title: 'Canonical deployment target',
+    aliases: ['Deploy target'],
+    content: 'The durable target is documented here.',
+    kind: 'fact',
+  }, ctx);
+  await hub.remember({
+    title: 'Deployment procedure',
+    content: 'Follow the linked target before release.',
+    kind: 'lesson',
+    links: ['Deploy target', target.ref.id],
+  }, ctx);
+  const historical = await hub.remember({
+    title: 'Historical deployment note',
+    content: 'This old note referenced a page that no longer exists.',
+    kind: 'fact',
+    links: ['Removed historical target'],
+  }, { ...ctx, runId: 'run-historical-link' });
+  await hub.remember({
+    title: 'Current deployment note',
+    content: 'The current note points at the canonical target.',
+    kind: 'fact',
+    links: [target.metadata.title],
+    supersedes: [historical.ref.id],
+  }, { ...ctx, runId: 'run-current-link' });
+
+  const report = await hub.lint(ctx);
+
+  assert.equal(report.issues.some((issue) => issue.code === 'broken-link'), false);
+  assert.equal(report.issues.some((issue) => issue.code === 'orphan'), false);
 });
 
 test('lint repairs deterministic page envelope and canonical identity through a revision', async () => {

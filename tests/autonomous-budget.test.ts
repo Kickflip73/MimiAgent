@@ -56,6 +56,7 @@ function completeRun(
   const claimed = store.claimTaskById(task.id, owner, 60_000, input.at);
   assert.ok(claimed?.sessionKey);
   const attempt = store.beginTaskAttempt(task.id, owner, claimed.sessionKey, owner, input.at);
+  if (task.type === 'memory_maintenance') store.memoryObservations.completeTaskBatch('owner', task.id, input.at);
   store.completeTask(task.id, owner, input.tokens === undefined ? { answer: 'done' } : {
     usage: { runInputTokens: input.tokens, runOutputTokens: 1 },
   }, attempt.id, input.at);

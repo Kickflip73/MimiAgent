@@ -484,10 +484,13 @@ export class MimiStore extends ActivityStore {
       const current = this.leasedTask(taskId, owner, timestamp);
       const requiresSemanticLintReceipt = current.type === 'memory_maintenance'
         && record(current.objective)?.semanticLint === true;
-      if (requiresSemanticLintReceipt && !this.database.prepare(`
+      const requiresMaintenanceReceipt = current.type === 'memory_maintenance';
+      if (requiresMaintenanceReceipt && !this.database.prepare(`
         SELECT 1 FROM memory_lint_task_receipts WHERE task_id=? AND profile_id=?
       `).get(current.id, current.profileId)) {
-        throw new Error(`Memory maintenance Task ${current.id} 缺少 semantic lint completion receipt`);
+        throw new Error(requiresSemanticLintReceipt
+          ? `Memory maintenance Task ${current.id} 缺少 semantic lint completion receipt`
+          : `Memory maintenance Task ${current.id} 缺少 batch completion receipt`);
       }
       if (!this.taskStore.updateTerminal(taskId, owner, 'completed', result, undefined, timestamp)) {
         throw new Error(`Task ${taskId} 租约已失效`);

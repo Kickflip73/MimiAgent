@@ -431,6 +431,24 @@ export function renderMarkdownLine(
     return `  ${cells.join('  │  ')}`;
   }
 
+  // Inline pipe-separated cells after regular text ("Text: | a | b | c |")
+  if (state && !state.code && line.indexOf('|') > 0) {
+    const firstPipe = line.indexOf('|');
+    const before = line.slice(0, firstPipe);
+    const after = line.slice(firstPipe + 1);
+    if (after.includes('|')) {
+      const lastPipe = after.lastIndexOf('|');
+      const cells = after.slice(0, lastPipe).split('|')
+        .map((cell) => inlineMarkdown(cell.trim(), tty));
+      const trailing = after.slice(lastPipe + 1);
+      const nonEmptyCount = cells.filter((c) => c.length > 0).length;
+      if (nonEmptyCount >= 2) {
+        const trail = trailing.trim() ? `  ${inlineMarkdown(trailing, tty)}` : '';
+        return `${inlineMarkdown(before, tty)}  ${cells.join('  │  ')}${trail}`;
+      }
+    }
+  }
+
   const quote = line.match(/^\s*>\s?(.*)$/);
   if (quote) {
     const text = inlineMarkdown(quote[1]!, tty);

@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the request fits the model budget, preventing alternating rediscovery loops
   caused by eagerly replacing already-consumed evidence with partial summaries
 - preserve OpenAI-compatible `reasoning_content` across streamed tool-call
-  continuations so thinking-mode providers do not reject the follow-up request
+  continuations so thinking-mode providers do not reject the follow-up request,
+  while removing standalone reasoning from later Chat Completions requests so it
+  cannot become an assistant message with neither content nor tool calls
 - recover forward-compatible Session finalization evidence, count pre-dispatch
   failures as known zero-token runs, and reclassify retained historical task
   dead letters so they no longer block Briefing-driven Digest consumption
@@ -38,7 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synthesis, ordered playback, and direct speaking, exposed through Host APIs,
   and one compact model tool backed by a single managed renderer without
   rewriting caller text or falling back to TTS scripts and Skills; expose stable
-  ChatTTS male/female speaker profiles with per-call switching and a male default
+  a curated allowlist of ten ChatTTS/Kokoro voices, including validated
+  young/lively and mature/steady female voices,
+  with per-call switching and a male default;
+  resolve mixed Chinese/Latin auto routing to ChatTTS before invoking the renderer
 - reorder the interactive status footer to show mode, effective Security profile,
   model, and context usage; make Shift+Tab cycle a real per-run Security ceiling,
   add mode cycling through terminal-reported Shift+Caps Lock with Shift+Up fallback,

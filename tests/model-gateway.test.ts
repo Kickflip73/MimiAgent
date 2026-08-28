@@ -4,6 +4,7 @@ import test from 'node:test';
 import type { AddressInfo } from 'node:net';
 import { Agent, Runner, type Model, type StreamEvent } from '@openai/agents';
 import { ModelGateway } from '../src/runtime/model-gateway.js';
+import { normalizeModelInput } from '../src/runtime/model.js';
 
 async function fakeProvider(label: string) {
   const requests: Array<{
@@ -242,6 +243,20 @@ test('OpenAI-compatible streaming replays provider reasoning_content with tool c
           return;
         }
       }
+      if (requests.length === 3) {
+        const emptyAssistant = messages.find((message) => message.role === 'assistant'
+          && (message.content === null || message.content === undefined)
+          && (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0));
+        if (emptyAssistant) {
+          response.writeHead(400, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({
+            error: {
+              message: 'Invalid assistant message: content or tool_calls must be set',
+            },
+          }));
+          return;
+        }
+      }
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       if (requests.length === 1) {
         response.write(`data: ${JSON.stringify({
@@ -269,7 +284,12 @@ test('OpenAI-compatible streaming replays provider reasoning_content with tool c
           object: 'chat.completion.chunk',
           choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
         })}\n\n`);
-      } else {
+      } else if (requests.length === 2) {
+        response.write(`data: ${JSON.stringify({
+          id: 'final-answer',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: { reasoning_content: '整理最终答复。' } }],
+        })}\n\n`);
         response.write(`data: ${JSON.stringify({
           id: 'final-answer',
           object: 'chat.completion.chunk',
@@ -277,6 +297,17 @@ test('OpenAI-compatible streaming replays provider reasoning_content with tool c
         })}\n\n`);
         response.write(`data: ${JSON.stringify({
           id: 'final-answer',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+        })}\n\n`);
+      } else {
+        response.write(`data: ${JSON.stringify({
+          id: 'continued-answer',
+          object: 'chat.completion.chunk',
+          choices: [{ index: 0, delta: { content: '可以继续。' } }],
+        })}\n\n`);
+        response.write(`data: ${JSON.stringify({
+          id: 'continued-answer',
           object: 'chat.completion.chunk',
           choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
         })}\n\n`);
@@ -324,6 +355,7 @@ test('OpenAI-compatible streaming replays provider reasoning_content with tool c
     assert.equal(functionCall.providerData?.reasoning_content, '先检查平台能力。');
 
     let finalText = '';
+    let secondDone: Extract<StreamEvent, { type: 'response_done' }> | undefined;
     for await (const event of model.getStreamedResponse({
       ...request,
       input: [
@@ -339,12 +371,40 @@ test('OpenAI-compatible streaming replays provider reasoning_content with tool c
       ],
     })) {
       if (event.type === 'output_text_delta') finalText += event.delta;
+      if (event.type === 'response_done') secondDone = event;
     }
     assert.equal(finalText, '已核实。');
+    assert.ok(secondDone);
+    assert.equal(secondDone.response.output[0]?.type, 'reasoning');
     const replayedAssistant = (requests[1]!.messages as Array<Record<string, unknown>>)
       .find((message) => message.role === 'assistant');
     assert.equal(replayedAssistant?.reasoning_content, '先检查平台能力。');
     assert.equal('reasoning' in (replayedAssistant ?? {}), false);
+
+    let continuedText = '';
+    for await (const event of model.getStreamedResponse({
+      ...request,
+      input: normalizeModelInput('openai-chat-completions', [
+        { role: 'user', content: '如何进入沙箱终端？' },
+        ...firstDone.response.output,
+        {
+          type: 'function_call_result',
+          name: 'inspect_capabilities',
+          callId: 'capability-call',
+          status: 'completed',
+          output: '{}',
+        },
+        ...secondDone.response.output,
+        { role: 'user', content: '现在怎么样了？' },
+      ]),
+    })) {
+      if (event.type === 'output_text_delta') continuedText += event.delta;
+    }
+    assert.equal(continuedText, '可以继续。');
+    const thirdMessages = requests[2]!.messages as Array<Record<string, unknown>>;
+    assert.equal(thirdMessages.some((message) => message.role === 'assistant'
+      && (message.content === null || message.content === undefined)
+      && (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0)), false);
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => error ? reject(error) : resolve()));

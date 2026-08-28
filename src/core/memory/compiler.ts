@@ -43,6 +43,7 @@ export interface CaptureInput {
   aliases?: string[];
   tags?: string[];
   links?: string[];
+  replaceLinks?: boolean;
   targetRef?: MemoryRef;
   canonicalKey?: string;
   rawEvidence?: Array<{ sourceRef: SourceRef; content: string }>;

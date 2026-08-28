@@ -62,8 +62,24 @@ export function normalizeModelInput(
   provider: AppConfig['provider'] | ProviderTransport,
   items: AgentInputItem[],
 ): AgentInputItem[] {
-  if (provider !== 'openai' && provider !== 'openai-responses') return items;
-  return items.map((item) => {
+  const chatCompletions = provider === 'deepseek'
+    || provider === 'openai-compatible'
+    || provider === 'openai-chat-completions';
+  const portableItems = chatCompletions
+    ? items.filter((item, index) => {
+        const value = item as unknown as Record<string, unknown>;
+        if (value.type !== 'reasoning') return true;
+        const next = items[index + 1] as unknown as Record<string, unknown> | undefined;
+        // The Chat Completions converter emits a standalone reasoning item as an
+        // assistant message with neither content nor tool_calls. Reasoning is only
+        // replayable when it belongs to the immediately following tool-call unit.
+        return next?.type === 'function_call';
+      })
+    : items;
+  if (provider !== 'openai' && provider !== 'openai-responses') {
+    return portableItems.length === items.length ? items : portableItems;
+  }
+  return portableItems.map((item) => {
     const value = item as unknown as Record<string, unknown>;
     if (value.type !== 'message' || typeof value.id !== 'string' || value.id.startsWith('msg')) {
       return item;

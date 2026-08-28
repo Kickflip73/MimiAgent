@@ -155,3 +155,50 @@ test('OpenAI-compatible model construction fails closed without endpoint or mode
   delete missingModel.defaultModel;
   assert.throws(() => createModel(missingModel), /MIMI_MODEL/);
 });
+
+test('Chat Completions history removes orphan reasoning without breaking tool-call replay', () => {
+  const orphanReasoning = {
+    type: 'reasoning',
+    content: [],
+    rawContent: [{ type: 'reasoning_text', text: '已经完成思考。' }],
+  };
+  const toolReasoning = {
+    type: 'reasoning',
+    content: [],
+    rawContent: [{ type: 'reasoning_text', text: '需要调用工具。' }],
+  };
+  const functionCall = {
+    type: 'function_call',
+    callId: 'call_1',
+    name: 'inspect',
+    arguments: '{}',
+    providerData: { reasoning_content: '需要调用工具。' },
+  };
+  const items = [
+    { role: 'user', content: '第一问' },
+    orphanReasoning,
+    {
+      type: 'message',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: '第一答' }],
+    },
+    { role: 'user', content: '第二问' },
+    toolReasoning,
+    functionCall,
+    {
+      type: 'function_call_result',
+      callId: 'call_1',
+      name: 'inspect',
+      output: '{}',
+    },
+  ] as unknown as AgentInputItem[];
+
+  for (const provider of ['deepseek', 'openai-compatible', 'openai-chat-completions'] as const) {
+    const normalized = normalizeModelInput(provider, items);
+    assert.equal(normalized.includes(orphanReasoning as never), false);
+    assert.equal(normalized.includes(toolReasoning as never), true);
+    assert.equal(normalized.includes(functionCall as never), true);
+  }
+  assert.equal(normalizeModelInput('google-generate-content', items), items);
+});

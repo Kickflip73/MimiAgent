@@ -499,8 +499,10 @@ MimiAgent 在 `agent.speech` 上原生提供 `listVoices()`、`setEnabled()`、
 `synthesize()`、`play()` 和 `speak()` 原子能力，并向主 Agent 暴露
 一个紧凑的 `speech` 工具，其 action 可选 `voices`、`synthesize`、`play` 或
 `speak`。底层按调用方给出的原始文本合成，不解释
-Markdown 或回答结构。中文默认走持久 ChatTTS，失败自动降级 Kokoro；英文和
-日文走 Kokoro。ChatTTS 提供 3 个男声和 3 个女声，默认使用男声
+Markdown 或回答结构。包含中文的内容（包括夹杂大量英文的中文回答）默认走持久
+ChatTTS，失败自动降级 Kokoro；纯英文和日文走 Kokoro。可选音色收敛为 10 个：
+ChatTTS 提供 2 个男声和 3 个女声，其中 `chattts:young-lively` 偏年轻活泼，
+`chattts:mature-steady` 偏成熟稳重；默认使用男声
 `chattts:male-1`；模型可先调用 `voices`，再在每次合成时通过 `voice` 灵活切换。
 `speech` 是模型唯一支持的 TTS 入口；模型不得通过 Shell、
 脚本或 Skill 绕过它。播报内容、表达风格、分段和调用时机均由上层或模型决定。
@@ -697,7 +699,7 @@ FTS5/BM25 是词法基线；`sqlite-vec@0.1.9` 只负责在同一 `memory.db` �
 
 2026-08-05 本机 Darwin arm64、32 个互不重复自然问题/80 个文档的离线串行基准中，direct BGE 模型为 23.180 MiB，完整 runtime install 为 211.675 MiB，warm query p95 为 2.111 ms，RSS 增量为 118.61 MiB。E5 int8/q8 因 133.7 MiB 级模型、616 MiB 以上 RSS 且中译英桶仍失效，没有成为默认；Xenova v2 BGE WASM 的质量近似但 warm p95 为 27.523 ms、RSS 增量为 326.89 MiB，同样淘汰。该小型基准也暴露 direct BGE 跨语限制：英译中桶 R@10 为 0%，中译英桶 R@10 为 50%；因此产品仍保留 BM25/结构化通道和可选远程 Provider，不能把本地向量相似度当成跨语正确性保证。
 
-每个已完成的 Session round 都会作为 private episode 增量索引；owner 的普通 Memory 检索默认同时搜索已编译 Wiki 和全部历史 episode，因此新 Session 可以直接回忆其他 Session 的相关信息。private episode 不向外部来源或 SubAgent/Team 开放。Daemon 在普通 Task 终态事务中登记 observation，达到 10 条或最老等待 10 分钟后才创建低优先级 `memory_maintenance` Task；连续 50 个页面变化，或有变化且 7 天未 lint 时，把 semantic lint 合并进下一维护 Task。维护 Run 每批最多读取 20 条/8KB 证据、写 5 页，只能使用 Memory 工具；单条 external/public 断言不能直接成为 active 事实。`/memory maintain` 可显式触发无网络的有界 semantic lint。
+每个已完成的 Session round 都会作为 private episode 增量索引；owner 的普通 Memory 检索默认同时搜索已编译 Wiki 和全部历史 episode，因此新 Session 可以直接回忆其他 Session 的相关信息。private episode 不向外部来源或 SubAgent/Team 开放。Daemon 在普通 Task 终态事务中登记 observation，达到 10 条或最老等待 10 分钟后才创建低优先级 `memory_maintenance` Task；连续 50 个页面变化，或有变化且 7 天未 lint 时，把 semantic lint 合并进下一维护 Task。维护 Run 每批最多读取 20 条 observation，使用稳定的 `obs-N` 批内句柄和从 ≤8KB 不可变快照提取的 ≤4KB 可见证据，最多写 5 页且只能使用 Memory 工具；未完成整个批次的 Task 不能进入 completed。维护先形成 L1，只有至少两个互补 L1 足以支持可复用结论时才形成带 `derivedFrom` 的 inferred L2；单条 external/public 断言不能直接成为 active 事实。`/memory maintain` 可显式触发无网络的有界 semantic lint。
 
 ## Plan、Goal、Ultra Team、Trace 与 Eval
 

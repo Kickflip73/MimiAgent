@@ -599,7 +599,7 @@ export class RemoteCommandTarget implements CommandTarget {
   }
 
   memoryReindex(): Promise<CommandMethodResult<'memoryReindex'>> {
-    return this.client.invoke('memory.reindex', undefined, this.sessionId);
+    return this.client.invoke('memory.reindex', undefined, this.sessionId, 20 * 60_000);
   }
 
   memoryStatus(): Promise<CommandMethodResult<'memoryStatus'>> {

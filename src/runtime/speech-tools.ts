@@ -22,7 +22,7 @@ export function createSpeechTools(speech: SpeechOutput): Tool[] {
   return [
     tool({
       name: 'speech',
-      description: 'The only supported local speech output interface. Never use Shell, scripts, or Skills for TTS. voices lists selectable voices and gender metadata; synthesize uses input=<exact text>; play uses input=<audioId returned by synthesize>; speak uses input=<exact text> and plays it. Select any returned voice id per synthesis or speaking call.',
+      description: 'Only supported local speech output; never use Shell, scripts, or Skills for TTS. voices lists selectable voices; synthesize and speak use exact input text, while play uses a synthesized audioId. auto selects ChatTTS for Chinese and Kokoro otherwise. Any listed voice may be selected per call.',
       parameters: speechParameters,
       execute: ({ action, input, ...options }, _context, details) => {
         if (action === 'voices') {

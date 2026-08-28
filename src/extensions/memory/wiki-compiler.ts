@@ -224,7 +224,9 @@ export class DefaultWikiCompiler implements WikiCompiler {
       ...(input.aliases ?? []),
     ])].filter((alias) => alias !== input.title.trim());
     const tags = [...new Set([...(existing?.metadata.tags ?? []), ...(input.tags ?? [])])];
-    const links = [...new Set([...wikiLinks(existing?.body ?? ''), ...(input.links ?? [])])];
+    const links = [...new Set(input.replaceLinks
+      ? input.links ?? []
+      : [...wikiLinks(existing?.body ?? ''), ...(input.links ?? [])])];
     const confidence = input.confidence ?? existing?.metadata.confidence ?? 'inferred';
     const requestedStatus = input.status ?? existing?.metadata.status ?? 'active';
     const independentSources = new Set(sourceRefs.map((source) => `${source.type}:${source.id}`)).size;

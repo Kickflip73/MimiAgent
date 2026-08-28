@@ -12,7 +12,17 @@ export function lintWiki(
   const issues: WikiLintIssue[] = [];
   const titles = new Map<string, MemoryDocument[]>();
   const currentPages = pages.filter((page) => page.metadata.status !== 'superseded' && page.metadata.status !== 'expired');
-  const titleSet = new Set(currentPages.map((page) => page.metadata.title.toLowerCase()));
+  const linkTargets = new Map<string, Set<string>>();
+  for (const page of currentPages) {
+    const canonicalTitle = page.metadata.title.toLowerCase();
+    for (const candidate of [page.metadata.title, ...page.metadata.aliases, page.ref.id]) {
+      const normalized = candidate.trim().toLowerCase();
+      if (!normalized) continue;
+      const targets = linkTargets.get(normalized) ?? new Set<string>();
+      targets.add(canonicalTitle);
+      linkTargets.set(normalized, targets);
+    }
+  }
   const linked = new Set<string>();
   for (const page of pages) {
     if (page.metadata.status !== 'superseded' && page.metadata.status !== 'expired') {
@@ -22,10 +32,13 @@ export function lintWiki(
         titles.set(normalized, [...titles.get(normalized) ?? [], page]);
       }
     }
-    for (const match of page.body.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]+)?\]\]/g)) {
-      const title = match[1]!.trim().toLowerCase();
-      if (!titleSet.has(title)) issues.push({ code: 'broken-link', severity: 'warning', ref: page.ref, message: `断链：${match[1]}` });
-      else linked.add(title);
+    if (page.metadata.status !== 'superseded' && page.metadata.status !== 'expired') {
+      for (const match of page.body.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]+)?\]\]/g)) {
+        const title = match[1]!.trim().toLowerCase();
+        const targets = linkTargets.get(title);
+        if (!targets) issues.push({ code: 'broken-link', severity: 'warning', ref: page.ref, message: `断链：${match[1]}` });
+        else for (const target of targets) linked.add(target);
+      }
     }
     if (!page.metadata.sourceRefs.length) issues.push({ code: 'missing-source', severity: 'error', ref: page.ref, message: '页面缺少 SourceRef' });
     if (policy.requireCanonicalKey && !page.metadata.canonicalKey) {

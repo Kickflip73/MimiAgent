@@ -95,9 +95,9 @@ test('production maintenance tools form faceted L1 and inferred L2 with an L0 ev
     const invoke = (name: string, input: unknown) => tools.find((candidate) => candidate.name === name)!
       .invoke(new RunContext({}), JSON.stringify(input));
     const listed = await invoke('list_memory_observations', { limit: 20 }) as unknown as {
-      observations: Array<{ sourceKey: string }>;
+      observations: Array<{ observationId: string }>;
     };
-    const sourceKeys = listed.observations.map((item) => item.sourceKey);
+    const sourceKeys = listed.observations.map((item) => item.observationId);
     assert.equal(sourceKeys.length, 2);
 
     const preferenceReceipt = await invoke('upsert_memory_page', {

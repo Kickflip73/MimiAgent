@@ -68,7 +68,7 @@ const modelComputerActionSchema = z.object({
   bundleId: modelOptional(z.string().min(1).max(500).describe(
     'launch_app 必填；只使用 computer_observe 返回的 apps[].bundleId，不猜应用名',
   )),
-  urls: modelOptional(z.array(z.string().max(4_000)).max(20)),
+  urls: modelOptional(z.array(z.string()).max(20)),
   newInstance: modelOptional(z.boolean()),
   elementIndex: modelOptional(z.number().int().nonnegative()),
   x: modelOptional(z.number().finite()),

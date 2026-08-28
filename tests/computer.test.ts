@@ -553,6 +553,7 @@ test('computer tools respect mode and deployment permission boundaries', async (
   assert.match(observeParameters, /app.*screenshot/);
   assert.doesNotMatch(observeParameters, /scope|pid|windowId|maxDepth|promptForPermissions/);
   assert.doesNotMatch(actParameters, /dispatch|kill_app|request_permissions|set_driver_config|trajectory/);
+  assert.doesNotMatch(actParameters, /"maxLength":4000/);
 });
 
 test('bounds the model-facing Computer observation without losing semantic state', async () => {

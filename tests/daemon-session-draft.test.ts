@@ -10,6 +10,23 @@ import { MimiIpcServer } from '../src/daemon/ipc.js';
 import { DAEMON_PROTOCOL_VERSION, type DaemonStatus } from '../src/daemon/types.js';
 import type { AppConfig } from '../src/config.js';
 
+test('memory reindex uses the long-running IPC timeout', async () => {
+  const calls: unknown[][] = [];
+  const client = {
+    invoke: (...args: unknown[]) => {
+      calls.push(args);
+      return Promise.resolve({});
+    },
+  } as unknown as MimiChatClient;
+  const target = new RemoteCommandTarget(client, 'mimi-reindex-timeout', true);
+
+  await target.memoryReindex();
+
+  assert.deepEqual(calls, [[
+    'memory.reindex', undefined, 'mimi-reindex-timeout', 20 * 60_000,
+  ]]);
+});
+
 test('CLI adopts a running daemon workspace even when local workspace is explicitly configured', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-workspace-adopt-'));
   const localWorkspace = path.join(root, 'local');

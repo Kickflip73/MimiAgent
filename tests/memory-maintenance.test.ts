@@ -78,16 +78,43 @@ test('terminal Tasks atomically register observations and emit one bounded maint
     const invoke = (name: string, input: unknown) => tools.find((tool) => tool.name === name)!
       .invoke(new RunContext({}), JSON.stringify(input));
     const listed = await invoke('list_memory_observations', { limit: 20 }) as unknown as {
-      observations: Array<{ sourceKey: string }>; deterministicLint: { valid: boolean };
+      observations: Array<{ observationId: string }>; deterministicLint: { valid: boolean };
     };
     assert.equal(listed.deterministicLint.valid, true);
-    const sourceKeys = listed.observations.map((item) => item.sourceKey);
+    const sourceKeys = listed.observations.map((item) => item.observationId);
+    const maintenanceOwner = 'maintenance-worker';
+    const maintenanceAt = new Date(at.getTime() + 2_000);
+    store.claimTaskById(emitted[0]!.id, maintenanceOwner, 60_000, maintenanceAt);
+    const maintenanceAttempt = store.beginTaskAttempt(
+      emitted[0]!.id,
+      maintenanceOwner,
+      emitted[0]!.sessionKey!,
+      maintenanceOwner,
+      maintenanceAt,
+    );
     await invoke('upsert_memory_page', {
       sourceKeys, action: 'upsert', title: 'Stable lesson', content: 'Reuse this verified result.',
       kind: 'lesson', status: 'active', reasonCode: 'repeated_success',
     });
+    assert.throws(
+      () => store.completeTask(
+        emitted[0]!.id,
+        maintenanceOwner,
+        { answer: 'premature completion' },
+        maintenanceAttempt.id,
+        maintenanceAt,
+      ),
+      /缺少 batch completion receipt/,
+    );
     assert.equal(await invoke('complete_memory_observations', { sourceKeys }) as unknown, 10);
     assert.equal(store.memoryObservations.status('owner').pending, 0);
+    store.completeTask(
+      emitted[0]!.id,
+      maintenanceOwner,
+      { answer: 'maintenance complete' },
+      maintenanceAttempt.id,
+      maintenanceAt,
+    );
   } finally {
     store.close();
   }
@@ -202,6 +229,7 @@ test('maintenance cannot promote one untrusted observation to active memory', as
   try {
     const at = new Date();
     addTask(store, 'external-one', at, 'external');
+    addTask(store, 'external-two', new Date(at.getTime() + 2_000), 'external');
     const maintenance = store.memoryObservations.emitDue(at, 'owner')[0]!;
     let captures = 0;
     const tools = createMemoryMaintenanceTools(store, maintenance, {
@@ -220,27 +248,26 @@ test('maintenance cannot promote one untrusted observation to active memory', as
     const invoke = (name: string, input: unknown) => tools.find((tool) => tool.name === name)!
       .invoke(new RunContext({}), JSON.stringify(input));
     const listed = await invoke('list_memory_observations', { limit: 20 }) as unknown as {
-      observations: Array<{ sourceKey: string }>;
+      observations: Array<{ observationId: string }>;
     };
     const denied = await invoke('upsert_memory_page', {
-      sourceKeys: [listed.observations[0]!.sourceKey], action: 'upsert', title: 'Unverified claim', content: 'Claim',
+      sourceKeys: [listed.observations[0]!.observationId], action: 'upsert', title: 'Unverified claim', content: 'Claim',
       kind: 'fact', status: 'active', reasonCode: 'single_external_claim',
     });
     assert.match(String(denied), /不能写为 active/);
     assert.equal(captures, 0);
-    addTask(store, 'external-two', new Date(at.getTime() + 2_000), 'external');
     const repeated = await invoke('list_memory_observations', { limit: 20 }) as unknown as {
-      observations: Array<{ sourceKey: string }>;
+      observations: Array<{ observationId: string }>;
     };
     const applied = await invoke('upsert_memory_page', {
-      sourceKeys: repeated.observations.map((item) => item.sourceKey), action: 'upsert',
+      sourceKeys: repeated.observations.map((item) => item.observationId), action: 'upsert',
       title: 'Repeated external claim', content: 'The same durable claim was observed independently twice.',
       kind: 'fact', status: 'active', reasonCode: 'repeated_external_observation',
     }) as unknown as { status: string };
     assert.equal(applied.status, 'applied');
     assert.equal(captures, 1);
     const rejected = await invoke('upsert_memory_page', {
-      sourceKeys: [listed.observations[0]!.sourceKey], action: 'reject', reasonCode: 'unverified_external_claim',
+      sourceKeys: [listed.observations[0]!.observationId], action: 'reject', reasonCode: 'unverified_external_claim',
     }) as unknown as { status: string };
     assert.equal(rejected.status, 'rejected');
   } finally {
@@ -308,7 +335,7 @@ test('page changes trigger semantic lint at 50 and successful maintenance resets
       () => store.completeTask(task.id, owner, { answer: 'semantic lint completed' }, attempt.id, executionAt),
       /缺少 semantic lint completion receipt/,
     );
-    store.memoryObservations.completeSemanticLint('owner', task.id, executionAt);
+    store.memoryObservations.completeTaskBatch('owner', task.id, executionAt);
     store.completeTask(task.id, owner, { answer: 'semantic lint completed' }, attempt.id, executionAt);
     const status = store.memoryObservations.status('owner');
     assert.equal(status.changesSinceSemanticLint, 0);
