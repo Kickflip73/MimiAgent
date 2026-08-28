@@ -21,7 +21,6 @@ import {
   type RunModelBinding,
   type WorkUnitModelProfile,
 } from '../core/model-routing.js';
-import { assertNoRepeatedToolCycle } from '../runtime/tool-cycle-guard.js';
 
 function selectTools(tools: Tool[], names: readonly string[]): Tool[] {
   const allowed = new Set(names);
@@ -108,13 +107,7 @@ function observedSubAgentTool(
         traceIncludeSensitiveData: false,
       });
       await forwardEvent(options.onEvent, role, 'agent_updated_stream_event');
-      const output = await runner.run(agent, input, {
-        maxTurns: null,
-        callModelInputFilter: ({ modelData }) => {
-          assertNoRepeatedToolCycle(modelData.input);
-          return modelData;
-        },
-      });
+      const output = await runner.run(agent, input, { maxTurns: null });
       const descriptor: WorkUnitDescriptor = {
         id,
         kind: 'subagent',

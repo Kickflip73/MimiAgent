@@ -214,69 +214,6 @@ test('safely checkpoints at the configured model-call limit without dropping pro
   }
 });
 
-test('terminates an exact alternating tool cycle at the shared model-call boundary', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-context-tool-cycle-'));
-  const dataRoot = path.join(root, '.mimi-agent');
-  const agent = await MimiAgent.create({
-    provider: 'openai',
-    workspaceRoot: root,
-    dataRoot,
-    skillsRoot: path.join(root, 'skills'),
-    mcpConfig: path.join(root, 'mcp.json'),
-    historyLimit: 40,
-    contextWindow: 128_000,
-    maxTurns: null,
-  }, 'tool-cycle');
-  const session = (agent as unknown as { session: FileSession }).session;
-  const runner = (agent as unknown as {
-    runner: {
-      run: (
-        runtimeAgent: { instructions: string },
-        input: string,
-        options: {
-          session: FileSession;
-          sessionInputCallback: (
-            history: AgentInputItem[],
-            current: AgentInputItem[],
-          ) => Promise<AgentInputItem[]>;
-          callModelInputFilter: (args: {
-            modelData: { input: AgentInputItem[]; instructions?: string };
-          }) => Promise<{ input: AgentInputItem[]; instructions?: string }>;
-        },
-      ) => Promise<unknown>;
-    };
-  }).runner;
-  runner.run = async (runtimeAgent, input, options) => {
-    const items: AgentInputItem[] = [{ role: 'user', content: input } as AgentInputItem];
-    for (let cycle = 0; cycle < 3; cycle += 1) {
-      for (const issue of ['HXST-238', 'HXST-237']) {
-        const callId = `${issue}-${cycle}`;
-        items.push(
-          { type: 'function_call', name: 'run_shell', callId, arguments: JSON.stringify({ command: `issue get ${issue}` }) } as AgentInputItem,
-          { type: 'function_call_result', name: 'run_shell', callId, output: `${issue} description` } as AgentInputItem,
-        );
-      }
-    }
-    await options.session.addItems(items);
-    const modelInput = await options.sessionInputCallback(await options.session.getItems(), []);
-    await options.callModelInputFilter({
-      modelData: { input: modelInput, instructions: runtimeAgent.instructions },
-    });
-    return {};
-  };
-
-  try {
-    await assert.rejects(
-      agent.stream('读取两个 issue'),
-      /检测到工具调用在相同参数和相同结果间重复循环.*周期 2/,
-    );
-    assert.equal((await session.getCheckpoint())?.status, undefined);
-    assertNoOrphanToolUnits(await session.getItems());
-  } finally {
-    await agent.close();
-  }
-});
-
 test('does not stop a run based on cumulative model input or call count by default', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-context-unlimited-run-'));
   const dataRoot = path.join(root, '.mimi-agent');
@@ -366,7 +303,59 @@ test('synthetic tool long run reduces cumulative model input by at least 70%', (
   assert.ok(reduction >= 0.7, `expected >=70% reduction, got ${(reduction * 100).toFixed(2)}%`);
 });
 
-test('real 1M view consumes each tool result once and avoids cumulative context amplification', () => {
+test('keeps complementary current-turn tool evidence lossless after it was consumed once', () => {
+  const manager = new ContextManager(40, 128_000);
+  const outputs = [
+    [
+      '设备状态查询',
+      'Usage: getdeviceonlinestatus',
+      'Examples: status',
+      'Flags: status',
+      'Structured Params: status',
+      'System Flags: status',
+      'manualbind：CLI 手动绑定',
+    ].join('\n'),
+    [
+      '根据 poiId 查询商家',
+      'Usage: get-merchant-list-by-poi-id',
+      'Examples: poi',
+      'Flags: poi',
+      'Structured Params: poi',
+      'System Flags: poi',
+      'qualification：根据统一社会信用代码查询商家',
+    ].join('\n'),
+  ];
+  const history: AgentInputItem[] = [{ role: 'user', content: '这个 CLI 有什么功能？' }];
+  const artifacts: ContextToolArtifact[] = [];
+  outputs.forEach((output, index) => {
+    const callId = `help-${index}`;
+    history.push(
+      { type: 'function_call', name: 'run_shell', callId, arguments: '{}' } as AgentInputItem,
+      { type: 'function_call_result', name: 'run_shell', callId, output } as AgentInputItem,
+    );
+    artifacts.push({
+      ref: `context-artifact:00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      callId,
+      toolName: 'run_shell',
+      outputDigest: `sha256:${createHash('sha256').update(JSON.stringify(output)).digest('hex')}`,
+      runId: 'current-run',
+      createdAt: '2026-08-28T00:00:00.000Z',
+      consumedAt: '2026-08-28T00:00:01.000Z',
+    });
+  });
+
+  const view = manager.modelContextView(history, '', 120_000, {
+    toolArtifacts: artifacts,
+    consumedArtifactRefs: new Set(artifacts.map((artifact) => artifact.ref)),
+  });
+  const serialized = JSON.stringify(view.input);
+  assert.match(serialized, /manualbind：CLI 手动绑定/);
+  assert.match(serialized, /qualification：根据统一社会信用代码查询商家/);
+  assert.equal(view.records.some((record) => record.strategy === 'tool-result-summary'), false);
+  assertNoOrphanToolUnits(view.input);
+});
+
+test('real 1M view keeps current-turn tool evidence lossless while the request fits', () => {
   const manager = new ContextManager(200, 1_048_576);
   const capacity = 962_068;
   const history: AgentInputItem[] = [
@@ -375,13 +364,11 @@ test('real 1M view consumes each tool result once and avoids cumulative context 
   ];
   const consumed = new Set<string>();
   const artifacts: ContextToolArtifact[] = [];
-  let legacyCumulative = 0;
-  let boundedCumulative = 0;
   for (let index = 0; index < 30; index += 1) {
     const output = JSON.stringify({
       artifactId: `artifact-${index}`,
       status: 'verified',
-      evidence: 'x'.repeat(12_000),
+      evidence: `${'x'.repeat(12_000)}-tail-${index}`,
     });
     history.push(
       {
@@ -405,19 +392,18 @@ test('real 1M view consumes each tool result once and avoids cumulative context 
       runId: 'million-run',
       createdAt: '2026-07-30T00:00:00.000Z',
     });
-    legacyCumulative += estimateTokens(history);
     const view = manager.modelContextView(history, 'base', capacity, {
       consumedArtifactRefs: consumed,
       toolArtifacts: artifacts,
     });
-    boundedCumulative += view.effectiveTokens;
     view.consumedArtifactRefs.forEach((ref) => consumed.add(ref));
     assert.ok(view.effectiveTokens <= capacity);
     assertNoOrphanToolUnits(view.input);
-    assert.match(JSON.stringify(view.input), new RegExp(`million-call-${index}`));
+    const serialized = JSON.stringify(view.input);
+    assert.match(serialized, /-tail-0/);
+    assert.match(serialized, new RegExp(`-tail-${index}`));
+    assert.equal(view.records.some((record) => record.strategy === 'tool-result-summary'), false);
   }
-  assert.ok(boundedCumulative < 500_000);
-  assert.ok(1 - boundedCumulative / legacyCumulative >= 0.7);
 });
 
 test('consumed SDK text envelopes retain structured browser facts for the final answer', () => {
@@ -439,6 +425,8 @@ test('consumed SDK text envelopes retain structured browser facts for the final 
     { role: 'user', content: '读取 h1 后关闭浏览器并回答。' },
     { type: 'function_call', name: 'browser_observe', callId: 'browser-read', arguments: '{}' },
     { type: 'function_call_result', callId: 'browser-read', output },
+    { role: 'assistant', content: '已读取浏览器结果。' },
+    { role: 'user', content: '基于刚才的结果继续回答。' },
   ] as AgentInputItem[];
   const artifact: ContextToolArtifact = {
     ref: 'context-artifact:browser-read',

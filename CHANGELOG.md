@@ -11,9 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - stop rendering every SDK reasoning item as a misleading completed reasoning
   phase while preserving those events as Daemon run-liveness progress
-- stop exact no-progress tool cycles, including alternating A/B call patterns,
-  at the shared model-call boundary while keeping legitimate changing-state
-  polling and unlimited progressing runs unaffected
+- keep complementary tool results lossless throughout the active user turn while
+  the request fits the model budget, preventing alternating rediscovery loops
+  caused by eagerly replacing already-consumed evidence with partial summaries
 - preserve OpenAI-compatible `reasoning_content` across streamed tool-call
   continuations so thinking-mode providers do not reject the follow-up request
 - recover forward-compatible Session finalization evidence, count pre-dispatch

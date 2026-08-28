@@ -730,6 +730,7 @@ export class ContextManager {
     const consumedArtifactRefs: string[] = [];
     const artifacts = options.toolArtifacts ?? [];
     const firstPassLimit = options.firstPassToolResultLimitTokens ?? 8_000;
+    const activeTurnStart = this.startOfLastUserTurn(history);
     const resultCount = history.filter((item) =>
       (item as unknown as Record<string, unknown>).type === 'function_call_result').length;
     let latestResult = -1;
@@ -745,6 +746,14 @@ export class ContextManager {
       const artifact = this.toolArtifact(value, artifacts);
       if (artifact) consumedArtifactRefs.push(artifact.ref);
       const output = this.extractText(value.output);
+      // A result can be "consumed" by the immediately following model call
+      // without becoming obsolete. Compressing it on the next call made the
+      // active turn forget complementary evidence and rediscover it in a loop.
+      // Keep the current turn lossless while it fits; modelContextView retries
+      // with a zero limit when the real request budget requires compression.
+      if (activeTurnStart >= 0
+        && index > activeTurnStart
+        && estimateTokens(output) <= firstPassLimit) return item;
       const wasConsumed = artifact
         ? options.consumedArtifactRefs?.has(artifact.ref) === true
         : resultCount > 1 || index !== latestResult;

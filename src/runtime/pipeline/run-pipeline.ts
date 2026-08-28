@@ -31,7 +31,6 @@ import { ModelContextSemanticSummarizer } from '../context-semantic-summarizer.j
 import { createTeamWorkerTools } from '../team-worker-tools.js';
 import { inputText } from '../attachments.js';
 import { isTerminalRunInterruption, RunContextLimitReachedError } from '../run-outcome.js';
-import { assertNoRepeatedToolCycle, RunNoProgressCycleError } from '../tool-cycle-guard.js';
 import { createCompletionTools } from '../completion.js';
 import { createPlanTools } from '../plan-tools.js';
 import { withoutMimiPreferenceTools } from '../preference-tools.js';
@@ -801,7 +800,6 @@ export async function executeRunPipeline(
     }: {
       modelData: { input: AgentInputItem[]; instructions?: string };
     }) => {
-      assertNoRepeatedToolCycle(modelData.input);
       const artifacts = canReadSessionContext
         ? await run.session.registerContextToolArtifacts(modelData.input, run.runId)
         : [];
@@ -932,9 +930,9 @@ export async function executeRunPipeline(
       run.releaseOwner();
       if (began) {
         const budgetPaused = error instanceof RunContextLimitReachedError;
-        const interrupted = signal?.aborted === true || budgetPaused || error instanceof RunNoProgressCycleError;
+        const interrupted = signal?.aborted === true || budgetPaused;
         const message = error instanceof Error ? error.message : String(error);
-        if (run.options?.retainExecutionLedger && !budgetPaused && !(error instanceof RunNoProgressCycleError)) {
+        if (run.options?.retainExecutionLedger && !budgetPaused) {
           await run.session.rollbackRunItems(run.runId).catch(() => undefined);
         }
         if (interrupted
