@@ -4,7 +4,11 @@ import { ContextManager } from '../core/context.js';
 import type { ProviderTransport, RunModelBinding } from '../core/model-routing.js';
 import type { AgentModel } from '../extensions/model-port.js';
 import type { ModelGateway } from './model-gateway.js';
-import { createOpenAICompatibleModel } from './providers/openai-compatible-model.js';
+import {
+  createOpenAICompatibleModel,
+  normalizeChatCompletionsInput,
+  stripChatCompletionsMetadata,
+} from './providers/openai-compatible-model.js';
 
 export type { AgentModel } from '../extensions/model-port.js';
 
@@ -66,18 +70,10 @@ export function normalizeModelInput(
     || provider === 'openai-compatible'
     || provider === 'openai-chat-completions';
   const portableItems = chatCompletions
-    ? items.filter((item, index) => {
-        const value = item as unknown as Record<string, unknown>;
-        if (value.type !== 'reasoning') return true;
-        const next = items[index + 1] as unknown as Record<string, unknown> | undefined;
-        // The Chat Completions converter emits a standalone reasoning item as an
-        // assistant message with neither content nor tool_calls. Reasoning is only
-        // replayable when it belongs to the immediately following tool-call unit.
-        return next?.type === 'function_call';
-      })
-    : items;
+    ? normalizeChatCompletionsInput(items)
+    : stripChatCompletionsMetadata(items);
   if (provider !== 'openai' && provider !== 'openai-responses') {
-    return portableItems.length === items.length ? items : portableItems;
+    return portableItems;
   }
   return portableItems.map((item) => {
     const value = item as unknown as Record<string, unknown>;
@@ -197,6 +193,7 @@ export function createModel(config: AppConfig, name?: string): ModelRuntime {
         ? config.providerBaseUrl ?? 'https://api.deepseek.com'
         : config.providerBaseUrl,
       modelName,
+      config.provider === 'deepseek' ? { reasoningContentDialect: true } : undefined,
     ),
     name: modelName,
     profile,

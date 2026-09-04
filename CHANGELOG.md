@@ -15,9 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the request fits the model budget, preventing alternating rediscovery loops
   caused by eagerly replacing already-consumed evidence with partial summaries
 - preserve OpenAI-compatible `reasoning_content` across streamed tool-call
-  continuations so thinking-mode providers do not reject the follow-up request,
-  while removing standalone reasoning from later Chat Completions requests so it
-  cannot become an assistant message with neither content nor tool calls
+  continuations so thinking-mode providers do not reject the follow-up request;
+  normalize every Chat Completions request at the adapter boundary, including
+  same-Run tool continuations, merge SDK-split assistant preambles back into
+  their reasoning/tool-call message, and retain empty or answer-only reasoning
+  required by Providers on later requests
 - recover forward-compatible Session finalization evidence, count pre-dispatch
   failures as known zero-token runs, and reclassify retained historical task
   dead letters so they no longer block Briefing-driven Digest consumption

@@ -156,11 +156,16 @@ test('OpenAI-compatible model construction fails closed without endpoint or mode
   assert.throws(() => createModel(missingModel), /MIMI_MODEL/);
 });
 
-test('Chat Completions history removes orphan reasoning without breaking tool-call replay', () => {
+test('Chat Completions history preserves assistant reasoning and removes only truly orphan items', () => {
   const orphanReasoning = {
     type: 'reasoning',
     content: [],
     rawContent: [{ type: 'reasoning_text', text: '已经完成思考。' }],
+  };
+  const answerReasoning = {
+    type: 'reasoning',
+    content: [],
+    rawContent: [{ type: 'reasoning_text', text: '准备第一答。' }],
   };
   const toolReasoning = {
     type: 'reasoning',
@@ -176,13 +181,14 @@ test('Chat Completions history removes orphan reasoning without breaking tool-ca
   };
   const items = [
     { role: 'user', content: '第一问' },
-    orphanReasoning,
+    answerReasoning,
     {
       type: 'message',
       role: 'assistant',
       status: 'completed',
       content: [{ type: 'output_text', text: '第一答' }],
     },
+    orphanReasoning,
     { role: 'user', content: '第二问' },
     toolReasoning,
     functionCall,
@@ -197,8 +203,62 @@ test('Chat Completions history removes orphan reasoning without breaking tool-ca
   for (const provider of ['deepseek', 'openai-compatible', 'openai-chat-completions'] as const) {
     const normalized = normalizeModelInput(provider, items);
     assert.equal(normalized.includes(orphanReasoning as never), false);
+    assert.equal(normalized.includes(answerReasoning as never), true);
     assert.equal(normalized.includes(toolReasoning as never), true);
     assert.equal(normalized.includes(functionCall as never), true);
   }
+  const nativeReasoning = {
+    type: 'reasoning',
+    content: [],
+    rawContent: [{ type: 'reasoning_text', text: 'provider-native reasoning' }],
+  };
+  const assistantPreamble = {
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    content: [{ type: 'output_text', text: '先读取源码。' }],
+  };
+  const nativeFunctionCall = {
+    type: 'function_call',
+    callId: 'call_native',
+    name: 'inspect',
+    arguments: '{}',
+  };
+  assert.deepEqual(
+    normalizeModelInput('openai-chat-completions', [
+      { role: 'user', content: '检查项目' },
+      nativeReasoning,
+      assistantPreamble,
+      nativeFunctionCall,
+    ] as unknown as AgentInputItem[]),
+    [
+      { role: 'user', content: '检查项目' },
+      nativeReasoning,
+      assistantPreamble,
+      nativeFunctionCall,
+    ],
+  );
+  const markedHistory = [{
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    content: [{
+      type: 'output_text',
+      text: '旧 Provider 回答',
+      providerData: { __mimi_reasoning_content: true },
+    }],
+    providerData: { __mimi_reasoning_content: true },
+  }, {
+    type: 'function_call',
+    callId: 'marked_call',
+    name: 'inspect',
+    arguments: '{}',
+    providerData: { __mimi_reasoning_content: true },
+  }] as unknown as AgentInputItem[];
+  for (const provider of ['openai-responses', 'google-generate-content'] as const) {
+    const portable = normalizeModelInput(provider, markedHistory);
+    assert.doesNotMatch(JSON.stringify(portable), /__mimi_reasoning_content/);
+  }
+  assert.match(JSON.stringify(markedHistory), /__mimi_reasoning_content/);
   assert.equal(normalizeModelInput('google-generate-content', items), items);
 });
