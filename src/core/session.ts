@@ -915,6 +915,8 @@ export class FileSession implements Session {
       session.items = [];
       session.checkpoint = undefined;
       session.contextArchive = undefined;
+      session.contextWorkSnapshot = undefined;
+      session.contextToolArtifacts = [];
       session.activeSkills = [];
       session.updatedAt = new Date().toISOString();
     });

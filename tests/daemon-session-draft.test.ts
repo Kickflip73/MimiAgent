@@ -183,6 +183,43 @@ test('CLI restarts an unavailable daemon and retries a draft bootstrap', async (
   }
 });
 
+test('CLI retries a busy daemon without restarting it when the initial status probe times out', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-status-timeout-'));
+  const socket = path.join(root, 'mimi.sock');
+  const workspaceRoot = path.join(root, 'workspace');
+  const status = {
+    protocolVersion: DAEMON_PROTOCOL_VERSION,
+    buildVersion: MIMI_BUILD_VERSION,
+    permissionMode: 'trusted',
+    workspaceRoot,
+  } as DaemonStatus;
+  let statusCalls = 0;
+  const server = new MimiIpcServer(socket, async (method) => {
+    if (method !== 'status') throw new Error(`unexpected method: ${method}`);
+    statusCalls += 1;
+    if (statusCalls === 1) await new Promise((resolve) => setTimeout(resolve, 2_100));
+    return status;
+  });
+  await server.start();
+  let starts = 0;
+  const client = new MimiChatClient({
+    dataRoot: root, daemonDataRoot: root, workspaceRoot,
+    provider: 'openai', permissionMode: 'trusted',
+  } as AppConfig, async () => status, {
+    startDaemon: async () => {
+      starts += 1;
+      return status;
+    },
+  });
+  try {
+    assert.equal((await client.connect()).workspaceRoot, workspaceRoot);
+    assert.equal(starts, 0);
+    assert.equal(statusCalls, 2);
+  } finally {
+    await server.close();
+  }
+});
+
 test('CLI submits its launch workspace and selected security with each owner command', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-submit-workspace-'));
   const socket = path.join(root, 'mimi.sock');

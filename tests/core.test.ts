@@ -560,8 +560,8 @@ test('owner natural-language runs retain direct tools and unified deferred Skill
     assert.equal(captured.tools?.includes('list_skills'), false);
     assert.ok((captured.tools?.length ?? 0) < 30);
     assert.ok(estimateTokens(captured.toolSchemas) <= 4_000);
-    assert.match(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
-    assert.match(captured.instructions ?? '', /精确 name="use_skill"/);
+    assert.doesNotMatch(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
+    assert.match(captured.instructions ?? '', /"source":"skill"[^\n]*"use_skill"/);
     assert.doesNotMatch(captured.instructions ?? '', /source:|location:|hidden-skill\/SKILL\.md/);
     await agent.completeRun('FOCUSED_OWNER_ANSWER');
     const recalled = await agent.memorySearch('FOCUSED_OWNER_ANSWER', 'private');
@@ -750,11 +750,16 @@ test('isolates transcript and context archives while sharing only usable long-te
       { id: 'review', description: 'SECOND_TEAM_B', role: 'reviewer', dependencies: [], paths: [] },
     ]);
     await agent.switchMode('ultra');
+    (agent as unknown as { lastContextManifest?: unknown }).lastContextManifest = {
+      sessionId: 'second',
+      requestId: 'stale-context-manifest',
+    };
     await agent.clearSession();
     assert.deepEqual(await agent.history(), []);
     assert.deepEqual(await agent.currentPlan(), []);
     assert.equal(await agent.currentGoal(), undefined);
     assert.deepEqual(await agent.currentTeam(), []);
+    assert.equal((agent as unknown as { lastContextManifest?: unknown }).lastContextManifest, undefined);
     assert.equal((await agent.runtimeInfo()).mode.id, 'ultra');
     assert.match(JSON.stringify(await agent.memoryList()), /SHARED_CONFIRMED_MEMORY/);
     await agent.switchSession('first');

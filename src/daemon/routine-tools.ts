@@ -1,5 +1,6 @@
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import { AttentionEngine, mimiRoutineSchema } from './attention.js';
 
 export function createMimiRoutineTools(attention: AttentionEngine): Tool[] {

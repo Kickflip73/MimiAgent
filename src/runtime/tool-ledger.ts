@@ -18,6 +18,7 @@ import {
   type ToolActionIntentMetadata,
 } from '../core/tool-metadata.js';
 import { isSideEffectTool } from './tool-policy.js';
+import { isCapturedToolError } from '../tool-factory.js';
 
 export { TOOL_LEDGER_ARGUMENTS } from '../core/tool-metadata.js';
 
@@ -55,6 +56,46 @@ type LedgerAwareTool = Tool & {
   [TOOL_LEDGER_ARGUMENTS]?: (rawInput: string) => string;
   [TOOL_ACTION_INTENT]?: (rawInput: string) => ToolActionIntentMetadata;
 };
+
+interface ToolFailureResult {
+  mimiStatus: 'tool_failed';
+  retryable: boolean;
+  code: string;
+  message: string;
+}
+
+class ToolExecutionFailedError extends Error {
+  constructor(readonly result: ToolFailureResult) {
+    super(result.message);
+    this.name = 'ToolExecutionFailedError';
+  }
+}
+
+function toolFailureResult(error: unknown): ToolFailureResult {
+  const value = error && typeof error === 'object' && !Array.isArray(error)
+    ? error as Record<string, unknown>
+    : undefined;
+  const message = error instanceof Error
+    ? error.message
+    : typeof value?.message === 'string'
+      ? value.message
+      : String(error);
+  return {
+    mimiStatus: 'tool_failed',
+    retryable: value?.retryable === true,
+    code: typeof value?.code === 'string' && value.code.trim()
+      ? value.code.slice(0, 200)
+      : 'tool_execution_failed',
+    message: message.slice(0, 2_000),
+  };
+}
+
+function isToolFailureResult(value: unknown): value is ToolFailureResult {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).mimiStatus === 'tool_failed';
+}
 
 function isInvokable(tool: Tool): tool is InvokableTool {
   return 'invoke' in tool && typeof tool.invoke === 'function';
@@ -194,6 +235,9 @@ export function withExecutionLedger(
         const invokeSanitized = async () => {
           try {
             const result = await originalInvoke(runContext, input, details);
+            if (isCapturedToolError(result)) {
+              return toolFailureResult(run?.sanitizeError?.(result.error) ?? result.error);
+            }
             return run?.sanitizeResult?.(result) ?? result;
           } catch (error) {
             throw run?.sanitizeError?.(error) ?? error;
@@ -251,6 +295,11 @@ export function withExecutionLedger(
           await run?.authorizeSideEffect?.(tool.name, input);
           return invokeSanitized();
         };
+        const invokeLedgered = async () => {
+          const output = await invokeAuthorized();
+          if (isToolFailureResult(output)) throw new ToolExecutionFailedError(output);
+          return output;
+        };
         if (!run || !callId) return invokeAuthorized();
         if (action) {
           const payloadDigest = actionPayloadDigest(action.payload);
@@ -296,14 +345,22 @@ export function withExecutionLedger(
                   },
               undefined,
               async () => {
-                const output = await ledger.executeOnce({
-                  sessionId: run.sessionId,
-                  runId: run.runId,
-                  toolName: tool.name,
-                  callId,
-                  ...(sdkCallId && sdkCallId !== callId ? { modelCallId: sdkCallId } : {}),
-                  argumentsJson,
-                }, invokeAuthorized);
+                let output: unknown;
+                try {
+                  output = await ledger.executeOnce({
+                    sessionId: run.sessionId,
+                    runId: run.runId,
+                    toolName: tool.name,
+                    callId,
+                    ...(sdkCallId && sdkCallId !== callId ? { modelCallId: sdkCallId } : {}),
+                    argumentsJson,
+                  }, invokeLedgered);
+                } catch (error) {
+                  if (error instanceof ToolExecutionFailedError) {
+                    throw new ActionFailedSafeError(error.result.message);
+                  }
+                  throw error;
+                }
                 const outcome = action.outcome?.(output) ?? 'confirmed';
                 if (outcome === 'failed_safe') {
                   throw new ActionFailedSafeError(failedSafeMessage(output));
@@ -331,7 +388,13 @@ export function withExecutionLedger(
           ...(sdkCallId && sdkCallId !== callId ? { modelCallId: sdkCallId } : {}),
           argumentsJson,
         };
-        const result = await ledger.executeOnce(call, invokeAuthorized);
+        let result: unknown;
+        try {
+          result = await ledger.executeOnce(call, invokeLedgered);
+        } catch (error) {
+          if (error instanceof ToolExecutionFailedError) return error.result;
+          throw error;
+        }
         if (consecutiveDuplicate) return alreadyExecutedResult(result);
         return tool.name === 'connector_action' || tool.name === 'connector_capability'
           ? withExecutionEvidence(result, executionReceiptRef(call))

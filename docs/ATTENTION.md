@@ -177,9 +177,9 @@ owner 也可先调用 `get_mimi_settings` 读取完整快照，再用 `update_mi
 
 `owner.replyRoute` 是 MimiAgent 的单一默认主动投递地址，格式与 Event route 相同：`channel` 必填，Connector 会话可再给 `target`。缺省值为 `{"channel":"system"}`，因此旧配置继续使用本机通知中心。IM 入站 Event 自带的 reply route 始终优先；System、Calendar、Radar、Files 等没有回信地址的自主任务才回落到 owner route。认证 Webhook 的 `notify:false` 是显式无回传，不会被 owner route 覆盖。Agent 创建的后续 Schedule 同样继承解析后的 route。`daemon status/attention` 只报告 channel，不返回私人 target。
 
-`routines` 让 MimiAgent 在摘要池为空、没有新 IM 或 CLI 输入时仍能主动工作。新建配置以及缺少该字段的旧配置默认获得两条例程：每天 08:00 的 `morning-plan` 和每天 21:00 的 `evening-close`。若不需要，显式设置 `"routines": []`；也可以对单条设置 `enabled:false`。
+`routines` 让 MimiAgent 在摘要池为空、没有新 IM 或 CLI 输入时仍能主动工作。新建配置以及缺少该字段的旧配置默认都是 `"routines": []`，不会自行创建晨间或晚间任务；owner 明确添加后才启用，也可以对单条设置 `enabled:false`。
 
-默认晨间与晚间例程会先使用 `inspect_mimi_activity` 检查 MimiAgent 自身积压、dead letter 和近期状态变化，再检查日历、消息、天气和生活事项。该只读视图与 `mimi daemon activity [数量]` 复用同一个 Store 查询，只包含有界运行元数据，不包含其他 Event 正文、Run 答案、Outbox payload 或 target。counts 是持久库当前保留窗口内的记录，不是本次进程启动以来的计数器。统计中的 Task 是路由后的执行单元，`conversation` 是一次对话处理而非后台任务，只有 `background` 才是委派后台任务；回答数量时应使用 `tasksByType` 和近期 trigger Event 来源，不得把 `tasks.completed` 总数直接表述为后台任务数。
+owner 可在自定义晨间、晚间或巡检例程中使用 `inspect_mimi_activity` 检查 MimiAgent 自身积压、dead letter 和近期状态变化，再检查日历、消息、天气和生活事项。该只读视图与 `mimi daemon activity [数量]` 复用同一个 Store 查询，只包含有界运行元数据，不包含其他 Event 正文、Run 答案、Outbox payload 或 target。counts 是持久库当前保留窗口内的记录，不是本次进程启动以来的计数器。统计中的 Task 是路由后的执行单元，`conversation` 是一次对话处理而非后台任务，只有 `background` 才是委派后台任务；回答数量时应使用 `tasksByType` 和近期 trigger Event 来源，不得把 `tasks.completed` 总数直接表述为后台任务数。
 
 `budgets` 同时限制每小时、每日和单来源每小时的自治 Run/Token。分母只包含 Connector、health、briefing、maintenance、routine 和无法分类的自治来源，并把 queued/running Task 计作 Run 预留；owner 直接请求、显式手动 Briefing、达到 `urgentPriority` 的事件、已经 dispatch 的副作用收尾和 eval 不受机械阻断。达到预算后，新非紧急事件进入 Digest，Routine/定时 Briefing 延后，不再先创建 Event/Task；同一来源在耗尽到恢复期间只写一次结构化状态通知。旧 Run 若没有完整 input/output token 事实，自治入口按 `token_usage_unavailable` 失败关闭，而不是把未知用量当作 0。`daemon activity`、Doctor 和脱敏诊断按 `owner_conversation | connector | health | briefing | maintenance | routine | eval | unknown` 报告近 24 小时 Run/Token 与当前耗尽原因；`unknown` 会形成健康风险，便于补齐新来源映射。
 
@@ -197,7 +197,7 @@ Schema v14 修复旧 Event/Task cutover 的历史语义：旧 `digested` / `igno
 - `sessionKey`：可选稳定 Session ID，必须通过核心 Session schema；缺省时从 Routine ID 派生 `mimi-routine-*`，含点号等不兼容字符或过长 ID 会使用稳定摘要。
 - `replyChannel` / `replyTarget`：可选单条覆盖；完全省略时继承 `owner.replyRoute`。只覆盖 channel 时不会沿用另一渠道的 target。
 
-最多配置 50 条 Routine，prompt 合计最多 50000 字符，ID 不得重复。到达时点后会先生成终态 owner Conversation authority root，再生成 `attention:routine` / `schedule` / `owner` Task Event；它保留 Routine Session 为 origin，但在独立 `mimi-task-*` Session 和 OS worker 中执行，不占用原对话。externalId 包含 ID、本地日期、时间和配置 revision，因此同日重复 poll 或 Daemon 重启不会重复执行；如果 Daemon 在当天时点之后才启动，会补发当天尚未执行的例程。跨过本地午夜后才进入下一次 occurrence。删除、禁用或更新 Routine 后，已排队的旧 revision 会在调用模型前被忽略。
+最多配置 50 条 Routine，prompt 合计最多 50000 字符，ID 不得重复。到达时点后会先生成终态 owner Conversation authority root，再生成 `attention:routine` / `schedule` / `owner` Task Event；它保留 Routine Session 为 origin，但在独立 `mimi-task-*` Session 和 OS worker 中执行，不占用原对话。externalId 包含 ID、本地日期、时间和配置 revision，因此同日重复 poll 或 Daemon 重启不会重复执行。Daemon 只在计划时刻后的 15 分钟宽限期内补发，避免停机数小时后集中执行已经失去时效的例程；跨过本地午夜后才进入下一次 occurrence。删除、禁用或更新 Routine 后，已排队的旧 revision 会在调用模型前被忽略。
 
 Routine 与其他机制分工：
 
@@ -304,7 +304,7 @@ mimi daemon digest 50
 mimi daemon brief
 ```
 
-到达配置时间后，Daemon 会把尚未归档的摘要合并成一个内部 briefing 事件。批次按实际序列化 prompt 的字符预算动态选择：短项可取满 `maxItems`，大项只取能完整放入预算的前缀，剩余项继续保持未领取。简报成功完成后才会把这些摘要标为已归档；如果运行最终进入 dead letter，下一次简报会自动重新领取它们。每个计划简报时点有持久 checkpoint，重启不会重复生成同一批简报。
+只有 `briefings.enabled:true` 时，Daemon 才会在配置时间后的 15 分钟宽限期内把尚未归档的摘要合并成一个内部 briefing 事件；新建配置默认关闭定时简报，owner 仍可随时手动请求。批次按实际序列化 prompt 的字符预算动态选择：短项可取满 `maxItems`，大项只取能完整放入预算的前缀，剩余项继续保持未领取。简报成功完成后才会把这些摘要标为已归档；如果运行最终进入 dead letter，下一次简报会自动重新领取它们。每个计划简报时点有持久 checkpoint，重启不会重复生成同一批简报。
 
 owner 也可以直接说“现在给我汇总一下”。`request_mimi_briefing` 会原子领取当前待处理摘要并创建同样的普通 briefing Event；工具结果只包含创建状态和路由元数据，不返回其他 Event 正文。
 

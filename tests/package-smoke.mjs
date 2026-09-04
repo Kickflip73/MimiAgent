@@ -232,10 +232,10 @@ try {
       runId: 'package-smoke-run',
       cause: { trust: 'owner', source: 'package-smoke' },
     });
-    assert.equal(memoryStatus.embeddingProvider, 'local');
-    assert.equal(memoryStatus.embeddingState, 'missing');
+    assert.equal(memoryStatus.embeddingProvider, undefined);
+    assert.equal(memoryStatus.embeddingState, undefined);
     assert.equal(memoryStatus.retrievalMode, 'lexical-only');
-    assert.equal(memoryStatus.nextAction, 'run-reindex');
+    assert.equal(memoryStatus.nextAction, 'configure-embedding-provider');
     const database = new DatabaseSync(':memory:', { allowExtension: true });
     sqliteVec.load(database);
     database.enableLoadExtension(false);

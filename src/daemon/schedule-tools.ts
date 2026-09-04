@@ -1,5 +1,6 @@
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import { MimiStore } from './store.js';
 import type { ImmutableEvent, ReplyRoute, ScheduleRecord, TaskRecord } from './types.js';
 

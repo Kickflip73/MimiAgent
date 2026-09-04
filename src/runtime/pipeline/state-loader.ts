@@ -133,6 +133,8 @@ export class RunStateLoader {
       memoryTokenBudget?: number;
       now?: Date;
       ownerTimeZone?: string;
+      includePersonalContext?: boolean;
+      loadTaskDetails?: boolean;
     } = {},
   ): Promise<RunStateSnapshot> {
     const [
@@ -146,9 +148,13 @@ export class RunStateLoader {
       storedArchive,
       activeSkills,
     ] = await Promise.all([
-      capabilities.canReadState ? this.dependencies.loadPlan() : Promise.resolve([]),
+      capabilities.canReadState && options.loadTaskDetails !== false
+        ? this.dependencies.loadPlan()
+        : Promise.resolve([]),
       capabilities.canReadState ? this.dependencies.loadGoal() : Promise.resolve(undefined),
-      capabilities.canReadState ? this.dependencies.loadTeamSummary() : Promise.resolve(''),
+      capabilities.canReadState && options.loadTaskDetails !== false
+        ? this.dependencies.loadTeamSummary()
+        : Promise.resolve(''),
       capabilities.canReadSessionContext ? this.dependencies.loadHistory() : Promise.resolve([]),
       capabilities.canReadLocal || options.loadOwnerSoul === true
         ? this.dependencies.loadSoul()
@@ -165,7 +171,9 @@ export class RunStateLoader {
     const [memoryCards, personalContextCandidates] = capabilities.canReadMemory
       ? await Promise.all([
         this.dependencies.searchMemories({ goal: storedGoal, history }),
-        this.dependencies.loadPersonalContextCandidates(),
+        options.includePersonalContext !== false
+          ? this.dependencies.loadPersonalContextCandidates()
+          : Promise.resolve([]),
       ])
       : [[], []];
     const uniqueMemories = uniqueCards(memoryCards);

@@ -1,6 +1,7 @@
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import {
   TOOL_ACTION_INTENT,
   type ToolActionIntentMetadata,

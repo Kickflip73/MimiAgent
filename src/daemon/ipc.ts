@@ -125,6 +125,10 @@ function errorCode(error: unknown): string | undefined {
   return typeof error.code === 'string' ? error.code : undefined;
 }
 
+export function isMimiIpcTimeout(error: unknown): boolean {
+  return errorCode(error) === 'ETIMEDOUT';
+}
+
 function sameIdentity(left: FileIdentity, right: FileIdentity): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.ctimeNs === right.ctimeNs;
 }

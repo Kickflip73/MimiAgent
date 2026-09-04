@@ -162,6 +162,54 @@ test('does not clear a Session owned by another live Run', async () => {
   }
 });
 
+test('clears derived context state together with the Session transcript', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-derived-clear-'));
+  const session = new FileSession(root, 'demo');
+  const run = await session.beginRun('remember private result', 'derived-clear-run');
+  const items = [{
+    type: 'function_call_result',
+    name: 'read_private_result',
+    callId: 'private-call',
+    status: 'completed',
+    output: 'PRIVATE_CONTEXT_SENTINEL',
+  }] as unknown as AgentInputItem[];
+  await session.addItems(items);
+  const artifacts = await session.registerContextToolArtifacts(items, run.runId);
+  assert.equal(artifacts.length, 1);
+  assert.equal(await session.setContextWorkSnapshot({
+    goal: ['PRIVATE_CONTEXT_SENTINEL'],
+    progress: [],
+    completed: [],
+    decisions: [],
+    constraints: [],
+    openQuestions: [],
+    evidence: [],
+    keyFacts: ['PRIVATE_CONTEXT_SENTINEL'],
+    references: [artifacts[0]!.ref],
+    coveredItems: 1,
+    sourceDigest: `sha256:${'a'.repeat(64)}`,
+  }, run.runId), true);
+  await session.setContextArchive({
+    coveredItems: 1,
+    summary: 'PRIVATE_CONTEXT_SENTINEL',
+    strategy: 'collapse',
+    originalTokens: 10,
+    compactedTokens: 2,
+    updatedAt: new Date().toISOString(),
+  });
+  await session.completeRun('done', run.runId);
+
+  await session.clearSession();
+
+  assert.deepEqual(await session.getItems(), []);
+  assert.equal(await session.getContextArchive(), undefined);
+  assert.equal(await session.getContextWorkSnapshot(), undefined);
+  const nextRun = await session.beginRun('fresh task', 'derived-clear-next-run');
+  const oldArtifact = await session.readContextToolArtifact(artifacts[0]!.ref, nextRun.runId);
+  assert.equal(oldArtifact.code, 'context_artifact_unavailable');
+  assert.equal(oldArtifact.retryable, false);
+});
+
 test('isolates a Session whose persisted transcript contains invalid items', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-invalid-items-'));
   const now = new Date().toISOString();

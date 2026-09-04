@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { tool, type AgentInputItem, type Tool } from '@openai/agents';
+import type { AgentInputItem, Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import { sessionIdSchema } from '../core/session-id.js';
 import type { ConfiguredProvider } from '../provider-config.js';
 

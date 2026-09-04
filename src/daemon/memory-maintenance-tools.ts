@@ -1,5 +1,5 @@
-import { tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import type {
   CaptureInput,
   CompilationReceipt,

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { tool, type Tool, type ToolOutputImage, type ToolOutputText } from '@openai/agents';
+import type { Tool, ToolOutputImage, ToolOutputText } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../../tool-factory.js';
 import { ActionFailedSafeError } from '../../core/action-intent.js';
 import {
   TOOL_ACTION_INTENT,

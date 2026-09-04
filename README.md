@@ -226,7 +226,7 @@ mimi daemon start
 mimi
 ```
 
-`mimi daemon start` 会完成初始化、选择 macOS LaunchAgent 或安全的 detached 后台模式、等待控制端点健康后再返回。`start`、`stop`、`restart` 和 `status` 是全局服务命令；直接运行 `mimi` 仍会在需要时自动启动同一个后台 Kernel。Kernel 是全局控制面，但不再把所有对话锁死在首次启动目录：每次本地 CLI 命令都会携带本次启动目录，Session 在模型运行前解析该任务的真实工作区，并为文件、Shell、项目指导、Skill、MCP、Team 和后台任务构建对应的工作区运行时。不同 Session 可以同时运行；同一 Session 的消息仍按 FIFO 处理。CLI 退出只关闭当前终端，不会关闭 MimiAgent 或它已接手的后台任务。macOS 上只要 Provider Key 保存在 `~/.mimi-agent/.env`（或显式 `MIMI_ENV_FILE`），启动命令会安装用户级 LaunchAgent，使 MimiAgent 在登录后启动并在异常退出后恢复。
+`mimi daemon start` 会完成初始化、复用属于当前数据根的 macOS LaunchAgent，或启动安全的 detached 后台进程，并等待控制端点健康后再返回。`start`、`stop`、`restart` 和 `status` 是全局服务命令；直接运行 `mimi` 仍会在需要时自动启动同一个后台 Kernel。Kernel 是全局控制面，但不再把所有对话锁死在首次启动目录：每次本地 CLI 命令都会携带本次启动目录，Session 在模型运行前解析该任务的真实工作区，并为文件、Shell、项目指导、Skill、MCP、Team 和后台任务构建对应的工作区运行时。不同 Session 可以同时运行；同一 Session 的消息仍按 FIFO 处理。CLI 退出只关闭当前终端，不会关闭 MimiAgent 或它已接手的后台任务。需要登录后自动启动与异常恢复时，先把 Provider Key 保存到 `~/.mimi-agent/.env`（或显式 `MIMI_ENV_FILE`），再显式运行 `mimi daemon install`。普通启动不会安装、迁移或重写 LaunchAgent；若全局 plist 属于另一个数据根，会明确拒绝覆盖。
 
 `mimi` 默认先进入不落盘的新对话草稿，发送第一条普通消息时才创建真实 Session；如果直接用 `/sessions` 或 `/switch` 切到已有对话，草稿不会留下空 Session。`/model`、`/mode`、`/sessions`、`/history`、`/skills`、`/mcp`、`/memory`、`/plan`、`/goal`、`/tasks` 和 `/task` 等命令与长期运行事件共用同一套实现和 FileSession 原始记录。
 
@@ -273,7 +273,7 @@ Daemon 在安全重启前轮转超过 10 MiB 的 stdout/stderr 日志，每类�
 
 `mimi daemon events/runs/outbox/schedule list` 返回不携带大正文的有界管理摘要；需要查看原始 payload、answer、投递内容或完整 prompt 时，使用 `mimi daemon show event|run|outbox|schedule <id>`。这样长期积累的大记录不会挤爆本地 IPC；CLI 的 `/history` 使用 revision 分块读取，Memory 列表只返回摘要和 ref，正文必须显式 `/memory read`。
 
-长期在线事件先经过注意力层：环境信号、静默时段消息和超出自治预算的事件会可靠进入摘要池，并在配置时点合并为主动简报；简报继续携带 `external` provenance 和受限策略，不会把其中来源内容洗成 system 指令。Run/Token 预算只统计 Connector、health、briefing、maintenance、routine 等自治来源，并为 queued/running Task 预留 Run；缺失 Token 事实时失败关闭，不把未知冒充成 0。高优先级告警、owner 命令和手动简报仍及时执行。`daemon activity`、Doctor 和脱敏诊断按稳定来源分类显示近 24 小时 Run/Token 与当前预算耗尽状态，同一来源从耗尽到恢复只通知一次。达到 `urgentPriority`、严格高于当前任务且会被 Attention 执行/通知的事件，可以在模型思考阶段抢占低优先级长任务；工具或外部事务在途时先等其安全结束，紧急事件处理并可靠投递结果后，原任务无失败惩罚续跑。模型连续无进展达到 `execution.runIdleTimeoutMs`（默认 20 分钟）会中止并按普通失败重试；流式输出或 Runtime 进展会刷新计时，Tool 在途时暂停。正常 Daemon 停机也会先等在途 Tool 返回，再无失败惩罚重排队。`assistant.json` 中的 Standing Orders 与 People 私有 context 会附加到 owner/system Run，以及命中 owner source policy 的替身 Run；未授权事件仍可按 alias 派生稳定 Person Session ID，但看不到该 Session 或私人 metadata。Daily Routines 是 owner Event，会按本地时区主动执行晨间规划、晚间收尾和自定义日常检查，并通过 `inspect_mimi_activity` 主动检查自身积压、失败和近期运行状态。非 command 自主运行确认没有新变化、风险、动作或需关注事项时，可调用 `finish_mimi_silently` 安静完成：Event/Run/答案/usage/原因仍保留，只省略通知 Outbox。这些能力复用同一个 Kernel、Session actor 系统与 Event 流，不创建第二套工作流。配置、决策顺序与规则示例见 [docs/ATTENTION.md](docs/ATTENTION.md)。
+长期在线事件先经过注意力层：环境信号、静默时段消息和超出自治预算的事件会可靠进入摘要池；只有 owner 启用定时简报后才会在配置时点主动合并，新安装默认安静，手动简报始终可用。简报继续携带 `external` provenance 和受限策略，不会把其中来源内容洗成 system 指令。Run/Token 预算只统计 Connector、health、briefing、maintenance、routine 等自治来源，并为 queued/running Task 预留 Run；缺失 Token 事实时失败关闭，不把未知冒充成 0。高优先级告警、owner 命令和手动简报仍及时执行。`daemon activity`、Doctor 和脱敏诊断按稳定来源分类显示近 24 小时 Run/Token 与当前预算耗尽状态，同一来源从耗尽到恢复只通知一次。达到 `urgentPriority`、严格高于当前任务且会被 Attention 执行/通知的事件，可以在模型思考阶段抢占低优先级长任务；工具或外部事务在途时先等其安全结束，紧急事件处理并可靠投递结果后，原任务无失败惩罚续跑。模型连续无进展达到 `execution.runIdleTimeoutMs`（默认 20 分钟）会中止并按普通失败重试；流式输出或 Runtime 进展会刷新计时，Tool 在途时暂停。正常 Daemon 停机也会先等在途 Tool 返回，再无失败惩罚重排队。`assistant.json` 中的 Standing Orders 与 People 私有 context 会附加到 owner/system Run，以及命中 owner source policy 的替身 Run；未授权事件仍可按 alias 派生稳定 Person Session ID，但看不到该 Session 或私人 metadata。Daily Routines 也是显式启用的 owner Event：新安装没有预置晨间或晚间任务，owner 创建后才按本地时区运行，并可通过 `inspect_mimi_activity` 检查自身积压、失败和近期状态。定时简报与 Routine 都只在计划时刻后的 15 分钟内补发，避免长时间停机后集中执行过期任务。非 command 自主运行确认没有新变化、风险、动作或需关注事项时，可调用 `finish_mimi_silently` 安静完成：Event/Run/答案/usage/原因仍保留，只省略通知 Outbox。这些能力复用同一个 Kernel、Session actor 系统与 Event 流，不创建第二套工作流。配置、决策顺序与规则示例见 [docs/ATTENTION.md](docs/ATTENTION.md)。
 
 owner/system 以及命中 owner source policy 的 MimiAgent 事件可使用有界运行自省与 follow-up/watch 工具推进当前事务；未授权事件不会获得这些工具。每个计划持久保存原 Conversation authority、origin Session 和 reply route；到期后进入独立 `mimi-task-*` Session 与 OS worker，不会占住创建计划的对话。Task 在执行时从原始 root 与当前 source policy 重新计算权限：root 缺失或 provenance 不匹配会失败关闭，撤销 external work policy 后不会继续原工作，周期 watch 只保留停止自身的能力，避免无权限轮询。条件监控同 Session 有新事件时立即触发，平时按周期兜底；结束条件成立后通过 `complete_current_mimi_schedule` 自行停止，没有变化时安静完成。用户还可直接说“现在给我汇总一下”，由 `request_mimi_briefing` 原子领取当前摘要并通过既有事件和投递链路送达；说“每天 9 点检查重要邮件”或“删除晚间收尾”时，Agent 会通过 `list_mimi_routines`、`upsert_mimi_routine`、`remove_mimi_routine` 原子管理固定本地时刻的 Daily Routines；Routine 删除、禁用或更新后，已排队的旧版本触发会在执行前失效。也可由 owner 对话管理 Standing Orders、来源规则、注意力规则和 People alias，无需手改 `assistant.json`。替身 Run 不获得这些配置控制工具，不能通过外部正文修改自己的授权。Activity 视图不包含其他 Event 正文、Run 答案、Outbox 内容或 target；一次性唤醒至少延后 5 秒、周期巡检最短 5 分钟、最多保留 100 个启用计划，配置写工具进入事件级副作用账本，崩溃重试不会重复修改。
 
@@ -393,8 +393,8 @@ SQLite、Socket、launchd、Tool ID、OpenClaw plugin ID 和配置示例均使�
 | `MIMI_MCP_CONFIG` | `<workspace>/mcp.json` | MCP Server 配置文件 |
 | `MIMI_EMBEDDING_API_KEY` | 未设置 | 可选的专用 OpenAI-compatible Embedding 凭证；只有显式设置才改用远程 Provider，不复用对话 Provider Key |
 | `MIMI_EMBEDDING_BASE_URL` | OpenAI 默认端点 | 仅远程 Embedding Provider 使用的 API 根地址 |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | 仅远程 Embedding Provider 使用的模型；本地模型由固定 manifest 标识 |
-| `MIMI_MEMORY_RETRIEVAL_MODE` | `auto` | `auto` 零 Key 使用本地 BGE，并在可用时启用 hybrid；`lexical` 固定纯本地 FTS/BM25 |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | 仅远程 Embedding Provider 使用的模型 |
+| `MIMI_MEMORY_RETRIEVAL_MODE` | `auto` | `auto` 默认使用 FTS/BM25，配置专用 Embedding Key 后启用 hybrid；`lexical` 固定纯本地 FTS/BM25 |
 | `MIMI_ENV_FILE` | 自动选择 | 显式指定统一环境配置文件 |
 
 通用 `AGENT_*`、模型与 MCP 变量仍按明确白名单作为后备别名。`MIMI_CONFIG_VERSION>=2` 用于区分显式 `workspace` 限制与早期模板默认值。
@@ -610,7 +610,7 @@ CLI 斜杠命令和模型工具调用复用相同的 MimiAgent 运行时方法�
 
 Session/Event/Document 是证据真相，LLMWiki Markdown 是持续编译的 semantic memory，SQLite 只是可重建索引与不可随 reindex 删除的 receipt/suppression 控制账本。owner 私有 Obsidian Vault 位于 `<dataRoot>/memory/vaults/owner/`，其中 `raw/` 保存内容寻址的不可变证据快照，`wiki/` 保存编译知识，`WIKI.md` 是机器可校验且人类可读的维护 Schema；内部 SQLite 位于 `<dataRoot>/memory/state/profiles/<hash>/memory.db`。workspace 继续使用 `knowledge/sources/`、`knowledge/wiki/` 与 `knowledge/WIKI.md`，禁止私人 provenance，Sources 对 MemoryHub 只读。
 
-Memory schema v2 在同一套页面和 revision 上增加 L1 Atom 与 L2 Scene/Topic；旧 schema v1 页面继续兼容读取。自由文本始终留在正文，typed facets 只承载 kind、实体、关系、时间和来源。L2 通过 `derivedFrom` 指向 L1/L2，`memory_read`/解释路径可以继续下钻到 L0 SourceRef；L3 Personal Context 是只读派生视图，按 900-token 默认预算轮询组装“今天重点”“最近承诺”“等待别人”“项目风险”，不拥有事实，也不写 Goal、Schedule 或 Memory。
+Memory schema v2 在同一套页面和 revision 上增加 L1 Atom 与 L2 Scene/Topic；旧 schema v1 页面继续兼容读取。自由文本始终留在正文，typed facets 只承载 kind、实体、关系、时间和来源。L2 通过 `derivedFrom` 指向 L1/L2，`memory_read`/解释路径可以继续下钻到 L0 SourceRef；L3 Personal Context 是只读派生视图，不拥有事实，也不写 Goal、Schedule 或 Memory。普通新请求仍由模型处理并按当前意图检索相关 Memory，但不再每轮注入整套“今天重点/最近承诺/等待别人/项目风险”；这些宽上下文只在主动任务或长事务恢复时按 900-token 预算装配。
 
 - `memory_search`：默认 Wiki-first 相关性搜索；owner 明确询问最近做过什么时可用 `order=recent` 按时间返回有界 Session round
 - `memory_read` / `memory_links`：按 ref 渐进读取正文与一跳关系
@@ -691,13 +691,13 @@ Memory 编译与查询流程：
 读取来源 → 校验 SourceRef/digest → 持久化多页 CompilationPlan → 逐页原子提交 → Lint/index/log → Wiki-first 召回
 ```
 
-`auto` 模式的零 Key 默认是 direct BGE q8：`onnx-community/bge-small-zh-v1.5-ONNX` 固定 revision `9507db33464b5da99a532ac26b2a251767cbc62b`，直接使用 `onnxruntime-node@1.24.3` 和 `@huggingface/tokenizers@0.1.3`，不经过生成式模型或远程服务。模型 manifest 固定五个资产的大小与 SHA-256，其中 `model_quantized.onnx` 为 `99a6e522710c00220c89f8c52e0cc5aa09d4cbb1c34c0e932eab3a9dfdc65df3`，外部权重为 `952623481ca8beea884e3d3c9ecaf8a3c7bf1d0c21de29e970cd31af9d37a90b`。缓存位于 `<dataRoot>/memory/models/bge-small-zh-v1.5-q8/<revision>/`，目录使用 `0700`、文件使用 `0600`，下载先校验字节数与摘要再原子替换。
+`auto` 模式在未配置 Embedding 时直接使用本地 FTS5/BM25，不创建本地推理 Provider，也不会在模型调用前加载 ONNX。显式设置专用 `MIMI_EMBEDDING_API_KEY`（可配 `MIMI_EMBEDDING_BASE_URL` 和 `EMBEDDING_MODEL`）才启用远程 OpenAI-compatible 向量通道；对话用的 OpenAI/DeepSeek Key 不会被自动复用。自然语言请求仍全部进入主模型，这里的 lexical/hybrid 只决定模型运行前如何召回相关 Memory。
 
-启动、普通查询和增量同步都不会隐式下载模型；只有 owner 显式执行 `/memory reindex` 才允许从固定 revision 下载或修复资产。模型缺失/损坏、下载失败，或当前平台不是 Darwin/Linux 的 arm64/x64 时，MimiAgent 仍可启动并报告原因，Memory 查询保持 lexical-only。显式设置专用 `MIMI_EMBEDDING_API_KEY`（可配 `MIMI_EMBEDDING_BASE_URL` 和 `EMBEDDING_MODEL`）才切换到远程 OpenAI-compatible Provider；对话用的 OpenAI/DeepSeek Key 不会被自动复用。
+仓库保留 direct BGE q8 的显式库级 Provider 和固定资产 manifest，供隔离实验或调用方主动注入，但 CLI/Daemon 不再默认选择它，自动 Context 召回也不会执行同步本地向量推理。没有显式 Provider 时，`/memory reindex` 只重建词法派生数据并在 status 中提示配置 Embedding Provider。
 
 FTS5/BM25 是词法基线；`sqlite-vec@0.1.9` 只负责在同一 `memory.db` 存储 chunk vector 并执行 vec0 KNN，不拥有 Memory 正文，也不负责生成 embedding。启动会执行 `vec_version()` 和最小 KNN 自检；结构化、BM25 与 vec0 top-k 通过 RRF 合并，查询热路径不会把全部向量加载到 JavaScript。Vec、Embedding、模型/维度或 reindex 异常时回退 lexical-only；FTS5/BM25 建表或查询失败时再回退有界 `LIKE`，并在 status 标记 degraded。错误模型或维度绝不混搜。旧 BLOB 派生向量只在迁移校验期间读取，vec0 校验通过后删除；`/memory reindex` 只重建页面、向量和 links 等派生数据，不清空 suppression 与 compilation receipt。
 
-2026-08-05 本机 Darwin arm64、32 个互不重复自然问题/80 个文档的离线串行基准中，direct BGE 模型为 23.180 MiB，完整 runtime install 为 211.675 MiB，warm query p95 为 2.111 ms，RSS 增量为 118.61 MiB。E5 int8/q8 因 133.7 MiB 级模型、616 MiB 以上 RSS 且中译英桶仍失效，没有成为默认；Xenova v2 BGE WASM 的质量近似但 warm p95 为 27.523 ms、RSS 增量为 326.89 MiB，同样淘汰。该小型基准也暴露 direct BGE 跨语限制：英译中桶 R@10 为 0%，中译英桶 R@10 为 50%；因此产品仍保留 BM25/结构化通道和可选远程 Provider，不能把本地向量相似度当成跨语正确性保证。
+2026-08-05 的 Darwin arm64 离线微基准记录了 direct BGE 的 warm query p95 2.111 ms；但真实常驻 Daemon 验收发现，同步 ONNX 的冷启动或争用会阻塞 IPC 和交互请求，因此该微基准不足以支持把它放进默认热路径。它同时存在明显跨语召回限制，所以当前产品选择 BM25/结构化基线和可选远程 Provider。
 
 每个已完成的 Session round 都会作为 private episode 增量索引；owner 的普通 Memory 检索默认同时搜索已编译 Wiki 和全部历史 episode，因此新 Session 可以直接回忆其他 Session 的相关信息。private episode 不向外部来源或 SubAgent/Team 开放。Daemon 在普通 Task 终态事务中登记 observation，达到 10 条或最老等待 10 分钟后才创建低优先级 `memory_maintenance` Task；连续 50 个页面变化，或有变化且 7 天未 lint 时，把 semantic lint 合并进下一维护 Task。维护 Run 每批最多读取 20 条 observation，使用稳定的 `obs-N` 批内句柄和从 ≤8KB 不可变快照提取的 ≤4KB 可见证据，最多写 5 页且只能使用 Memory 工具；未完成整个批次的 Task 不能进入 completed。维护先形成 L1，只有至少两个互补 L1 足以支持可复用结论时才形成带 `derivedFrom` 的 inferred L2；单条 external/public 断言不能直接成为 active 事实。`/memory maintain` 可显式触发无网络的有界 semantic lint。
 

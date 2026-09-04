@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
-import type { Model } from '@openai/agents';
+import { Agent, Runner, tool, type Model } from '@openai/agents';
+import { z } from 'zod';
 import { ModelGateway } from '../src/runtime/model-gateway.js';
 import { normalizeModelInput } from '../src/runtime/model.js';
 
@@ -36,6 +37,55 @@ async function fakeNative(
               totalTokenCount: 6,
             },
           }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address() as AddressInfo;
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+    requests,
+    close: () => new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve())),
+  };
+}
+
+async function fakeNativeToolLoop(
+  protocol: 'anthropic' | 'google',
+): Promise<{
+  baseUrl: string;
+  requests: Array<Record<string, unknown>>;
+  close: () => Promise<void>;
+}> {
+  const requests: Array<Record<string, unknown>> = [];
+  const server = http.createServer((request, response) => {
+    let body = '';
+    request.setEncoding('utf8');
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => {
+      requests.push(JSON.parse(body) as Record<string, unknown>);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      const firstRequest = requests.length === 1;
+      if (protocol === 'anthropic') {
+        response.end(JSON.stringify({
+          id: `anthropic-${requests.length}`,
+          content: firstRequest
+            ? [{ type: 'tool_use', id: 'native-tool-call', name: 'inspect_fixture', input: {} }]
+            : [{ type: 'text', text: 'anthropic-finished' }],
+          usage: { input_tokens: 3, output_tokens: 2 },
+        }));
+        return;
+      }
+      response.end(JSON.stringify({
+        responseId: `google-${requests.length}`,
+        candidates: [{
+          content: {
+            parts: firstRequest
+              ? [{ functionCall: { name: 'inspect_fixture', args: {} } }]
+              : [{ text: 'google-finished' }],
+          },
+        }],
+        usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 2, totalTokenCount: 5 },
+      }));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -153,6 +203,55 @@ test('Anthropic and Gemini adapters use distinct native protocols behind one Mod
     assert.doesNotMatch(JSON.stringify(google.requests), /claude-secret/);
   } finally {
     await Promise.all([anthropic.close(), google.close()]);
+  }
+});
+
+test('native adapters preserve the real SDK tool result in the second Runner request', async () => {
+  for (const protocol of ['anthropic', 'google'] as const) {
+    const server = await fakeNativeToolLoop(protocol);
+    try {
+      const providerId = `${protocol}-tool-loop`;
+      const apiKeyEnv = `${protocol.toUpperCase()}_TOOL_LOOP_KEY`;
+      const gateway = new ModelGateway({
+        providers: [{
+          id: providerId,
+          label: `${protocol} tool loop`,
+          transport: protocol === 'anthropic' ? 'anthropic-messages' : 'google-generate-content',
+          baseUrl: server.baseUrl,
+          apiKeyEnv,
+          models: [{
+            target: { providerId, modelId: `${protocol}-model` },
+            kind: 'agent',
+            capabilities: { imageInput: false, imageOutput: false, toolCalling: true },
+          }],
+        }],
+        environment: { [apiKeyEnv]: 'fixture-secret' },
+      });
+      let executions = 0;
+      const agent = new Agent({
+        name: `${protocol} runner fixture`,
+        model: gateway.createAgentRuntime({
+          providerId,
+          modelId: `${protocol}-model`,
+        }).model,
+        tools: [tool({
+          name: 'inspect_fixture',
+          description: 'Return a structured fixture result.',
+          parameters: z.object({}),
+          execute: async () => ({ marker: 'TOOL_RESULT_VISIBLE', executions: ++executions }),
+        })],
+      });
+
+      const result = await new Runner({ tracingDisabled: true }).run(agent, 'inspect', { maxTurns: 3 });
+
+      assert.equal(result.finalOutput, `${protocol}-finished`);
+      assert.equal(executions, 1);
+      assert.equal(server.requests.length, 2);
+      const replay = JSON.stringify(server.requests[1]);
+      assert.match(replay, /TOOL_RESULT_VISIBLE/);
+    } finally {
+      await server.close();
+    }
   }
 });
 

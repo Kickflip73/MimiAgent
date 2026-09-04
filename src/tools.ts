@@ -6,13 +6,14 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { isIP, type LookupFunction } from 'node:net';
 import path from 'node:path';
-import { codeInterpreterTool, tool, webSearchTool } from '@openai/agents';
+import { codeInterpreterTool, webSearchTool } from '@openai/agents';
 import { Agent as HttpAgent, fetch } from 'undici';
 import { z } from 'zod';
 import { DEFAULT_EXECUTION_LEDGER_MAX_OUTPUT_BYTES } from './core/execution-ledger.js';
 import { PRE_MIMI_DATA_DIRECTORY } from './core/mimi-legacy.js';
 import { withExclusiveFileLock } from './core/state-file.js';
 import { diagnoseWrittenFiles } from './runtime/file-diagnostics.js';
+import { tool } from './tool-factory.js';
 import type { FileMutationObserver } from './core/file-change-journal.js';
 
 const MAX_TEXT_BYTES = 200_000;

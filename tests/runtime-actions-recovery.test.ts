@@ -52,10 +52,23 @@ function runControlCalls(agent: MimiAgent, calls: RuntimeCall[], outputs: unknow
     }> }).tools;
     for (const [index, call] of calls.entries()) {
       const selected = tools.find((tool) => tool.name === call.name);
-      if (!selected) throw new Error(`missing tool ${call.name}`);
-      outputs.push(await selected.invoke(
-        new RunContext({}), JSON.stringify(call.input), { toolCall: { callId: `sdk-${index}` } },
-      ));
+      const context = new RunContext({});
+      if (selected) {
+        outputs.push(await selected.invoke(
+          context, JSON.stringify(call.input), { toolCall: { callId: `sdk-${index}` } },
+        ));
+        continue;
+      }
+      const inspect = tools.find((candidate) => candidate.name === 'inspect_capabilities');
+      const invoke = tools.find((candidate) => candidate.name === 'invoke_capability');
+      if (!inspect || !invoke) throw new Error(`missing deferred tool ${call.name}`);
+      await inspect.invoke(context, JSON.stringify({ name: call.name }), {
+        toolCall: { callId: `inspect-${index}` },
+      });
+      outputs.push(await invoke.invoke(context, JSON.stringify({
+        name: call.name,
+        argumentsJson: JSON.stringify(call.input),
+      }), { toolCall: { callId: `sdk-${index}` } }));
     }
     return {};
   };

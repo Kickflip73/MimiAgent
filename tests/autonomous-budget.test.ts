@@ -289,7 +289,9 @@ test('scheduled Briefing defers under pressure while an explicit owner Briefing 
     const settings = attention.getSettings();
     await attention.updateSettings({
       ...settings,
+      timezone: 'UTC',
       quietHours: { ...settings.quietHours, enabled: false },
+      briefings: { enabled: true, times: ['13:30'], maxItems: 100 },
       budgets: {
         ...settings.budgets,
         maxRunsPerHour: 1,

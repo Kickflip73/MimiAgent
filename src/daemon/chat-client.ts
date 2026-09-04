@@ -13,7 +13,7 @@ import {
   type CommandTarget,
 } from '../commands.js';
 import { runtimeEffectSchema, type RuntimeEffect } from '../runtime/control.js';
-import { mimiRpc } from './ipc.js';
+import { isMimiIpcTimeout, mimiRpc } from './ipc.js';
 import {
   assertDaemonWorkspace,
   daemonProtocolAction,
@@ -164,9 +164,17 @@ export class MimiChatClient {
     try {
       status = await mimiRpc<DaemonStatus>(this.socket, 'status', undefined, 2_000);
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ECONNREFUSED') throw error;
-      status = await (this.options.startDaemon ?? defaultStartDaemon)(this.config);
+      if (isMimiIpcTimeout(error)) {
+        try {
+          status = await mimiRpc<DaemonStatus>(this.socket, 'status', undefined, 10_000);
+        } catch (retryError) {
+          if (isMimiIpcTimeout(retryError) || !isTransientIpcDisconnect(retryError)) throw retryError;
+          status = await (this.options.startDaemon ?? defaultStartDaemon)(this.config);
+        }
+      } else {
+        if (!isTransientIpcDisconnect(error)) throw error;
+        status = await (this.options.startDaemon ?? defaultStartDaemon)(this.config);
+      }
     }
     return this.ensureCurrentDaemon(status);
   }

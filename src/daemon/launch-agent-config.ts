@@ -9,6 +9,9 @@ import { escapeXmlAttribute as xml } from '../core/xml.js';
 import { mimiPaths } from './client-runtime.js';
 
 export const MIMI_LAUNCH_AGENT_LABEL = 'com.mimiagent.daemon';
+export function launchAgentPlistBelongsTo(plist: string, config: AppConfig): boolean {
+  return plist.includes(`<key>MIMI_DAEMON_DATA_DIR</key>\n      <string>${xml(mimiPaths(config).root)}</string>`);
+}
 
 export function daemonLaunchEnvironment(config: AppConfig): Record<string, string> {
   const paths = mimiPaths(config);

@@ -3,11 +3,11 @@ import path from 'node:path';
 import {
   MCPServerStdio,
   MCPServerStreamableHttp,
-  tool,
   type MCPServer,
   type MCPServerWithResources,
 } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 
 const common = {
   enabled: z.boolean().optional(),

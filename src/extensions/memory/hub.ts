@@ -54,7 +54,6 @@ import {
   type EmbeddingProvider,
   type EmbeddingProviderDiagnostics,
 } from './embedding-provider.js';
-import { LocalEmbeddingProvider } from './local-embedding-provider.js';
 
 const AUTOMATIC_EMBEDDING_TIMEOUT_MS = 1_500;
 
@@ -320,7 +319,9 @@ class DefaultMemoryHub implements MemoryHub {
     const finish = (hits: MemoryHit[]) => automatic
       ? boundCards(diversify(hits, normalized, limit), 2_400, limit)
       : hits;
-    const queryVector = await this.embed(normalized);
+    const queryVector = automatic && this.embeddingProvider?.kind === 'local'
+      ? undefined
+      : await this.embed(normalized);
     const queryEmbedding = queryVector ? {
       model: this.embeddingModel,
       vector: queryVector,
@@ -1327,7 +1328,7 @@ export function createRoutedMemoryHub(options: Omit<MemoryHubOptions, 'profileId
 export function routedMemoryEmbeddingProvider(
   options: Pick<MemoryHubOptions, 'dataRoot' | 'embeddingProvider' | 'embeddingClient' | 'embeddingModel'>,
   environment: NodeJS.ProcessEnv = process.env,
-): EmbeddingProvider {
+): EmbeddingProvider | undefined {
   if (options.embeddingProvider) return options.embeddingProvider;
   if (environment.MIMI_EMBEDDING_API_KEY?.trim() && options.embeddingClient) {
     return new OpenAIEmbeddingProvider(
@@ -1337,5 +1338,5 @@ export function routedMemoryEmbeddingProvider(
         || 'text-embedding-3-small',
     );
   }
-  return new LocalEmbeddingProvider({ dataRoot: options.dataRoot });
+  return undefined;
 }

@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import {
-  tool,
   type AgentInputItem,
   type Usage,
 } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../../tool-factory.js';
 import {
   estimateTokens,
   type WorkSnapshot,
@@ -273,6 +273,8 @@ export async function executeRunPipeline(
     }).load(capabilities, {
       loadOwnerSoul: directOwnerRun,
       loadOwnerPreferences: directOwnerRun,
+      includePersonalContext: options?.cause !== undefined || resumesCheckpoint || options?.resumeState === true,
+      loadTaskDetails: resumesCheckpoint || options?.resumeState === true,
       now: personalContextOptions.now, ownerTimeZone: personalContextOptions.timeZone,
     });
     const {
@@ -663,9 +665,6 @@ export async function executeRunPipeline(
       const value = tool as unknown as Record<string, unknown>;
       return { name: value.name, description: value.description, parameters: value.parameters };
     });
-    const skillsDisclosed = catalogTools.some((tool) => (
-      tool.name === 'list_skills' || tool.name === 'use_skill' || tool.name === 'read_skill_resource'
-    ));
     const budget = context.requestBudget(toolSchemas);
     const ownerGuidanceReserve = directOwnerRun
       ? estimateTokens(soul.instructions) + estimateTokens(preferences.instructions)
@@ -750,10 +749,7 @@ export async function executeRunPipeline(
       }) : '',
       projectGuidance: canReadLocal ? projectGuidance.instructions : '',
       historySummary: '',
-      skillCatalog: canReadLocal && skillsDisclosed ? host.components.skills.catalog({
-        canReadLocal,
-        availableTools: run.availableToolNames,
-      }, { includeLocations: false }) : '',
+      skillCatalog: '',
       activeSkills,
       memories,
       plan: activePlan,

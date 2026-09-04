@@ -19,6 +19,7 @@ import { persistEnvironmentValues, providerApiKeyName } from '../provider-config
 import { MimiAgent } from '../agent.js';
 import { sanitizeSensitiveData } from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
+import { withExclusiveFileLock } from '../core/state-file.js';
 import { configureAgentRuntime, requireProviderApiKey } from '../runtime/bootstrap.js';
 import { MimiHost } from '../runtime/mimi-host.js';
 import {
@@ -44,7 +45,7 @@ import {
   workerConnectorActionParamsSchema,
   workerConnectorInspectParamsSchema,
 } from './connector-worker-rpc.js';
-import { mimiRpc, MimiIpcServer, readControlToken } from './ipc.js';
+import { isMimiIpcTimeout, mimiRpc, MimiIpcServer, readControlToken } from './ipc.js';
 import { NotifierRegistry } from './notifier.js';
 import { MimiStore } from './store.js';
 import { MimiWebhookServer } from './webhook.js';
@@ -79,6 +80,7 @@ import { initializeMimi } from './initialization.js';
 import {
   daemonLaunchEnvironment,
   launchAgentPlist,
+  launchAgentPlistBelongsTo,
   MIMI_LAUNCH_AGENT_LABEL,
 } from './launch-agent-config.js';
 import {
@@ -166,38 +168,14 @@ function chatSessionId(params: Record<string, unknown>): string {
 
 const DAEMON_WORKSPACE_FILE = 'workspace.json';
 
-export type DaemonStartupMode = 'launchd' | 'detached';
-
-export function daemonStartupMode(
-  platform: NodeJS.Platform,
-  launchAgentInstalled: boolean,
-  persistentProviderConfigured = false,
-): DaemonStartupMode {
-  return platform === 'darwin' && (launchAgentInstalled || persistentProviderConfigured) ? 'launchd' : 'detached';
-}
-
-export function daemonSupervisorAction(
-  status: Pick<DaemonStatus, 'activeEventId' | 'activeHostMutations' | 'activeTaskCount' | 'tasks' | 'outbox'>,
-  startupMode: DaemonStartupMode,
-  launchAgentInstalled: boolean,
-): 'reuse' | 'migrate' {
-  return startupMode === 'launchd' && !launchAgentInstalled && !daemonHasActiveWork(status)
-    ? 'migrate'
-    : 'reuse';
-}
-
-async function daemonSupervisorState(config: AppConfig) {
-  const launchAgentInstalled = await exists(launchAgentFile());
-  const persistentProviderConfigured = process.platform === 'darwin'
-    && await launchAgentProviderConfigured(config);
-  return {
-    launchAgentInstalled,
-    startupMode: daemonStartupMode(
-      process.platform,
-      launchAgentInstalled,
-      persistentProviderConfigured,
-    ),
-  };
+async function launchAgentOwnership(config: AppConfig) {
+  try {
+    const source = await readFile(launchAgentFile(), 'utf8');
+    return { installed: true, owned: launchAgentPlistBelongsTo(source, config) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { installed: false, owned: false };
+    throw error;
+  }
 }
 
 export async function reconcileMimiDaemon(
@@ -205,10 +183,7 @@ export async function reconcileMimiDaemon(
   status: DaemonStatusWire,
 ): Promise<DaemonStatus> {
   const expectedPermissionMode = config.permissionMode ?? 'trusted';
-  const protocolAction = daemonProtocolAction(status, expectedPermissionMode);
-  const { launchAgentInstalled, startupMode } = await daemonSupervisorState(config);
-  const supervisorAction = daemonSupervisorAction(status, startupMode, launchAgentInstalled);
-  if (protocolAction === 'reuse' && supervisorAction === 'reuse') return status as DaemonStatus;
+  if (daemonProtocolAction(status, expectedPermissionMode) === 'reuse') return status as DaemonStatus;
   return startMimiDaemon(config);
 }
 
@@ -406,10 +381,11 @@ export async function doctorMimi(config: AppConfig) {
   if (missingScripts.length) issues.push(`${missingScripts.length} 个 Connector 脚本不存在`);
   const configured = Boolean(process.env[providerApiKeyName(config.provider)]?.trim());
   if (!configured) issues.push(`${config.provider} API Key 未配置`);
+  const launchAgent = await launchAgentOwnership(config);
   const installedLaunchAgentFile = launchAgentFile();
-  const launchAgentInstalled = await exists(installedLaunchAgentFile);
+  const launchAgentInstalled = launchAgent.installed;
   const persistentProviderKey = await launchAgentProviderConfigured(config);
-  if (launchAgentInstalled && !persistentProviderKey) {
+  if (launchAgent.owned && !persistentProviderKey) {
     issues.push(`launchd 持久环境文件缺少 ${providerApiKeyName(config.provider)}`);
   }
   let daemonStatus: DaemonStatus | undefined;
@@ -483,7 +459,7 @@ export async function doctorMimi(config: AppConfig) {
   const nextActions: string[] = [];
   if (!connectorConfig) nextActions.push('运行 mimi 完成自动初始化');
   if (!configured) nextActions.push(`在 ~/.mimi-agent/.env（或旧目录）配置 ${providerApiKeyName(config.provider)}`);
-  if (launchAgentInstalled && !persistentProviderKey && configured) {
+  if (launchAgent.owned && !persistentProviderKey && configured) {
     nextActions.push(`把 ${providerApiKeyName(config.provider)} 写入 ${resolveEnvironmentFile()} 后重新运行 mimi`);
   }
   if (missingScripts.length) nextActions.push('重新运行 npm install 或修复 Connector 脚本路径');
@@ -549,7 +525,11 @@ export async function doctorMimi(config: AppConfig) {
         },
       } : {}),
     },
-    launchAgent: { installed: launchAgentInstalled, file: installedLaunchAgentFile },
+    launchAgent: {
+      installed: launchAgentInstalled,
+      owned: launchAgent.owned,
+      file: installedLaunchAgentFile,
+    },
     computer: {
       configured: Boolean(config.computer),
       ...(config.computer ? { backend: config.computer.backend, ready: computerStatus?.ready === true } : {}),
@@ -563,6 +543,30 @@ export async function doctorMimi(config: AppConfig) {
 
 export type MimiDoctorReport = Awaited<ReturnType<typeof doctorMimi>>;
 
+export async function installLaunchAgentPlistFile(
+  config: AppConfig, file: string, activate: () => Promise<void>,
+  entry = process.argv[1], execArgs = process.execArgv): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
+  await withExclusiveFileLock(file, async () => {
+    let existing: string | undefined;
+    try { existing = await readFile(file, 'utf8'); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (existing !== undefined && !launchAgentPlistBelongsTo(existing, config)) {
+      throw new Error('全局 launchd 服务属于另一个 MimiAgent 数据目录；请先从原实例执行 mimi daemon uninstall');
+    }
+    const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, launchAgentPlist(config, entry, execArgs), { flag: 'wx', mode: 0o600 });
+      await rename(temporary, file);
+      await chmod(file, 0o600);
+      await activate();
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  });
+}
+
 export async function installMimiLaunchAgent(config: AppConfig): Promise<string> {
   if (process.platform !== 'darwin') throw new Error('自动登录启动当前仅支持 macOS launchd');
   config = await resolveDaemonWorkspaceConfig(config);
@@ -572,25 +576,23 @@ export async function installMimiLaunchAgent(config: AppConfig): Promise<string>
   const paths = mimiPaths(config);
   await mkdir(paths.root, { recursive: true, mode: 0o700 });
   await chmod(paths.root, 0o700);
-  const directory = path.join(os.homedir(), 'Library', 'LaunchAgents');
   const file = launchAgentFile();
-  const temporary = `${file}.${process.pid}.tmp`;
-  await mkdir(directory, { recursive: true });
-  await writeFile(temporary, launchAgentPlist(config), { mode: 0o600 });
-  await rename(temporary, file);
-  await chmod(file, 0o600);
   const domain = `gui/${process.getuid?.() ?? 0}`;
-  await launchctl(['bootout', domain, file], true);
-  await rotateDaemonLogs(paths);
-  await launchctl(['bootstrap', domain, file]);
+  await installLaunchAgentPlistFile(config, file, async () => {
+    await launchctl(['bootout', domain, file], true);
+    await rotateDaemonLogs(paths);
+    await launchctl(['bootstrap', domain, file]);
+  });
   return file;
 }
 
 export async function uninstallMimiLaunchAgent(): Promise<string> {
   if (process.platform !== 'darwin') throw new Error('自动登录启动当前仅支持 macOS launchd');
   const file = launchAgentFile();
-  await launchctl(['bootout', `gui/${process.getuid?.() ?? 0}`, file], true);
-  await rm(file, { force: true });
+  await withExclusiveFileLock(file, async () => {
+    await launchctl(['bootout', `gui/${process.getuid?.() ?? 0}`, file], true);
+    await rm(file, { force: true });
+  });
   return file;
 }
 
@@ -1377,7 +1379,7 @@ async function waitForDaemonOffline(
       if (daemonProtocolAction(status, expectedPermissionMode) === 'reuse') return status as DaemonStatus;
       // launchd may immediately restart the new binary with a stale plist. A
       // current, idle worker with the wrong permission can be replaced by the
-      // install step below without treating it as an unknown legacy race.
+      // owned supervisor start below without treating it as an unknown legacy race.
       if (allowManagedReplacement && daemonProtocolState(status) === 'current') return undefined;
       throw new Error('旧版 MimiAgent 退出期间被另一个旧版后台重新启动；当前后台未被强制终止，请重试升级。');
     }
@@ -1394,19 +1396,19 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
   requireProviderApiKey(config);
   let paths = mimiPaths(config);
   const expectedPermissionMode = config.permissionMode ?? 'trusted';
-  const { launchAgentInstalled, startupMode } = await daemonSupervisorState(config);
+  const launchAgentOwned = (await launchAgentOwnership(config)).owned;
+  const useLaunchAgent = process.platform === 'darwin' && launchAgentOwned;
   let existing: DaemonStatusWire | undefined;
   let stoppedExisting = false;
   try {
-    existing = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 500);
-  } catch {
-    // No live daemon; continue with the selected supervisor.
+    existing = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 5_000);
+  } catch (error) {
+    if (isMimiIpcTimeout(error)) throw error;
   }
   if (existing) {
     assertDaemonWorkspace(existing.workspaceRoot, config.workspaceRoot);
     const protocolAction = daemonProtocolAction(existing, expectedPermissionMode);
-    const supervisorAction = daemonSupervisorAction(existing, startupMode, launchAgentInstalled);
-    if (protocolAction === 'reuse' && supervisorAction === 'reuse') return existing as DaemonStatus;
+    if (protocolAction === 'reuse') return existing as DaemonStatus;
     await mimiRpc(paths.socket, 'shutdown', undefined, 2_000);
     const replacement = await waitForDaemonOffline(
       paths.socket,
@@ -1414,7 +1416,7 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
       existing.pid,
       config.workspaceRoot,
       expectedPermissionMode,
-      startupMode === 'launchd',
+      useLaunchAgent,
     );
     if (replacement) return replacement;
     stoppedExisting = true;
@@ -1423,8 +1425,10 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
     config = migrateLegacyMimiDaemon(config);
     paths = mimiPaths(config);
   }
-  if (startupMode === 'launchd') {
-    await installMimiLaunchAgent(config);
+  if (useLaunchAgent) {
+    const domain = `gui/${process.getuid?.() ?? 0}`;
+    await launchctl(['bootstrap', domain, launchAgentFile()], true);
+    await launchctl(['kickstart', '-k', `${domain}/${MIMI_LAUNCH_AGENT_LABEL}`]);
   } else {
     const entry = process.argv[1];
     if (!entry) throw new Error('无法确定 MimiAgent 启动入口');
@@ -1455,7 +1459,7 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
   while (Date.now() < deadline) {
     let status: DaemonStatusWire;
     try {
-      status = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 500);
+      status = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 2_000);
     } catch (error) {
       lastError = error;
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1494,7 +1498,7 @@ export async function stopMimiDaemon(
   const paths = mimiPaths(config);
   let existing: DaemonStatusWire;
   try {
-    existing = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 500);
+    existing = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 5_000);
   } catch {
     return false;
   }

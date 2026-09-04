@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import type {
   WorkUnitArtifact,
   WorkUnitDescriptor,

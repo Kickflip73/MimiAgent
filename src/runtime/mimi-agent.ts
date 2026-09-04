@@ -1166,6 +1166,7 @@ export class MimiAgent {
         ? this.components.state.executionLedger.store.clearSessionExcept(sessionId, retainedExecutionKey)
         : this.components.state.executionLedger.store.clearSession(sessionId),
     ]).then(() => undefined));
+    if (this.lastContextManifest?.sessionId === sessionId) this.lastContextManifest = undefined;
   }
 
 }

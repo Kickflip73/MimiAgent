@@ -1,18 +1,21 @@
 [
   {
     "name": "activates a matching Agent Skill",
-    "input": "请调用 use_skill 激活 research Skill，然后只回复完成。",
-    "expectedTools": ["use_skill"]
+    "input": "请找到并激活 research Skill，然后只回复完成。",
+    "fixtureFiles": {
+      "skills/research/SKILL.md": "---\nname: research\ndescription: Use for evidence-backed research tasks.\n---\n\n# Research\n\n先明确问题，再查找和交叉验证来源。\n"
+    },
+    "expectedTools": ["inspect_capabilities", "invoke_capability"]
   },
   {
     "name": "delegates an explicit review subtask",
-    "input": "请调用 delegate_review 审查这句话是否正确：2+2=4，然后简短回复。",
-    "expectedTools": ["delegate_review"]
+    "input": "请委派一个只读审查子任务，判断这句话是否正确：2+2=4，然后简短回复。",
+    "expectedTools": ["inspect_capabilities", "invoke_capability"]
   },
   {
     "name": "changes its own runtime mode on request",
-    "input": "请调用 switch_mode 将 MimiAgent 切换到 ultra 模式，然后简短确认。",
-    "expectedTools": ["switch_mode"]
+    "input": "请把 MimiAgent 切换到 ultra 模式，然后简短确认。",
+    "expectedTools": ["inspect_capabilities", "invoke_capability"]
   },
   {
     "name": "plans and runs a real Ultra Team wave",

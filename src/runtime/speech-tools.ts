@@ -1,5 +1,6 @@
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import type { SpeechOutput } from './speech-output.js';
 
 export const SPEECH_TOOL_NAMES = new Set(['speech']);

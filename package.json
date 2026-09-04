@@ -100,6 +100,7 @@
     "eval:m1": "tsx scripts/run-m1-eval.ts fixtures",
     "eval:m1:canary": "tsx scripts/run-m1-canary.ts",
     "eval:agent": "tsx src/agent-eval.ts",
+    "eval:usability": "tsx src/agent-eval.ts evals/usability-cases.json",
     "eval:canary": "node --import tsx src/provider-canary.ts",
     "bench:capacity": "node --import tsx scripts/benchmark-capacity.ts",
     "check": "tsc --noEmit",

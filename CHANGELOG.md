@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- keep every natural-language request on the main model path while making common
+  file, shell, Web, Browser, Computer, artifact, and Memory tools direct and
+  discovering lower-frequency capabilities on demand without injecting the full
+  Skill catalog or broad Personal Context into every new turn
+- normalize native Provider tool results, turn SDK-captured tool exceptions into
+  structured failures recorded as failed by the execution ledger, and make
+  `/clear` remove derived context snapshots, artifacts, archives, and manifests
+- make fresh proactive configuration quiet by default, bound scheduled Routine
+  and Briefing catch-up to 15 minutes, soften unknown optional Computer readiness,
+  and give LaunchAgent plists atomic per-data-root ownership
+- add an isolated 20-case real-model daily-usability canary covering answers,
+  files, shell, Web, failures, memory, sessions, mode changes, Skills, and Plan
 - stop rendering every SDK reasoning item as a misleading completed reasoning
   phase while preserving those events as Daemon run-liveness progress
 - keep complementary tool results lossless throughout the active user turn while
@@ -64,17 +76,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - replace hot-path JavaScript vector scans with `sqlite-vec@0.1.9` vec0 KNN in
   the existing `memory.db`, including startup self-test, legacy BLOB migration,
   model/dimension isolation, lexical fallback, and packed-package coverage
-- make zero-key Memory retrieval use direct BGE q8 at pinned revision
-  `9507db33464b5da99a532ac26b2a251767cbc62b` with
-  `onnxruntime-node@1.24.3` and `@huggingface/tokenizers@0.1.3`; keep remote
-  embeddings opt-in through a dedicated key, download verified model assets
-  only during explicit reindex, and preserve startup plus lexical/BM25 or
-  bounded-LIKE fallback when the model, platform, Vec, or FTS path is unavailable
-- record the local embedding selection boundary: a 23.180 MiB model, 211.675
-  MiB runtime install, 2.111 ms warm-query p95, and 118.61 MiB RSS increase on
-  the 2026-08-05 Darwin arm64 offline 32-question/80-document run; E5 and
-  Xenova v2 remain rejected as defaults, and BGE cross-language recall remains
-  explicitly limited
+- keep zero-key Memory retrieval on FTS5/BM25 and require a dedicated key for
+  remote hybrid retrieval; retain direct BGE only as an explicitly injected
+  library component after real Daemon validation showed synchronous ONNX can
+  block IPC, cancellation, and ordinary model requests despite a fast warm
+  microbenchmark
+- retry a busy Daemon status probe without restarting its live process, refuse
+  an implicit restart on IPC timeout, and reclaim supervised workers as soon as
+  their durable task lease is lost
 - add a provenance-bounded owner Session retrieval audit that reuses production
   Catalog search through an immutable read-only snapshot, refuses active WAL
   state, never invokes remote embeddings, and emits only unlabelled aggregates

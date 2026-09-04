@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, readdir, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
-import { tool } from '@openai/agents';
 import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import { estimateTokens } from '../core/context.js';
 import type {
   ActivatedSkill,

@@ -710,10 +710,11 @@ export class TaskProcessSupervisor {
       const heartbeatAt = worker.heartbeatAt ? Date.parse(worker.heartbeatAt) : worker.spawnedAt;
       const startExpired = !worker.workerId && now - worker.spawnedAt > startTimeoutMs;
       const heartbeatExpired = worker.workerId !== undefined && now - heartbeatAt > heartbeatTimeoutMs;
-      if (startExpired || heartbeatExpired) {
+      const ownershipLost = worker.workerId !== undefined && !this.authorizeWorker(worker.taskId, worker.workerToken);
+      if (ownershipLost || startExpired || heartbeatExpired) {
         this.terminateWorker(
           worker,
-          startExpired ? '启动超时' : '心跳超时',
+          ownershipLost ? '执行租约已失效' : startExpired ? '启动超时' : '心跳超时',
         );
       }
     }

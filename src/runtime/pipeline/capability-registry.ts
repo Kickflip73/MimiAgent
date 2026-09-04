@@ -1,5 +1,6 @@
-import { tool, type RunContext, type Tool } from '@openai/agents';
+import type { RunContext, Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../../tool-factory.js';
 import { toolDescriptor } from '../tool-policy.js';
 import {
   createEffectiveCapabilitySnapshot,

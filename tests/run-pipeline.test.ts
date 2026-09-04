@@ -297,13 +297,13 @@ test('direct tools stay out of the gateway while deferred families remain invoka
   assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_wait'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_assert'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_close'));
-  assert.ok(modelFacing.some((candidate) => candidate.name === 'list_sessions'));
-  assert.ok(modelFacing.some((candidate) => candidate.name === 'get_session_history'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'web_search'));
+  assert.equal(modelFacing.some((candidate) => candidate.name === 'list_sessions'), false);
+  assert.equal(modelFacing.some((candidate) => candidate.name === 'get_session_history'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'inspect_mimi_capabilities'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'invoke_runtime_capability'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'connector_capability'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'send_owner_message'), false);
-  assert.equal(modelFacing.some((candidate) => candidate.name === 'web_search'), false);
   const inspect = gateway.find((candidate) => candidate.name === 'inspect_capabilities') as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
@@ -316,7 +316,10 @@ test('direct tools stay out of the gateway while deferred families remain invoka
     JSON.stringify({ query: '会话 历史 Session 列表 搜索 读取' }),
     {},
   ) as { capabilities: Array<{ name: string }> };
-  assert.deepEqual(naturalSessionQuery.capabilities, []);
+  assert.deepEqual(
+    naturalSessionQuery.capabilities.map((candidate) => candidate.name).sort(),
+    ['get_session_history', 'list_sessions'],
+  );
   const directComputer = await inspect.invoke(
     context,
     JSON.stringify({ name: 'computer_observe' }),
@@ -351,9 +354,17 @@ test('direct tools stay out of the gateway while deferred families remain invoka
     actualSource: 'browser',
     instruction: '改用 source=browser 查询；不要调用当前 source 下不存在的能力。',
   });
+  const directWeb = await inspect.invoke(
+    context,
+    JSON.stringify({ source: 'builtin', name: 'web_search' }),
+    {},
+  ) as { resolution: { status: string; instruction: string } };
+  assert.equal(directWeb.resolution.status, 'direct');
+  assert.match(directWeb.resolution.instruction, /立即调用 web_search/);
   for (const [source, name, result] of [
-    ['builtin', 'web_search', 'web-ok'],
     ['memory', 'memory_read', 'memory-ok'],
+    ['builtin', 'list_sessions', 'session-list-ok'],
+    ['builtin', 'get_session_history', 'session-history-ok'],
     ['goal', 'show_goal', 'goal-ok'],
     ['skill', 'list_skills', 'skill-ok'],
     ['mcp', 'custom_mcp_lookup', 'mcp-ok'],
@@ -939,6 +950,52 @@ test('state loader can inject direct-owner Soul and preferences without granting
   assert.equal(state.soul.instructions, soul.instructions);
   assert.equal(state.preferences.instructions, preferences.instructions);
   assert.equal(state.projectGuidance.instructions, '');
+});
+
+test('state loader keeps ordinary turns query-relevant without loading proactive or task-detail context', async () => {
+  let memorySearches = 0;
+  let goalLoads = 0;
+  const unexpected = () => Promise.reject(new Error('broad context loader was called'));
+  const loader = new RunStateLoader({
+    hotProfile: unexpected,
+    searchMemories: async () => {
+      memorySearches += 1;
+      return [];
+    },
+    loadPersonalContextCandidates: unexpected,
+    loadPlan: unexpected,
+    loadGoal: async () => {
+      goalLoads += 1;
+      return undefined;
+    },
+    loadTeamSummary: unexpected,
+    loadHistory: async () => [{ role: 'user', content: 'current question' }],
+    loadSoul: async () => ({ files: [], instructions: 'identity' }),
+    loadPreferences: async () => ({ files: [], instructions: 'preference' }),
+    loadProjectGuidance: async () => ({ files: [], instructions: 'project' }),
+    loadArchive: async () => undefined,
+    loadActiveSkills: async () => [],
+  });
+
+  const state = await loader.load({
+    canReadLocal: true,
+    canReadMemory: true,
+    canReadState: true,
+    canReadSessionContext: true,
+    completionToolsAllowed: true,
+    computerAccess: 'none',
+  }, {
+    includePersonalContext: false,
+    loadTaskDetails: false,
+    loadOwnerSoul: true,
+    loadOwnerPreferences: true,
+  });
+
+  assert.equal(memorySearches, 1);
+  assert.equal(goalLoads, 1);
+  assert.deepEqual(state.plan, []);
+  assert.equal(state.teamSummary, '');
+  assert.deepEqual(state.memories, []);
 });
 
 test('state loader never injects hot profiles and budgets Personal Context instead of fixing card count', async () => {

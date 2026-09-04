@@ -1,0 +1,185 @@
+[
+  {
+    "name": "01 普通知识问答不启动任务编排",
+    "input": "用一句中文回答：法国的首都是哪里？",
+    "forbiddenTools": ["inspect_capabilities", "set_goal", "update_plan", "run_team"],
+    "expectedOutputPatterns": ["巴黎"],
+    "maxDurationMs": 30000
+  },
+  {
+    "name": "02 读取单个文件并总结",
+    "input": "读取 notes/brief.txt，用两句话总结重点。",
+    "fixtureFiles": {
+      "notes/brief.txt": "ALPHA_RELEASE 将在周五发布。唯一风险是数据库迁移尚未演练。\n"
+    },
+    "expectedTools": ["read_file"],
+    "expectedOutputPatterns": ["ALPHA_RELEASE", "数据库迁移"],
+    "forbiddenTools": ["set_goal", "update_plan", "run_team"],
+    "maxDurationMs": 45000
+  },
+  {
+    "name": "03 按行读取文件",
+    "input": "只读取 log.txt 的第 2 到第 3 行，并告诉我这两行是什么。",
+    "fixtureFiles": {
+      "log.txt": "FIRST\nBETA_SENTINEL\nGAMMA_SENTINEL\nLAST\n"
+    },
+    "expectedTools": ["read_file"],
+    "expectedOutputPatterns": ["BETA_SENTINEL", "GAMMA_SENTINEL"],
+    "maxDurationMs": 45000
+  },
+  {
+    "name": "04 列出目录内容",
+    "input": "看看 docs 目录里有哪些文件，只列文件名。",
+    "fixtureFiles": {
+      "docs/alpha.md": "alpha\n",
+      "docs/beta.md": "beta\n"
+    },
+    "expectedTools": ["list_directory"],
+    "expectedOutputPatterns": ["alpha\\.md", "beta\\.md"],
+    "maxDurationMs": 45000
+  },
+  {
+    "name": "05 搜索工作区文本",
+    "input": "在当前工作区查找 PAYMENT_RETRY_LIMIT 出现在哪个文件，并告诉我值。",
+    "fixtureFiles": {
+      "src/config.ts": "export const PAYMENT_RETRY_LIMIT = 7;\n",
+      "README.md": "fixture\n"
+    },
+    "expectedTools": ["search_files"],
+    "expectedOutputPatterns": ["src/config\\.ts", "7"],
+    "maxDurationMs": 45000
+  },
+  {
+    "name": "06 执行一次本地命令",
+    "input": "执行命令 printf 'mimi-shell-ok\\n'，把真实输出告诉我。",
+    "expectedTools": ["run_shell"],
+    "expectedOutputPatterns": ["mimi-shell-ok"],
+    "forbiddenTools": ["set_goal", "update_plan", "run_team"],
+    "maxDurationMs": 45000
+  },
+  {
+    "name": "07 查询当前时间",
+    "input": "告诉我当前本地时间和时区，请以系统实际时间为准。",
+    "expectedTools": ["current_time"],
+    "forbiddenTools": ["set_goal", "update_plan", "run_team"],
+    "maxDurationMs": 45000
+  },
+  {
+    "name": "08 查询实时网页信息",
+    "input": "搜索一下 Node.js 官方网站当前列出的最新 LTS 大版本，并附来源。",
+    "expectedTools": ["web_search"],
+    "forbiddenTools": ["set_goal", "update_plan", "run_team"],
+    "maxDurationMs": 90000
+  },
+  {
+    "name": "09 文件不存在时如实失败",
+    "input": "读取 missing/private.txt 并告诉我内容；如果不存在就直接说明失败原因。",
+    "expectedTools": ["read_file"],
+    "expectedOutputPatterns": ["不存在|失败|ENOENT|找不到"],
+    "forbiddenTools": ["write_file", "set_goal", "update_plan"],
+    "maxDurationMs": 45000
+  },
+  {
+    "name": "10 创建一个文本文件",
+    "input": "创建 output/note.txt，内容必须包含 EXACT_WRITE_SENTINEL，完成后简短确认。",
+    "expectedTools": ["write_file"],
+    "expectedFiles": [
+      { "path": "output/note.txt", "contains": "EXACT_WRITE_SENTINEL" }
+    ],
+    "forbiddenTools": ["set_goal", "run_team"],
+    "maxDurationMs": 60000
+  },
+  {
+    "name": "11 精确修改现有文件",
+    "input": "把 settings.txt 中的 color=red 改成 color=blue，保留其他内容。",
+    "fixtureFiles": {
+      "settings.txt": "name=mimi\ncolor=red\nenabled=true\n"
+    },
+    "expectedAnyTools": [["edit_file", "apply_patch"]],
+    "expectedFiles": [
+      { "path": "settings.txt", "contains": "name=mimi\ncolor=blue\nenabled=true" }
+    ],
+    "maxDurationMs": 60000
+  },
+  {
+    "name": "12 移动文件",
+    "input": "把 drafts/report.txt 移动到 archive/report.txt，不要改内容。",
+    "fixtureFiles": {
+      "drafts/report.txt": "MOVE_SENTINEL\n"
+    },
+    "expectedTools": ["move_file"],
+    "expectedFiles": [
+      { "path": "drafts/report.txt", "absent": true },
+      { "path": "archive/report.txt", "contains": "MOVE_SENTINEL" }
+    ],
+    "maxDurationMs": 60000
+  },
+  {
+    "name": "13 查询 Mimi 当前运行状态",
+    "input": "实际查询一下 Mimi 当前使用的模式和模型，不要猜。",
+    "expectedTools": ["inspect_capabilities", "invoke_capability"],
+    "forbiddenTools": ["set_goal", "update_plan", "run_team"],
+    "maxDurationMs": 60000
+  },
+  {
+    "name": "14 按需列出持久会话",
+    "input": "实际查看当前有哪些 Mimi 会话，并告诉我数量。",
+    "expectedTools": ["inspect_capabilities", "invoke_capability"],
+    "forbiddenTools": ["set_goal", "update_plan", "run_team"],
+    "maxDurationMs": 60000
+  },
+  {
+    "name": "15 用自然语言切换模式",
+    "input": "把 Mimi 的后续会话模式切换成 ultra，然后确认结果。",
+    "expectedTools": ["inspect_capabilities", "invoke_capability"],
+    "forbiddenTools": ["run_shell", "run_team"],
+    "maxDurationMs": 60000
+  },
+  {
+    "name": "16 按需激活专业 Skill",
+    "input": "这次任务请使用 research Skill；激活成功后告诉我。",
+    "fixtureFiles": {
+      "skills/research/SKILL.md": "---\nname: research\ndescription: Use for evidence-backed research tasks.\n---\n\n# Research\n\n先明确问题，再查找和交叉验证来源。\n"
+    },
+    "expectedTools": ["inspect_capabilities", "invoke_capability"],
+    "expectedOutputPatterns": ["research"],
+    "forbiddenTools": ["run_shell", "set_goal", "run_team"],
+    "maxDurationMs": 60000
+  },
+  {
+    "name": "17 保存有长期价值的记忆",
+    "input": "请记住：我的测试代号是 ORCHID_731，以后我提到测试代号就是它。",
+    "expectedTools": ["remember"],
+    "expectedOutputPatterns": ["ORCHID_731"],
+    "forbiddenTools": ["set_goal", "update_plan", "run_team"],
+    "maxDurationMs": 60000
+  },
+  {
+    "name": "18 Plan 模式只读分析",
+    "input": "读取 app.ts，给出把函数拆小的修改方案，但不要修改文件。",
+    "fixtureFiles": {
+      "app.ts": "export function build() { const a = 1; const b = 2; return a + b; }\n"
+    },
+    "expectedTools": ["read_file"],
+    "forbiddenTools": ["write_file", "edit_file", "apply_patch", "run_shell"],
+    "expectedFiles": [
+      { "path": "app.ts", "contains": "export function build()" }
+    ],
+    "env": { "MIMI_MODE": "plan" },
+    "maxDurationMs": 60000
+  },
+  {
+    "name": "19 命令失败不能说成成功",
+    "input": "执行命令 sh -c 'echo EXPECTED_FAILURE >&2; exit 7'，如实告诉我是否成功。",
+    "expectedTools": ["run_shell"],
+    "expectedOutputPatterns": ["EXPECTED_FAILURE", "失败|退出|exit|错误"],
+    "forbiddenTools": ["set_goal", "update_plan", "run_team"],
+    "maxDurationMs": 45000
+  },
+  {
+    "name": "20 文本润色不加载任务系统",
+    "input": "把“这个方案还行但是需要再看看”润色成一句自然、明确、不过度正式的话。",
+    "forbiddenTools": ["inspect_capabilities", "set_goal", "update_plan", "run_team", "delegate_research"],
+    "maxDurationMs": 30000
+  }
+]

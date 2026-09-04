@@ -70,7 +70,7 @@ test('MemoryHub uses an embedding provider boundary and only explicit reindex ma
     kind: 'fact',
   }, ctx);
 
-  assert.equal((await hub.search('未来三个月优先做什么', ctx))[0]?.ref.id, relevant.ref.id);
+  assert.equal((await hub.search('未来三个月优先做什么', ctx, { limit: 20 }))[0]?.ref.id, relevant.ref.id);
   assert.ok(calls.some((call) => call.purpose === 'document' && !call.allowDownload));
   assert.ok(calls.some((call) => call.purpose === 'query' && !call.allowDownload));
   assert.ok(calls.filter((call) => call.purpose === 'document').every((call) => (
@@ -87,6 +87,40 @@ test('MemoryHub uses an embedding provider boundary and only explicit reindex ma
   assert.equal(status.providerConfigured, true);
   assert.equal(status.embeddingProvider, 'local');
   assert.equal(status.embeddingState, 'ready');
+});
+
+test('automatic context recall does not run synchronous local embedding inference', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-automatic-lexical-'));
+  const calls: string[] = [];
+  const embeddingProvider = {
+    kind: 'local' as const,
+    model: 'fixture-local-model@1',
+    embed: async (_inputs: string[], options: { purpose: 'query' | 'document' }) => {
+      calls.push(options.purpose);
+      return [[1, 0]];
+    },
+    diagnostics: async () => ({
+      kind: 'local' as const,
+      state: 'ready' as const,
+      model: 'fixture-local-model@1',
+    }),
+  };
+  const hub = await createMemoryHub({
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    profileId: 'owner',
+    embeddingProvider,
+  });
+  const ctx = context(root);
+  const relevant = await hub.remember({
+    title: '季度路线图',
+    content: '季度路线图和交付优先级。',
+    kind: 'fact',
+  }, ctx);
+  calls.length = 0;
+
+  assert.equal((await hub.search('季度路线图', ctx))[0]?.ref.id, relevant.ref.id);
+  assert.deepEqual(calls, []);
 });
 
 test('local provider downloads pinned assets only when allowed and rejects cache corruption', async () => {
@@ -256,15 +290,15 @@ test('local embedding timeout opens an instance circuit without starting more in
   }), [[0.6, 0.8]]);
 });
 
-test('runtime defaults to local embedding and requires a dedicated key to opt into remote', async () => {
+test('runtime defaults to lexical retrieval and requires a dedicated key to opt into remote embedding', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-local-embedding-default-'));
   const embeddingClient = {
     embeddings: { create: async () => ({ data: [] }) },
   } as unknown as OpenAI;
-  const local = routedMemoryEmbeddingProvider({ dataRoot: root, embeddingClient }, {
+  const lexical = routedMemoryEmbeddingProvider({ dataRoot: root, embeddingClient }, {
     OPENAI_API_KEY: 'chat-only-key',
   });
-  assert.equal(local.kind, 'local');
+  assert.equal(lexical, undefined);
   const remote = routedMemoryEmbeddingProvider({
     dataRoot: root,
     embeddingClient,
@@ -272,6 +306,7 @@ test('runtime defaults to local embedding and requires a dedicated key to opt in
     MIMI_EMBEDDING_API_KEY: 'embedding-key',
     EMBEDDING_MODEL: 'embedding-model',
   });
+  assert.ok(remote);
   assert.equal(remote.kind, 'remote');
   assert.equal(remote.model, 'embedding-model');
 });

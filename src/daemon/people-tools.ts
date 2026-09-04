@@ -1,5 +1,6 @@
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import { AttentionEngine, mimiPersonSchema } from './attention.js';
 
 const personIdSchema = z.string().regex(/^[a-zA-Z0-9._-]+$/).min(1).max(60);
