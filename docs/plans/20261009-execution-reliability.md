@@ -24,7 +24,7 @@ The goal is a reliable, inspectable execution loop with existing components. No 
 - Preferences selected during a run affect the next run, not its frozen tool/security scope.
 - Diagnostics contain composition counts and identifiers, not prompt or credential bodies.
 - Missing historical reasoning cannot be reconstructed. Timing samples do not imply a global latency guarantee.
-- Global journal partitioning, shared-account rate coordination and multi-day sleep/restart reliability require further evidence; this patch does not replace those systems speculatively.
+- Shared-account rate coordination and multi-day sleep/restart reliability require further evidence; the measured journal write bottleneck is addressed by the SQLite migration described below.
 
 ## Verification
 
@@ -63,3 +63,10 @@ The research task also reproduced a Shell false rejection: `&#39;` inside a quot
 Web SSE 原先固定750ms取一次进度，改成有输出时80ms、静默时上限400ms退避。设置禁止代理缓冲，序号与终态回执不变。浏览器以 requestAnimationFrame 按完整字素逐步呈现，保持原始事件缓存不变；最多落后最新块700ms，历史恢复、隐藏页面和减少动画偏好直接呈现。只更新变化的答案节点，过程面板与持久化仍批量处理。终态以后台回执为准，不提前显示成功。发送确认前立即显示待确认用户消息，失败保留原输入和请求ID用于幂等重试。
 
 运行中刷新可能早于 SDK 写入当前 user，结束后必须以最终快照补齐缺失的 user 行，不能只更新上下文计数。这属于前台状态同步，带 type:message 的合法用户消息本身并未被历史投影过滤。
+
+
+### 提交后记忆写入的第二个瓶颈
+
+仅优化日志后，真实 Web 最后文本到完成仍需5.1–5.7s。分段计时发现 recordEpisode 占3.36–4.73s：新增文档也按非索引 ref_key 删除整个 FTS 表的旧行；未达到保留上限也读取全部 episode 正文。新增/更新在现有事务中区分，只有更新才删旧索引；清理先 COUNT，不到上限直接返回，达到上限只读所需元数据。保留事务、raw fsync、引用保护和清理语义。
+
+同一 Friday/deepseek-v4-pro 的实际 Web 两轮复验：长回答10.24s、后续短翻译3.16s，最后文本到终态分别375ms和236ms；记忆写入26ms和19ms。冷/热准备3.22s和0.48s。小样本不构成性能保证，模型推理与网络仍占一部分等待。当前完整回归1140项通过；Web实际点击发送、部分答案生成、最终状态恢复、过程折叠均完成观察。
