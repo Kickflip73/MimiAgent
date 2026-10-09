@@ -152,11 +152,8 @@ function renderImageDrafts() {
   const note=$('#image-model-note'); note.hidden=!hasVisual || !!selected?.capabilities?.imageInput;
   note.innerHTML=vision ? `当前模型仅支持文字。<button type="button" id="use-vision-model">使用 ${esc(vision.target.modelId)} 看图</button>` : '请在模型接入中配置支持图片理解的模型。';
   note.querySelector('button')?.addEventListener('click',()=>{selections.set(selectionKey('model'),vision.target);renderImageDrafts();});
-  // Auto mode can select the configured vision model. Explicit choices stay explicit.
-  if(hasVisual && vision && state.models.length && !selections.get(selectionKey('model'))?.value && !selected?.capabilities?.imageInput) {
-    selections.set(selectionKey('model'),vision.target);
-    note.hidden=true;
-  }
+  // Host resolves automatic visual requests without changing the user's preference.
+  if(hasVisual && vision && !selections.get(selectionKey('model'))?.value) note.hidden=true;
 }
 async function addImages(files) {
   if(state.sending){toast('正在发送，请稍后添加图片');return;}

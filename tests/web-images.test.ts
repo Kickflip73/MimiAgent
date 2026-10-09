@@ -65,3 +65,26 @@ test('image drafts survive reload by reference; removal during upload cannot res
   assert.ok(!values.get('mimi-images:a').includes('base64'));
   restored.clear('a',[image.id]);assert.equal(restored.list('a').length,0);
 });
+
+test('Web image preflight shares automatic vision routing without pinning a session model',async t=>{
+  const {writeFile}=await import('node:fs/promises');const {randomUUID}=await import('node:crypto');
+  const {MimiIpcServer}=await import('../src/daemon/ipc.js');const {daemonWebBackend}=await import('../src/web/backend.js');
+  const root=await mkdtemp(path.join(os.tmpdir(),'mimi-image-preflight-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const previous=process.env.MIMI_TEST_VISION_KEY;process.env.MIMI_TEST_VISION_KEY='test';t.after(()=>{if(previous===undefined)delete process.env.MIMI_TEST_VISION_KEY;else process.env.MIMI_TEST_VISION_KEY=previous;});
+  const modelsConfig=path.join(root,'models.json');
+  const text={providerId:'test',modelId:'text'},vision={providerId:'test',modelId:'vision'};
+  await writeFile(modelsConfig,JSON.stringify({version:1,routeVersion:1,providers:[{id:'test',label:'test',transport:'openai-responses',apiKeyEnv:'MIMI_TEST_VISION_KEY',models:[text,vision].map(target=>({target,kind:'agent',capabilities:{imageInput:target===vision,imageOutput:false,toolCalling:true}}))}],routing:{globalDefault:text,scenarios:{}}}));
+  let submits=0;
+  const ipc=new MimiIpcServer(path.join(root,'mimi.sock'),(method,params:any)=>{
+    if(method==='status')return {supportsWebImages:true};
+    if(method==='submit'){submits++;return {task:{id:params.eventId},inserted:true};}
+    throw new Error('Unexpected IPC method '+method);
+  });await ipc.start();t.after(()=>ipc.close());
+  const backend=daemonWebBackend({workspaceRoot:root,dataRoot:root,daemonDataRoot:root,modelsConfig} as any);
+  const image=await backend.uploadImage!(png,'image/png');
+  await backend.submit('auto','看图',randomUUID(),'safe',root,[image.id]);assert.equal(submits,1);
+  const session=new FileSession(path.join(root,'sessions'),'pinned');await session.ensure();
+  await session.setPreferences({modelTarget:text});
+  await assert.rejects(backend.submit('pinned','看图',randomUUID(),'safe',root,[image.id]),/不满足.*图片输入/);
+  assert.equal(submits,1,'explicit text model must not silently switch');
+});

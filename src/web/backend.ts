@@ -15,6 +15,7 @@ import { savedSessionWorkspace } from '../daemon/session-workspace.js';
 import { validateWorkspace } from './workspace-picker.js';
 import { readFile, mkdir } from 'node:fs/promises';
 import { modelTargetSchema } from '../core/model-routing.js';
+import { WorkUnitModelResolver } from '../runtime/work-unit-model-resolver.js';
 import { ModelConfigStore, legacyModelConfigurationForAppConfig } from '../runtime/model-config.js';
 import { webManagement } from './management.js';
 import type { ModelTarget } from '../core/model-routing.js';
@@ -94,16 +95,22 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
   let sessionsCachedAt = 0;
   const management = webManagement(config, (operation, value, session) => client.invoke(operation, value, session), (method, params) => mimiRpc(socket, method, params, 30_000));
   const modelConfig = () => config.modelsConfig ? new ModelConfigStore(config.modelsConfig).read() : Promise.resolve(legacyModelConfigurationForAppConfig(config));
-  const availableModels = async (id: string) => {
+  const availableModels = async (id: string, imageInput = false) => {
       const [models, preferences] = await Promise.all([modelConfig(), readFile(path.join(config.dataRoot,'sessions',`${id}.json`),'utf8').then(source => {
         // A Web-only build can be older than the daemon. Never run migration/recovery while inspecting its files.
         const preferences = JSON.parse(source)?.preferences;
         const target = modelTargetSchema.safeParse(preferences?.modelTarget);
         return { modelTarget: target.success ? target.data : undefined };
       }).catch((error: NodeJS.ErrnoException) => { if(error.code === 'ENOENT') return {modelTarget: undefined}; throw error; })]);
+      const next = imageInput ? new WorkUnitModelResolver({
+        providers: models.providers, routing: models.routing,
+        isConfigured: provider => Boolean(process.env[provider.apiKeyEnv]?.trim()),
+      }).resolve({scenario:'conversation.default',sessionTarget:preferences.modelTarget,
+        profile:{requirements:{imageInput:true,toolCalling:true}},routeVersion:models.routeVersion}).target
+        : preferences.modelTarget ?? models.routing.scenarios['conversation.default']?.target ?? models.routing.globalDefault;
       return { choices: models.providers.flatMap(provider => provider.models.map(registration => ({ ...registration,
         provider: { id: provider.id, label: provider.label, transport: provider.transport }, configured: Boolean(process.env[provider.apiKeyEnv]?.trim()) }))),
-        current: { sessionTarget: preferences.modelTarget, next: { target: preferences.modelTarget ?? models.routing.scenarios['conversation.default']?.target ?? models.routing.globalDefault } } };
+        current: { sessionTarget: preferences.modelTarget, next: { target: next } } };
     };
   return {
     manageRead: management.read, manageWrite: management.write,
@@ -160,7 +167,7 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
       if(ids.length || prepared.some(ref=>ref.kind==='video')) {
         const daemon=await mimiRpc<{supportsWebImages?:boolean}>(socket,'status',undefined,8_000);
         if(!daemon.supportsWebImages)throw new Error('后台仍运行旧版本，请在当前任务完成后重启 Mimi 后台以启用图片发送');
-        const catalog=await availableModels(id);
+        const catalog=await availableModels(id,true);
         const target=catalog.current.next.target;
         const selected=catalog.choices.find(choice=>choice.target.providerId===target.providerId&&choice.target.modelId===target.modelId);
         if(!selected?.capabilities.imageInput)throw new Error('当前模型不支持图片理解，请在输入框下方选择支持图片的模型后重新发送');
