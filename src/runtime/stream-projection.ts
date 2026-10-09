@@ -1,4 +1,5 @@
 import type { RunStreamEvent } from '@openai/agents';
+import { toolResultStatus } from '../core/tool-result.js';
 
 export type RunStreamProjection =
   | { kind: 'answer'; text: string }
@@ -51,12 +52,15 @@ export function projectRunStreamEvent(event: RunStreamEvent): RunStreamProjectio
       };
     }
     if (event.name === 'tool_output') {
+      const output = item?.output ?? raw?.output;
+      const status = toolResultStatus(output);
       return {
         kind: 'status',
-        tone: 'success',
+        tone: status === 'succeeded' ? 'success' : 'failure',
         title: name === 'run_team' ? 'Ultra Team' : name ?? 'tool',
-        detail: name === 'run_team' ? '本轮并行任务已结束' : text(item?.output, 120),
-        fullDetail: text(item?.output),
+        detail: status === 'uncertain' ? `结果待核实：${text(output, 100) ?? ''}`
+          : name === 'run_team' && status === 'succeeded' ? '本轮并行任务已结束' : text(output, 120),
+        fullDetail: text(output),
         next: '模型继续思考',
       };
     }

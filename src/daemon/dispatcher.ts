@@ -751,7 +751,13 @@ export class MimiDispatcher {
       // follow-up runtime actions such as a Provider restart. Publishing first
       // briefly made the just-completed conversation still appear in
       // activeEventIds, so the restart rejected its own completed Run.
-      await this.host.finalizeExecutionLedger(decision.sessionId!, executionKey).catch(() => undefined);
+      if (result.finalization && ['partial', 'blocked', 'interrupted'].includes(result.finalization.outcome)) {
+        // Keep effect receipts, but allow a later owner-authorized continuation
+        // instead of replaying the already-settled incomplete answer forever.
+        await this.host.reopenExecutionLedger(sessionId, executionKey);
+      } else if (!result.finalization || result.finalization.outcome === 'completed') {
+        await this.host.finalizeExecutionLedger(decision.sessionId!, executionKey).catch(() => undefined);
+      }
       this.store.completeTask(task.id, this.workerId, {
         answer: result.answer,
         sessionId: sessionEffect?.type === 'session_changed' ? sessionEffect.sessionId : decision.sessionId,

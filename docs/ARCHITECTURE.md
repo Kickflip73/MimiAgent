@@ -120,7 +120,13 @@ CLI / IM / Voice / Schedule / Connector events
 user → function_call → function_call_result → assistant
 ```
 
-完整 transcript 是 canonical Session；模型输入只是每次调用前由 SDK `callModelInputFilter` 重新计算的派生 Context View，过滤结果绝不写回 Session。输入占可用预算达到 70% 时，Host 通过同一 Provider 的无工具 summarizer seam 准备结构化工作快照，固定包含目标、进度、已完成、决策、约束、未决问题、证据、关键事实和稳定 Artifact 引用，并以独立 Session 状态持久化而不伪装成对话；该准备阶段非阻断，不再按句子长度或事实条数中断普通日志/代码历史。快照记录已覆盖 item 数与 canonical 前缀摘要，达到 80% 时才替换该已验证前缀；生成失败时复用仍能通过前缀摘要校验的旧快照，或在请求仍可装入时安全保留未压缩视图，最近三个用户回合始终逐字保留。只有最终视图确实无法装入时才失败关闭，禁止用字符头尾裁剪或关键词句子抽取冒充语义摘要。当前用户回合内的工具结果只要单项和整次请求仍可装入预算，就在后续模型调用中持续完整保留；不能因“已经消费过一次”提前丢弃互补证据。较早回合、单项首次即过大或整次请求确实超预算时，才替换为有界语义事实与 `context-artifact:*` 引用。模型只能通过 `read_context_artifact` 在同一 Session 和活动 Run 内只读回取经摘要哈希校验的 canonical 结果；旧 Run 的引用归属不可改写，新 Run 只能获得记录原始 runId 的显式 alias，跨 Session/Run 或摘要伪造失败。call/result 骨架始终配对；连协议骨架也超预算时明确终止，不退化为孤立输入，也不根据摘要重放 uncertain 副作用。
+完整 transcript 是 canonical Session；模型输入是每次调用前由 SDK `callModelInputFilter` 重新计算的派生 Context View，过滤结果绝不写回 Session。硬容量按模型窗口、输出预留、工具和协议开销计算；语义压缩另使用最多 64k tokens 的软工作集预算，不因软预算本身终止任务。有效视图达到软预算 70% 时，同 Provider 的无工具 summarizer 准备结构化工作快照（目标、进度、已完成、决策、约束、未决问题、证据、关键事实、稳定引用），达到 80% 时使用已验证的摘要前缀。快照最多 6k tokens，通过 canonical 前缀哈希验证；后续压缩只处理新增前缀并合并之前快照，不重复提交全部已压缩历史。模型摘要接受主 Run 取消信号和 60 秒超时，失败写 trace 并间隔三次模型调用重试；没有可压缩前缀时不调用摘要模型。
+
+普通聊天保留最近三个用户回合；单个用户任务内也可以在完整工具批次边界压缩，保留最近三个已闭合批次、所有未闭合调用和当前用户原文约束。快照可跨后续回合复用，但必须同时满足前缀哈希和 call/result 边界验证。摘要不生成可重放调用，不能把 uncertain 副作用判为完成。只有最终视图无法装入硬预算才失败关闭。
+
+工具结果默认在单项不超过 16k 估算 tokens 且请求可装入时完整保留，包括此前已消费的互补证据。超大单项或硬预算不足时，仅有有效 `context-artifact:*` 引用的结果才能替换为**明确标注的不完整原文页**，不再用启发式句子抽取冒充语义摘要。无可靠回读引用时保留原文或明确报预算错误。`read_context_artifact(ref, offset?, limit?)` 按 UTF-16 字符偏移回读，默认 12000、最多 24000 字符，返回 `totalChars`、`nextOffset`、`truncated`、`format`；小结果保留原类型，分页对象使用精确 JSON 字符串。新回读页首次进入模型时不再被同一裁剪机制替换。读取继续校验 Session、Run 和原结果哈希；旧引用仅可通过当前 Run 的显式 alias 恢复，不修改原归属、不跨 Session，不重放原工具副作用。
+
+Skill 激活记录仍持久化用于发现和资源授权，但以前任务的 Skill 全文不会自动常驻新任务。当前显式 `$skill` 调用或明确恢复任务可加载完整指令；其他场景先用 `use_skill` 获取本轮指令，大内容使用同一 Context Artifact 分页机制。
 
 Context Window 由当前模型 Profile 提供，而不是按 Provider 使用同一个常量。Profile 同时定义输出预留；模型切换和 Session 恢复会原子更新 Model 与 ContextManager。每轮先分别扣除输出预留、已知 Function Tool Schema 和协议/MCP 安全余量，再在剩余输入预算内组装 Instructions、历史与当前输入；超长当前输入也不能绕过总预算。每次模型请求产生只供 Host、Trace 和 TUI 使用的 Context Manifest，按稳定 section ID 保存本地估算、压缩动作、request/run 标识和 estimator ID，不复制 prompt 正文，也不进入模型输入。协议 reserve 只显示预留，绝不计入已用输入；`/context` 分别展示 Raw Session、模型视图及占比、Last Request Actual、Run cumulative、静态工具/能力开销和压缩次数。Provider 未返回 usage 时明确显示 `est`，不会把本地估算冒充实际值。Conversation 不按累计输入量或固定模型调用次数中断；每次请求仍必须独立装入当前模型的 Context Window。只有操作员显式配置 `MIMI_MAX_TURNS` 时才按该轮数暂停，并保留完整协议单元和执行账本，不删除或重放动作。
 
@@ -561,7 +567,8 @@ Codex 单 Attempt 边界。
 auto、routes、route 与 doctor。写动作在工具内部要求 direct Owner；整个工具受
 ExecutionLedger 保护，Session 选择从下一 Run 生效且不持久化全局活动 Provider、
 不重启 Daemon。CLI 的 `/models` 与 `/model current/inspect/use/auto/routes/route/doctor`
-通过认证本地 Socket 把同一结构化请求送入对应 Session actor 的 FIFO mutation lane，
+通过本地 Socket 提交结构化请求；会话模式、模型和输出偏好直接原子保存为 next-run 设置，
+不等待活跃执行的 FIFO lane，下一轮建立 RunScope 时应用。其他可变运行时操作仍进入 actor lane，
 不建立第二套选择逻辑，也不走 legacy 全局 Provider 切换或 Daemon 重启。合并 Function
 Tool 动作避免把八个低频命令 schema 常驻到每次模型请求。`inspect` 直接投影
 Provider endpoint、region、credential 环境变量名和是否已配置，但绝不返回
@@ -795,3 +802,10 @@ Manager 返回动作结果的 `live_action` 才计入 100 次。readiness、dire
 blocked/skipped 和 uncertain 均不能晋级。该 canary 不是 24/72h soak。
 默认输出使用不覆盖的时间戳文件名；`run-m1-eval.ts report <run...>` 只聚合同一 dataset
 revision 的多次 run，因此分母可以持续累计而不会混入不同口径。
+
+
+### 2026-10 执行可靠性补充
+
+上下文分项以小型 `context-manifests/<session>.json` 派生快照保存，读取不触发运行时/MCP初始化或修复原文件。未知历史继续标注估算；快照不是 canonical transcript。Host 的下一轮偏好更新不改变进行中 RunScope。
+
+ARC-303 原组合面及其已批准扩展之外，为本轮原文分页、派生快照、轻量控制、可靠终态与恢复增加 600 行显式预算，计入 `context-artifact.ts`、`context-manifest-store.ts`、`task-inspection.ts`；组合根单文件上限保持不变。设计与验收见 `docs/plans/20261009-execution-reliability.md`。

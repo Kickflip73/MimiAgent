@@ -103,7 +103,10 @@ function usageFrom(stream: RunStream | undefined): ContextUsageSnapshot | undefi
 function progressFrom(event: RunStreamEvent): Record<string, unknown> | undefined {
   const projection = projectRunStreamEvent(event);
   if (projection?.kind !== 'status') return undefined;
+  const raw = event.type === 'run_item_stream_event'
+    ? event.item.rawItem as unknown as { callId?: string; call_id?: string } : undefined;
   return {
+    ...((raw?.callId ?? raw?.call_id) ? { callId: raw?.callId ?? raw?.call_id } : {}),
     kind: projection.kind,
     tone: projection.tone,
     title: projection.title,
@@ -158,6 +161,9 @@ export class AgentRunService {
   }
 
   async execute(request: AgentRunRequest, observer: AgentRunObserver = {}): Promise<AgentRunResult> {
+    const startedAt = performance.now();
+    const phases: Record<string, number> = {};
+    let timingSessionId: string | undefined;
     let stream: RunStream | undefined;
     let streamedAnswer = '';
     let interruptedAnswer = '';
@@ -173,10 +179,13 @@ export class AgentRunService {
       // One durable entry per reasoning phase, never one Session write per delta.
       await this.agent.recordEvent('reasoning', observation, traceRunId).catch(() => undefined);
     };
-    const stopRuntimeEvents = this.agent.onRuntimeEvent((event) => observe(
-      observer.onRuntimeEvent,
-      this.agent.redactActiveRunData?.(event) ?? event,
-    ));
+    const stopRuntimeEvents = this.agent.onRuntimeEvent((event) => {
+      if (event.type === 'run_start') {
+        traceRunId = this.agent.activeRunId;
+        timingSessionId = event.sessionId;
+      }
+      return observe(observer.onRuntimeEvent, this.agent.redactActiveRunData?.(event) ?? event);
+    });
     await observe(observer.onStart, request.input);
     try {
       const providerId = this.providerIdForRun
@@ -215,8 +224,11 @@ export class AgentRunService {
       selectedProvider = acquired.provider;
       stream = acquired.value;
       traceRunId = this.agent.activeRunId;
+      timingSessionId = this.agent.currentSessionId;
+      phases.prepareMs = performance.now() - startedAt;
       for await (const event of stream) {
         const projection = projectRunStreamEvent(event);
+        if (projection?.kind === 'answer' && phases.firstAnswerMs === undefined) phases.firstAnswerMs = performance.now() - startedAt;
         const answerDelta = projection?.kind === 'answer' ? projection.text : '';
         streamedAnswer += answerDelta;
         const safeEvent = this.agent.redactActiveRunData?.(event) ?? event;
@@ -255,7 +267,10 @@ export class AgentRunService {
         : finalOutput === undefined ? streamedAnswer : JSON.stringify(finalOutput)).slice(0, 20_000);
       const answer = this.agent.redactActiveRunText?.(rawAnswer) ?? rawAnswer;
       const usage = usageFrom(stream);
+      phases.streamMs = performance.now() - startedAt - (phases.prepareMs ?? 0);
+      const commitStartedAt = performance.now();
       const committed = await this.agent.completeRun(answer, usage);
+      phases.commitMs = performance.now() - commitStartedAt;
       const result = {
         answer: committed.answer,
         effects: committed.effects,
@@ -266,8 +281,14 @@ export class AgentRunService {
       await observe(observer.onComplete, result);
       return result;
     } catch (error) {
+      traceRunId ??= this.agent.activeRunId;
+      timingSessionId ??= this.agent.currentSessionId;
+      if (phases.prepareMs === undefined) phases.prepareMs = performance.now() - startedAt;
+      else phases.streamMs = performance.now() - startedAt - phases.prepareMs;
       await flushReasoning();
-      if (stream && classifyProviderFault(error).kind !== 'other') {
+      if (request.signal?.aborted || isRunInterrupted(error, request.signal)) {
+        this.providerReliability.cancel(selectedProvider);
+      } else if (stream && classifyProviderFault(error).kind !== 'other') {
         this.providerReliability.failure(selectedProvider, error);
       }
       const safeError = this.agent.redactActiveRunError?.(error) ?? error;
@@ -275,6 +296,7 @@ export class AgentRunService {
         && isTerminalRunInterruption(request.signal.reason)
         ? request.signal.reason
         : undefined;
+      const failureCommitStartedAt = performance.now();
       const commitFailure = this.agent.failRun(
         isTerminalRunInterruption(error)
           ? safeError
@@ -288,6 +310,7 @@ export class AgentRunService {
       const failureFinalization = stream
         ? await commitFailure
         : await commitFailure.catch(() => undefined);
+      phases.commitMs = performance.now() - failureCommitStartedAt;
       const terminalError = failureFinalization
         ? attachRunFinalization(safeError, failureFinalization)
         : safeError;
@@ -295,6 +318,10 @@ export class AgentRunService {
       throw terminalError;
     } finally {
       stopRuntimeEvents();
+      phases.totalMs = performance.now() - startedAt;
+      if (traceRunId && timingSessionId) {
+        await this.agent.recordRunTiming?.(timingSessionId, traceRunId, phases).catch(() => undefined);
+      }
     }
   }
 }

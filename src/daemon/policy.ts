@@ -55,7 +55,7 @@ const READ_TASK_CAPABILITIES = [
 ] as const satisfies readonly ToolCapability[];
 
 const READ_TASK_TOOLS = [
-  'current_time', 'calculate', 'task_history',
+  'current_time', 'calculate', 'task_history', 'read_context_artifact',
   'read_file', 'list_directory', 'search_files', 'inspect_processes',
   'http_get', 'web_search',
   'memory_search', 'memory_read', 'memory_links',
@@ -72,6 +72,7 @@ const READ_TASK_SIDE_EFFECT_TOOLS = [
 ] as const;
 
 const MEMORY_MAINTENANCE_TOOLS = [
+  'read_context_artifact',
   'memory_search', 'memory_read', 'memory_links',
   'list_memory_observations', 'upsert_memory_page',
   'merge_memory_pages', 'supersede_memory_page', 'add_memory_links',
@@ -91,7 +92,7 @@ const WORK_SOURCE_POLICY_CAPABILITIES = [
 ] as const satisfies readonly ToolCapability[];
 
 const WORK_SOURCE_POLICY_TOOLS = [
-  'current_time', 'calculate', 'task_history',
+  'current_time', 'calculate', 'task_history', 'read_context_artifact',
   'read_file', 'write_file', 'edit_file', 'move_file', 'list_directory', 'search_files',
   'inspect_processes', 'run_shell',
   'http_get', 'web_search', 'http_request',

@@ -1,5 +1,6 @@
 import type { AgentInputItem, SessionInputCallback } from '@openai/agents';
 import { createHash } from 'node:crypto';
+import { contextArtifactPage } from './context-artifact.js';
 import type { MemoryCard } from './memory.js';
 import type { Goal, PlanStep } from './plan.js';
 import type {
@@ -122,6 +123,7 @@ export interface ContextSemanticSummaryRequest {
   previous?: ContextWorkSnapshot;
   seed: Partial<WorkSnapshotContent>;
   maxSnapshotTokens: number;
+  signal?: AbortSignal;
 }
 
 export interface ContextSemanticSummarizer {
@@ -146,6 +148,7 @@ export interface ModelContextViewOptions {
   semanticSnapshot?: WorkSnapshot;
   seedSnapshot?: Partial<WorkSnapshotContent>;
   firstPassToolResultLimitTokens?: number;
+  workingSetBudgetTokens?: number;
 }
 
 export interface BuiltInstructions {
@@ -216,9 +219,10 @@ export class ContextManager {
   async prepareSemanticSnapshot(
     input: AgentInputItem[],
     summarizer: ContextSemanticSummarizer,
-    options: Pick<ModelContextViewOptions, 'persistedSnapshot' | 'seedSnapshot'> = {},
+    options: Pick<ModelContextViewOptions, 'persistedSnapshot' | 'seedSnapshot'> & { signal?: AbortSignal } = {},
   ): Promise<WorkSnapshot> {
-    const coveredItems = this.startOfRecentTurns(input, 3);
+    const previous = this.verifiedSnapshot(input, options.persistedSnapshot);
+    const coveredItems = Math.max(this.semanticSnapshotBoundary(input), previous?.coveredItems ?? 0);
     const sourceDigest = this.sourceDigest(input.slice(0, coveredItems));
     const persisted = options.persistedSnapshot;
     if (persisted
@@ -226,12 +230,13 @@ export class ContextManager {
       && persisted.sourceDigest === sourceDigest) {
       return this.snapshotContent(persisted, coveredItems, sourceDigest);
     }
-    const maxSnapshotTokens = Math.max(2_000, Math.floor(this.contextWindow * 0.08));
-    const content = this.normalizeSnapshot(await summarizer.summarize({
-      input: structuredClone(input.slice(0, coveredItems)),
-      previous: persisted ? structuredClone(persisted) : undefined,
+    const maxSnapshotTokens = Math.min(6_000, Math.max(2_000, Math.floor(this.contextWindow * 0.08)));
+    const content = this.normalizeSnapshot(coveredItems === 0 ? options.seedSnapshot ?? {} : await summarizer.summarize({
+      input: structuredClone(input.slice(previous?.coveredItems ?? 0, coveredItems)),
+      previous: previous && persisted ? structuredClone(persisted) : undefined,
       seed: structuredClone(options.seedSnapshot ?? {}),
       maxSnapshotTokens,
+      signal: options.signal,
     }), options.seedSnapshot);
     const requiredReferences = this.requiredOpaqueReferences(input.slice(0, coveredItems));
     content.references = [...new Set([...content.references, ...requiredReferences])];
@@ -251,7 +256,8 @@ export class ContextManager {
     options: ModelContextViewOptions = {},
   ): ModelContextView {
     const rawTokens = estimateTokens(input) + estimateTokens(instructions ?? '');
-    const usageRatio = rawTokens / Math.max(1, capacityTokens);
+    const workingBudget = Math.min(capacityTokens, options.workingSetBudgetTokens ?? capacityTokens);
+    const usageRatio = rawTokens / Math.max(1, workingBudget);
     let summarizedTools = this.summarizeConsumedToolResults(input, options);
     if (estimateTokens(summarizedTools.items) + estimateTokens(instructions ?? '') > capacityTokens) {
       summarizedTools = this.summarizeConsumedToolResults(input, {
@@ -303,6 +309,10 @@ export class ContextManager {
     }
     const older = summarizedTools.items.slice(0, effectiveSnapshot.coveredItems);
     const retained = summarizedTools.items.slice(effectiveSnapshot.coveredItems);
+    // A single user task can span many tool exchanges. Keep its constraints
+    // verbatim even when earlier completed exchanges move into the snapshot.
+    const currentUser = this.startOfLastUserTurn(input);
+    if (currentUser >= 0 && currentUser < effectiveSnapshot.coveredItems) retained.unshift(input[currentUser]!);
     const snapshotText = this.renderWorkSnapshot(effectiveSnapshot);
     const modelInstructions = [instructions, snapshotText].filter(Boolean).join('\n\n');
     const effectiveTokens = estimateTokens(retained) + estimateTokens(modelInstructions);
@@ -626,7 +636,7 @@ export class ContextManager {
   }
 
   private normalizeSnapshot(
-    candidate: WorkSnapshotContent,
+    candidate: Partial<WorkSnapshotContent>,
     seed: Partial<WorkSnapshotContent> = {},
   ): WorkSnapshotContent {
     const keys: Array<keyof WorkSnapshotContent> = [
@@ -676,8 +686,8 @@ export class ContextManager {
     snapshot?: ContextWorkSnapshot | WorkSnapshot,
   ): WorkSnapshot | undefined {
     if (!snapshot || snapshot.coveredItems < 0 || snapshot.coveredItems > history.length) return undefined;
-    const recentStart = this.startOfRecentTurns(history, 3);
-    if (snapshot.coveredItems > recentStart) return undefined;
+    const recentStart = Math.max(this.semanticSnapshotBoundary(history), this.startOfLastUserTurn(history));
+    if (snapshot.coveredItems > recentStart || !this.isProtocolBoundary(history, snapshot.coveredItems)) return undefined;
     const digest = this.sourceDigest(history.slice(0, snapshot.coveredItems));
     return digest === snapshot.sourceDigest
       ? this.snapshotContent(snapshot as ContextWorkSnapshot, snapshot.coveredItems, snapshot.sourceDigest)
@@ -729,8 +739,7 @@ export class ContextManager {
     const beforeTokens = estimateTokens(history);
     const consumedArtifactRefs: string[] = [];
     const artifacts = options.toolArtifacts ?? [];
-    const firstPassLimit = options.firstPassToolResultLimitTokens ?? 8_000;
-    const activeTurnStart = this.startOfLastUserTurn(history);
+    const firstPassLimit = options.firstPassToolResultLimitTokens ?? 16_000;
     const resultCount = history.filter((item) =>
       (item as unknown as Record<string, unknown>).type === 'function_call_result').length;
     let latestResult = -1;
@@ -744,24 +753,32 @@ export class ContextManager {
       const value = item as unknown as Record<string, unknown>;
       if (value.type !== 'function_call_result') return item;
       const artifact = this.toolArtifact(value, artifacts);
-      if (artifact) consumedArtifactRefs.push(artifact.ref);
-      const output = this.extractText(value.output);
-      // A result can be "consumed" by the immediately following model call
-      // without becoming obsolete. Compressing it on the next call made the
-      // active turn forget complementary evidence and rediscover it in a loop.
-      // Keep the current turn lossless while it fits; modelContextView retries
-      // with a zero limit when the real request budget requires compression.
-      if (activeTurnStart >= 0
-        && index > activeTurnStart
-        && estimateTokens(output) <= firstPassLimit) return item;
+      const outputTokens = estimateTokens(value.output);
       const wasConsumed = artifact
         ? options.consumedArtifactRefs?.has(artifact.ref) === true
         : resultCount > 1 || index !== latestResult;
-      if (!wasConsumed && estimateTokens(output) <= firstPassLimit) return item;
+      const callId = String(value.callId ?? value.call_id ?? '');
+      const pageRead = artifact?.toolName === 'read_context_artifact' || value.name === 'read_context_artifact'
+        || history.some((entry) => {
+          const call = entry as unknown as Record<string, unknown>;
+          return call.type === 'function_call' && call.name === 'read_context_artifact'
+            && String(call.callId ?? call.call_id ?? '') === callId;
+        });
+      if ((pageRead && !wasConsumed) || outputTokens <= firstPassLimit) {
+        if (artifact) consumedArtifactRefs.push(artifact.ref);
+        return item;
+      }
+      // No reliable read-back reference: retain the original or fail the hard
+      // budget check, never claim an arbitrary excerpt is a semantic summary.
+      if (!artifact) return item;
       summarized += 1;
       return {
         ...value,
-        output: this.toolResultSummary(value, artifact?.ref),
+        output: JSON.stringify({
+          ref: artifact.ref,
+          note: 'Partial original output, NOT a summary. Read more via read_context_artifact(ref, offset, limit); never rerun the original action.',
+          ...contextArtifactPage(value.output, 0, firstPassLimit === 0 ? 200 : 12_000),
+        }),
       } as unknown as AgentInputItem;
     });
     return {
@@ -986,6 +1003,43 @@ export class ContextManager {
       .map((item, index) => this.itemRole(item) === 'user' ? index : -1)
       .filter((index) => index >= 0);
     return starts.length > count ? starts[starts.length - count]! : 0;
+  }
+
+  /** Prefix ends only after all calls in a parallel tool batch have results. */
+  semanticSnapshotBoundary(history: AgentInputItem[]): number {
+    const recentStart = this.startOfRecentTurns(history, 3);
+    const currentStart = this.startOfLastUserTurn(history);
+    const pending = new Set<string>();
+    const boundaries: number[] = [];
+    for (let index = Math.max(0, currentStart); index < history.length; index += 1) {
+      const item = history[index] as unknown as Record<string, unknown>;
+      const id = String(item.callId ?? item.call_id ?? '');
+      if (item.type === 'function_call') {
+        if (!id) return recentStart;
+        pending.add(id);
+      } else if (item.type === 'function_call_result') {
+        if (!id || !pending.has(id)) return recentStart;
+        pending.delete(id);
+        if (!pending.size) boundaries.push(index + 1);
+      }
+    }
+    // Keep the newest three protocol batches lossless, including unconsumed output.
+    return Math.max(recentStart, boundaries.length > 3 ? boundaries[boundaries.length - 4]! : 0);
+  }
+
+  private isProtocolBoundary(history: AgentInputItem[], end: number): boolean {
+    const pending = new Set<string>();
+    for (const entry of history.slice(0, end)) {
+      const item = entry as unknown as Record<string, unknown>;
+      const id = String(item.callId ?? item.call_id ?? '');
+      if (item.type === 'function_call') {
+        if (!id) return false;
+        pending.add(id);
+      } else if (item.type === 'function_call_result') {
+        if (!id || !pending.delete(id)) return false;
+      }
+    }
+    return pending.size === 0;
   }
 
   private mergeSummary(previous: string, addition: string): string {

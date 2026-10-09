@@ -22,7 +22,11 @@ test('Mimi activity tool is bounded read-only self-inspection', async () => {
     const snapshot = await invoke(tools, { limit: 10 }) as { needsAttention: boolean; workPending: number };
     assert.equal(snapshot.needsAttention, false);
     assert.equal(snapshot.workPending, 0);
-    assert.match(String(await invoke(tools, { limit: 21 })), /Invalid (?:JSON )?input|error/i);
+    const rejected = await invoke(tools, { limit: 21 }) as { code: string; disposition: { dispatchStarted: boolean }; issues: Array<{ path: string; maximum?: number }> };
+    assert.equal(rejected.code, 'tool_input_invalid');
+    assert.equal(rejected.disposition.dispatchStarted, false);
+    assert.equal(rejected.issues[0]?.path, 'limit');
+    assert.equal(rejected.issues[0]?.maximum, 20);
     assert.equal(isSideEffectTool('inspect_mimi_activity'), false);
     assert.deepEqual(toolsForRunPolicy(tools, {
       allowedCapabilities: ['state-read'], allowSideEffects: false,

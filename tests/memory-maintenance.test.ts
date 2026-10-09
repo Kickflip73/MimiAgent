@@ -56,6 +56,7 @@ test('terminal Tasks atomically register observations and emit one bounded maint
       occurredAt: at.toISOString(), receivedAt: at.toISOString(), priority: 0,
     }, [], undefined, undefined, false, emitted[0]);
     assert.deepEqual(decision.options?.policy?.allowedTools, [
+      'read_context_artifact',
       'memory_search', 'memory_read', 'memory_links',
       'list_memory_observations', 'upsert_memory_page',
       'merge_memory_pages', 'supersede_memory_page', 'add_memory_links',

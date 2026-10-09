@@ -1,3 +1,6 @@
+import { APIUserAbortError } from 'openai';
+import { RunFailureError } from '../core/run-failure.js';
+
 export type ProviderFaultKind =
   | 'rate_limit'
   | 'insufficient_balance'
@@ -12,6 +15,7 @@ export interface ProviderFault {
   retryable: boolean;
   status?: number;
   code?: string;
+  retryAt?: string;
 }
 
 export interface ProviderCircuitConfig {
@@ -40,6 +44,52 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined;
 }
 
+/** Standard provider headers, without copying credentials or response bodies. */
+export function providerRetryAt(error: unknown, now = Date.now()): string | undefined {
+  const value = record(error);
+  if (typeof value?.retryAt === 'string' && Number.isFinite(Date.parse(value.retryAt))) return value.retryAt;
+  const headers = record(value?.headers ?? record(value?.response)?.headers);
+  const header = (name: string): unknown => {
+    if (typeof headers?.get === 'function') return headers.get(name);
+    const key = Object.keys(headers ?? {}).find((key) => key.toLowerCase() === name);
+    return key ? headers?.[key] : undefined;
+  };
+  const retryMs = header('retry-after-ms');
+  const retry = header('retry-after');
+  let at: number | undefined;
+  if (retryMs !== undefined && retryMs !== null && Number.isFinite(Number(retryMs)) && Number(retryMs) >= 0) {
+    at = now + Number(retryMs);
+  } else if (typeof retry === 'string' || typeof retry === 'number') {
+    at = Number.isFinite(Number(retry)) && Number(retry) >= 0
+      ? now + Number(retry) * 1_000 : Date.parse(String(retry));
+  }
+  return at !== undefined && Number.isFinite(at) && Math.abs(at) <= 8.64e15
+    ? new Date(Math.max(now, at)).toISOString() : undefined;
+}
+
+export function isProviderCancellation(error: unknown): boolean {
+  if (error instanceof APIUserAbortError) return true;
+  const seen = new Set<unknown>();
+  let current = record(error);
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    if (['AbortError', 'APIUserAbortError', 'RunInterruptedError', 'TerminalRunInterruptedError'].includes(String(current.name))
+      || current.code === 'ABORT_ERR') return true;
+    current = record(current.cause);
+  }
+  return false;
+}
+
+export class ProviderCircuitOpenError extends RunFailureError {
+  constructor(readonly provider: string, readonly retryAt: string, probing = false) {
+    super('provider.circuit_open', probing
+      ? `Provider ${provider} 半开探测已在进行，等待恢复`
+      : `Provider ${provider} 熔断中，等待 ${retryAt} 后重试`, {
+      phase: 'provider', kind: 'transient', retryable: true, dispatchStarted: false,
+    });
+  }
+}
+
 export function classifyProviderFault(error: unknown): ProviderFault {
   const value = record(error);
   const nested = record(value?.error);
@@ -52,7 +102,7 @@ export function classifyProviderFault(error: unknown): ProviderFault {
     : typeof value?.message === 'string' ? value.message : String(error);
   const normalized = `${code ?? ''} ${message}`.toLowerCase();
   if (status === 429 || /rate.?limit|too many requests|限流/u.test(normalized)) {
-    return { kind: 'rate_limit', retryable: true, status, code };
+    return { kind: 'rate_limit', retryable: true, status, code, retryAt: providerRetryAt(error) };
   }
   if (status === 402
     || /insufficient.?balance|quota.?exceeded|billing|余额不足|额度不足/u.test(normalized)) {
@@ -72,6 +122,7 @@ interface ProviderState {
   failures: number;
   halfOpenSuccesses: number;
   openedAt?: number;
+  retryAt?: number;
   lastFailure?: ProviderFaultKind;
   lastSuccessAt?: number;
   probeInFlight: boolean;
@@ -95,16 +146,16 @@ export class ProviderCircuitBreaker {
   acquire(provider: string): void {
     const state = this.providerState(provider);
     if (state.state === 'open') {
-      if (state.openedAt !== undefined && this.now() - state.openedAt >= this.config.openMs) {
+      if (state.openedAt !== undefined && this.now() >= (state.retryAt ?? state.openedAt + this.config.openMs)) {
         state.state = 'half_open';
         state.probeInFlight = false;
         state.halfOpenSuccesses = 0;
       } else {
-        throw new Error(`Provider ${provider} 熔断中，拒绝形成重试风暴`);
+        throw new ProviderCircuitOpenError(provider, new Date(state.retryAt ?? this.now() + this.config.openMs).toISOString());
       }
     }
     if (state.state === 'half_open') {
-      if (state.probeInFlight) throw new Error(`Provider ${provider} 半开探测已在进行`);
+      if (state.probeInFlight) throw new ProviderCircuitOpenError(provider, new Date(this.now() + this.config.openMs).toISOString(), true);
       state.probeInFlight = true;
     }
   }
@@ -121,19 +172,27 @@ export class ProviderCircuitBreaker {
     state.failures = 0;
     state.halfOpenSuccesses = 0;
     delete state.openedAt;
+    delete state.retryAt;
     delete state.lastFailure;
+  }
+
+  cancel(provider: string): void {
+    this.providerState(provider).probeInFlight = false;
   }
 
   failure(provider: string, error: unknown): ProviderFault {
     const fault = classifyProviderFault(error);
     const state = this.providerState(provider);
     state.probeInFlight = false;
+    if (isProviderCancellation(error) || error instanceof ProviderCircuitOpenError) return fault;
     state.failures += 1;
     state.lastFailure = fault.kind;
     const immediate = fault.kind === 'rate_limit' || fault.kind === 'insufficient_balance';
     if (state.state === 'half_open' || immediate || state.failures >= this.config.failureThreshold) {
       state.state = 'open';
       state.openedAt = this.now();
+      const retryAt = providerRetryAt(error, this.now());
+      state.retryAt = Math.max(state.openedAt + this.config.openMs, retryAt ? Date.parse(retryAt) : 0);
     }
     return fault;
   }
@@ -147,7 +206,7 @@ export class ProviderCircuitBreaker {
       failures: state.failures,
       ...(openedAt === undefined ? {} : {
         openedAt: new Date(openedAt).toISOString(),
-        retryAt: new Date(openedAt + this.config.openMs).toISOString(),
+        retryAt: new Date(state.retryAt ?? openedAt + this.config.openMs).toISOString(),
       }),
       ...(state.lastFailure ? { lastFailure: state.lastFailure } : {}),
       ...(state.lastSuccessAt === undefined
@@ -210,6 +269,7 @@ export class ProviderFailoverCoordinator {
         return { provider: candidate.id, value, attempts };
       } catch (error) {
         lastError = error;
+        if (isProviderCancellation(error)) { this.breaker.cancel(candidate.id); throw error; }
         const fault = this.breaker.failure(candidate.id, error);
         if (options.sideEffectsStarted()) {
           throw new Error('副作用已经开始，禁止切换 Provider 重放整轮', { cause: error });

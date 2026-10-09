@@ -62,6 +62,7 @@ export class ModelContextSemanticSummarizer implements ContextSemanticSummarizer
       '把较早 canonical 对话压缩为可继续工作的有界快照：保留目标、进度、已完成、决策、约束、未决问题、证据、关键事实、实体、精确数值和 opaque 引用。',
       '合并 previousSnapshot 和 seed；冲突事实同时保留并明确冲突，不猜测、不按关键词筛选、不复制无意义长日志或代码。',
       '工具结果只保留其结论和稳定引用，绝不生成可重放的工具调用。',
+      '输入可能是同一用户任务中已完成的工具批次。精确保留用户约束和失败/uncertain副作用状态；不可把未确认动作写成已完成。',
       `快照总预算不超过约 ${request.maxSnapshotTokens} tokens；优先保留影响后续正确性和副作用安全的信息。`,
     ].join('\n');
     const input: AgentInputItem[] = [{
@@ -81,6 +82,9 @@ export class ModelContextSemanticSummarizer implements ContextSemanticSummarizer
       outputType: 'text',
       handoffs: [],
       tracing: false,
+      signal: request.signal
+        ? AbortSignal.any([request.signal, AbortSignal.timeout(60_000)])
+        : AbortSignal.timeout(60_000),
     });
     this.usages.push(response.usage);
     const text = responseText(response.output as unknown[]);

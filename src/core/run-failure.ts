@@ -25,6 +25,8 @@ export interface RunFailureDisposition {
 export interface RunFailureRecord {
   code: string;
   disposition: RunFailureDisposition;
+  /** Earliest permitted retry time, preserved across durable task scheduling. */
+  retryAt?: string;
 }
 
 export class RunFailureError extends Error {
@@ -68,5 +70,8 @@ export function runFailureRecord(value: unknown): RunFailureRecord | undefined {
     ? value.code
     : (value as { code?: unknown }).code;
   if (typeof code !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,159}$/.test(code)) return undefined;
-  return { code, disposition };
+  const retryAt = (value as { retryAt?: unknown }).retryAt;
+  return { code, disposition,
+    ...(typeof retryAt === 'string' && Number.isFinite(Date.parse(retryAt)) ? { retryAt } : {}),
+  };
 }

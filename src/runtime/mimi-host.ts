@@ -266,6 +266,13 @@ export class MimiHost {
     });
   }
 
+  async setSessionPreference(sessionId: string, operation: string, value: unknown) {
+    this.assertOpen();
+    const result = await this.agent.setSessionPreference(sessionId, operation, value);
+    this.invalidateSummaryCache(sessionId);
+    return result;
+  }
+
   prepareQqPersonalMessageScope(
     sessionId: string,
     workspaceRoot: string | undefined,

@@ -26,6 +26,12 @@ export interface CapabilityCatalogAccess {
   revision?: () => string;
 }
 
+export interface DeferredMcpCatalog {
+  statuses(): readonly { name: string; state: string; tools: number; error?: string }[];
+  load(): Promise<readonly Tool[]>;
+  changed?(): void;
+}
+
 const MAX_INDEXED_NAMES_PER_SOURCE = 12;
 const INTERNAL_COMPATIBILITY_TOOLS = new Set([
   'inspect_mimi_capabilities',
@@ -117,10 +123,14 @@ interface RegistryEntry {
   parameters: unknown;
 }
 
-/** Immutable per-Run authority plus the only mutable, in-memory discovery cache. */
+/** Per-Run authority; a preauthorized MCP provider may materialize deferred tools. */
 export class HostCapabilityRegistry {
-  private readonly byName: ReadonlyMap<string, Tool>;
-  private readonly entries: readonly RegistryEntry[];
+  private readonly byName: Map<string, Tool>;
+  private entries: readonly RegistryEntry[];
+  private mcpPending?: Promise<void>;
+  private mcpLoaded = false;
+  private loadedMcpNames = new Set<string>();
+  private deferredNames = new Set<string>();
   private readonly discoveredNames = new Set<string>();
   private readonly discoveredConnectorActions = new Set<string>();
   private readonly discoveryCache = new Map<string, unknown>();
@@ -129,6 +139,8 @@ export class HostCapabilityRegistry {
   constructor(
     authorizedTools: readonly Tool[],
     private readonly catalogAccess?: CapabilityCatalogAccess,
+    private readonly skillCatalog?: (filter: { name?: string; query?: string }) => unknown | Promise<unknown>,
+    private readonly mcpCatalog?: DeferredMcpCatalog,
   ) {
     const duplicates = authorizedTools
       .map((candidate) => candidate.name)
@@ -156,19 +168,22 @@ export class HostCapabilityRegistry {
     return [...this.byName.values()];
   }
 
+  async prepareMcp(): Promise<void> { await this.loadMcp(this.deferredNames); }
+
   gatewayTools(deferredTools: readonly Tool[]): Tool[] {
-    const deferredNames = new Set(deferredTools.map((candidate) => candidate.name));
+    const deferredNames = new Set([...deferredTools.map((candidate) => candidate.name), ...this.loadedMcpNames]);
+    this.deferredNames = deferredNames;
     for (const name of deferredNames) {
       if (!this.byName.has(name)) throw new Error(`Deferred capability 不属于当前 Host registry：${name}`);
     }
-    const entries = this.entries.filter((entry) => deferredNames.has(entry.name));
+    let entries = this.entries.filter((entry) => deferredNames.has(entry.name));
     const connectorInvokerEntry = entries.find((entry) => (
       entry.name === 'connector_capability' || entry.name === 'connector_action'
     ));
     return [
       tool({
         name: 'inspect_capabilities',
-        description: '查询本轮能力状态。Tool 用精确 name，Connector action 用 capability；返回 resolution，deferred 结果另含调用 schema。',
+        description: '查询本轮能力状态。Tool 用精确 name；Skill 实例用 source=skill 加技能 name/query；Connector action 用 capability。返回 resolution 和调用 schema。',
         parameters: z.object({
           source: z.enum(['builtin', 'mcp', 'browser', 'computer', 'memory', 'goal', 'skill', 'connector']).optional(),
           name: z.string().trim().min(1).max(200).optional()
@@ -181,6 +196,11 @@ export class HostCapabilityRegistry {
           query: z.string().trim().min(1).max(100).optional(),
         }).strict(),
         execute: async ({ source, name, capability, query }, _context, details) => {
+          const inspectMcp = source === 'mcp' || (!source && name?.startsWith('mcp_'));
+          if (inspectMcp && this.mcpCatalog) {
+            await this.loadMcp(deferredNames);
+            entries = this.entries.filter(entry => deferredNames.has(entry.name));
+          }
           this.refreshCatalogRevision(connectorInvokerEntry);
           // Older model turns used source=connector + name for an action capability.
           // Keep that input non-throwing while making the schema unambiguous going forward.
@@ -193,12 +213,31 @@ export class HostCapabilityRegistry {
           });
           const cached = this.discoveryCache.get(signature);
           if (cached !== undefined) return cached;
+          // Skill names are catalog entries, not tool names. Discovery never grants new tools.
+          if (source === 'skill' && this.skillCatalog && this.byName.has('list_skills')
+            && (!toolName || !this.byName.has(toolName))) {
+            const catalog = await this.skillCatalog({ ...(toolName ? { name: toolName } : {}), ...(query ? { query } : {}) });
+            const skills = catalog && typeof catalog === 'object' && 'skills' in catalog && Array.isArray(catalog.skills) ? catalog.skills : [];
+            const navigators = entries.filter(entry => ['use_skill', 'read_skill_resource', 'list_skills'].includes(entry.name));
+            for (const entry of navigators) this.discoveredNames.add(entry.name);
+            return {
+              authorizedCount: this.entries.length,
+              ...(inspectMcp && this.mcpCatalog ? { mcpCatalog: this.mcpCatalog.statuses() } : {}), deferredCount: entries.length, matchedCount: skills.length,
+              skillCatalog: catalog,
+              capabilities: navigators.map(entry => ({ ...entry, invokeWith: 'invoke_capability' })),
+              resolution: { name: toolName, status: skills.length ? 'skill' : 'not_found', instruction: skills.length
+                ? '这是已安装 Skill。检查 available；通过返回的 use_skill schema 传入技能 name 激活，不要把技能名当作工具名。'
+                : '当前技能目录未匹配；可通过 list_skills 分页查看，不能据此判断同名 Tool 的状态。' },
+              truncated: !!catalog && typeof catalog === 'object' && 'nextOffset' in catalog,
+            };
+          }
           const authorizedEntry = toolName
             ? this.entries.find((entry) => entry.name === toolName)
             : undefined;
           if (toolName && (!authorizedEntry || (source && authorizedEntry.source !== source))) {
             const result = {
               authorizedCount: this.entries.length,
+              ...(inspectMcp && this.mcpCatalog ? { mcpCatalog: this.mcpCatalog.statuses() } : {}),
               deferredCount: entries.length,
               matchedCount: 0,
               capabilities: [],
@@ -224,6 +263,7 @@ export class HostCapabilityRegistry {
           if (toolName && authorizedEntry && !deferredNames.has(toolName)) {
             const result = {
               authorizedCount: this.entries.length,
+              ...(inspectMcp && this.mcpCatalog ? { mcpCatalog: this.mcpCatalog.statuses() } : {}),
               deferredCount: entries.length,
               matchedCount: 1,
               capabilities: [{
@@ -288,6 +328,7 @@ export class HostCapabilityRegistry {
           }
           const result = {
             authorizedCount: this.entries.length,
+              ...(inspectMcp && this.mcpCatalog ? { mcpCatalog: this.mcpCatalog.statuses() } : {}),
             deferredCount: entries.length,
             matchedCount: matches.length,
             capabilities: matches.slice(0, 100).map((entry) => ({
@@ -399,8 +440,43 @@ export class HostCapabilityRegistry {
       hiddenTools: this.hiddenCapabilityGroups(input.modelTools),
       skillNames: input.skills,
       observedAt: input.observedAt,
-      items: input.items,
+      items: [
+        ...(input.items ?? []).filter(item => !item.id.startsWith('mcp-server:')),
+        ...(this.mcpCatalog?.statuses() ?? []).map(status => ({
+          id: `mcp-server:${status.name}`, kind: 'mcp' as const,
+          availability: ['failed', 'disabled'].includes(status.state) ? 'unavailable' as const : 'available' as const,
+          readiness: status.state === 'connected' ? 'ready' as const : status.state === 'configured' ? 'unknown' as const : 'unavailable' as const,
+          freshness: 'fresh' as const, coverage: 'metadata_only' as const,
+          permissionSource: input.policyRevision, selectedRoute: 'inspect_capabilities(source=mcp)',
+          routeOwner: status.state, actionCount: status.tools, safeFallback: 'none' as const,
+        })),
+      ],
     });
+  }
+
+  private async loadMcp(deferredNames: Set<string>): Promise<void> {
+    if (!this.mcpCatalog || this.mcpLoaded) return;
+    if (this.mcpPending) return this.mcpPending;
+    this.mcpPending = (async () => {
+      const loaded = await this.mcpCatalog!.load();
+      const existingMcp = this.loadedMcpNames;
+      if (new Set(loaded.map(candidate => candidate.name)).size !== loaded.length) throw new Error('MCP Tool 名称重复');
+      for (const candidate of loaded) {
+        if (this.byName.has(candidate.name) && !existingMcp.has(candidate.name)) throw new Error(`MCP Tool 名称与 Host 冲突：${candidate.name}`);
+      }
+      for (const name of existingMcp) { this.byName.delete(name); deferredNames.delete(name); this.discoveredNames.delete(name); }
+      const next = this.entries.filter(entry => !existingMcp.has(entry.name));
+      for (const candidate of loaded) {
+        this.byName.set(candidate.name, candidate); deferredNames.add(candidate.name);
+        const value = candidate as unknown as Record<string, unknown>;
+        next.push({ name: candidate.name, source: 'mcp', effect: 'side-effect', description: String(value.description ?? ''), parameters: value.parameters });
+      }
+      this.loadedMcpNames = new Set(loaded.map(candidate => candidate.name));
+      this.entries = Object.freeze(next); this.discoveryCache.clear();
+      this.mcpLoaded = this.mcpCatalog!.statuses().every(status => ['connected', 'disabled'].includes(status.state));
+      this.mcpCatalog!.changed?.();
+    })();
+    try { await this.mcpPending; } finally { this.mcpPending = undefined; }
   }
 
   private refreshCatalogRevision(connectorInvokerEntry?: RegistryEntry): void {

@@ -220,7 +220,7 @@ function contextDetails(info = {}, note = '') {
     const svg = `<circle cx="60" cy="60" r="48" pathLength="100" fill="none" stroke="${colors[i%colors.length]}" stroke-width="10" stroke-dasharray="${share} ${100-share}" stroke-dashoffset="${-offset}"/>`; offset += share; return Number.isFinite(share) ? svg : '';
   }).join('');
   return `<div class="context-totals"><div><span>已用上下文${actual?'':' · 估算'}</span><strong>${number(used)}<small> tokens</small></strong></div><div><span>总窗口</span><strong>${number(total)}</strong></div><div><span>占用</span><strong>${percent === undefined ? '尚无数据' : percent.toFixed(1)+'%'}</strong></div></div>
-    <div class="context-chart"><svg viewBox="0 0 120 120" role="img" aria-label="上下文占用环形图"><circle cx="60" cy="60" r="48" fill="none" stroke="#efeff1" stroke-width="10"/><g transform="rotate(-90 60 60)">${slices}</g><text x="60" y="57" text-anchor="middle">${percent===undefined?'—':percent.toFixed(1)+'%'}</text><text class="ring-caption" x="60" y="72" text-anchor="middle">上下文占用</text></svg><div class="context-legend">${sections.map((s,i)=>`<div><svg class="legend-dot" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="${colors[i%colors.length]}"/></svg><span>${esc(names[s.id]||s.id)}${s.truncated?' · 已裁剪':''}</span><strong>≈ ${number(s.estimatedTokens)}</strong></div>`).join('') || '<p class="settings-note">当前后台未提供分项快照。更新后台后，下一次模型请求会生成分项；总量仍可查看。</p>'}<div><svg class="legend-dot" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="#efeff1"/></svg><span>剩余窗口</span><strong>${number(remaining)}</strong></div></div></div>
+    <div class="context-chart"><svg viewBox="0 0 120 120" role="img" aria-label="上下文占用环形图"><circle cx="60" cy="60" r="48" fill="none" stroke="#efeff1" stroke-width="10"/><g transform="rotate(-90 60 60)">${slices}</g><text x="60" y="57" text-anchor="middle">${percent===undefined?'—':percent.toFixed(1)+'%'}</text><text class="ring-caption" x="60" y="72" text-anchor="middle">上下文占用</text></svg><div class="context-legend">${sections.map((s,i)=>`<div><svg class="legend-dot" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="${colors[i%colors.length]}"/></svg><span>${esc(names[s.id]||s.id)}${s.truncated?' · 已裁剪':''}</span><strong>≈ ${number(s.estimatedTokens)}</strong></div>`).join('') || `<p class="settings-note">${note === '正在更新快照…' ? '正在读取分项…' : '尚无已保存的分项快照；下一次模型请求后会更新。'}</p>`}<div><svg class="legend-dot" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="#efeff1"/></svg><span>剩余窗口</span><strong>${number(remaining)}</strong></div></div></div>
     <p class="settings-note">${actual?'总量来自最近请求的实际输入。':'总量为最近请求或已保存历史的估算。'}${sections.length?'分项为请求组装时的估算；环形面积按其比例分配，可能与实际 token 数存在差异。':''}</p>
     ${Number.isFinite(info.outputReserve)?`<p class="settings-note">输出预留 ${number(info.outputReserve)} · 协议预留 ${number(info.protocolReserveTokens)}（不计入已用）</p>`:''}${note?`<p class="settings-note">${esc(note)}</p>`:''}`;
 }
@@ -775,7 +775,10 @@ function startStream(id) {
   }
   function tick() { $('#run-elapsed').textContent = elapsedLabel(Date.now()-run.startedAt); }
   const timer = setInterval(() => { if (current()) tick(); },1000);
-  const poll = setInterval(() => void recover(),2500);
+  let lastPush = Date.now();
+  const poll = setInterval(() => {
+    if (!source || source.readyState !== EventSource.OPEN || Date.now() - lastPush > 20_000) void recover();
+  },2500);
   function dispose() { save(); detached = true; clearInterval(timer); clearInterval(poll); clearTimeout(paintTimer); source?.close(); }
   state.disposeRun = dispose;
   async function finish(task, missing = false) {
@@ -830,8 +833,9 @@ function startStream(id) {
     if (!current()) return;
     source?.close();
     source = new EventSource(`/api/events?id=${encodeURIComponent(id)}&after=${run.sequence}`); state.source = source;
-    source.addEventListener('ready',() => { if(current()) {runActivity('Mimi 正在处理'); connection(true);} });
-    source.addEventListener('update',event => { if(current()) ingest(JSON.parse(event.data)); });
+    source.addEventListener('heartbeat',() => { lastPush = Date.now(); });
+    source.addEventListener('ready',() => { lastPush = Date.now(); if(current()) {runActivity('Mimi 正在处理'); connection(true);} });
+    source.addEventListener('update',event => { lastPush = Date.now(); if(current()) ingest(JSON.parse(event.data)); });
     source.addEventListener('done',event => { if(current()) void finish(JSON.parse(event.data)); });
     source.addEventListener('unavailable',() => { if(current()) {source.close(); void recover();} });
     source.onerror = () => { if(current()) void recover(); };
@@ -1335,7 +1339,7 @@ $('#send').addEventListener('click', async (event) => {
   try {
     const result = await api('tasks/action', { id, action: 'cancel' });
     if (state.streamId !== id) return;
-    if (result.state === 'cancelled') await state.finishRun?.({ id, status: 'cancelled' });
+    if (result.state === 'cancelled') void state.recoverRun?.();
     else if (result.state === 'already_terminal') void state.recoverRun?.();
     else throw new Error('未能停止，请重试');
   } catch (error) {

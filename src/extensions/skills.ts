@@ -299,6 +299,21 @@ export class SkillLoader {
     }) => ({ name, description, root, file, source: { ...source }, contentHash }));
   }
 
+  inspectCatalog(filter: { name?: string; query?: string; offset?: number; limit?: number } = {}, access: SkillRunAccess = { canReadLocal: true }) {
+    const matches = [...this.skills.values()].filter(skill => (!filter.name || skill.name === filter.name)
+      && (!filter.query || `${skill.name} ${skill.description}`.toLowerCase().includes(filter.query.toLowerCase())));
+    const offset = Math.max(0, filter.offset ?? 0), limit = Math.min(25, Math.max(1, filter.limit ?? 25));
+    return {
+      skills: matches.slice(offset, offset + limit).map(skill => ({
+        name: skill.name, description: skill.description.slice(0, 180), source: skill.source.id,
+        ...this.evaluateAvailability(skill, access),
+      })),
+      total: matches.length,
+      ...(offset + limit < matches.length ? { nextOffset: offset + limit } : {}),
+      instruction: '使用 use_skill(name) 读取完整说明；nextOffset 表示还有更多技能。',
+    };
+  }
+
   preference(name: string) {
     return this.preferences?.preference(name) ?? { disabled: false as const };
   }
@@ -370,6 +385,20 @@ export class SkillLoader {
     };
   }
 
+  async executionRoots(bindings: readonly ActivatedSkill[], access: SkillRunAccess): Promise<string[]> {
+    if (!access.canReadLocal || !access.availableTools?.includes('run_shell')) return [];
+    const roots: string[] = [];
+    for (const binding of bindings) {
+      const skill = this.get(binding.name);
+      if (!skill || !this.evaluateAvailability(skill, { ...access, binding }).available) continue;
+      const [root, file] = await Promise.all([realpath(skill.root), realpath(skill.file)]);
+      const relative = path.relative(root, file);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
+      roots.push(root);
+    }
+    return [...new Set(roots)];
+  }
+
   async readResource(name: string, resource: string): Promise<{ path: string; content: string }> {
     const skill = this.get(name);
     if (!skill) throw new Error(`未找到 Skill：${name}`);
@@ -403,14 +432,6 @@ export class SkillLoader {
             ? 'activated' as const
             : await runtime.activate(skill);
           if (status === 'stale_run') throw new Error(`Skill ${name} 激活失败：所属 Run 已失效`);
-          if (status === 'already_active') {
-            return {
-              name: skill.name,
-              sourceId: skill.source.id,
-              contentHash: skill.contentHash,
-              status,
-            };
-          }
           return { ...this.activate(name, currentAccess()), status };
         },
       }),
@@ -434,12 +455,9 @@ export class SkillLoader {
       }),
       tool({
         name: 'list_skills',
-        description: '列出可用 Agent Skills 及其位置。',
-        parameters: z.object({}),
-        execute: async () => this.list().filter((listed) => {
-          const skill = this.get(listed.name);
-          return skill && this.evaluateAvailability(skill, currentAccess()).available;
-        }),
+        description: '分页查询 Agent Skills 的轻量索引和可用性。name 精确匹配技能名，query 搜索名称/简介；用 use_skill 读取完整说明。',
+        parameters: z.object({ name: z.string().min(1).optional(), query: z.string().min(1).max(100).optional(), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(25).default(25) }),
+        execute: async (filter) => this.inspectCatalog(filter, currentAccess()),
       }),
       tool({
         name: 'reload_skills',
@@ -447,7 +465,7 @@ export class SkillLoader {
         parameters: z.object({}),
         execute: async () => {
           await this.load();
-          return { skills: this.list(), warnings: this.diagnostics() };
+          return { ...this.inspectCatalog({}, currentAccess()), warnings: this.diagnostics().slice(0, 20) };
         },
       }),
     ];

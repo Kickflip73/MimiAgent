@@ -140,7 +140,7 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
       };
     },
     stream: (id, after) => mimiRpc<MimiStreamSnapshot>(socket, 'event.stream', { id, after }, 8_000),
-    tasks: () => mimiRpc(socket, 'tasks.list', { limit: 100 }, 30_000),
+    tasks: () => mimiRpc(socket, 'tasks.list', { limit: 100, projection: 'list' }, 30_000),
     task: (id) => mimiRpc(socket, 'tasks.get', { id }, 30_000),
     taskAction: (id, action, context) => {
       if (action === 'pause') return client.pauseBackgroundTask(id, '用户从 Web 暂停');

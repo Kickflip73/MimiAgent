@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { tool } from '../../tool-factory.js';
 import {
   estimateTokens,
+  type ModelContextView,
   type WorkSnapshot,
 } from '../../core/context.js';
 import { assertCompletionContractForTask } from '../../core/completion.js';
@@ -98,6 +99,7 @@ export async function executeRunPipeline(
     const textInput = inputText(input);
     if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
     const preferences = await host.session.getPreferences();
+    host.applySessionPreferences?.(preferences);
     const routeConfig = options?.providerRoute
       ? { ...host.config, provider: options.providerRoute.provider }
       : host.config;
@@ -323,7 +325,9 @@ export async function executeRunPipeline(
     const persistContextSnapshot = async (
       snapshot: WorkSnapshot | ContextWorkSnapshot | undefined,
     ): Promise<void> => {
-      if (!canReadSessionContext || !snapshot) return;
+      if (!canReadSessionContext || !snapshot?.coveredItems) return;
+      if (persistedContextSnapshot?.coveredItems === snapshot.coveredItems
+        && persistedContextSnapshot.sourceDigest === snapshot.sourceDigest) return;
       await run.session.setContextWorkSnapshot(snapshot, run.runId);
       persistedContextSnapshot = { ...snapshot, runId: run.runId, updatedAt: new Date().toISOString() };
     };
@@ -438,16 +442,19 @@ export async function executeRunPipeline(
       ...memoryTools,
       tool({
         name: 'read_context_artifact',
-        description: '按本轮 Context View 中的稳定 ref 只读回取当前 Session、当前 Run 的 canonical 工具结果。旧 Run ref 不可直接读；结构化拒绝返回 replacementRef 时只用该新 ref 重试一次，否则不重试。',
+        description: '按稳定 ref 分页只读回取当前 Session/Run 的原始工具结果。offset/limit 使用字符数（不是行或token）；默认12000、最多24000字符。若返回nextOffset，以相同ref继续，truncated=true不能当完整结果。旧ref仅在返回replacementRef时换ref重试，不重做原工具。',
         parameters: z.object({
           ref: z.string().regex(/^context-artifact:[0-9a-f-]{36}$/),
+          offset: z.number().int().min(0).optional(),
+          limit: z.number().int().min(1).max(24_000).optional(),
         }).strict(),
-        execute: async ({ ref }) => {
+        execute: async ({ ref, offset, limit }) => {
           assertCurrentRun('Context Artifact ');
           return run.session.readContextToolArtifact(
             ref,
             run.runId,
             [...run.pendingContextResults.values()],
+            { offset, limit },
           );
         },
       }),
@@ -577,19 +584,38 @@ export async function executeRunPipeline(
         error, run.ephemeralSensitiveAccess,
       ),
     });
-    const mcpTools = mcpAllowed
-      ? await materializeMcpTools({
-          servers: host.components.mcp.servers,
-          ledger: host.components.state.executionLedger.store,
-          currentRun: mcpRunIdentity,
-          model,
-          reservedTools: localTools,
-        })
-      : [];
-    const catalogTools = [...localTools, ...mcpTools];
     const capabilityRegistry = new HostCapabilityRegistry(
-      catalogTools,
+      localTools,
       options?.capabilityCatalog,
+      (filter) => host.components.skills.inspectCatalog(filter, { canReadLocal, availableTools: run.availableToolNames }),
+      mcpAllowed ? {
+        statuses: () => host.components.mcp.statuses(),
+        load: async () => {
+          assertCurrentRun('MCP 能力发现');
+          await host.components.mcp.ensureConnected();
+          assertCurrentRun('MCP 连接完成');
+          return materializeMcpTools({
+            servers: host.components.mcp.servers,
+            ledger: host.components.state.executionLedger.store,
+            currentRun: mcpRunIdentity, model, reservedTools: localTools,
+          });
+        },
+        changed: () => {
+          run.availableToolNames = capabilityRegistry.authorizedTools().map(candidate => candidate.name);
+          const previous = run.capabilitySnapshot;
+          if (previous) {
+            run.capabilitySnapshot = capabilityRegistry.snapshot({
+              runId: run.runId, policyRevision: previous.policyRevision,
+              modelTools, items: previous.items,
+              skills: host.components.skills.list().filter(candidate => {
+                const skill = host.components.skills.get(candidate.name);
+                return skill && host.components.skills.evaluateAvailability(skill, { canReadLocal, availableTools: run.availableToolNames }).available;
+              }).map(skill => skill.name),
+            });
+            host.lastCapabilitySnapshot = run.capabilitySnapshot;
+          }
+        },
+      } : undefined,
     );
     const classifiedTools = host.toolSetBuilder.classify(
       [...capabilityRegistry.authorizedTools()],
@@ -689,6 +715,18 @@ export async function executeRunPipeline(
       options?.cause === undefined || options.cause.trust === 'owner',
     );
     let activeRecords: readonly Readonly<ActivatedSkill>[] = storedActiveSkills;
+    const selectedSkills: Array<{ name: string; binding?: ActivatedSkill }> = [
+      ...invocation.names.map(name => ({ name })),
+      ...(resumesCheckpoint || options?.resumeState === true ? storedActiveSkills.map(binding => ({ name: binding.name, binding })) : []),
+    ];
+    if (mcpAllowed && selectedSkills.some(({ name, binding }) => {
+      const skill = host.components.skills.get(name);
+      if (!skill) return false;
+      const availability = host.components.skills.evaluateAvailability(skill, { canReadLocal, availableTools: run.availableToolNames, binding, instructionBudget });
+      return availability.reasons.every(reason => reason === 'missing-required-tool')
+        && availability.missingTools.some(name => name.startsWith('mcp_'));
+    })) await capabilityRegistry.prepareMcp();
+
     for (const name of invocation.names) {
       const skill = host.components.skills.activate(name, {
         canReadLocal,
@@ -718,7 +756,9 @@ export async function executeRunPipeline(
         if (availability.available) activeSkillDefinitions.push(skill);
       }
     }
-    const activeSkills = renderActiveSkills(activeSkillDefinitions);
+    const activeSkills = renderActiveSkills(activeSkillDefinitions.filter((skill) =>
+      invocation.names.includes(skill.name) || resumesCheckpoint || options?.resumeState === true));
+    const priorSkills = activeSkillDefinitions.filter((skill) => !invocation.names.includes(skill.name));
     const builtInstructions = context.buildInstructionsResult({
       identity: soul.instructions,
       baseInstructions: BASE_INSTRUCTIONS,
@@ -728,6 +768,9 @@ export async function executeRunPipeline(
         canReadLocal
           ? `当前工作区：${host.config.workspaceRoot}。MimiAgent 运行时代码目录：${host.runtimeRoot}。Capability set：${run.capabilitySnapshot?.snapshotDigest ?? 'unavailable'}。用户要求检查或修改项目/Agent 自身时，使用当前能力集合提供的文件工具和 Shell（若可用）实际读取、编辑并验证。`
           : '本轮来源无权读取本地工作区、Skills、记忆或持久状态；不要猜测、泄露或声称访问了这些数据。',
+        priorSkills.length && !resumesCheckpoint && options?.resumeState !== true
+          ? `此前使用过的 Skills（不会自动作用于新任务）：${priorSkills.map((skill) => skill.name).join(', ')}。本轮需要时先调用 use_skill 读取当前指令。`
+          : '',
         host.runContexts.causeInstructions(options?.cause),
         personalConnectorOnly
           ? '本轮是个人账号消息通道查询。只能使用个人消息专用工具访问已注册通道；不得调用或建议通用 Connector、CUA、Computer、Browser、MCP、桌面客户端或 Shell，也不得复用这些旧路径产生的历史消息内容。'
@@ -789,6 +832,8 @@ export async function executeRunPipeline(
     );
     const modelCallLimit = binding?.maxTurns ?? host.config.maxTurns;
     let modelCalls = 0;
+    let semanticRetryAfter = 0;
+    const workingSetBudgetTokens = Math.min(budget.inputBudget, 64_000);
     let runUsage: { add(usage: Usage): void } | undefined;
     const pendingSemanticUsages: Usage[] = [];
     const recordSemanticUsage = (usage: Usage): void => {
@@ -829,29 +874,54 @@ export async function executeRunPipeline(
         if (artifact.consumedAt) consumedArtifactRefs.add(artifact.ref);
       }
       let semanticSnapshot: WorkSnapshot | ContextWorkSnapshot | undefined = persistedContextSnapshot;
-      const rawViewTokens = estimateTokens(modelData.input)
-        + estimateTokens(modelData.instructions ?? '');
-      if (rawViewTokens / Math.max(1, budget.inputBudget) >= 0.7
+      let workingTokens = estimateTokens(modelData.input) + estimateTokens(modelData.instructions ?? '');
+      let reusableSnapshot: WorkSnapshot | undefined;
+      let preparedView: ModelContextView | undefined;
+      try {
+        const prepared = context.modelContextView(modelData.input, modelData.instructions, budget.inputBudget, {
+          consumedArtifactRefs, toolArtifacts: artifacts, persistedSnapshot: persistedContextSnapshot, workingSetBudgetTokens,
+        });
+        workingTokens = prepared.effectiveTokens;
+        reusableSnapshot = prepared.snapshot;
+        preparedView = prepared;
+      } catch {
+        // A hard overflow may still be recoverable by a new semantic snapshot.
+      }
+      const semanticBoundary = context.semanticSnapshotBoundary(modelData.input);
+      if (semanticBoundary > 0 && semanticBoundary !== reusableSnapshot?.coveredItems
+        && workingTokens / Math.max(1, workingSetBudgetTokens) >= 0.7
         && semanticSummarizer
+        && modelCalls >= semanticRetryAfter
         && (modelCallLimit === null || modelCalls < modelCallLimit)) {
+        const startedAt = Date.now();
         try {
           semanticSnapshot = await context.prepareSemanticSnapshot(modelData.input, semanticSummarizer, {
             persistedSnapshot: persistedContextSnapshot,
             seedSnapshot: contextSnapshotSeed,
+            signal,
           });
+          preparedView = undefined;
           for (const usage of drainSemanticUsages()) {
             recordSemanticUsage(usage);
           }
           await persistContextSnapshot(semanticSnapshot);
-        } catch {
+          await host.components.state.traces.record(run.sessionId, 'context_semantic_summary', {
+            runId: run.runId, status: 'completed', coveredItems: semanticSnapshot.coveredItems,
+            workingTokens, durationMs: Date.now() - startedAt,
+          });
+        } catch (error) {
           for (const usage of drainSemanticUsages()) {
             recordSemanticUsage(usage);
           }
-          // A 70% checkpoint is preparatory. A previously verified snapshot or the
-          // still-fitting canonical-derived view remains safe; fitting is checked below.
+          if (signal?.aborted) throw error;
+          semanticRetryAfter = modelCalls + 3;
+          await host.components.state.traces.record(run.sessionId, 'context_semantic_summary', {
+            runId: run.runId, status: 'failed', durationMs: Date.now() - startedAt,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
-      const view = context.modelContextView(
+      const view = preparedView ?? context.modelContextView(
         modelData.input,
         modelData.instructions,
         budget.inputBudget,
@@ -861,6 +931,7 @@ export async function executeRunPipeline(
           persistedSnapshot: persistedContextSnapshot,
           semanticSnapshot,
           seedSnapshot: contextSnapshotSeed,
+          workingSetBudgetTokens,
         },
       );
       if (modelCallLimit !== null && modelCalls >= modelCallLimit) {
@@ -907,6 +978,7 @@ export async function executeRunPipeline(
         currentInput: perCallCurrentInput,
         toolCount: toolSchemas.length,
       });
+      await host.persistContextManifest?.(host.lastContextManifest);
       return { input: view.input, instructions: view.instructions };
     };
     const streamResult = await host.runner.run(request.agent, input, {

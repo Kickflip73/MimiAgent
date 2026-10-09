@@ -42,6 +42,17 @@ function assertNoOrphanToolUnits(items: AgentInputItem[]): void {
   assert.deepEqual([...calls].sort(), [...results].sort());
 }
 
+function artifactsFor(items: AgentInputItem[]): ContextToolArtifact[] {
+  return items.flatMap((item, index) => {
+    const value = item as unknown as Record<string, unknown>;
+    if (value.type !== 'function_call_result') return [];
+    return [{ ref: `context-artifact:00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      callId: String(value.callId), toolName: String(value.name),
+      outputDigest: `sha256:${createHash('sha256').update(JSON.stringify(value.output)).digest('hex')}`,
+      runId: 'test', createdAt: new Date(0).toISOString() }];
+  });
+}
+
 function fakeSummarizer(
   content: Partial<WorkSnapshotContent>,
 ): ContextSemanticSummarizer {
@@ -117,11 +128,11 @@ test('keeps every model request bounded without orphaning 30 tool protocol units
   }
   const raw = JSON.stringify(history);
   for (let request = 0; request < 5; request += 1) {
-    const view = manager.modelContextView(history, 'base', 8_000);
+    const view = manager.modelContextView(history, 'base', 8_000, { toolArtifacts: artifactsFor(history) });
     assert.ok(view.effectiveTokens <= 8_000);
     assertNoOrphanToolUnits(view.input);
     assert.match(JSON.stringify(view.input), /call-29/);
-    assert.match(JSON.stringify(view.input), /tool-result:sha256:/);
+    assert.match(JSON.stringify(view.input), /context-artifact:/);
     assert.doesNotMatch(JSON.stringify(view.input), /result-29-199/);
     assert.ok(view.records.some((record) => record.strategy === 'tool-result-summary'));
   }
@@ -297,7 +308,7 @@ test('synthetic tool long run reduces cumulative model input by at least 70%', (
       } as AgentInputItem,
     );
     legacyCumulative += estimateTokens(history);
-    boundedCumulative += manager.modelContextView(history, 'base', 8_000).effectiveTokens;
+    boundedCumulative += manager.modelContextView(history, 'base', 8_000, { toolArtifacts: artifactsFor(history) }).effectiveTokens;
   }
   const reduction = 1 - boundedCumulative / legacyCumulative;
   assert.ok(reduction >= 0.7, `expected >=70% reduction, got ${(reduction * 100).toFixed(2)}%`);
@@ -441,8 +452,8 @@ test('consumed SDK text envelopes retain structured browser facts for the final 
     consumedArtifactRefs: new Set([artifact.ref]),
   });
   const serialized = JSON.stringify(view.input);
-  assert.match(serialized, /result\.value=Mimi Browser Fixture/);
-  assert.match(serialized, /result\.matches_n=1/);
+  assert.deepEqual((view.input[2] as unknown as { output: unknown }).output, output);
+  assert.match(serialized, /Mimi Browser Fixture/);
   assert.doesNotMatch(serialized, /完整结果保存在 canonical Session.*Mimi Browser Fixture/s);
   assertNoOrphanToolUnits(view.input);
 });
@@ -577,7 +588,8 @@ test('persists the 70% work snapshot and binds artifact reads to Session and Run
   assert.ok(view.snapshot);
   assert.equal(await session.setContextWorkSnapshot(view.snapshot!, run.runId), true);
   const reopened = new FileSession(root, 'owner');
-  assert.match(JSON.stringify(await reopened.getContextWorkSnapshot()), /opaque-ABC_7788/);
+  assert.equal((await reopened.getContextWorkSnapshot())!.coveredItems, 0);
+  assert.match(JSON.stringify(view.input), /opaque-ABC_7788/);
   const read = await reopened.readContextToolArtifact(artifacts[0]!.ref, run.runId);
   assert.deepEqual(read.output, (result as unknown as { output: unknown }).output);
   const pendingSession = new FileSession(root, 'pending-owner');

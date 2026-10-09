@@ -55,6 +55,7 @@ import { MimiRuntimeHttpServer, runtimeHttpSessionId } from './runtime-http.js';
 import { AttentionEngine } from './attention.js';
 import { EphemeralSecretBroker } from './ephemeral-secrets.js';
 import { TaskProcessSupervisor } from './task-supervisor.js';
+import { taskListItem } from './task-inspection.js';
 import { backgroundTaskSummary, inspectBackgroundTaskSummary } from './task-tools.js';
 import {
   buildDaemonHealth,
@@ -1027,6 +1028,11 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const operation = requiredString(params.operation, 'operation');
         if (operation === 'sessions') return sanitizeSensitiveData(await host!.listSessionSummaries());
         const sessionId = chatSessionId(params);
+        const action = operation === 'model.control' ? object(params.value).action : undefined;
+        if (['mode.set', 'output.set', 'model.set'].includes(operation)
+          || (operation === 'model.control' && (action === 'use' || action === 'auto'))) {
+          return sanitizeSensitiveData(await host!.setSessionPreference(sessionId, operation, params.value));
+        }
         return sanitizeSensitiveData(await mutationGate.run(() => host!.mutate(sessionId, async (agent) => {
             const operations: Record<string, () => unknown | Promise<unknown>> = {
               runtime: () => agent.runtimeInfo(),
@@ -1164,7 +1170,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         'event.get': () => store.getImmutableEvent(requestedId()),
         'event.route': () => store.getEventRouteReceipt(requestedId()),
         'events.list': () => store.listEventSummaries(limit(params.limit)),
-        'tasks.list': () => store.listTasks(limit(params.limit)).map(taskSummaryWithRuntime),
+        'tasks.list': () => store.listTasks(limit(params.limit)).map((task) => params.projection === 'list' ? taskListItem(task) : taskSummaryWithRuntime(task)),
         'tasks.get': () => taskDetailsWithRuntime(store.getTask(requestedId())),
         'task.retry': () => store.retryDeadLetterTask(requestedId()),
         'run.get': () => store.runs.get(requestedId()),

@@ -14,9 +14,10 @@ export function toolResultObject(value: unknown): Record<string, unknown> | unde
 export function toolResultFailure(value: unknown): string | undefined {
   const result = toolResultObject(value);
   if (!result) return undefined;
-  const failed = ['tool_failed', 'tool_input_rejected', 'action_uncertain'].includes(String(result.mimiStatus))
+  const failed = result.isError === true || ['tool_failed', 'tool_input_rejected', 'action_uncertain'].includes(String(result.mimiStatus))
     || ['failed', 'uncertain'].includes(String(result.outcome))
     || ['failed', 'uncertain'].includes(String(result.status))
+    || toolResultObject(result.mimiActionIntent)?.outcome === 'failed_safe'
     || result.success === false || result.ok === false || result.timedOut === true
     || (typeof result.exitCode === 'number' && result.exitCode !== 0);
   if (!failed) return undefined;
@@ -28,7 +29,12 @@ export function toolResultFailure(value: unknown): string | undefined {
 export function toolResultUncertain(value: unknown): boolean {
   const result = toolResultObject(value);
   return result?.mimiStatus === 'action_uncertain' || result?.status === 'uncertain'
-    || result?.outcome === 'uncertain' || result?.uncertain === true;
+    || result?.outcome === 'uncertain' || result?.uncertain === true
+    || toolResultObject(result?.mimiActionIntent)?.outcome === 'uncertain';
+}
+
+export function toolResultStatus(value: unknown): 'succeeded' | 'failed' | 'uncertain' {
+  return toolResultUncertain(value) ? 'uncertain' : toolResultFailure(value) ? 'failed' : 'succeeded';
 }
 
 export const resultArtifactSchema = z.object({
@@ -77,5 +83,5 @@ export function toolProgress(call: ExecutionCallRecord): ToolProgress {
   const output = call.error ?? call.output;
   const resultValue = sanitizeSensitiveData(toolResultObject(output) ?? output);
   return { toolName: call.toolName.slice(0, 200), callId: call.callId.slice(0, 200),
-    status: call.status, arguments: preview(argumentsValue, 1_000), result: preview(resultValue, 2_000) };
+    status: call.status === 'succeeded' ? toolResultStatus(call.output) : call.status, arguments: preview(argumentsValue, 1_000), result: preview(resultValue, 2_000) };
 }

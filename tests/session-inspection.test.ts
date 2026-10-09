@@ -87,6 +87,7 @@ test('cold Agent inspection uses the requested transcript, preferences and plan 
   const step = { id: 'step', description: 'historical plan', status: 'pending' };
   await writeFile(planFile, JSON.stringify({ history: [step] }));
   const agent = Object.assign(Object.create(MimiAgent.prototype), {
+    config: {dataRoot: root},
     sessionId: 'primary', defaultMode: 'general', defaultOutputLevel: 'normal',
     runtimeSecurity: { permissionMode: 'trusted' },
     lastContextManifest: { sessionId: 'primary', estimatedInputTokens: 999999 },
@@ -111,6 +112,24 @@ test('cold Agent inspection uses the requested transcript, preferences and plan 
   assert.equal(snapshot.context.manifest, undefined);
   assert.equal(snapshot.context.status.source, 'raw-history');
   assert.ok(snapshot.context.status.value < 999999);
+  // A same-session cache rejected by run/model ownership must not leak through
+  // a default argument in the status projection.
+  for (const stale of [
+    { runId: 'old-run', provider: target.providerId, model: target.modelId },
+    { runId: 'current-run', provider: target.providerId, model: 'old-model' },
+  ]) {
+    agent.lastContextManifest = { sessionId: 'history', ...stale,
+      estimatedInputTokens: 999999, actual: { inputTokens: 888888 },
+    } as typeof agent.lastContextManifest;
+    const current = { ...record, checkpoint: { runId: 'current-run', status: 'completed',
+      input: 'question', phase: 'completed', startedAt: '2026-01-01', updatedAt: '2026-01-01' } };
+    await writeFile(path.join(root, 'history.json'), JSON.stringify(current));
+    const inspected = await agent.sessionSnapshot('history');
+    assert.equal(inspected.context.manifest, undefined);
+    assert.equal(inspected.context.status.source, 'raw-history');
+    assert.ok(inspected.context.status.value < 888888);
+  }
+  await writeFile(path.join(root, 'history.json'), JSON.stringify(record));
   assert.equal(agent.sessionId, 'primary');
   assert.equal(await readFile(path.join(root, 'history.json'), 'utf8'), JSON.stringify(record));
 });

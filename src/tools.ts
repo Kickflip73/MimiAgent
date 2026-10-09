@@ -88,6 +88,7 @@ export interface ToolAccessPolicy {
   shellEnvironment?: NodeJS.ProcessEnv | (() => NodeJS.ProcessEnv);
   shellSensitiveValues?: () => readonly string[];
   shellDetachedProcessGroup?: boolean;
+  shellReadOnlySkillRoots?: () => Promise<readonly string[]>;
   blockedUnixSocketPaths?: string[];
   blockedLocalTcpPorts?: number[];
   postWriteDiagnostics?: boolean;
@@ -151,6 +152,7 @@ function sandboxProfile(
   blockedUnixSocketPaths: string[],
   blockedLocalTcpPorts: number[],
   homeDirectory: string | undefined,
+  readOnlySkillRoots: readonly string[] = [],
 ): string {
   const quote = (value: string) => `"${path.resolve(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   const applicationRoots = [
@@ -189,7 +191,7 @@ function sandboxProfile(
       'com.apple.windowserver.active',
     ].map((service) => `(deny mach-lookup (global-name "${service}"))`),
     ...protectedPaths.flatMap((protectedPath) => [
-      `(deny file-read* (subpath ${quote(protectedPath)}))`,
+      `(deny file-read* (require-all (subpath ${quote(protectedPath)}) ${readOnlySkillRoots.map(root => `(require-not (subpath ${quote(root)}))`).join(' ')}))`,
       `(deny file-write* (subpath ${quote(protectedPath)}))`,
     ]),
   ].join(' ');
@@ -1272,6 +1274,7 @@ export async function runShellCommand(
   blockedLocalTcpPorts: number[] = [],
   sensitiveValues: readonly string[] = [],
   allowHostExecution = false,
+  readOnlySkillRoots: readonly string[] = [],
 ): Promise<ShellCommandResult> {
   const usesDarwinSandbox = process.platform === 'darwin' && !allowHostExecution;
   const executionBoundary = usesDarwinSandbox
@@ -1313,6 +1316,12 @@ export async function runShellCommand(
       return path.resolve(protectedPath);
     }
   }));
+  const canonicalSkillRoots = await Promise.all(readOnlySkillRoots.map(root => realpath(root)));
+  for (const root of canonicalSkillRoots) {
+    if (canonicalProtectedPaths.some(protectedRoot => containsPath(root, protectedRoot))) {
+      throw new Error('Skill 只读执行根不能包含 MimiAgent 私有根');
+    }
+  }
   const canonicalBlockedUnixSocketPaths = await Promise.all(
     blockedUnixSocketPaths.map(canonicalPotentialPath),
   );
@@ -1334,6 +1343,7 @@ export async function runShellCommand(
           canonicalBlockedUnixSocketPaths,
           validatedBlockedLocalTcpPorts,
           environment.HOME,
+          canonicalSkillRoots,
         ),
         '/bin/zsh',
         '-o',
@@ -1763,6 +1773,7 @@ export function createTools(
         access.blockedLocalTcpPorts,
         access.shellSensitiveValues?.(),
         accessEnabled(access.allowHostShellAccess),
+        await access.shellReadOnlySkillRoots?.(),
       ),
   });
 

@@ -212,7 +212,7 @@ export class MimiWebServer {
       let heartbeat = Date.now();
       while (!response.destroyed) {
         if (Date.now() - heartbeat >= 10_000) {
-          response.write(': heartbeat\n\n');
+          response.write('event: heartbeat\ndata: {}\n\n');
           heartbeat = Date.now();
         }
         for (const event of page.events) {

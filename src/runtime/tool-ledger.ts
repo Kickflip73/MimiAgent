@@ -236,6 +236,11 @@ export function withExecutionLedger(
           try {
             const result = await originalInvoke(runContext, input, details);
             if (isCapturedToolError(result)) {
+              if (result.disposition?.phase === 'pre_dispatch' && result.disposition.kind === 'validation') {
+                const failure = { mimiStatus: result.mimiStatus, retryable: result.retryable, code: result.code,
+                  message: result.message, disposition: result.disposition, issues: result.issues };
+                return run?.sanitizeResult?.(failure) ?? failure;
+              }
               return toolFailureResult(run?.sanitizeError?.(result.error) ?? result.error);
             }
             return run?.sanitizeResult?.(result) ?? result;
@@ -325,6 +330,7 @@ export function withExecutionLedger(
             policyRevision,
             status: 'not_started' as const,
           };
+          let rejectedResult: ToolFailureResult | undefined;
           try {
             const receipt = await ledger.executeActionIntent(
               run.sessionId,
@@ -357,6 +363,7 @@ export function withExecutionLedger(
                   }, invokeLedgered);
                 } catch (error) {
                   if (error instanceof ToolExecutionFailedError) {
+                    rejectedResult = error.result;
                     throw new ActionFailedSafeError(error.result.message);
                   }
                   throw error;
@@ -369,7 +376,8 @@ export function withExecutionLedger(
                 return output;
               },
             );
-            return withActionIntentEvidence(receipt);
+            return withActionIntentEvidence(receipt.outcome === 'failed_safe' && rejectedResult
+              ? { ...receipt, result: rejectedResult } : receipt);
           } catch (error) {
             if (!(error instanceof ActionIntentUncertainError)) throw error;
             uncertainActionFence = {

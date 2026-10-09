@@ -63,10 +63,10 @@ test('dispatcher retry policy stops terminal and deterministic run failures imme
   assert.equal(eventFailureAttemptLimit({ name: 'MaxTurnsExceededError' }, 1, 5), 1);
 });
 
-test('dispatcher retry policy does not replay rejected requests, quota failures, or rate limits', () => {
+test('dispatcher retry policy does not replay rejected requests or authentication failures', () => {
   assert.equal(eventFailureAttemptLimit(Object.assign(new Error('rejected'), { status: 400 }), 1, 5), 1);
   assert.equal(eventFailureAttemptLimit(Object.assign(new Error('unauthorized'), { status: 401 }), 2, 5), 2);
-  assert.equal(eventFailureAttemptLimit(Object.assign(new Error('rate limited'), { status: 429 }), 1, 5), 1);
+  assert.equal(eventFailureAttemptLimit(Object.assign(new Error('rate limited'), { status: 429 }), 1, 5), 5);
   assert.equal(eventFailureAttemptLimit(Object.assign(new Error('client closed'), { status: 499 }), 1, 5), 1);
 });
 

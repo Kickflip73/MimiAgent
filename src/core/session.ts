@@ -10,6 +10,7 @@ import {
   type CompletionReport,
 } from './completion.js';
 import { assertSessionId } from './session-id.js';
+import { contextArtifactPage } from './context-artifact.js';
 import { AtomicJsonStore, StateFileCorruptError } from './state-file.js';
 import { modelTargetSchema, type ModelTarget } from './model-routing.js';
 import { resultArtifactSchema, resultArtifacts, toolProgress, toolProgressSchema, type ResultArtifact, type ToolProgress } from './tool-result.js';
@@ -137,6 +138,11 @@ export interface ContextToolArtifactReadSuccess {
   callId: string;
   toolName: string;
   output: unknown;
+  offset: number;
+  totalChars: number;
+  nextOffset?: number;
+  truncated: boolean;
+  format: string;
   mimiStatus?: never;
   code?: never;
   retryable?: never;
@@ -785,7 +791,10 @@ export class FileSession implements Session {
         const artifact: ContextToolArtifact = {
           ref: `context-artifact:${randomUUID()}`,
           callId,
-          toolName: String(value.name ?? 'unknown'),
+          toolName: String(value.name ?? (items.find((candidate) => {
+            const call = candidate as unknown as Record<string, unknown>;
+            return call.type === 'function_call' && String(call.callId ?? call.call_id ?? '') === callId;
+          }) as unknown as Record<string, unknown> | undefined)?.name ?? 'unknown'),
           outputDigest,
           runId: expectedRunId,
           originRunId: origin?.originRunId ?? origin?.runId ?? expectedRunId,
@@ -829,6 +838,7 @@ export class FileSession implements Session {
     ref: string,
     expectedRunId: string,
     pendingItems: readonly AgentInputItem[] = [],
+    page: { offset?: number; limit?: number } = {},
   ): Promise<ContextToolArtifactReadResult> {
     const session = await this.load();
     const artifact = session.contextToolArtifacts?.find((candidate) =>
@@ -873,7 +883,7 @@ export class FileSession implements Session {
       ref: artifact.ref,
       callId: artifact.callId,
       toolName: artifact.toolName,
-      output: structuredClone(item.output),
+      ...contextArtifactPage(item.output, page.offset, page.limit),
     };
   }
 

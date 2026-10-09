@@ -1,4 +1,5 @@
 import { APIConnectionError } from 'openai';
+import { providerRetryAt, isProviderCancellation } from '../runtime/provider-reliability.js';
 import { isTerminalRunInterruption } from '../runtime/run-outcome.js';
 import {
   runFailureDisposition,
@@ -31,7 +32,7 @@ export function classifyRunFailureRecord(error: unknown): RunFailureRecord {
       },
     };
   }
-  if (isTerminalRunInterruption(error)
+  if (isProviderCancellation(error) || isTerminalRunInterruption(error)
     || value.name === 'ContextProtocolBudgetError'
     || value.name === 'MaxTurnsExceededError'
     || value.name === 'EphemeralSecretsExpiredError'
@@ -47,10 +48,11 @@ export function classifyRunFailureRecord(error: unknown): RunFailureRecord {
   }
   const status = errorStatus(error);
   if (status !== undefined) {
-    if (status >= 500 || status === 408 || status === 409 || status === 425) {
+    if (status >= 500 || status === 408 || status === 409 || status === 425 || status === 429) {
+      const retryAt = providerRetryAt(error) ?? (status === 429 ? new Date(Date.now() + 60_000).toISOString() : undefined);
       return { code: `provider.http_${status}`, disposition: {
         phase: 'provider', kind: 'transient', retryable: true, dispatchStarted: false,
-      } };
+      }, ...(retryAt ? { retryAt } : {}) };
     }
     if (status >= 400 && status < 500) {
       return { code: `provider.http_${status}`, disposition: {

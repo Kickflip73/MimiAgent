@@ -268,14 +268,17 @@ export class AtomicJsonStore<T> {
     }
   }
 
-  update<R>(mutation: (value: T) => R | Promise<R>): Promise<R> {
-    return this.updateWhen(async (value) => ({ result: await mutation(value), changed: true }));
+  update<R>(mutation: (value: T) => R | Promise<R>, signal?: AbortSignal): Promise<R> {
+    return this.updateWhen(async (value) => ({ result: await mutation(value), changed: true }), signal);
   }
 
   updateWhen<R>(
     mutation: (value: T) => { result: R; changed: boolean } | Promise<{ result: R; changed: boolean }>,
+    signal?: AbortSignal,
   ): Promise<R> {
+    signal?.throwIfAborted();
     return enqueue(this.file, async () => this.withLock(async () => {
+      signal?.throwIfAborted();
       let value: T;
       try {
         value = await this.readFromDisk();
@@ -283,10 +286,11 @@ export class AtomicJsonStore<T> {
         if (!(error instanceof InvalidStateFileError)) throw error;
         value = await this.recoverInvalidState(error);
       }
+      signal?.throwIfAborted();
       const { result, changed } = await mutation(value);
-      if (changed) await this.writeToDisk(value);
+      if (changed) await this.writeToDisk(value, signal);
       return result;
-    }));
+    }, signal));
   }
 
   replace(value: T, signal?: AbortSignal): Promise<void> {
