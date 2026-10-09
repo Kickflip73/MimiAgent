@@ -1,3 +1,4 @@
+import { estimateContextTokens, serializeTextContext } from './context-content.js';
 import type { AgentInputItem, SessionInputCallback } from '@openai/agents';
 import { createHash } from 'node:crypto';
 import { contextArtifactPage } from './context-artifact.js';
@@ -168,12 +169,7 @@ export class ContextProtocolBudgetError extends Error {
   readonly name = 'ContextProtocolBudgetError';
 }
 
-export function estimateTokens(value: unknown): number {
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
-  if (!text) return 0;
-  const ascii = (text.match(/[\x00-\x7f]/g) ?? []).length;
-  return Math.ceil(ascii / 4 + (text.length - ascii) / 1.5);
-}
+export const estimateTokens = estimateContextTokens;
 
 export class ContextManager {
   private readonly historyTokenBudget: number;
@@ -699,7 +695,7 @@ export class ContextManager {
   }
 
   private requiredOpaqueReferences(value: unknown): string[] {
-    const text = JSON.stringify(value);
+    const text = serializeTextContext(value);
     if (!text) return [];
     const patterns = [
       /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/giu,
@@ -875,7 +871,7 @@ export class ContextManager {
   }
 
   private stableReferences(value: unknown): string[] {
-    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    const text = typeof value === 'string' ? value : serializeTextContext(value);
     if (!text) return [];
     const patterns = [
       /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/giu,
@@ -1080,7 +1076,7 @@ export class ContextManager {
     if (content && typeof content === 'object') {
       const value = content as Record<string, unknown>;
       if (typeof value.text === 'string') return value.text.replace(/\s+/g, ' ').trim();
-      return JSON.stringify(content).replace(/\s+/g, ' ').trim();
+      return (serializeTextContext(content) ?? '').replace(/\s+/g, ' ').trim();
     }
     return content == null ? '' : String(content);
   }

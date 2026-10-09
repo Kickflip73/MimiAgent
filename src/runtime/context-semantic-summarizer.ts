@@ -1,3 +1,4 @@
+import { serializeTextContext } from '../core/context-content.js';
 import type { AgentInputItem, Model, Usage } from '@openai/agents';
 import {
   type ContextSemanticSummarizer,
@@ -84,11 +85,11 @@ export class ModelContextSemanticSummarizer implements ContextSemanticSummarizer
     ].join('\n');
     const input: AgentInputItem[] = [{
       role: 'user',
-      content: JSON.stringify({
+      content: serializeTextContext({
         previousSnapshot: request.previous,
         seed: request.seed,
         canonicalOlderConversation: request.input,
-      }),
+      })!,
     }];
     const response = await withinDeadline(signal, () => this.model.getResponse({
       systemInstructions: instructions,

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- budget native image blocks as visual input instead of tokenizing Base64 transport;
+  keep full images for vision calls and omit binary encodings from text-only semantic summaries
+
 - add bidirectional audio/video blocks, code-block controls and click-to-record voice
   drafts with local Whisper transcription, bounded media preparation and replay
 - carry typed media references through daemon submission, queues and canonical history;
