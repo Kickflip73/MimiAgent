@@ -10,7 +10,7 @@ import {
   type ModelContextView,
   type WorkSnapshot,
 } from '../../core/context.js';
-import { runInputBoundary, withRunInputBoundary } from '../../core/context-turn-boundary.js';
+import { runInputBoundary, sessionWithoutDerivedItems, stoppedRunObservation, withRunInputBoundary } from '../../core/context-turn-boundary.js';
 import { assertCompletionContractForTask } from '../../core/completion.js';
 import type { RunModelBinding } from '../../core/model-routing.js';
 import {
@@ -716,6 +716,7 @@ export async function executeRunPipeline(
     });
     const budget = context.requestBudget(toolSchemas);
     const turnBoundary = runInputBoundary(resumesCheckpoint || options?.resumeState === true, stoppedRun);
+    const stoppedObservation = stoppedRunObservation(stoppedRun);
     // Reserve before compaction; the boundary itself is a derived request item, not canonical history.
     const projectionBudget = Math.max(0, budget.inputBudget - estimateTokens([turnBoundary]));
     const ownerGuidanceReserve = directOwnerRun
@@ -1006,8 +1007,15 @@ export async function executeRunPipeline(
       return { input: modelInput, instructions: view.instructions };
     };
     const sdkStarted = performance.now();
-    const streamResult = await host.runner.run(request.agent, input, {
-      session: run.session,
+    // Put the transport-only closure in the SDK's original input so its session
+    // tracker does not mistake a filter insertion for the new owner's message.
+    const sdkInput = stoppedObservation
+      ? [stoppedObservation, ...(typeof input === 'string'
+          ? [{ type: 'message' as const, role: 'user' as const, content: input }]
+          : input)]
+      : input;
+    const streamResult = await host.runner.run(request.agent, sdkInput, {
+      session: sessionWithoutDerivedItems(run.session, [turnBoundary, ...(stoppedObservation ? [stoppedObservation] : [])]),
       sessionInputCallback,
       callModelInputFilter,
       maxTurns: null,

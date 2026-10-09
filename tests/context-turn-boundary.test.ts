@@ -7,9 +7,11 @@ import OpenAI from 'openai';
 import { OpenAIChatCompletionsModel } from '@openai/agents-openai';
 import { withTrace, type AgentInputItem } from '@openai/agents';
 import { FileSession } from '../src/core/session.js';
-import { runInputBoundary, withRunInputBoundary } from '../src/core/context-turn-boundary.js';
+import { runInputBoundary, sessionWithoutDerivedItems, withRunInputBoundary } from '../src/core/context-turn-boundary.js';
 import { normalizeChatCompletionsInput } from '../src/runtime/providers/openai-compatible-model.js';
 import { MimiAgent } from '../src/runtime/mimi-agent.js';
+import { tool } from '../src/tool-factory.js';
+import { z } from 'zod';
 
 test('stopping retains bounded execution facts across restart without making the old task resumable', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-stopped-'));
@@ -49,6 +51,23 @@ test('fresh and resumed input have distinct host boundaries and keep call/result
   assert.doesNotMatch(JSON.stringify(runInputBoundary(true)), /starts a new turn/);
 });
 
+test('per-run persistence guard removes cloned/repeated derived records but preserves real user and assistant messages', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-projection-guard-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const canonical = new FileSession(root, 'guard');
+  const boundary = runInputBoundary(false);
+  const real = [
+    { role: 'user', content: (boundary as { content: string }).content },
+    { role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'A real answer' }] },
+  ] as AgentInputItem[];
+  await canonical.addItems([real[1]!]);
+  const sdk = sessionWithoutDerivedItems(canonical, [boundary]);
+  await sdk.addItems([structuredClone(boundary), real[0]!, structuredClone(boundary)]);
+  await sdk.addItems([structuredClone(boundary)]); // Retry/cached projection.
+  assert.deepEqual(await sdk.getItems(), [real[1], real[0]]);
+  assert.equal(await sdk.getSessionId(), 'guard');
+});
+
 test('real Chat Completions SDK request separates stopped user history from the new owner message', async () => {
   let body: { messages: Array<{ role: string; content: unknown }> } | undefined;
   const client = new OpenAI({ apiKey: 'fixture', baseURL: 'http://fixture.invalid/v1', fetch: async (_url, init) => {
@@ -76,6 +95,7 @@ test('full runtime pipeline sends stopped history and new input as separate wire
   globalThis.fetch = async (_url, init) => {
     bodies.push(JSON.parse(String(init?.body)));
     const chunk = (delta: unknown, finish: string | null) => `data: ${JSON.stringify({ id: 'wire-fixture', object: 'chat.completion.chunk', created: 1, model: 'deepseek-v4-pro', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+    if (bodies.length === 1) return new Response(chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_fixture', type: 'function', function: { name: 'fixture_check', arguments: '{}' } }] }, 'tool_calls') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
     return new Response(chunk({ role: 'assistant', content: 'QUEUE_OK' }, null) + chunk({}, 'stop') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
   };
   let agent: MimiAgent | undefined;
@@ -88,20 +108,36 @@ test('full runtime pipeline sends stopped history and new input as separate wire
     await session.rollbackRunItems('old-run');
     await session.clearRunCheckpoint('old-run', { runId: 'old-run', answerDigest: 'a'.repeat(64), outcome: 'uncertain', evidenceRefs: [], toolManifest: [{ runId: 'old-run', toolName: 'run_shell', callId: 'shell', status: 'started', argumentsDigest: 'b'.repeat(64) }] });
     agent = await MimiAgent.create({ provider: 'openai-compatible', providerBaseUrl: 'http://fixture.invalid/v1', defaultModel: 'deepseek-v4-pro', workspaceRoot: root, dataRoot, skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'), historyLimit: 40, maxTurns: 5 }, 'wire', { enableMcp: false });
-    const run = await agent.stream('NEW_QUEUE: only reply QUEUE_OK', undefined, { providerRoute: { provider: 'openai-compatible', model: 'deepseek-v4-pro' } });
+    const run = await agent.stream('NEW_QUEUE: only reply QUEUE_OK', undefined, {
+      providerRoute: { provider: 'openai-compatible', model: 'deepseek-v4-pro' },
+      hostTools: [tool({ name: 'fixture_check', description: 'Isolated test observation.', parameters: z.object({}), execute: async () => 'fixture observation' })],
+    });
     for await (const _event of run) { /* Drain the real SDK stream. */ }
     await run.completed;
-    assert.equal(bodies.length, 1);
+    assert.equal(bodies.length, 2);
     const messages = bodies[0]!.messages;
-    assert.deepEqual(messages.slice(-3).map(message => message.role), ['user', 'system', 'user']);
-    assert.equal(messages.at(-3)?.content, 'OLD_STOP: run a long shell task');
+    assert.deepEqual(messages.slice(-4).map(message => message.role), ['user', 'assistant', 'system', 'user']);
+    assert.equal(messages.at(-4)?.content, 'OLD_STOP: run a long shell task');
     assert.equal(messages.at(-1)?.content, 'NEW_QUEUE: only reply QUEUE_OK');
     assert.match(String(messages.at(-2)?.content), /preceding run was stopped \(uncertain\)/);
     assert.match(String(messages.at(-2)?.content), /run_shell/);
+    // Providers may extract/hoist system messages before converting to their
+    // native chat template. The stopped turn must remain structurally closed.
+    const withoutSystem = messages.filter(message => message.role !== 'system');
+    assert.deepEqual(withoutSystem.slice(-3).map(message => message.role), ['user', 'assistant', 'user']);
+    assert.match(JSON.stringify(withoutSystem.at(-2)?.content), /Host execution ended: uncertain/);
+    assert.match(JSON.stringify(withoutSystem.at(-2)?.content), /runtime-generated observation, not a model answer/);
+    assert.match(JSON.stringify(withoutSystem.at(-2)?.content), /run_shell/);
     const userMessages = messages.filter(message => message.role === 'user');
     assert.equal(userMessages.length, 3);
     assert.ok(userMessages.every(message => !(String(message.content).includes('OLD_STOP') && String(message.content).includes('NEW_QUEUE'))));
+    assert.equal(bodies[1]!.messages.filter(message => message.role === 'user' && message.content === 'NEW_QUEUE: only reply QUEUE_OK').length, 1);
+    assert.equal(bodies[1]!.messages.filter(message => message.role === 'assistant' && JSON.stringify(message.content).includes('Host execution ended')).length, 1);
     assert.ok((await session.getItems()).every(item => (item as { role?: string }).role !== 'system'));
+    assert.doesNotMatch(JSON.stringify(await session.getItems()), /Host execution ended|Host current-turn boundary/);
+    assert.deepEqual((await session.getItems()).filter(item => (item as { role?: string }).role === 'user').map(item => (item as { content: unknown }).content), ['Compute 43*47', 'OLD_STOP: run a long shell task', 'NEW_QUEUE: only reply QUEUE_OK']);
+    assert.equal((await session.getItems()).filter(item => item.type === 'function_call').length, 1);
+    assert.equal((await session.getItems()).filter(item => item.type === 'function_call_result').length, 1);
     await agent.completeRun('QUEUE_OK');
   } finally {
     await agent?.close();

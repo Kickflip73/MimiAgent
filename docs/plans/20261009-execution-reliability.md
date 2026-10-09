@@ -51,3 +51,6 @@ The research task also reproduced a Shell false rejection: `&#39;` inside a quot
 实际点击停止后，Host 终态已经取消，而验收 Shell PID 仍然存在。当前 SDK 的 Function Tool 调用没有转发 Runner signal；必须在 Host 暴露给 SDK 的工具 invoke 边界绑定本轮 signal，与 SDK 的 invocation/timeout signal 合并，覆盖普通、代理及 Team 工具，再由各工具的既有实现清理进程/请求。不把 UI 终态等同于外部副作用已撤销。
 
 记忆 catalog 的 search/list/vector 命中只需要元数据，但原 SQL SELECT * 读取正文。改为固定 metadata 投影，并在可写 catalog 初始化时补 document_type/updated_at 索引；只读旧库不写入，全文匹配和 readDocument 均保持。同步 SQL 的所有剩余等待仍须以真实计时核实，不能只凭索引存在宣称超时消失。
+
+
+最终真实模型仍会在相邻 user 之间的 system 边界存在时尝试续跑旧命令。完整 HTTP mock 已确认 Mimi 未合并消息，但无法证明供应商内部如何归一化。兼容处理为：仅在停止后为派生模型上下文增加 assistant-role、明确标为 Host runtime-generated 的终止观察；原始历史不写入假答案。即使供应商把 system 提到顶部，剩余 user/assistant/user 轮次仍完整。该观察与 system 事实都计入预算。
