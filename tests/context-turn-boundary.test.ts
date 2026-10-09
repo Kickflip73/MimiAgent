@@ -9,6 +9,7 @@ import { withTrace, type AgentInputItem } from '@openai/agents';
 import { FileSession } from '../src/core/session.js';
 import { runInputBoundary, withRunInputBoundary } from '../src/core/context-turn-boundary.js';
 import { normalizeChatCompletionsInput } from '../src/runtime/providers/openai-compatible-model.js';
+import { MimiAgent } from '../src/runtime/mimi-agent.js';
 
 test('stopping retains bounded execution facts across restart without making the old task resumable', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-stopped-'));
@@ -61,4 +62,51 @@ test('real Chat Completions SDK request separates stopped user history from the 
   assert.equal(body?.messages[0]?.content, 'run long task');
   assert.equal(body?.messages[2]?.content, 'only reply OK');
   assert.equal(canonical.length, 2);
+});
+
+test('full runtime pipeline sends stopped history and new input as separate wire messages', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-turn-wire-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const previousFetch = globalThis.fetch;
+  const previousHome = process.env.HOME;
+  const previousKey = process.env.MIMI_PROVIDER_API_KEY;
+  process.env.HOME = root;
+  process.env.MIMI_PROVIDER_API_KEY = 'fixture';
+  const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+  globalThis.fetch = async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body)));
+    const chunk = (delta: unknown, finish: string | null) => `data: ${JSON.stringify({ id: 'wire-fixture', object: 'chat.completion.chunk', created: 1, model: 'deepseek-v4-pro', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+    return new Response(chunk({ role: 'assistant', content: 'QUEUE_OK' }, null) + chunk({}, 'stop') + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  };
+  let agent: MimiAgent | undefined;
+  try {
+    const dataRoot = path.join(root, 'data');
+    const session = new FileSession(path.join(dataRoot, 'sessions'), 'wire');
+    await session.addItems([{ role: 'user', content: 'Compute 43*47' }, { role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '2021' }] }]);
+    await session.beginRun('OLD_STOP: run a long shell task', 'old-run', undefined, true);
+    await session.addItems([{ role: 'user', content: 'OLD_STOP: run a long shell task' }]);
+    await session.rollbackRunItems('old-run');
+    await session.clearRunCheckpoint('old-run', { runId: 'old-run', answerDigest: 'a'.repeat(64), outcome: 'uncertain', evidenceRefs: [], toolManifest: [{ runId: 'old-run', toolName: 'run_shell', callId: 'shell', status: 'started', argumentsDigest: 'b'.repeat(64) }] });
+    agent = await MimiAgent.create({ provider: 'openai-compatible', providerBaseUrl: 'http://fixture.invalid/v1', defaultModel: 'deepseek-v4-pro', workspaceRoot: root, dataRoot, skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'), historyLimit: 40, maxTurns: 5 }, 'wire', { enableMcp: false });
+    const run = await agent.stream('NEW_QUEUE: only reply QUEUE_OK', undefined, { providerRoute: { provider: 'openai-compatible', model: 'deepseek-v4-pro' } });
+    for await (const _event of run) { /* Drain the real SDK stream. */ }
+    await run.completed;
+    assert.equal(bodies.length, 1);
+    const messages = bodies[0]!.messages;
+    assert.deepEqual(messages.slice(-3).map(message => message.role), ['user', 'system', 'user']);
+    assert.equal(messages.at(-3)?.content, 'OLD_STOP: run a long shell task');
+    assert.equal(messages.at(-1)?.content, 'NEW_QUEUE: only reply QUEUE_OK');
+    assert.match(String(messages.at(-2)?.content), /preceding run was stopped \(uncertain\)/);
+    assert.match(String(messages.at(-2)?.content), /run_shell/);
+    const userMessages = messages.filter(message => message.role === 'user');
+    assert.equal(userMessages.length, 3);
+    assert.ok(userMessages.every(message => !(String(message.content).includes('OLD_STOP') && String(message.content).includes('NEW_QUEUE'))));
+    assert.ok((await session.getItems()).every(item => (item as { role?: string }).role !== 'system'));
+    await agent.completeRun('QUEUE_OK');
+  } finally {
+    await agent?.close();
+    globalThis.fetch = previousFetch;
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    if (previousKey === undefined) delete process.env.MIMI_PROVIDER_API_KEY; else process.env.MIMI_PROVIDER_API_KEY = previousKey;
+  }
 });

@@ -4,7 +4,7 @@ import {
   type Usage,
 } from '@openai/agents';
 import { z } from 'zod';
-import { tool } from '../../tool-factory.js';
+import { tool, withToolRunSignal } from '../../tool-factory.js';
 import {
   estimateTokens,
   type ModelContextView,
@@ -312,12 +312,12 @@ export async function executeRunPipeline(
     const persistentInstructions = [soul.instructions, projectGuidance.instructions].filter(Boolean).join('\n\n');
     const memoryTools = createMemoryTools(host.components.memory, () => memoryContext);
     const delegatedMemoryTools = createMemoryTools(host.components.memory, () => memoryContext, { workspaceOnly: true });
-    const delegatedTools = toolsForSecurity(securityProfile, [
+    const delegatedTools = withToolRunSignal(toolsForSecurity(securityProfile, [
       ...withoutSpeechTools(scopedTools).filter((tool) => (
         !ephemeralSensitiveAccess || tool.name !== 'run_shell'
       )),
       ...delegatedMemoryTools,
-    ]);
+    ]), signal);
     const activeStoredGoal = storedGoal?.status === 'active' || storedGoal?.status === 'paused'
       ? storedGoal
       : undefined;
@@ -418,13 +418,13 @@ export async function executeRunPipeline(
       },
       onModelBinding: async (task, selected) => emitModelBinding('team-worker', task.id, selected),
       workerToolFactory: (task) => withExecutionLedger(
-        createTeamWorkerTools({
+        withToolRunSignal(createTeamWorkerTools({
           workspaceRoot: host.config.workspaceRoot,
           dataRoot: host.config.dataRoot,
           canWrite: runRuntimeAccess.workspaceWrite,
           task,
           memorySearchTool: delegatedMemoryTools.find((tool) => tool.name === 'memory_search'),
-        }),
+        }), signal),
         host.components.state.executionLedger.store,
         () => ({
           sessionId: run.sessionId,
@@ -657,7 +657,7 @@ export async function executeRunPipeline(
         ? []
         : capabilityRegistry.gatewayTools(classifiedTools.deferred),
     );
-    const modelTools = run.facts.wrap(selectedModelTools, async (call) => {
+    const modelTools = run.facts.wrap(withToolRunSignal(selectedModelTools, signal), async (call) => {
       await run.session.recordToolProgress(redactActiveEphemeralData({
         ...call, sessionId: run.sessionId, runId: executionRunId,
       }, run.ephemeralSensitiveAccess), run.runId);

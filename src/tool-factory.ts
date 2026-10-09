@@ -1,4 +1,4 @@
-import { ModelBehaviorError, tool as sdkTool } from '@openai/agents';
+import { ModelBehaviorError, tool as sdkTool, type Tool } from '@openai/agents';
 import { z } from 'zod';
 
 const CAPTURED_TOOL_ERROR = Symbol('mimi.captured-tool-error');
@@ -46,6 +46,25 @@ export function isCapturedToolError(value: unknown): value is CapturedToolError 
   return value !== null
     && typeof value === 'object'
     && (value as Partial<CapturedToolError>)[CAPTURED_TOOL_ERROR] === true;
+}
+
+/** The SDK Run signal is not forwarded to Function Tool invocation details.
+ * Bind each Run's tools without mutating tools reused by other Runs. Preserve
+ * invocation-specific cancellation/timeouts as well as the owner's stop signal.
+ */
+export function withToolRunSignal(tools: readonly Tool[], signal?: AbortSignal): Tool[] {
+  return tools.map(candidate => {
+    if (!signal || candidate.type !== 'function') return candidate;
+    return {
+      ...candidate,
+      invoke: (context, input, details) => {
+        const invocationSignal = details?.signal && details.signal !== signal
+          ? AbortSignal.any([signal, details.signal]) : signal;
+        invocationSignal.throwIfAborted();
+        return candidate.invoke(context, input, { ...details, signal: invocationSignal });
+      },
+    };
+  });
 }
 
 /**

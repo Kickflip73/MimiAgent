@@ -82,6 +82,11 @@ export interface PersistedLintIssue {
   lastSeenAt: string;
 }
 
+// Search/list are metadata surfaces; document bodies are loaded only by readDocument.
+const HIT_COLUMNS = ['ref_key', 'id', 'scope', 'profile_id', 'title', 'summary', 'kind',
+  'status', 'confidence', 'source_refs_json', 'document_type', 'stale', 'layer',
+  'facets_json', 'derived_from_json'];
+
 function hitFromRow(row: Row, score = 0): MemoryHit {
   const layer = row.layer === 'L1' || row.layer === 'L2' ? row.layer : undefined;
   return {
@@ -178,6 +183,7 @@ function sameFileIdentity(left: ReadOnlyFileIdentity | undefined, right: ReadOnl
 
 export class SqliteMemoryCatalog {
   private readonly database: DatabaseSync;
+  private hitColumns: string[] = HIT_COLUMNS;
   private readonly readOnly: boolean;
   private readonly readOnlyFile?: string;
   private readonly readOnlySnapshot?: ReadOnlyFileSnapshot;
@@ -247,6 +253,14 @@ export class SqliteMemoryCatalog {
       this.backupV1IfNeeded();
       this.initialize();
     }
+    // Read-only legacy catalogs may predate optional metadata columns.
+    const columns = new Set((this.database.prepare('PRAGMA table_info(documents)').all() as Row[])
+      .map((row) => String(row.name)));
+    this.hitColumns = HIT_COLUMNS.filter((column) => columns.has(column));
+  }
+
+  private hitSelection(alias = ''): string {
+    return this.hitColumns.map((column) => `${alias}${column}`).join(', ');
   }
 
   close(): void {
@@ -357,7 +371,7 @@ export class SqliteMemoryCatalog {
     const where = this.filters(options);
     const parameters = where.parameters;
     const structureRows = this.database.prepare(`
-      SELECT * FROM documents WHERE ${where.sql}
+      SELECT ${this.hitSelection()} FROM documents WHERE ${where.sql}
         AND (lower(title) = lower(?) OR lower(title) LIKE lower(?) OR lower(aliases_json) LIKE lower(?))
       ORDER BY updated_at DESC LIMIT ?
     `).all(...parameters, query, `${query}%`, `%${query}%`, limit * 3) as Row[];
@@ -368,7 +382,7 @@ export class SqliteMemoryCatalog {
       if (ftsQuery) {
         try {
           lexicalRows = this.database.prepare(`
-            SELECT d.*, bm25(documents_fts, 4.0, 2.0, 1.5, 1.0) AS lexical_score
+            SELECT ${this.hitSelection('d.')}, bm25(documents_fts, 4.0, 2.0, 1.5, 1.0) AS lexical_score
             FROM documents_fts JOIN documents d ON d.ref_key = documents_fts.ref_key
             WHERE documents_fts MATCH ? AND ${where.sql}
             ORDER BY lexical_score LIMIT ?
@@ -380,7 +394,7 @@ export class SqliteMemoryCatalog {
     }
     if (!lexicalRows.length) {
       lexicalRows = this.database.prepare(`
-        SELECT * FROM documents WHERE ${where.sql}
+        SELECT ${this.hitSelection()} FROM documents WHERE ${where.sql}
           AND lower(title || ' ' || aliases_json || ' ' || tags_json || ' ' || body) LIKE lower(?)
         ORDER BY updated_at DESC LIMIT ?
       `).all(...parameters, `%${query}%`, limit * 3) as Row[];
@@ -399,7 +413,7 @@ export class SqliteMemoryCatalog {
     this.assertReadOnlySnapshotStable();
     const limit = Math.min(1_000, Math.max(1, options.limit ?? 100));
     const where = this.filters(options);
-    const result = (this.database.prepare(`SELECT * FROM documents WHERE ${where.sql} ORDER BY updated_at DESC LIMIT ?`)
+    const result = (this.database.prepare(`SELECT ${this.hitSelection()} FROM documents WHERE ${where.sql} ORDER BY updated_at DESC LIMIT ?`)
       .all(...where.parameters, limit) as Row[]).map((row) => hitFromRow(row));
     this.assertReadOnlySnapshotStable();
     return result;
@@ -919,7 +933,7 @@ export class SqliteMemoryCatalog {
           SELECT rowid, distance FROM document_vec_chunks
           WHERE embedding MATCH ? AND k = ?
         )
-        SELECT d.*, MIN(knn.distance) AS vector_distance
+        SELECT ${this.hitSelection('d.')}, MIN(knn.distance) AS vector_distance
         FROM knn
         JOIN document_vec_chunks_map m ON m.rowid=knn.rowid
         JOIN documents d ON d.ref_key=m.ref_key
@@ -1306,6 +1320,8 @@ export class SqliteMemoryCatalog {
     this.ensureDocumentColumn('layer');
     this.ensureDocumentColumn('facets_json');
     this.ensureDocumentColumn('derived_from_json');
+    this.database.exec(`CREATE INDEX IF NOT EXISTS documents_type_updated_idx
+      ON documents(document_type, updated_at DESC)`);
     try {
       this.database.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
         ref_key UNINDEXED, title, aliases, tags, body, tokenize='trigram'

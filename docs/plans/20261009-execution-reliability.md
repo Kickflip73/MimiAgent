@@ -44,3 +44,10 @@ The research task also reproduced a Shell false rejection: `&#39;` inside a quot
 - 任务列表即使在 JS 中缩小返回体，数据库仍先 `SELECT *` 扫描、排序并读取结果大字段。改为 SQL 摘要投影，增加 `tasks(created_at)` 索引，与会话运行索引一起幂等更新旧库。保留详情接口，无历史数据迁移。
 - 取消会清除 checkpoint；历史中两个独立 user 消息之间缺少执行终态，模型把旧任务约束视为当前未完成要求。在派生模型请求中增加 Host 轮次边界，保留最多 4 条已脱敏进展、32 条工具终态作为停止事实；原始消息不改写。新请求与结构化 resume 分开，未知副作用仍需核验。
 - 收尾增加分阶段 wall-clock 计时，包含日志、会话、记忆、生命周期钩子，不能把事件循环等待误归因为某个文件锁。
+
+
+### 工具取消与记忆查询的闭环
+
+实际点击停止后，Host 终态已经取消，而验收 Shell PID 仍然存在。当前 SDK 的 Function Tool 调用没有转发 Runner signal；必须在 Host 暴露给 SDK 的工具 invoke 边界绑定本轮 signal，与 SDK 的 invocation/timeout signal 合并，覆盖普通、代理及 Team 工具，再由各工具的既有实现清理进程/请求。不把 UI 终态等同于外部副作用已撤销。
+
+记忆 catalog 的 search/list/vector 命中只需要元数据，但原 SQL SELECT * 读取正文。改为固定 metadata 投影，并在可写 catalog 初始化时补 document_type/updated_at 索引；只读旧库不写入，全文匹配和 readDocument 均保持。同步 SQL 的所有剩余等待仍须以真实计时核实，不能只凭索引存在宣称超时消失。
