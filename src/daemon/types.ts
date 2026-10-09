@@ -518,6 +518,8 @@ export type MimiStreamEvent = {
   | { kind: 'plan'; steps: PlanStep[] }
   | {
       kind: 'status';
+      /** Ephemeral host preparation, excluded from execution evidence. */
+      transient?: boolean;
       tone: 'agent' | 'thinking' | 'tool' | 'success' | 'failure';
       title: string;
       detail?: string;

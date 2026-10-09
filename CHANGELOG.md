@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- keep host preparation notices in the transient execution preview only; exclude them
+  from expanded details and step counts, including legacy cached conversations
+
 - show live microphone input levels and a device picker; reject silent recordings before
   local transcription, including legacy cached silence, instead of accepting hallucinated text
 

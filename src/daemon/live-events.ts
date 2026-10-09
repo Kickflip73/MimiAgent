@@ -133,7 +133,7 @@ export function mimiStreamEvent(event: RunStreamEvent): PendingStreamEvent | und
 }
 
 export function mimiRuntimeStreamEvent(event: RuntimeEvent): PendingStreamEvent | undefined {
-  if (event.type === 'run_progress' || event.type === 'run_start') return {kind:'status',tone:'thinking',title:event.type==='run_start'?'正在准备回答':event.phase,next:''};
+  if (event.type === 'run_progress' || event.type === 'run_start') return {kind:'status',transient:true,tone:'thinking',title:event.type==='run_start'?'正在准备回答':event.phase,next:''};
   if (event.type !== 'plan_updated') return undefined;
   return {
     kind: 'plan',

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 // @ts-expect-error Browser module is intentionally dependency-free JavaScript.
-import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal, createTextFade, presentAnswer, executionGroups } from '../src/web/assets/execution.js';
+import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal, createTextFade, presentAnswer, executionGroups, isPreparationStatus } from '../src/web/assets/execution.js';
 
 test('stream keeps answer chunks together but separates replies around tools and reasoning', () => {
   const run: { sequence: number; answers: string[]; steps: Array<{ text?: string }>; boundary: boolean } = { sequence: 0, answers: [], steps: [], boundary: true };
@@ -122,4 +122,24 @@ test('adjacent reasoning phases separated by an answer never merge', () => {
   [{sequence:1,kind:'reasoning',text:'initial'}, {sequence:2,kind:'answer',text:'reply'},
     {sequence:3,kind:'reasoning',text:'next'}, {sequence:4,kind:'reasoning',text:' phase'}].forEach(e=>projectEvent(run,e));
   assert.deepEqual(executionGroups(run).map((g:any)=>g.steps[0].text),['initial','next phase']);
+});
+
+
+test('host preparation updates the preview without creating steps, counts or reply boundaries',()=>{
+  const run:any={sequence:0,answers:[],steps:[],boundary:true};
+  const preparation={kind:'status',tone:'thinking',title:'正在准备上下文',next:''};
+  projectEvent(run,{...preparation,sequence:1});
+  assert.equal(run.activity,'正在准备上下文');assert.deepEqual(run.steps,[]);assert.deepEqual(executionGroups(run),[]);
+  projectEvent(run,{kind:'answer',text:'第一段',sequence:2});
+  projectEvent(run,{...preparation,transient:true,title:'后续准备阶段',sequence:3});
+  projectEvent(run,{kind:'answer',text:'继续',sequence:4});
+  assert.deepEqual(run.answers,['第一段继续']);assert.equal(run.activity,undefined);
+  projectEvent(run,{kind:'reasoning',text:'检查上下文内容',sequence:5});
+  projectEvent(run,{kind:'status',tone:'tool',title:'read_file',fullDetail:'完整参数',sequence:6});
+  assert.equal(run.steps.length,2);assert.equal(executionGroups(run)[0].steps.length,2);
+  // Persisted legacy notices are also excluded; actual similarly named evidence remains.
+  run.steps.unshift(preparation);
+  assert.equal(executionGroups(run)[0].steps.length,2);
+  assert.equal(isPreparationStatus({kind:'reasoning',text:preparation.title}),false);
+  assert.equal(isPreparationStatus({...preparation,fullDetail:'真实执行内容'}),false);
 });

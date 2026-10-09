@@ -1,7 +1,17 @@
+// Older daemons/caches did not mark preparation notices. Match only empty host
+// notices, never model reasoning or tool evidence with the same wording.
+const legacyPreparationTitles = new Set(['正在准备附件与运行环境','正在准备回答','正在理解图片与视频画面','正在准备上下文','正在等待模型响应']);
+export function isPreparationStatus(step) {
+  return step.kind === 'status' && (step.transient === true ||
+    (step.tone === 'thinking' && !step.detail && !step.fullDetail && !step.next && legacyPreparationTitles.has(step.title)));
+}
+
 /** Project the public stream without joining replies across tool/thinking phases. */
 export function projectEvent(run, event) {
   if (event.sequence <= run.sequence) return false;
   run.sequence = event.sequence;
+  if (isPreparationStatus(event)) { run.activity = event.title; return true; }
+  run.activity = undefined;
   if (event.kind === 'answer') {
     if (run.boundary || !run.answers.length) run.answers.push('');
     run.answers[run.answers.length - 1] += event.text;
@@ -19,6 +29,7 @@ export function projectEvent(run, event) {
 export function executionGroups(run) {
   const groups = new Map();
   for (const step of run.steps || []) {
+    if (isPreparationStatus(step)) continue;
     const afterAnswer = Number.isInteger(step.afterAnswer) ? step.afterAnswer : -1;
     if (!groups.has(afterAnswer)) groups.set(afterAnswer, {afterAnswer, steps:[]});
     groups.get(afterAnswer).steps.push(step);

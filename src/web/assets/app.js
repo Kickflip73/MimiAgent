@@ -5,7 +5,7 @@ import { createImageDrafts, imageUrl } from './images.js';
 import { createMessageQueue } from './queue.js';
 import { contextBreakdown } from './context.js';
 import { createManagement, managedViews, viewTitles } from './manage.js';
-import { historyExecution, projectEvent, finishAnswers, runningActivity, elapsedLabel, createTextReveal, presentAnswer, renderStreamText, executionGroups } from './execution.js';
+import { historyExecution, projectEvent, finishAnswers, runningActivity, isPreparationStatus, elapsedLabel, createTextReveal, presentAnswer, renderStreamText, executionGroups } from './execution.js';
 import { setupPickers, createSelectionQueue, enhanceSelects } from './pickers.js';
 const $ = (selector) => document.querySelector(selector);
 const icons = {
@@ -802,13 +802,13 @@ function executionDetails(run) {
   let rendered;
   details.addEventListener('toggle', () => { if(details.open) details.update(); });
   details.update = () => {
-    const steps = run.steps.filter(step => run.historical || state.defaults.outputLevel === 'trace' || (state.defaults.outputLevel === 'thinking' ? step.kind === 'reasoning' : step.kind !== 'reasoning'));
+    const steps = run.steps.filter(step => !isPreparationStatus(step) && (run.historical || state.defaults.outputLevel === 'trace' || (state.defaults.outputLevel === 'thinking' ? step.kind === 'reasoning' : step.kind !== 'reasoning')));
     details.hidden = state.defaults.outputLevel === 'answer' || (!run.running && !steps.length && !['partial','blocked','failed','uncertain','interrupted'].includes(run.status));
     details.classList.toggle('is-running', !!run.running);
     summary.querySelector('.execution-label').textContent = `${run.status ? (labels[run.status] || run.status) + ' · ' : ''}执行过程${steps.length ? ` · ${steps.length} 项` : ''}`;
     // The activity preview belongs only to the closed summary. Never project it
     // into the expanded evidence or replace the full tool/thinking content.
-    summary.querySelector('.execution-activity').textContent = run.running ? runningActivity(run.steps, run.activity) : '';
+    summary.querySelector('.execution-activity').textContent = run.running ? (run.activity || runningActivity(run.steps)) : '';
     if (!details.open) return;
     const version = JSON.stringify(steps);
     if (version === rendered) return;
@@ -874,7 +874,7 @@ function startStream(id) {
         entry = {projection, node, article:executionMessage(node)};
         processNodes.set(group.afterAnswer,entry);
       }
-      Object.assign(entry.projection, {steps:group.steps, status:group === groups.at(-1) ? run.status : undefined, running:group === groups.at(-1) && !run.endedAt && (!run.status || active(run.status))});
+      Object.assign(entry.projection, {steps:group.steps, activity:group === groups.at(-1) ? run.activity : undefined, status:group === groups.at(-1) ? run.status : undefined, running:group === groups.at(-1) && !run.endedAt && (!run.status || active(run.status))});
       entry.node.update();
     }
   }
