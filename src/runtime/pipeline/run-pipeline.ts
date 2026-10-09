@@ -113,16 +113,6 @@ export async function executeRunPipeline(
     options = { ...options, securityProfile };
     const textInput = inputText(input);
     if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
-    const imageRoot = path.join(host.config.dataRoot, 'attachments');
-    await persistInputImages(input, imageRoot);
-    const imageHistory = options?.policy?.allowSessionContext === false || containsImageInput(input)
-      ? new Map<number, AgentInputItem>()
-      : await recentImageHistory(await host.session.getItems(), [
-          imageRoot,
-          path.join(host.config.daemonDataRoot ?? path.join(host.config.dataRoot, 'mimi'), 'attachments'),
-        ]);
-    const visualInput = [...imageHistory.values(), ...(typeof input === 'string' ? [] : input)];
-    const hasImages = containsImageInput(visualInput);
     const preferences = await host.session.getPreferences();
     host.applySessionPreferences?.(preferences);
     const routeConfig = options?.providerRoute
@@ -130,6 +120,24 @@ export async function executeRunPipeline(
       : host.config;
     const scenario = options?.scenario
       ?? (options?.cause ? 'background.default' : 'conversation.default');
+    const imageRoot = path.join(host.config.dataRoot, 'attachments');
+    await persistInputImages(input, imageRoot);
+    // Historical pixels are optional context. An explicit text model must still
+    // be usable for new text requests; new image uploads remain a hard requirement.
+    const explicitTarget = host.fixedModelBinding?.target ?? options?.modelProfile?.modelTarget
+      ?? (scenario === 'conversation.default' ? preferences.modelTarget
+        ?? host.components.modelGateway.legacyAgentTarget(preferences.model, preferences.provider) : undefined)
+      ?? host.components.modelConfig.routing.scenarios[scenario]?.target;
+    const restoreImages = !options?.providerRoute && (!explicitTarget
+      || host.components.modelGateway.inspect(explicitTarget).capabilities.imageInput);
+    const imageHistory = !restoreImages || options?.policy?.allowSessionContext === false || containsImageInput(input)
+      ? new Map<number, AgentInputItem>()
+      : await recentImageHistory(await host.session.getItems(), [
+          imageRoot,
+          path.join(host.config.daemonDataRoot ?? path.join(host.config.dataRoot, 'mimi'), 'attachments'),
+        ]);
+    const visualInput = [...imageHistory.values(), ...(typeof input === 'string' ? [] : input)];
+    const hasImages = containsImageInput(visualInput);
     if (host.fixedModelBinding && host.fixedModelBinding.scenario !== scenario) {
       throw new Error(
         `冻结模型场景不匹配：${host.fixedModelBinding.scenario} != ${scenario}`,

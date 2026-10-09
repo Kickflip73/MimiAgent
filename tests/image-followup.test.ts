@@ -65,5 +65,9 @@ test('text follow-up uses a vision route and sends restored pixels; no-history p
   await agent.failRun(new Error('test complete'),true);
   await agent.stream('独立问题',undefined,{policy:{allowSessionContext:false,allowedCapabilities:[]}});
   await agent.failRun(new Error('test complete'),true);
-  assert.equal(calls,2);
+  await session.setPreferences({modelTarget:{providerId:'fake',modelId:'text'}});
+  await agent.stream('继续普通文字对话');
+  assert.equal((agent as any).lastModelBinding.target.modelId,'text');
+  await agent.failRun(new Error('test complete'),true);
+  assert.equal(calls,3);
 });
