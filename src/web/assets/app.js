@@ -761,6 +761,11 @@ function startStream(id) {
   const startKey = `mimi-start:${id}`, cacheKey = `mimi-progress:${session}`, timesKey = `mimi-times:${id}`;
   let cached = liveRuns.get(id), times = {};
   try { cached ||= JSON.parse(sessionStorage.getItem(cacheKey) || 'null'); times = JSON.parse(sessionStorage.getItem(timesKey) || '{}'); } catch { /* Replay from daemon on cache failure. */ }
+  // Older tabs cached one flat process list. Replay its ordered events once so
+  // an already-running conversation adopts reply groups immediately after upgrade.
+  if (cached?.id === id && cached.steps?.some(step => !Number.isInteger(step.afterAnswer))) {
+    cached = {...cached,sequence:0,answers:[],steps:[],boundary:true};
+  }
   const run = cached?.id === id ? cached : { id, sequence: 0, answers: [], steps: [], boundary: true,
     startedAt: Number(sessionStorage.getItem(startKey)) || Date.now(), answerTimes: times.answerTimes || [],
     sentAt: times.sentAt || [...document.querySelectorAll('#messages .message.user')].at(-1)?.dataset.sentAt,
