@@ -7,6 +7,7 @@ import type { SecurityProfile } from '../config.js';
 import type { WebBackend } from './backend.js';
 
 const ASSETS: Record<string, [string, string]> = {
+  '/message-view.js': ['message-view.js', 'text/javascript; charset=utf-8'],
   '/images.js': ['images.js', 'text/javascript; charset=utf-8'],
   '/queue.js': ['queue.js', 'text/javascript; charset=utf-8'],
   '/context.js': ['context.js', 'text/javascript; charset=utf-8'],

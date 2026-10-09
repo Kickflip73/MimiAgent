@@ -148,8 +148,8 @@ test('history places tools between the replies that surrounded them, including a
   const options = await fixture(t,items);
   const result = await decorateSessionTimeline({...options,items:items.filter(i=>'role' in i)});
   assert.deepEqual(result.items[1]!.execution!.steps.map(s=>s.text),['initial']);
-  assert.equal(result.items[1]!.executionAfter!.steps[0]!.title,'read_file');
-  assert.match(result.items[1]!.executionAfter!.steps[0]!.fullDetail!,/data/);
+  assert.equal(result.items[2]!.execution!.steps[0]!.title,'read_file');
+  assert.match(result.items[2]!.execution!.steps[0]!.fullDetail!,/data/);
   assert.deepEqual(result.items[2]!.executionAfter!.steps.map(s=>s.text),['follow-up']);
   const tail = await decorateSessionTimeline({...options,items:[items[5]]});
   assert.ok(tail.items[0]!.execution!.steps.some(s=>s.title==='read_file'));
@@ -163,6 +163,6 @@ test('persisted reply positions restore trace-only thinking between multiple ans
     event('reasoning',4,{runId:'r',text:'between',afterAnswer:0}),event('turn_end',6,{answer:'second'})]);
   const result=await decorateSessionTimeline({...options,items});
   assert.equal(result.items[1]!.execution!.steps[0]!.text,'initial');
-  assert.equal(result.items[1]!.executionAfter!.steps[0]!.text,'between');
-  assert.equal(result.items[2]!.execution,undefined);
+  assert.equal(result.items[2]!.execution!.steps[0]!.text,'between');
+  assert.equal(result.items[1]!.executionAfter,undefined);
 });

@@ -318,12 +318,14 @@ export async function decorateSessionTimeline(options: SessionTimelineOptions): 
       groups.get(after)!.push(step);
     }
     for (const [after, group] of groups) {
+      const next = assistants[after + 1];
       const previous = after >= 0 ? assistants[after] : undefined;
-      const anchor = previous !== undefined && indices.has(previous) ? previous
-        : assistants.find((index) => indices.has(index)) ?? (indices.has(start) ? start : undefined);
+      const anchor = next !== undefined && indices.has(next) ? next
+        : next !== undefined ? assistants.find((index) => index > next && indices.has(index))
+        : previous !== undefined && indices.has(previous) ? previous : (indices.has(start) ? start : undefined);
       if (anchor === undefined) continue;
       const item = projected[indices.get(anchor)!]!;
-      const field = previous === anchor ? 'executionAfter' : 'execution';
+      const field = next === undefined && previous === anchor ? 'executionAfter' : 'execution';
       if (item[field]) item[field]!.steps.push(...group);
       else item[field] = {...execution, steps:[...group]};
     }

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- place each execution phase above its following reply in live and restored chats;
+  keep trailing work separate when no answer has arrived
+- unify compact rounded message bubbles, reveal copy controls on hover/focus,
+  and add bounded entrance/re-entry motion with reduced-motion support
+- separate message bodies into text/image blocks for future typed media renderers
+
 - preserve native multimodal input through Session host execution, fixing lost
   image/file attachments in daemon-backed conversations
 - paste or select images in Web chat, preview/remove thumbnails, send image-only

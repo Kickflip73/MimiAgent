@@ -1,3 +1,4 @@
+import { createMessageBody, messageBlocks, observeMessageMotion } from './message-view.js';
 import { createImageDrafts, imageUrl } from './images.js';
 import { createMessageQueue } from './queue.js';
 import { contextBreakdown } from './context.js';
@@ -448,7 +449,7 @@ function messageFooter(text, { role = 'assistant', sentAt, timestampSource, dura
 function setMessageFooter(article, text, metadata) {
   const content = article.querySelector('.message-content');
   content.querySelector(':scope > .message-footer')?.remove();
-  content.querySelector('.markdown').after(messageFooter(text, metadata));
+  content.querySelector('.message-bubble').after(messageFooter(text, metadata));
 }
 function message(role, text, live = false, sentAt, images = []) {
   if (role === 'assistant') text = presentAnswer(text).text;
@@ -458,8 +459,8 @@ function message(role, text, live = false, sentAt, images = []) {
   el.dataset.messageText = text;
   if (sentAt) el.dataset.sentAt = String(sentAt);
   if (live) el.id = 'live-message';
-  el.innerHTML = `<div class="message-avatar">${role === 'user' ? '我' : '<img src="/cat.svg" alt="" />'}</div><div class="message-content"><div class="message-author">${role === 'user' ? '你' : 'Mimi'}</div><div class="markdown">${markdown(text)}</div></div>`;
-  if(images.length)el.querySelector('.markdown').insertAdjacentHTML('afterbegin',`<div class="message-images">${imagesMarkup(images)}</div>`);
+  el.innerHTML = `<div class="message-avatar">${role === 'user' ? '我' : '<img src="/cat.svg" alt="" />'}</div><div class="message-content"><div class="message-author">${role === 'user' ? '你' : 'Mimi'}</div></div>`;
+  el.querySelector('.message-content').append(createMessageBody(messageBlocks(text, images), {markdown, imagesMarkup}));
   if (!live) setMessageFooter(el, text, { role, sentAt });
   return el;
 }
@@ -498,13 +499,12 @@ function renderMessages(items) {
     if (item.timelineRunId) article.dataset.timelineRun = item.timelineRunId;
     if (item.role === 'assistant') {
       const display = presentAnswer(textOf(item));
-      if (item.execution || display.outcome) article.querySelector('.markdown').before(executionDetails({...item.execution, steps:item.execution?.steps || [], ...(display.outcome ? {status:display.outcome} : {}), historical:true}));
+      if (item.execution || display.outcome) article.querySelector('.message-bubble').before(executionDetails({...item.execution, steps:item.execution?.steps || [], ...(display.outcome ? {status:display.outcome} : {}), historical:true}));
     }
-    if (item.executionAfter) article.querySelector('.message-content').append(executionDetails({...item.executionAfter,historical:true}));
     $('#messages').append(article);
-    if (item.execution && item.role === 'user') {
+    if (item.executionAfter || (item.execution && item.role === 'user')) {
       const process = document.createElement('div'); process.className = 'orphan-execution';
-      process.append(executionDetails({...item.execution,historical:true})); $('#messages').append(process);
+      process.append(executionDetails({...item.executionAfter || item.execution,historical:true})); $('#messages').append(process);
     }
   }
   if (state.snapshot?.timeline?.truncated) {
@@ -525,11 +525,13 @@ function renderMessages(items) {
         setMessageFooter(partial, text, {sentAt:final ? record.endedAt : record.answerTimes?.[answerIndex], ...(final ? {duration:record.endedAt-record.startedAt} : {})});
         for (const group of executionGroups(record)) {
           const panel = () => executionDetails({...record,steps:group.steps});
-          if (group.afterAnswer === -1 && answerIndex === 0) partial.querySelector('.markdown').before(panel());
-          else if (group.afterAnswer === answerIndex) partial.querySelector('.message-content').append(panel());
+          if (group.afterAnswer + 1 === answerIndex) partial.querySelector('.message-bubble').before(panel());
         }
         previous.after(partial); previous = partial;
       });
+      for (const group of executionGroups(record)) if(group.afterAnswer + 1 >= record.answers.length) {
+        const tail=document.createElement('div');tail.className='orphan-execution';tail.append(executionDetails({...record,steps:group.steps}));previous.after(tail);previous=tail;
+      }
     }
     if (articles[index + 1]?.classList.contains('assistant')) {
       // Replace the legacy-envelope fallback with the cached detailed execution.
@@ -537,10 +539,10 @@ function renderMessages(items) {
       const replies = [];
       for (let at = index + 1; at < articles.length && articles[at].classList.contains('assistant'); at++) replies.push(articles[at]);
       for (const group of executionGroups(record)) {
-        const target = replies[Math.max(0, group.afterAnswer)] || replies.at(-1);
+        const target = replies[group.afterAnswer + 1];
         const panel = executionDetails({...record,steps:group.steps});
-        if(group.afterAnswer < 0) target?.querySelector('.markdown')?.before(panel);
-        else target?.querySelector('.message-content')?.append(panel);
+        if (target) target.querySelector('.message-bubble').before(panel);
+        else { const tail=document.createElement('div');tail.className='orphan-execution';tail.append(panel);replies.at(-1)?.after(tail); }
       }
       let end = index + 1;
       while (end + 1 < visible.length && visible[end + 1].role === 'assistant') end++;
@@ -815,8 +817,8 @@ function startStream(id) {
   sessionStorage.setItem(startKey, String(run.startedAt));
   $('#welcome').hidden = true;
   $('#live-message')?.remove();
-  const live = message('assistant', '', true), content = live.querySelector('.markdown');
-  content.className = 'live-content';
+  const live = document.createElement('div'); live.id = 'live-message'; live.className = 'message-run';
+  const content = document.createElement('div'); content.className = 'live-content'; live.append(content);
   const answerNodes = [], processNodes = new Map();
   $('#messages').append(live);
   let source, settled = false, detached = false, recovering = false, finishing = false, paintTimer, frame;
@@ -844,8 +846,7 @@ function startStream(id) {
     texts.forEach((text,index) => {
       let part = answerNodes[index];
       if (!part) {
-        part = document.createElement('div'); part.className = 'answer-part'; part.tabIndex = 0;
-        part.innerHTML = '<div class="markdown"></div>'; answerNodes.push(part);
+        part = message('assistant', '', true); part.removeAttribute('id'); part.classList.add('answer-part'); answerNodes.push(part);
       }
       const final = !!run.endedAt && index === texts.length-1;
       const key = `${final}:${text}`;
@@ -853,14 +854,17 @@ function startStream(id) {
       part._rendered = key;
       renderStreamText(part.querySelector('.markdown'), markdown(presentAnswer(text).text), performance.now(), replayPaint || document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches);
       part.querySelector('.message-footer')?.remove();
-      part.append(messageFooter(text, {sentAt: final ? run.endedAt : run.answerTimes[index], copy: !!text, ...(final ? {duration:run.endedAt-run.startedAt} : {})}));
+      part.querySelector('.message-content').append(messageFooter(text, {sentAt: final ? run.endedAt : run.answerTimes[index], copy: !!text, ...(final ? {duration:run.endedAt-run.startedAt} : {})}));
     });
     const nodes = [];
-    if (processNodes.has(-1)) nodes.push(processNodes.get(-1).node);
     answerNodes.forEach((node,index) => {
+      const process = processNodes.get(index - 1)?.node;
+      if (process && process.parentElement !== node.querySelector('.message-content')) node.querySelector('.message-bubble').before(process);
       nodes.push(node);
-      if (processNodes.has(index)) nodes.push(processNodes.get(index).node);
     });
+    for (const [after, entry] of processNodes) if (after + 1 >= answerNodes.length) {
+      entry.node.classList.add('pending-execution'); nodes.push(entry.node);
+    } else entry.node.classList.remove('pending-execution');
     // Move only newly inserted nodes; preserve expanded panels, scroll and text animation.
     nodes.forEach((node,index) => { if(content.children[index]!==node) content.insertBefore(node,content.children[index]||null); });
     replayPaint = false;
@@ -1592,3 +1596,5 @@ document.addEventListener('visibilitychange', resumePage);
 window.addEventListener('pageshow', resumePage);
 window.addEventListener('online', resumePage);
 void init();
+
+observeMessageMotion($('#messages'), $('#chat-scroll'));
