@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- preserve native multimodal input through Session host execution, fixing lost
+  image/file attachments in daemon-backed conversations
 - paste or select images in Web chat, preview/remove thumbnails, send image-only
   messages, and retain image references in queued messages and saved history
 - deliver Web images through the existing native vision input path; select an

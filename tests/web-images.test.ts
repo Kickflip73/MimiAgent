@@ -7,6 +7,8 @@ import { imageAttachment, imageIds, IMAGE_MAX_BYTES } from '../src/core/image-at
 import { saveWebImage, readWebImage } from '../src/web/images.js';
 import { stageAttachments, inputWithAttachments } from '../src/runtime/attachments.js';
 import { FileSession } from '../src/core/session.js';
+import { MimiHost } from '../src/runtime/mimi-host.js';
+import type { MimiAgent } from '../src/runtime/mimi-agent.js';
 // @ts-expect-error Browser module.
 import {createImageDrafts} from '../src/web/assets/images.js';
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=','base64');
@@ -19,7 +21,15 @@ test('uploaded image reaches native multimodal input and retains a small history
   const staged=await stageAttachments([{path:image.id,kind:'image'}],uploads,snapshots);
   const input=await inputWithAttachments('看图',staged);
   assert.ok(Array.isArray(input));assert.equal((input[0] as any).content[1].image,`data:image/png;base64,${png.toString('base64')}`);
-  const session=new FileSession(path.join(root,'sessions'),'image-chat');await session.addItems(input);
+  const session=new FileSession(path.join(root,'sessions'),'image-chat');
+  const host=new MimiHost({currentSessionId:'image-chat',close:async()=>{}} as unknown as MimiAgent,{
+    execute:async request=>{
+      assert.deepEqual(request.modelInput,input,'Session host must preserve native image input');
+      await session.addItems(request.modelInput!);
+      return {answer:'image received',effects:[]};
+    },
+  });
+  await host.execute({sessionId:'image-chat',input:'看图',modelInput:input});await host.close();
   const restored=await new FileSession(path.join(root,'sessions'),'image-chat').getItems();
   assert.deepEqual((restored[0] as any).imageAttachments,[image]);
   const saved=await readFile(path.join(root,'sessions','image-chat.json'),'utf8');

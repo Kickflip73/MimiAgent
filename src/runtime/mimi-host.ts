@@ -231,6 +231,7 @@ export class MimiHost {
           }
           const result = await actor.runs.execute({
             input: request.input,
+            modelInput: request.modelInput,
             signal,
             options: request.options,
           }, observer);
