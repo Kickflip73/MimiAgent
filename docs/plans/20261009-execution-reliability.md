@@ -37,3 +37,10 @@ After type checking, full tests and packaging, run serial live-provider tasks th
 The first live retest still exposed IPC stalls. A native process sample showed the daemon main thread inside synchronous SQLite `StatementSync.All`, scanning B-tree pages after a file-close callback. The timeline query selected a Session's latest runs without a Session index; the real database's query plan scanned `runs_started_at`. Add the idempotent `(session_key, started_at DESC, id DESC, task_id)` index for existing databases and use indexed candidate task IDs for workspace recovery. Regression tests assert the production query plan uses a Session search. No transcript deletion, timeout extension or new storage service is needed.
 
 The research task also reproduced a Shell false rejection: `&#39;` inside a quoted sed argument matched the old background-process regex. A small isolated lexical ownership check distinguishes quoted data, escapes, redirects and nested executable Shell. This check is not a sandbox; process-group cleanup and existing permission boundaries remain mandatory.
+
+
+### 最终真实复测发现的另外两个通用根因
+
+- 任务列表即使在 JS 中缩小返回体，数据库仍先 `SELECT *` 扫描、排序并读取结果大字段。改为 SQL 摘要投影，增加 `tasks(created_at)` 索引，与会话运行索引一起幂等更新旧库。保留详情接口，无历史数据迁移。
+- 取消会清除 checkpoint；历史中两个独立 user 消息之间缺少执行终态，模型把旧任务约束视为当前未完成要求。在派生模型请求中增加 Host 轮次边界，保留最多 4 条已脱敏进展、32 条工具终态作为停止事实；原始消息不改写。新请求与结构化 resume 分开，未知副作用仍需核验。
+- 收尾增加分阶段 wall-clock 计时，包含日志、会话、记忆、生命周期钩子，不能把事件循环等待误归因为某个文件锁。

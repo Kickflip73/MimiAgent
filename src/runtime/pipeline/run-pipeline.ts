@@ -10,6 +10,7 @@ import {
   type ModelContextView,
   type WorkSnapshot,
 } from '../../core/context.js';
+import { runInputBoundary, withRunInputBoundary } from '../../core/context-turn-boundary.js';
 import { assertCompletionContractForTask } from '../../core/completion.js';
 import type { RunModelBinding } from '../../core/model-routing.js';
 import {
@@ -245,6 +246,7 @@ export async function executeRunPipeline(
     await run.session.cleanupGeneratedSummaries();
     await run.session.repairToolPairs();
     const recovery = canReadSessionContext ? await run.session.getCheckpoint() : undefined;
+    const stoppedRun = canReadSessionContext ? await run.session.getLastStoppedRun?.() : undefined;
     run.recoveryRunId = recovery?.runId;
     const resumesCheckpoint = recovery !== undefined
       && recovery.status !== 'completed'
@@ -713,6 +715,9 @@ export async function executeRunPipeline(
       return { name: value.name, description: value.description, parameters: value.parameters };
     });
     const budget = context.requestBudget(toolSchemas);
+    const turnBoundary = runInputBoundary(resumesCheckpoint || options?.resumeState === true, stoppedRun);
+    // Reserve before compaction; the boundary itself is a derived request item, not canonical history.
+    const projectionBudget = Math.max(0, budget.inputBudget - estimateTokens([turnBoundary]));
     const ownerGuidanceReserve = directOwnerRun
       ? estimateTokens(soul.instructions) + estimateTokens(preferences.instructions)
       : 0;
@@ -896,7 +901,7 @@ export async function executeRunPipeline(
       let reusableSnapshot: WorkSnapshot | undefined;
       let preparedView: ModelContextView | undefined;
       try {
-        const prepared = context.modelContextView(modelData.input, modelData.instructions, budget.inputBudget, {
+        const prepared = context.modelContextView(modelData.input, modelData.instructions, projectionBudget, {
           consumedArtifactRefs, toolArtifacts: artifacts, persistedSnapshot: persistedContextSnapshot, workingSetBudgetTokens,
         });
         workingTokens = prepared.effectiveTokens;
@@ -942,7 +947,7 @@ export async function executeRunPipeline(
       const view = preparedView ?? context.modelContextView(
         modelData.input,
         modelData.instructions,
-        budget.inputBudget,
+        projectionBudget,
         {
           consumedArtifactRefs,
           toolArtifacts: artifacts,
@@ -967,8 +972,9 @@ export async function executeRunPipeline(
         view.consumedArtifactRefs.forEach((ref) => consumedArtifactRefs.add(ref));
       }
       await persistContextSnapshot(view.snapshot);
-      const currentStart = context.startOfLastUserTurn(view.input);
-      const perCallCurrentInput = currentStart >= 0 ? view.input.slice(currentStart) : [];
+      const modelInput = withRunInputBoundary(view.input, turnBoundary);
+      const currentStart = context.startOfLastUserTurn(modelInput);
+      const perCallCurrentInput = currentStart >= 0 ? modelInput.slice(currentStart) : [];
       host.lastContextManifest = host.contextAssembler.manifest({
         scope,
         budget,
@@ -986,10 +992,10 @@ export async function executeRunPipeline(
           ],
         },
         effective: {
-          items: view.input,
+          items: modelInput,
           records: view.records,
           rawTokens: view.rawTokens,
-          effectiveTokens: estimateTokens(view.input),
+          effectiveTokens: estimateTokens(modelInput),
         },
         archive,
         archiveInput: [],
@@ -997,7 +1003,7 @@ export async function executeRunPipeline(
         toolCount: toolSchemas.length,
       });
       await host.persistContextManifest?.(host.lastContextManifest);
-      return { input: view.input, instructions: view.instructions };
+      return { input: modelInput, instructions: view.instructions };
     };
     const sdkStarted = performance.now();
     const streamResult = await host.runner.run(request.agent, input, {

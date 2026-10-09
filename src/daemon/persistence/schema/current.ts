@@ -1,9 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite';
 
 /** Derived lookup index, safe to install on existing v17 databases without rewriting records. */
-export function ensureSessionRunIndexes(database: DatabaseSync): void {
+export function ensureReadQueryIndexes(database: DatabaseSync): void {
   database.exec(`CREATE INDEX IF NOT EXISTS runs_session_started_idx
-    ON runs(session_key, started_at DESC, id DESC, task_id)`);
+    ON runs(session_key, started_at DESC, id DESC, task_id);
+    CREATE INDEX IF NOT EXISTS tasks_created_idx ON tasks(created_at)`);
 }
 
 export function createFreshV16Schema(database: DatabaseSync): void {

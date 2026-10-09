@@ -13,7 +13,7 @@ import { EventStore, listEventSummaries } from './event-store.js';
 import { EventRouter } from './event-router.js';
 import { taskCompletionRoute } from './task-continuation.js';
 import { sanitizedMemoryEvidenceSnapshot } from './memory-evidence.js';
-import { createFreshV16Schema, ensureSessionRunIndexes } from './persistence/schema/current.js';
+import { createFreshV16Schema, ensureReadQueryIndexes } from './persistence/schema/current.js';
 import { upgradeScheduleContextV17 } from './persistence/schema/migrations/v17-schedule-context.js';
 import {
   ensureMemoryLintSchemaV13,
@@ -187,7 +187,7 @@ export class MimiStore extends ActivityStore {
     this.runs = new RunStore(this.database, this.taskStore);
     this.backupBeforeMigrations();
     this.migrate();
-    ensureSessionRunIndexes(this.database);
+    ensureReadQueryIndexes(this.database);
     this.eventRouter = new EventRouter(this, 'ingress-v1');
     this.schedules = new ScheduleStore(this.database, this.eventStore, this.taskStore, {
       ensureConversationAuthority: (event) => this.ensureConversationAuthority(event),
@@ -296,6 +296,10 @@ export class MimiStore extends ActivityStore {
 
   listTasks(limit = 50, selector: TaskListSelector = {}): TaskRecord[] {
     return this.taskStore.list(managementLimit(limit), selector);
+  }
+
+  listTaskSummaries(limit = 50) {
+    return this.taskStore.listSummaries(managementLimit(limit));
   }
 
   runningTasks(selector: TaskSelector = {}, limit = 50): TaskRecord[] {

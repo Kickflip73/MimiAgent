@@ -55,7 +55,6 @@ import { MimiRuntimeHttpServer, runtimeHttpSessionId } from './runtime-http.js';
 import { AttentionEngine } from './attention.js';
 import { EphemeralSecretBroker } from './ephemeral-secrets.js';
 import { TaskProcessSupervisor } from './task-supervisor.js';
-import { taskListItem } from './task-inspection.js';
 import { backgroundTaskSummary, inspectBackgroundTaskSummary } from './task-tools.js';
 import {
   buildDaemonHealth,
@@ -1170,7 +1169,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         'event.get': () => store.getImmutableEvent(requestedId()),
         'event.route': () => store.getEventRouteReceipt(requestedId()),
         'events.list': () => store.listEventSummaries(limit(params.limit)),
-        'tasks.list': () => store.listTasks(limit(params.limit)).map((task) => params.projection === 'list' ? taskListItem(task) : taskSummaryWithRuntime(task)),
+        'tasks.list': () => params.projection === 'list'
+          ? store.listTaskSummaries(limit(params.limit))
+          : store.listTasks(limit(params.limit)).map(taskSummaryWithRuntime),
         'tasks.get': () => taskDetailsWithRuntime(store.getTask(requestedId())),
         'task.retry': () => store.retryDeadLetterTask(requestedId()),
         'run.get': () => store.runs.get(requestedId()),

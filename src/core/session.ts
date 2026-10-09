@@ -17,6 +17,7 @@ import { resultArtifactSchema, resultArtifacts, toolProgress, toolProgressSchema
 import type { ExecutionCallRecord } from './execution-ledger.js';
 import {
   runFinalizationRecordSchema,
+  toolExecutionManifestEntrySchema,
   type RunFinalizationRecord,
   type RunOutcome,
 } from './run-finalization.js';
@@ -86,6 +87,16 @@ export interface RunCheckpoint {
   startedAt: string;
   updatedAt: string;
 }
+
+const stoppedRunSchema = z.object({
+  runId: z.string(),
+  historyEnd: z.number().int().nonnegative(),
+  outcome: z.enum(['completed', 'partial', 'blocked', 'interrupted', 'failed', 'uncertain']),
+  toolProgress: z.array(toolProgressSchema).max(4),
+  toolManifest: z.array(toolExecutionManifestEntrySchema).max(32),
+  omittedTools: z.number().int().nonnegative(),
+}).strict();
+export type StoppedRunContext = z.infer<typeof stoppedRunSchema>;
 
 export interface ContextArchive {
   coveredItems: number;
@@ -187,6 +198,7 @@ interface SessionFile {
   updatedAt: string;
   items: AgentInputItem[];
   checkpoint?: RunCheckpoint;
+  lastStoppedRun?: StoppedRunContext;
   contextArchive?: ContextArchive;
   contextWorkSnapshot?: ContextWorkSnapshot;
   contextToolArtifacts?: ContextToolArtifact[];
@@ -275,6 +287,7 @@ const sessionFileSchema = z.object({
     startedAt: z.string(),
     updatedAt: z.string(),
   }).strict().optional(),
+  lastStoppedRun: stoppedRunSchema.optional(),
   contextArchive: z.object({
     coveredItems: z.number().int().nonnegative(),
     summary: z.string(),
@@ -488,6 +501,13 @@ export class FileSession implements Session {
     return checkpoint ? { ...checkpoint } : undefined;
   }
 
+  /** Only the immediately preceding stopped turn contributes this derived context. */
+  async getLastStoppedRun(): Promise<StoppedRunContext | undefined> {
+    const session = await this.load();
+    return session.lastStoppedRun?.historyEnd === session.items.length
+      ? structuredClone(session.lastStoppedRun) : undefined;
+  }
+
   async beginRun(
     input: string,
     runId?: string,
@@ -664,11 +684,20 @@ export class FileSession implements Session {
     }, expectedRunId);
   }
 
-  async clearRunCheckpoint(expectedRunId: string): Promise<boolean> {
+  async clearRunCheckpoint(expectedRunId: string, finalization?: RunFinalizationRecord): Promise<boolean> {
     return this.mutateWhen((session) => {
       if (!session.checkpoint || session.checkpoint.runId !== expectedRunId) {
         return { result: false, changed: false };
       }
+      const manifest = finalization?.runId === expectedRunId ? finalization.toolManifest : [];
+      session.lastStoppedRun = {
+        runId: expectedRunId,
+        historyEnd: session.items.length,
+        outcome: finalization?.runId === expectedRunId ? finalization.outcome : 'interrupted',
+        toolProgress: (session.checkpoint.toolProgress ?? []).slice(-4),
+        toolManifest: manifest.slice(-32),
+        omittedTools: Math.max(0, manifest.length - 32),
+      };
       session.checkpoint = undefined;
       session.updatedAt = new Date().toISOString();
       return { result: true, changed: true };
@@ -967,6 +996,7 @@ export class FileSession implements Session {
       await relatedCleanup?.();
       session.items = [];
       session.checkpoint = undefined;
+      session.lastStoppedRun = undefined;
       session.contextArchive = undefined;
       session.contextWorkSnapshot = undefined;
       session.contextToolArtifacts = [];

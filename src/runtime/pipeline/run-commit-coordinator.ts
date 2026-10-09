@@ -133,6 +133,14 @@ export class RunCommitCoordinator {
   async complete(input: RunCommitInput) {
     const run = this.port.activeRun;
     if (!run) throw new Error('没有正在运行的任务可完成');
+    const startedAt = performance.now();
+    let stageStartedAt = startedAt;
+    const timings: Record<string, number> = {};
+    const stage = (name: string) => {
+      const now = performance.now();
+      timings[name] = now - stageStartedAt;
+      stageStartedAt = now;
+    };
     const safeAnswer = redactActiveEphemeralText(input.answer, run.ephemeralSensitiveAccess);
     let gate;
     if (run.completionRequired) {
@@ -151,6 +159,7 @@ export class RunCommitCoordinator {
       run.facts.calls(run.sessionId, evidenceRunId),
       await this.port.components.state.executionLedger.store.listCalls(run.sessionId, evidenceRunId),
     );
+    stage('completionFactsMs');
     const decision = decideRunCommit({
       draft: gate && gate.decision !== 'pass' ? incompleteCompletionAnswer(gate) : safeAnswer,
       calls: executionCalls,
@@ -171,6 +180,7 @@ export class RunCommitCoordinator {
         executionKey,
         retainExecutionLedger: run.options?.retainExecutionLedger === true,
       });
+      stage('runtimeActionsMs');
       finalization = createRunFinalization({
         runId: run.runId,
         answer: committedAnswer,
@@ -191,6 +201,7 @@ export class RunCommitCoordinator {
         runtimeActions: actions.map((action) => ({ ...action })),
         finalization,
       });
+      stage('journalPrepareMs');
       if (run.options?.retainExecutionLedger && executionKey) {
         const receipt = {
           runId: run.runId,
@@ -209,19 +220,25 @@ export class RunCommitCoordinator {
           throw new Error(`Execution ${executionKey} 已存在不同的完成回执，拒绝覆盖`);
         }
       }
+      stage('completionReceiptMs');
       await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'receipt_committed');
+      stage('journalReceiptMs');
       await this.port.components.state.traces.record(run.sessionId, 'run_finalization', finalization);
       completed = await run.session.completeRun(committedAnswer, run.runId, finalization);
       if (completed?.runId !== run.runId || completed.status !== 'completed') {
         throw new Error(`Run ${run.runId} 已失效，拒绝用旧结果完成当前 Session`);
       }
+      stage('sessionCompleteMs');
       await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'session_committed');
+      stage('journalSessionMs');
       if (gate?.decision === 'pass' && run.goalCreatedAt) {
         await this.port.components.state.goalsAndPlans.store.completeGoalFromGate(
           gate.reason, run.goalCreatedAt,
         );
       }
+      stage('goalCompleteMs');
       await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'goal_committed');
+      stage('journalGoalMs');
       const cause = run.options?.cause;
       if (cause?.source !== 'mimi:memory-maintenance' && cause?.source !== 'attention:briefing') {
         await this.port.components.memory.recordEpisode({
@@ -236,6 +253,7 @@ export class RunCommitCoordinator {
           });
         });
       }
+      stage('memoryEpisodeMs');
     } catch (error) {
       // Once a completion receipt exists it is recovery evidence. Clearing it
       // here would permit the model and side effects to run again after a crash.
@@ -245,21 +263,31 @@ export class RunCommitCoordinator {
     if (!finalization) throw new Error(`Run ${run.runId} 未生成最终提交事实`);
     this.port.applyManifestActual(validUsage);
     await this.port.components.computer?.endRun(run.runId);
+    stage('computerEndMs');
     await this.port.hooks.emit({ type: 'run_end', sessionId: run.sessionId, answer: committedAnswer });
+    stage('runEndHooksMs');
     if (!run.options?.retainExecutionLedger) {
       await this.port.components.state.executionLedger.store
         .clearRun(run.sessionId, executionKey ?? run.runId).catch(() => undefined);
     }
+    stage('clearLedgerMs');
     run.releaseOwner();
     const effects = await this.port.runtimeActions.apply(
       actions,
       run.sessionId,
       run.options?.retainExecutionLedger ? executionKey : undefined,
     );
+    stage('applyEffectsMs');
     await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'effects_applied');
+    stage('journalEffectsMs');
     if (!run.options?.retainExecutionLedger) {
       await this.port.components.state.runCommits.advance(run.sessionId, run.runId, 'finalized');
     }
+    stage('journalFinalizeMs');
+    // Wall-clock phases include event-loop contention; they are not CPU/I/O attribution.
+    await this.port.components.state.traces.record(run.sessionId, 'run_commit_timing', {
+      runId: run.runId, ...timings, totalMs: performance.now() - startedAt,
+    }).catch(() => undefined);
     return { answer: committedAnswer, effects, finalization };
   }
 
@@ -306,7 +334,7 @@ export class RunCommitCoordinator {
         await run.session.rollbackRunItems(run.runId, safeInterruptedAnswer).catch(() => undefined);
       }
       if (input.interrupted && isTerminalRunInterruption(safeError)) {
-        await run.session.clearRunCheckpoint(run.runId);
+        await run.session.clearRunCheckpoint(run.runId, finalization);
       } else {
         await run.session.failRun(
           errorMessage,

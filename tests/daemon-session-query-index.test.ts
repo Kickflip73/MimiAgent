@@ -60,3 +60,42 @@ test('fresh and existing databases bound session history and workspace lookup by
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test('task sidebar SQL reads bounded metadata and preserves fields without decoding result bodies', async () => {
+  const { taskListItem } = await import('../src/daemon/task-inspection.js');
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'mimi-task-query-'));
+  const file = path.join(directory, 'mimi.db');
+  let store = new MimiStore(file);
+  let database: DatabaseSync | undefined;
+  try {
+    const timestamp = '2026-10-09T08:00:00.000Z';
+    const authority = store.appendEvent({ id: 'authority', externalId: 'authority', source: 'local-cli',
+      type: 'command.received', trust: 'owner', profileId: 'owner', payload: {},
+      replyRoute: { channel: 'local' }, occurredAt: timestamp, receivedAt: timestamp }).event;
+    for (let i = 0; i < 3; i += 1) {
+      store.enqueueTask({ id: `task-${i}`, type: 'background', idempotencyKey: `task-${i}`,
+        authorityEventId: authority.id, profileId: 'owner', sessionKey: `session-${i}`,
+        objective: { objective: i ? 'a'.repeat(700) : '', originSessionId: 'origin' },
+        executor: 'isolated_worker', workspaceAccess: 'write', priority: 50 });
+    }
+    database = new DatabaseSync(file);
+    database.prepare('UPDATE tasks SET created_at=?, updated_at=?, error=?').run(timestamp, timestamp, 'error'.repeat(150));
+    const expected = store.listTasks(2).map(taskListItem);
+    assert.deepEqual(expected.map((item) => item.taskId), ['task-2', 'task-1']);
+    // A deliberately undecodable result proves the sidebar path never parses it.
+    database.exec("UPDATE tasks SET result_json='not-json'; DROP INDEX tasks_created_idx");
+    database.close(); database = undefined;
+    store.close(); store = new MimiStore(file); // existing deployment receives index
+    database = new DatabaseSync(file);
+    assert.deepEqual(store.listTaskSummaries(2), expected);
+    assert.equal(store.listTaskSummaries(200).find((item) => item.taskId === 'task-0')?.objective, '');
+    const sql = await queryFrom('src/daemon/task-store.ts', 'listSummaries(limit:');
+    assert.doesNotMatch(sql, /result_json|SELECT \*/);
+    const queryPlan = plan(database, sql, '100');
+    assert.match(queryPlan, /SCAN tasks USING INDEX tasks_created_idx/);
+    assert.doesNotMatch(queryPlan, /USE TEMP B-TREE/);
+  } finally {
+    store.close(); database?.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
