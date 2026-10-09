@@ -63,7 +63,7 @@ const text = (value: unknown): string => {
   if (Array.isArray(value)) return value.map((part) => typeof object(part).text === 'string' ? object(part).text : '').join('\n');
   return '';
 };
-const itemText = (item: Item): string => text(item.content).trim();
+const itemText = (item: Item): string => (Array.isArray(item.mediaAttachments)&&typeof item.displayText==='string'?item.displayText:text(item.content)).trim();
 const date = (value: unknown): string | undefined => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? value : undefined;
 const detail = (value: unknown): string => {
   const safe = sanitizeSensitiveData(value);

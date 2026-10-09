@@ -1672,3 +1672,46 @@ dialog h2 {
 #attach-image svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.4; }
 .image-model-note { padding:4px 16px 7px; font-size:11px; color:#888; }
 .image-model-note button { border:0; background:none; padding:0 4px; color:#333; text-decoration:underline; cursor:pointer; font:inherit; }
+
+/* Media blocks share the bubble shell; playback always starts with an explicit click. */
+.message-media { max-width:100%; margin-top:8px; }
+.message-media:first-child { margin-top:0; }
+.voice-message { width:340px; max-width:100%; }
+.voice-player { display:flex; align-items:center; gap:10px; min-width:0; padding:4px 0; }
+.voice-player audio { display:none; }
+.voice-play { width:32px; height:32px; display:grid; place-items:center; flex:none; background:#242426; color:white; border-radius:50%; }
+.voice-play svg { width:17px; height:17px; fill:currentColor; }
+.voice-label { font-size:12px; color:#737379; }
+.voice-player input { min-width:35px; width:100%; flex:1; height:3px; accent-color:#55555d; }
+.voice-player time { font-size:10px; color:#898991; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.voice-transcript { margin:8px 0 0; padding-top:8px; border-top:1px solid #00000009; font-size:13px; line-height:1.65; color:#55555d; white-space:pre-wrap; }
+.media-video { margin:0; width:460px; max-width:100%; }
+.media-video video { display:block; width:100%; max-height:340px; border-radius:12px; background:#19191b; }
+.media-video figcaption { font-size:10px; color:#96969d; margin-top:5px; }
+.media-drafts { max-height:270px; overflow:auto; padding:10px 3px 4px; display:flex; flex-wrap:wrap; gap:10px; }
+.media-draft { position:relative; border:1px solid #e8e8eb; background:#f8f8fa; padding:9px 12px; border-radius:14px; max-width:100%; }
+.media-draft .media-video { width:240px; }
+.media-draft .media-video video { max-height:130px; }
+.media-progress,.media-error { display:flex; gap:6px; align-items:center; font-size:11px; color:#8b8b91; margin:7px 0 0; }
+.media-error { color:#ac5555; }
+.media-error button,.media-resume { font-size:11px; text-decoration:underline; }
+.mini-spinner { width:11px; height:11px; border:1.5px solid #ddd; border-top-color:#555; border-radius:50%; animation:media-spin .8s linear infinite; }
+@keyframes media-spin { to {transform:rotate(360deg);} }
+#record-voice { width:28px; height:28px; color:#88888f; }
+#record-voice svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.5; }
+#record-voice.is-recording { background:#252527; color:#fff; border-radius:50%; }
+#record-voice.is-recording svg { display:none; }
+#record-voice.is-recording::after { content:''; width:10px; height:10px; border-radius:2px; background:currentColor; }
+.recording-state { display:flex; align-items:center; gap:8px; padding:8px 0; font-size:12px; color:#777; }
+.recording-state button { margin-left:auto; }
+.recording-dot { width:7px; height:7px; border-radius:50%; background:#ac5555; }
+.code-block { margin:8px 0; border:1px solid #e1e1e5; border-radius:12px; overflow:hidden; background:#fff; max-width:100%; }
+.code-block header { display:flex; justify-content:space-between; align-items:center; padding:5px 11px; border-bottom:1px solid #eee; color:#929298; font:10px ui-monospace,monospace; }
+.code-block header button { width:24px; height:22px; opacity:0; }
+.code-block:hover header button,.code-block:focus-within header button {opacity:1;}
+.code-block header svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.4; }
+.code-block pre { border:0; border-radius:0; margin:0; padding:12px; background:transparent; overflow:auto; font-size:12px; }
+.queued-media .voice-transcript,.queued-media .media-video video { display:none; }
+.queued-media .voice-message {width:240px;}
+@media(hover:none){.code-block header button{opacity:1;}}
+@media(prefers-reduced-motion:reduce){.mini-spinner{animation:none;}}

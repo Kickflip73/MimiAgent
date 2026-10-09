@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- add bidirectional audio/video blocks, code-block controls and click-to-record voice
+  drafts with local Whisper transcription, bounded media preparation and replay
+- carry typed media references through daemon submission, queues and canonical history;
+  sample video frames through the existing vision input path
+- render assistant media links with scoped local-file access and range playback
+
 - place each execution phase above its following reply in live and restored chats;
   keep trailing work separate when no answer has arrived
 - unify compact rounded message bubbles, reveal copy controls on hover/focus,

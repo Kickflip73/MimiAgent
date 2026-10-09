@@ -226,3 +226,14 @@ test('Web accepts binary image upload and image-only messages without passing im
   const blocked=await fetch(server.address+'/api/images',{method:'POST',headers:{'content-type':'image/png',origin:'https://evil.test'},body:'image'});
   assert.equal(blocked.status,403);
 });
+
+test('media upload, media-only submission and byte-range playback preserve attachment identity',async t=>{
+ const {mediaAttachment}=await import('../src/core/media-attachment.js');
+ const data=Buffer.from('RIFF0000WAVEfmt synthetic test payload');const ref=mediaAttachment(data,'audio/wav');let submitted:unknown[]=[];
+ const server=new MimiWebServer(backend({uploadMedia:async(bytes,type)=>mediaAttachment(bytes,type),media:async()=>({data,mediaType:'audio/wav'}),prepareMedia:async()=>({...ref,transcript:'你好'}),submit:async(...args)=>{submitted=args;return {eventId:'media-task'};}}),0);
+ await server.start();t.after(()=>server.close());const headers=localHeaders(server);
+ const upload=await fetch(server.address+'/api/media',{method:'POST',headers:{...headers,'content-type':'audio/wav'},body:data});assert.equal(upload.status,201);assert.equal((await upload.json() as any).id,ref.id);
+ for(const [range,expected,status] of [['bytes=0-3','RIFF',206],['bytes=-7','payload',206],['bytes=999-1000','',416]] as const){const response=await fetch(server.address+'/api/media?id='+ref.id,{headers:{range}});assert.equal(response.status,status);if(expected)assert.equal(await response.text(),expected);}
+ const result=await fetch(server.address+'/api/messages',{method:'POST',headers,body:JSON.stringify({sessionId:'s',input:'',requestId:randomUUID(),media:[ref.id]})});assert.equal(result.status,202);assert.deepEqual(submitted[6],[ref.id]);
+ assert.equal((await fetch(server.address+'/api/media',{method:'POST',headers:{...headers,origin:'https://evil.example'},body:data})).status,403);
+});

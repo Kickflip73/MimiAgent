@@ -828,3 +828,20 @@ MimiAgent 不追求复刻大型 Agent 平台的全部能力。当前不在运行
 支持 PNG、JPEG、GIF、WebP，每次最多 8 张、单张 10MB、合计 20MB。图片可随消息排队，刷新后保留已上传草稿和历史缩略图。
 自动选择模型时，附图会为当前会话选择已配置的看图模型；手动选中的纯文字模型会提示切换。
 图片通过原有原生视觉输入链路交给模型，本机保存附件，历史仅保存引用，不重复写入图片 Base64。
+
+音频与视频可通过同一附件按钮选择。麦克风按钮录音、再次点击停止；录音最长 5 分钟，首次使用需允许浏览器访问麦克风。录音后显示播放条，识别中显示转圈，完成后在下方显示转写。识别失败会保留附件，可重试或移除；识别完成后才可发送。支持仅附件、混合文字、排队及历史回放。
+
+音视频单个最大 100MB、最长 10 分钟，每条消息所有类型合计最多 8 个附件。音频支持 MP3/WAV/M4A/OGG/FLAC/WebM，视频支持 MP4/WebM/MOV；具体播放编码兼容性取决于浏览器。视频均匀采样最多 8 帧送给已配置的视觉模型，不分析视频声音；音频在本机转写，模型接收转写文字，不能据此判断音色或语气。
+
+Web 语音识别使用按需启动的 whisper.cpp base（CPU 2 线程，任务结束退出），媒体处理串行执行，不使用 ChatTTS。macOS 安装：
+
+```sh
+brew install ffmpeg whisper.cpp
+mkdir -p ~/.mimi-agent/daemon/web-media/models
+curl -fL https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin \
+  -o ~/.mimi-agent/daemon/web-media/models/ggml-base.bin
+```
+
+也可通过 `MIMI_WHISPER_BIN`、`MIMI_WHISPER_MODEL` 指定已有程序和模型；自定义 daemon 根目录时模型默认位于其 `web-media/models/`。识别完全本机执行，发送消息时转写会交给当前模型服务。录音只在点击麦克风后开始，切换会话时停止并归入原会话草稿。
+
+双方消息均支持带语言标题与复制按钮的 Markdown 代码块。模型回答中的媒体链接会显示图片预览、语音播放条或视频播放器；不自动播放。本地媒体必须是当前回答引用的工作区文件或 Mimi 生成的媒体，使用绝对路径链接，例如 `[音频](/绝对路径/briefing.mp3)`；HTTPS 媒体链接直接由浏览器加载。不存在或越出允许目录的文件不会暴露。

@@ -1,3 +1,5 @@
+import { mediaIds, type MediaAttachment } from '../core/media-attachment.js';
+import { mediaRecord, readMedia } from '../runtime/media-input.js';
 import { ModelConfigStore } from '../runtime/model-config.js';
 import { nextCronTime } from './cron.js';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -277,6 +279,8 @@ interface SubmitParams extends Partial<Pick<EventEnvelope,
   approvedPersonalMessageText?: string;
   attachments?: LocalAttachmentRequest[];
   webImages?: string[];
+  webMedia?: string[];
+  webMediaText?: string;
   requestedSecurityProfile?: unknown;
 }
 
@@ -811,6 +815,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       return {
         ...status,
         supportsWebImages: true,
+        supportsWebMedia: true,
         lifecycle: lifecycleEpoch,
         ...(providerHealth ? { providerHealth } : {}),
         ...(providerHealthRoutes?.length ? { providerHealthRoutes } : {}),
@@ -1141,6 +1146,15 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           stagedAttachments.push(...images);
           if(stagedAttachments.length>8 || stagedAttachments.reduce((sum,item)=>sum+item.bytes,0)>IMAGE_TOTAL_BYTES) throw new Error('附件最多 8 个，合计不超过 20MB');
         }
+        const preparedMedia: MediaAttachment[] = [];
+        if(source === 'local-cli' && trust === 'owner') for(const id of mediaIds(params.webMedia)) {
+          const root=path.join(mimiPaths(config).root,'web-media');
+          await readMedia(root,id);
+          const ref=await mediaRecord(root,id).read();
+          if(!ref||ref.id!==id)throw new Error('媒体尚未处理完成，请等待识别或视频准备完成');
+          preparedMedia.push(ref);
+        }
+        if(preparedMedia.length + stagedAttachments.length > 8)throw new Error('每条消息最多 8 个附件');
         const prompt = params.payload === undefined ? requiredString(params.text, 'text') : undefined;
         const submittedPayload = params.payload ?? {
           ...(requestedWorkspaceRoot ? { workspaceRoot: requestedWorkspaceRoot } : {}),
@@ -1150,6 +1164,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             ? { approvedPersonalMessageText: params.approvedPersonalMessageText.trim().slice(0, 4_000) }
             : {}),
           ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
+          ...(preparedMedia.length ? {mediaAttachments:preparedMedia,...(typeof params.webMediaText==='string'&&params.webMediaText.length<=60000?{mediaDisplayText:params.webMediaText}:{})} : {}),
         };
         const payload = requestedSecurityProfile
           ? {

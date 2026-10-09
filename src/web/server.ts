@@ -1,3 +1,4 @@
+import { mediaIds, mediaMime, MEDIA_MAX_BYTES } from '../core/media-attachment.js';
 import { imageIds, imageMediaType, IMAGE_MAX_BYTES } from '../core/image-attachment.js';
 import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -7,6 +8,8 @@ import type { SecurityProfile } from '../config.js';
 import type { WebBackend } from './backend.js';
 
 const ASSETS: Record<string, [string, string]> = {
+  '/media.js': ['media.js','text/javascript; charset=utf-8'],
+  '/recorder.js': ['recorder.js','text/javascript; charset=utf-8'],
   '/message-view.js': ['message-view.js', 'text/javascript; charset=utf-8'],
   '/images.js': ['images.js', 'text/javascript; charset=utf-8'],
   '/queue.js': ['queue.js', 'text/javascript; charset=utf-8'],
@@ -80,7 +83,7 @@ export class MimiWebServer {
       response.setHeader('x-content-type-options', 'nosniff');
       response.setHeader('referrer-policy', 'no-referrer');
       response.setHeader('x-frame-options', 'DENY');
-      response.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+      response.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
       void this.route(request, response).catch((error: unknown) => {
         if (response.destroyed) return;
         if (response.headersSent) { response.end(); return; }
@@ -136,6 +139,29 @@ export class MimiWebServer {
       if (!this.backend.manageWrite) throw new HttpError(503, '管理接口不可用');
       const input = await body(request);
       json(response, 200, await this.backend.manageWrite(identifier(input.action), identifier(input.sessionId), input.value)); return;
+    }
+    if((url.pathname === '/api/media' || url.pathname === '/api/media/output') && get && this.backend.media) {
+      const id=String(url.searchParams.get('id')||'');
+      if(url.pathname==='/api/media')try{mediaMime(id);}catch{throw new HttpError(400,'无效的媒体标识');}
+      const value=url.pathname==='/api/media/output' && this.backend.outputMedia ? await this.backend.outputMedia(identifier(url.searchParams.get('session')),String(url.searchParams.get('path')||'')) : await this.backend.media(id);
+      const size=value.data.length,range=request.headers.range;
+      const headers={'content-type':value.mediaType,'accept-ranges':'bytes','cache-control':'private, max-age=86400','x-content-type-options':'nosniff'};
+      if(range) {
+        const match=/^bytes=(\d*)-(\d*)$/.exec(range);
+        if(!match||(!match[1]&&!match[2])){response.writeHead(416,{'content-range':`bytes */${size}`});response.end();return;}
+        const start=match[1]?Number(match[1]):Math.max(0,size-Number(match[2]));
+        const end=match[1]&&match[2]?Math.min(size-1,Number(match[2])):size-1;
+        if(start>end||start>=size){response.writeHead(416,{'content-range':`bytes */${size}`});response.end();return;}
+        response.writeHead(206,{...headers,'content-length':end-start+1,'content-range':`bytes ${start}-${end}/${size}`});response.end(value.data.subarray(start,end+1));
+      }else{response.writeHead(200,{...headers,'content-length':size});response.end(value.data);}return;
+    }
+    if(url.pathname === '/api/media' && request.method==='POST' && this.backend.uploadMedia) {
+      const chunks:Buffer[]=[];let size=0;
+      for await(const chunk of request){size+=chunk.length;if(size>MEDIA_MAX_BYTES)throw new HttpError(413,'媒体不能超过 100MB');chunks.push(Buffer.from(chunk));}
+      json(response,201,await this.backend.uploadMedia(Buffer.concat(chunks),String(request.headers['content-type']||'').split(';')[0]!));return;
+    }
+    if(url.pathname === '/api/media/prepare' && request.method==='POST' && this.backend.prepareMedia) {
+      const input=await body(request);const ids=mediaIds([input.id]);json(response,200,await this.backend.prepareMedia(ids[0]!));return;
     }
     if (url.pathname === '/api/images') {
       if (get && this.backend.image) {
@@ -197,14 +223,15 @@ export class MimiWebServer {
     if (request.method === 'POST' && url.pathname === '/api/messages') {
       const input = await body(request);
       const id = identifier(input.sessionId);
-      let images:string[];
-      try { images=imageIds(input.images); } catch(error) {throw new HttpError(400,(error as Error).message);}
-      if (typeof input.input !== 'string' || (!input.input.trim() && !images.length) || input.input.length > 60_000) throw new HttpError(400, '消息不能为空或超过 60000 字');
+      let images:string[];let media:string[];
+      try { images=imageIds(input.images);media=mediaIds(input.media);if(images.length+media.length>8)throw new Error('每条消息最多 8 个附件'); } catch(error) {throw new HttpError(400,(error as Error).message);}
+      if (typeof input.input !== 'string' || (!input.input.trim() && !images.length && !media.length) || input.input.length > 60_000) throw new HttpError(400, '消息不能为空或超过 60000 字');
       if (typeof input.requestId !== 'string' || !UUID.test(input.requestId)) throw new HttpError(400, '无效的请求 ID');
       if (input.security !== undefined && !['safe', 'workstation', 'full-owner'].includes(String(input.security))) throw new HttpError(400, '无效的安全等级');
       if(input.workspaceRoot!==undefined && (typeof input.workspaceRoot!=='string' || input.workspaceRoot.length>4096))throw new HttpError(400,'无效的工作区');
       const security = input.security as SecurityProfile | undefined;
-      const result = images.length ? await this.backend.submit(id,input.input,input.requestId,security,input.workspaceRoot as string | undefined,images)
+      const result = media.length ? await this.backend.submit(id,input.input,input.requestId,security,input.workspaceRoot as string | undefined,images,media)
+        : images.length ? await this.backend.submit(id,input.input,input.requestId,security,input.workspaceRoot as string | undefined,images)
         : input.workspaceRoot === undefined ? await this.backend.submit(id,input.input,input.requestId,security)
         : await this.backend.submit(id,input.input,input.requestId,security,input.workspaceRoot as string);
       json(response,202,result); return;

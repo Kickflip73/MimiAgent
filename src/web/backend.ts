@@ -1,3 +1,7 @@
+import { readOutputMedia } from './media-output.js';
+import { mediaIds, type MediaAttachment } from '../core/media-attachment.js';
+import { saveMedia, readMedia } from '../runtime/media-input.js';
+import { prepareMedia } from './media.js';
 import { imageIds, IMAGE_TOTAL_BYTES, type ImageAttachment } from '../core/image-attachment.js';
 import { saveWebImage, readWebImage } from './images.js';
 import { memoryEvidence, readMemoryEvidence } from './memory-browser.js';
@@ -29,7 +33,11 @@ export interface WebBackend {
   session(id: string, draft: boolean): Promise<unknown>;
   history(id: string): Promise<unknown>;
   context(id: string): Promise<unknown>;
-  submit(id: string, input: string, requestId: string, security?: SecurityProfile, workspaceRoot?: string, images?: string[]): Promise<unknown>;
+  submit(id: string, input: string, requestId: string, security?: SecurityProfile, workspaceRoot?: string, images?: string[], media?: string[]): Promise<unknown>;
+  outputMedia?(session:string,file:string):Promise<{data:Buffer;mediaType:string}>;
+  uploadMedia?(data:Buffer,type:string):Promise<MediaAttachment>;
+  media?(id:string):Promise<{data:Buffer;mediaType:string}>;
+  prepareMedia?(id:string):Promise<MediaAttachment>;
   uploadImage?(data: Buffer, mediaType: string): Promise<ImageAttachment>;
   image?(id: string): Promise<{data:Buffer;mediaType:string}>;
   stream(id: string, after: number): Promise<MimiStreamSnapshot>;
@@ -135,11 +143,21 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
       const items = await client.history(id);
       return (await timeline(id, items)).items;
     },
+    outputMedia:(session,file)=>readOutputMedia(config.dataRoot,sessionWorkspace(session),session,file),
+    uploadMedia:(data,type)=>saveMedia(path.join(daemonPaths.root,'web-media'),data,type),
+    media:id=>readMedia(path.join(daemonPaths.root,'web-media'),id),
+    prepareMedia:id=>prepareMedia(path.join(daemonPaths.root,'web-media'),id),
     uploadImage: (data,mediaType) => saveWebImage(path.join(daemonPaths.root,'web-images'),data,mediaType),
     image: id => readWebImage([path.join(daemonPaths.root,'web-images'),path.join(daemonPaths.root,'attachments')],id),
-    submit: async (id, input, requestId, security, workspaceRoot, images) => {
+    submit: async (id, input, requestId, security, workspaceRoot, images, media) => {
+      const mediaRefs=mediaIds(media),prepared:MediaAttachment[]=[];
+      if(mediaRefs.length) {
+        const daemon=await mimiRpc<{supportsWebMedia?:boolean}>(socket,'status',undefined,8000);
+        if(!daemon.supportsWebMedia)throw new Error('需要在当前任务结束后重启后台以启用音视频消息');
+        for(const ref of mediaRefs)prepared.push(await prepareMedia(path.join(daemonPaths.root,'web-media'),ref));
+      }
       const ids = imageIds(images);
-      if(ids.length) {
+      if(ids.length || prepared.some(ref=>ref.kind==='video')) {
         const daemon=await mimiRpc<{supportsWebImages?:boolean}>(socket,'status',undefined,8_000);
         if(!daemon.supportsWebImages)throw new Error('后台仍运行旧版本，请在当前任务完成后重启 Mimi 后台以启用图片发送');
         const catalog=await availableModels(id);
@@ -152,7 +170,7 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
       if(total > IMAGE_TOTAL_BYTES) throw new Error('图片合计不能超过 20MB');
       const root = workspaceRoot ? await validateWorkspace(workspaceRoot) : sessionWorkspace(id);
       if (root === defaultWorkspaceRoot(options.homeDirectory)) await mkdir(root, { recursive: true, mode: 0o700 });
-      const submission=await client.submit(input, id, { requestId, requestedSecurityProfile: security, workspaceRoot: root, ...(ids.length ? {webImages:ids} : {}) });
+      const submission=await client.submit(input, id, { requestId, requestedSecurityProfile: security, workspaceRoot: root, ...(ids.length ? {webImages:ids} : {}), ...(mediaRefs.length ? {webMedia:mediaRefs} : {}) });
       if(root)rememberWorkspace(id,root);
       return submission;
     },

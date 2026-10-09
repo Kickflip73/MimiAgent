@@ -1,19 +1,20 @@
 /** Presentation blocks only. Neither canonical history nor executable HTML lives here. */
-export function messageBlocks(text, images = []) {
-  return [...(images.length ? [{type:'images', images}] : []), {type:'text', text}];
+export function messageBlocks(text, images = [], media = []) {
+  return [...(images.length ? [{type:'images', images}] : []), {type:'text', text}, ...media.map(ref=>({type:ref.kind==='image'?'images':'media',...(ref.kind==='image'?{images:[ref]}:{ref})}))];
 }
 
-export function createMessageBody(blocks, {markdown, imagesMarkup}) {
+export function createMessageBody(blocks, {markdown, imagesMarkup, mediaMarkup}) {
   const body = document.createElement('div');
   body.className = 'message-bubble';
   const renderers = {
     text: block => markdown(block.text),
     images: block => imagesMarkup(block.images),
+    media: block => mediaMarkup(block.ref),
   };
   for (const block of blocks) {
     if (!renderers[block.type]) continue;
     const element = document.createElement('div');
-    element.className = block.type === 'text' ? 'markdown message-block' : 'message-images message-block';
+    element.className = block.type === 'text' ? 'markdown message-block' : block.type==='images'?'message-images message-block':'message-media message-block';
     element.dataset.block = block.type;
     element.innerHTML = renderers[block.type](block);
     body.append(element);

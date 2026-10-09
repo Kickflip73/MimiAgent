@@ -94,9 +94,11 @@
               <div id="plan" class="plan" hidden></div>
               <div id="message-queue" class="message-queue" aria-label="待发送消息" hidden></div>
               <form class="composer" id="composer">
+                <div id="recording-state" class="recording-state" hidden><span class="recording-dot"></span><time id="recording-time">0:00</time><span>录音中</span><button id="cancel-recording" type="button" aria-label="取消录音">×</button></div>
+                <div id="media-drafts" class="media-drafts" aria-label="待发送媒体" hidden></div>
                 <div id="image-drafts" class="image-strip" aria-label="待发送图片" hidden></div>
                 <div id="image-model-note" class="image-model-note" hidden></div>
-                <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden />
+                <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,audio/mpeg,audio/wav,audio/mp4,audio/ogg,audio/flac,audio/webm,video/mp4,video/webm,video/quicktime" multiple hidden />
                 <label class="sr-only" for="message-input"
                   >给 Mimi 发消息</label
                 >
@@ -129,7 +131,8 @@
                     <select id="security" aria-label="安全等级"><option value="safe">安全</option><option value="workstation">工作区</option><option value="full-owner">完全访问</option></select>
                   </div>
                   <div class="composer-actions">
-                    <button id="attach-image" type="button" class="icon-button" aria-label="添加图片" title="添加图片，也可直接粘贴"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8" cy="8" r="1.5"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg></button>
+                    <button id="record-voice" type="button" class="icon-button" aria-label="录制语音" title="录制语音，最长 5 分钟"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></svg></button>
+                    <button id="attach-image" type="button" class="icon-button" aria-label="添加图片、音频或视频" title="添加图片、音频或视频"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8" cy="8" r="1.5"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg></button>
                     <time id="run-elapsed" hidden>0s</time>
                     <button type="button" id="context-indicator" class="context-indicator" aria-haspopup="dialog" aria-label="上下文占用" hidden>
                       <svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7"/><circle id="context-ring" cx="10" cy="10" r="7" pathLength="100"/></svg>

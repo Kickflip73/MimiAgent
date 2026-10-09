@@ -22,11 +22,11 @@ export function createMessageQueue({ storage, submit, isRunning, interrupt, acce
   return {
     list: (session) => items.filter(item => item.session === session),
     sessions: () => [...new Set(items.map(item => item.session))],
-    add(session, input, security, images = []) {
-      const item = { id: uuid(), session, input, security, ...(images.length ? {images:images.map(i=>({...i}))} : {}), state: 'queued', createdAt: new Date().toISOString() };
+    add(session, input, security, images = [], media = []) {
+      const item = { id: uuid(), session, input, security, ...(images.length ? {images:images.map(i=>({...i}))} : {}), ...(media.length?{media:media.map(i=>({...i}))}:{}), state: 'queued', createdAt: new Date().toISOString() };
       items.push(item); persist(); return item;
     },
-    edit(id, input) { const item = items.find(i => i.id === id); if (item?.state === 'queued' && (input.trim() || item.images?.length)) { item.input = input.trim(); item.error = undefined; persist(); } },
+    edit(id, input) { const item = items.find(i => i.id === id); if (item?.state === 'queued' && (input.trim() || item.images?.length || item.media?.length)) { item.input = input.trim(); item.error = undefined; persist(); } },
     cancel(id) { items = items.filter(i => i.id !== id || i.state !== 'queued'); persist(); },
     async drain(session, immediateId) {
       if (busy.has(session) || (!immediateId && probing.has(session))) return;

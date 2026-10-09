@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { inputWithMedia } from '../runtime/media-input.js';
+import { mediaSchema } from '../core/media-attachment.js';
 import { randomUUID } from 'node:crypto';
 import type { RunStreamEvent } from '@openai/agents';
 import type { MimiAgent } from '../runtime/mimi-agent.js';
@@ -534,7 +537,12 @@ export class MimiDispatcher {
       preemptTimer = setInterval(checkPreemption, this.options.preemptPollMs ?? 250);
       preemptTimer.unref();
       refreshRunIdleWatchdog();
-      const modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
+      let modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
+      const mediaPayload = event.payload as {mediaAttachments?:unknown[];mediaDisplayText?:string};
+      if(Array.isArray(mediaPayload?.mediaAttachments) && event.source==='local-cli' && event.trust==='owner') {
+        modelInput = await inputWithMedia(modelInput,mediaPayload.mediaDisplayText ?? decision.input!,
+          mediaPayload.mediaAttachments.map(ref=>mediaSchema.parse(ref)),path.join(path.dirname(this.store.file),'web-media'));
+      }
       const secretReferences = ephemeralSecretReferences(task.objective);
       const directOwnerConversation = task.type === 'conversation'
         && event.id === active.authority.id
