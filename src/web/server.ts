@@ -206,10 +206,11 @@ export class MimiWebServer {
       let after = initial;
       let page = await this.backend.stream(id, after);
       if (!page.task) throw new HttpError(404, '任务不存在');
-      response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', connection: 'keep-alive' });
+      response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', connection: 'keep-alive', 'cache-control': 'no-cache, no-transform', 'x-accel-buffering': 'no' });
       response.write('retry: 1500\n\n');
       response.write('event: ready\ndata: {}\n\n');
       let heartbeat = Date.now();
+      let quietPolls = 0;
       while (!response.destroyed) {
         if (Date.now() - heartbeat >= 10_000) {
           response.write('event: heartbeat\ndata: {}\n\n');
@@ -224,7 +225,11 @@ export class MimiWebServer {
           response.write(`event: done\ndata: ${JSON.stringify(page.task)}\n\n`);
           break;
         }
-        if (!page.hasMore) await delay(750, undefined, { signal: abort.signal });
+        if (!page.hasMore) {
+          quietPolls = page.events.length ? 0 : quietPolls + 1;
+          // Fast while producing text, bounded backoff during model/tool silence.
+          await delay(Math.min(400, 80 + quietPolls * 40), undefined, { signal: abort.signal });
+        }
         if (response.destroyed) break;
         page = await this.backend.stream(id, after);
       }

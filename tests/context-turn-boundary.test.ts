@@ -12,6 +12,8 @@ import { normalizeChatCompletionsInput } from '../src/runtime/providers/openai-c
 import { MimiAgent } from '../src/runtime/mimi-agent.js';
 import { tool } from '../src/tool-factory.js';
 import { z } from 'zod';
+import { createMimiChatSnapshot } from '../src/daemon/chat-snapshot.js';
+import { decorateSessionTimeline } from '../src/web/session-timeline.js';
 
 test('stopping retains bounded execution facts across restart without making the old task resumable', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-stopped-'));
@@ -139,6 +141,10 @@ test('full runtime pipeline sends stopped history and new input as separate wire
     assert.equal((await session.getItems()).filter(item => item.type === 'function_call').length, 1);
     assert.equal((await session.getItems()).filter(item => item.type === 'function_call_result').length, 1);
     await agent.completeRun('QUEUE_OK');
+    const snapshot = await createMimiChatSnapshot({ snapshot: id => agent!.sessionSnapshot(id) }, 'wire', root);
+    const history = await decorateSessionTimeline({ dataRoot, sessionId: 'wire', items: snapshot.items });
+    assert.equal(history.items.filter(item => item.role === 'user' && item.content === 'NEW_QUEUE: only reply QUEUE_OK').length, 1);
+    assert.equal((await session.getItems()).filter(item => (item as { role?: string }).role === 'user').at(-1)?.type, undefined);
   } finally {
     await agent?.close();
     globalThis.fetch = previousFetch;

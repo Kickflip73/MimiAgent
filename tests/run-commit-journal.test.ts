@@ -182,5 +182,6 @@ test('preserves forward-compatible finalization media anchors when reopening a j
     entries: Record<string, { finalization?: { mediaAnchors?: unknown[] } }>;
   };
   assert.equal(persisted.entries[entryId]?.finalization?.mediaAnchors?.length, 1);
-  assert.deepEqual(await readdir(root), ['journal.json']);
+  assert.equal((await new RunCommitJournal(file).get('owner', 'run-1'))?.phase, 'receipt_committed');
+  assert.deepEqual((await readdir(root)).sort(), ['journal.json', 'journal.json.sqlite']);
 });

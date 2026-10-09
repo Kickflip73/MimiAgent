@@ -54,3 +54,12 @@ The research task also reproduced a Shell false rejection: `&#39;` inside a quot
 
 
 最终真实模型仍会在相邻 user 之间的 system 边界存在时尝试续跑旧命令。完整 HTTP mock 已确认 Mimi 未合并消息，但无法证明供应商内部如何归一化。兼容处理为：仅在停止后为派生模型上下文增加 assistant-role、明确标为 Host runtime-generated 的终止观察；原始历史不写入假答案。即使供应商把 system 提到顶部，剩余 user/assistant/user 轮次仍完整。该观察与 system 事实都计入预算。
+
+
+## 发送前、回答后与流式展示
+
+真实 trace 的一个短请求 prepare 6.16s、commit 3.56s。提交阶段 5 次全局 JSON 更新各约0.45–0.58s，正文已停止输出但 durable commit 尚未完成。提交日志改为现有 SQLite 技术上的逐运行记录；旧 JSON 校验后单事务导入，新文件保存迁移摘要和条数，旧文件保留。幂等提交、phase 单调性、相同 execution 的多 attempt 与跨进程并发继续受事务约束。初始化失败不写成功标记，可重试；不支持同时运行旧版 JSON 写入器或直接降级到旧版（恢复时应使用相同新格式构建）。
+
+Web SSE 原先固定750ms取一次进度，改成有输出时80ms、静默时上限400ms退避。设置禁止代理缓冲，序号与终态回执不变。浏览器以 requestAnimationFrame 按完整字素逐步呈现，保持原始事件缓存不变；最多落后最新块700ms，历史恢复、隐藏页面和减少动画偏好直接呈现。只更新变化的答案节点，过程面板与持久化仍批量处理。终态以后台回执为准，不提前显示成功。发送确认前立即显示待确认用户消息，失败保留原输入和请求ID用于幂等重试。
+
+运行中刷新可能早于 SDK 写入当前 user，结束后必须以最终快照补齐缺失的 user 行，不能只更新上下文计数。这属于前台状态同步，带 type:message 的合法用户消息本身并未被历史投影过滤。

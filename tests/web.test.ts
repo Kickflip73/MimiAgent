@@ -194,3 +194,21 @@ test('progress fallback pages replay missing events before the final receipt, in
   assert.equal(tail.events.length,0);assert.equal(tail.task.status,'completed');
   assert.equal((await fetch(`${server.address}/api/progress?id=run&after=-1`)).status,400);
 });
+
+
+test('SSE forwards consecutive live batches without the former 750ms gate', async (t) => {
+  let polls = 0;
+  const at: number[] = [];
+  const server = new MimiWebServer(backend({ stream: async () => {
+    at.push(performance.now()); polls++;
+    return { events: [{ sequence: polls, eventId: 'paced', kind: 'answer', text: '字' }], nextSequence: polls,
+      task: { id: 'paced', status: polls >= 3 ? 'completed' : 'running', result: { answer: '字字字' } } };
+  } }), 0);
+  await server.start(); t.after(() => server.close());
+  const response = await fetch(`${server.address}/api/events?id=paced`);
+  const content = await response.text();
+  assert.match(response.headers.get('cache-control')!, /no-transform/);
+  assert.equal(response.headers.get('x-accel-buffering'), 'no');
+  assert.equal((content.match(/event: update/g) || []).length, 3);
+  assert.ok(at[2]! - at[0]! < 650, 'new batches should not wait on a 750ms poll interval');
+});

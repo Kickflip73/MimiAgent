@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 // @ts-expect-error Browser module is intentionally dependency-free JavaScript.
-import { historyExecution, projectEvent, finishAnswers, elapsedLabel } from '../src/web/assets/execution.js';
+import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal } from '../src/web/assets/execution.js';
 
 test('stream keeps answer chunks together but separates replies around tools and reasoning', () => {
   const run: { sequence: number; answers: string[]; steps: Array<{ text?: string }>; boundary: boolean } = { sequence: 0, answers: [], steps: [], boundary: true };
@@ -46,4 +46,20 @@ test('historical tool arguments/results and reasoning reconstruct after live buf
   const steps=historyExecution([{type:'reasoning',summary:[{text:'核对来源'}]},{type:'function_call',callId:'call-1',name:'read_file',arguments:'{"path":"guide.md"}'},{type:'function_call_result',callId:'call-1',output:{text:'完整结果'}}]);
   assert.equal(steps.length,2);assert.equal(steps[0].text,'核对来源');
   assert.match(steps[1].fullDetail,/guide.md/);assert.match(steps[1].fullDetail,/完整结果/);
+});
+
+
+test('live burst text is frame-paced, bounded and preserves graphemes; replay is immediate', () => {
+  const reveal = createTextReveal();
+  const answer = '猫咪🐱和家人👨‍👩‍👧‍👦一起看世界。'.repeat(20);
+  let shown = reveal.update([answer], 100);
+  assert.ok(shown[0].length > 0 && shown[0].length < answer.length);
+  const first = shown[0];
+  shown = reveal.update([answer], 132);
+  assert.ok(shown[0].startsWith(first) && shown[0].length > first.length);
+  assert.ok(answer.startsWith(shown[0]));
+  assert.deepEqual(reveal.update([answer], 801), [answer]);
+  assert.equal(reveal.pending, false);
+  assert.deepEqual(reveal.update([answer, '恢复的历史'], 820, true), [answer, '恢复的历史']);
+  assert.deepEqual(reveal.update(['更正后的完整结果'], 840, true), ['更正后的完整结果']);
 });

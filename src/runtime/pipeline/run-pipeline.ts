@@ -1011,7 +1011,7 @@ export async function executeRunPipeline(
     // tracker does not mistake a filter insertion for the new owner's message.
     const sdkInput = stoppedObservation
       ? [stoppedObservation, ...(typeof input === 'string'
-          ? [{ type: 'message' as const, role: 'user' as const, content: input }]
+          ? [{ role: 'user' as const, content: input }]
           : input)]
       : input;
     const streamResult = await host.runner.run(request.agent, sdkInput, {

@@ -1,11 +1,15 @@
 import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import { chmod, mkdir, open, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { setTimeout } from 'node:timers/promises';
 import { z } from 'zod';
 import {
   runFinalizationRecordSchema,
   type RunFinalizationRecord,
   type RunOutcome,
 } from './run-finalization.js';
-import { AtomicJsonStore } from './state-file.js';
 
 export type RunCommitPhase =
   | 'prepared'
@@ -28,11 +32,6 @@ export interface RunCommitJournalEntry {
   runtimeActions: Array<Record<string, unknown>>;
   finalization?: RunFinalizationRecord;
   updatedAt: string;
-}
-
-interface RunCommitJournalFile {
-  version: 1;
-  entries: Record<string, RunCommitJournalEntry>;
 }
 
 const phaseSchema = z.enum([
@@ -81,153 +80,199 @@ export function runCommitJournalId(sessionId: string, runId: string): string {
 }
 
 export class RunCommitJournal {
-  private readonly state: AtomicJsonStore<RunCommitJournalFile>;
+  private readonly databaseFile: string;
+  private initialization?: Promise<void>;
 
-  constructor(file: string) {
-    this.state = new AtomicJsonStore(file, {
-      defaultValue: () => ({
-        version: 1,
-        entries: Object.create(null) as Record<string, RunCommitJournalEntry>,
-      }),
-      decode: (value) => {
-        const parsed = journalSchema.parse(value);
-        return {
-          version: 1,
-          entries: Object.assign(
-            Object.create(null),
-            parsed.entries,
-          ) as Record<string, RunCommitJournalEntry>,
-        };
-      },
-      recoverCorrupt: false,
+  constructor(private readonly file: string) {
+    this.file = path.resolve(file);
+    this.databaseFile = `${this.file}.sqlite`;
+  }
+
+  /** May be awaited at startup; concurrent callers share initialization. */
+  initialize(): Promise<void> {
+    this.initialization ??= this.importLegacy().catch((error) => {
+      this.initialization = undefined;
+      throw error;
     });
+    return this.initialization;
+  }
+
+  /** Import legacy evidence once; never rewrite or remove the original JSON. */
+  private async importLegacy(): Promise<void> {
+    await mkdir(path.dirname(this.databaseFile), { recursive: true, mode: 0o700 });
+    const handle = await open(this.databaseFile, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+    await handle.close();
+    const database = new DatabaseSync(this.databaseFile, { timeout: 5_000 });
+    try {
+      await chmod(this.databaseFile, 0o600);
+      // Concurrent first opens may race on the journal-mode transition, for
+      // which SQLite does not always honor busy_timeout. Retry only setup DDL.
+      const setupDeadline = Date.now() + 5_000;
+      for (;;) {
+        try {
+          if (database.prepare('PRAGMA journal_mode').get()?.journal_mode !== 'wal') {
+            database.exec('PRAGMA journal_mode=WAL');
+          }
+          database.exec(`PRAGMA synchronous=FULL;
+        CREATE TABLE IF NOT EXISTS journal_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS run_commits (
+          sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+          id TEXT NOT NULL UNIQUE, session_id TEXT NOT NULL, execution_key TEXT,
+          phase TEXT NOT NULL, updated_at TEXT NOT NULL, entry_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS run_commits_execution_idx
+          ON run_commits(session_id, execution_key, sequence);
+        CREATE INDEX IF NOT EXISTS run_commits_recovery_idx ON run_commits(phase, updated_at);`);
+          break;
+        } catch (error) {
+          if ((error as { errcode?: number }).errcode !== 5 || Date.now() >= setupDeadline) throw error;
+          await setTimeout(10);
+        }
+      }
+      let imported = database.prepare("SELECT value FROM journal_meta WHERE key='legacy_import'").get();
+      if (!imported) {
+        // No transaction is held across an await: another initializer in the same
+        // event loop must not block behind a writer awaiting its own continuation.
+        const source = await readFile(this.file, 'utf8').catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return undefined;
+          throw error;
+        });
+        const entries = source === undefined ? [] : Object.entries(journalSchema.parse(JSON.parse(source)).entries);
+        for (const [key, entry] of entries) {
+          if (key !== entry.id || key !== runCommitJournalId(entry.sessionId, entry.runId)) {
+            throw new Error('Run commit journal 的旧日志标识不一致，拒绝导入');
+          }
+        }
+        database.exec('BEGIN IMMEDIATE');
+        try {
+          imported = database.prepare("SELECT value FROM journal_meta WHERE key='legacy_import'").get();
+          if (!imported) {
+            for (const [, entry] of entries) this.save(database, entry);
+            database.prepare('INSERT INTO journal_meta(key, value) VALUES (?, ?)').run('legacy_import', JSON.stringify({
+              version: 1, sourceDigest: source === undefined ? null : runAnswerDigest(source), entries: entries.length,
+            }));
+          }
+          database.exec('COMMIT');
+        } catch (error) {
+          database.exec('ROLLBACK');
+          throw error;
+        }
+      }
+    } finally {
+      database.close();
+    }
+  }
+
+  private async withJournal<T>(operation: (database: DatabaseSync) => T): Promise<T> {
+    await this.initialize();
+    const database = new DatabaseSync(this.databaseFile, { timeout: 5_000 });
+    try {
+      database.exec('PRAGMA synchronous=FULL; BEGIN IMMEDIATE');
+      try {
+        const result = operation(database);
+        database.exec('COMMIT');
+        return result;
+      } catch (error) {
+        database.exec('ROLLBACK');
+        throw error;
+      }
+    } finally {
+      database.close();
+    }
+  }
+
+  private save(database: DatabaseSync, entry: RunCommitJournalEntry): void {
+    database.prepare(`INSERT INTO run_commits(id, session_id, execution_key, phase, updated_at, entry_json)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+      execution_key=excluded.execution_key, phase=excluded.phase,
+      updated_at=excluded.updated_at, entry_json=excluded.entry_json`)
+      .run(entry.id, entry.sessionId, entry.executionKey ?? null, entry.phase, entry.updatedAt, JSON.stringify(entry));
+  }
+
+  private decode(row: Record<string, unknown> | undefined): RunCommitJournalEntry | undefined {
+    return row ? entrySchema.parse(JSON.parse(String(row.entry_json))) : undefined;
+  }
+
+  private byId(database: DatabaseSync, sessionId: string, runId: string): RunCommitJournalEntry | undefined {
+    return this.decode(database.prepare('SELECT entry_json FROM run_commits WHERE id=?')
+      .get(runCommitJournalId(sessionId, runId)));
   }
 
   async prepare(input: Omit<RunCommitJournalEntry, 'id' | 'phase' | 'updatedAt'>): Promise<RunCommitJournalEntry> {
-    const id = runCommitJournalId(input.sessionId, input.runId);
-    return this.state.update((journal) => {
-      const existing = journal.entries[id];
+    return this.withJournal((database) => {
+      const existing = this.byId(database, input.sessionId, input.runId);
       if (existing) {
         const conflicts = existing.answerDigest !== input.answerDigest
           || existing.executionKey !== input.executionKey
           || existing.outcome !== input.outcome
           || JSON.stringify(existing.runtimeActions) !== JSON.stringify(input.runtimeActions)
           || JSON.stringify(existing.finalization) !== JSON.stringify(input.finalization);
-        if (conflicts) {
-          const hasDurableProgress = existing.phase !== 'prepared';
-          if (hasDurableProgress) {
-            throw new Error(`Run ${input.runId} 已存在不同的提交计划，拒绝覆盖`);
-          }
-          const replacement: RunCommitJournalEntry = {
-            id,
-            ...input,
-            outcome: input.outcome ?? 'completed',
-            phase: 'prepared',
-            updatedAt: new Date().toISOString(),
-          };
-          journal.entries[id] = replacement;
-          return { ...replacement };
+        if (!conflicts) return existing;
+        if (existing.phase !== 'prepared') {
+          throw new Error(`Run ${input.runId} 已存在不同的提交计划，拒绝覆盖`);
         }
-        return { ...existing };
       }
       const entry: RunCommitJournalEntry = {
-        id,
-        ...input,
-        phase: 'prepared',
-        updatedAt: new Date().toISOString(),
+        id: runCommitJournalId(input.sessionId, input.runId), ...input,
+        ...(existing ? { outcome: input.outcome ?? 'completed' } : {}),
+        phase: 'prepared', updatedAt: new Date().toISOString(),
       };
-      journal.entries[id] = entry;
-      return { ...entry };
+      // Validate before committing new evidence, just as subsequent reads do.
+      const validated = entrySchema.parse(entry);
+      this.save(database, validated);
+      return validated;
     });
   }
 
-  async advance(
-    sessionId: string,
-    runId: string,
-    phase: RunCommitPhase,
-  ): Promise<RunCommitJournalEntry> {
-    const id = runCommitJournalId(sessionId, runId);
-    return this.state.update((journal) => {
-      const entry = journal.entries[id];
+  async advance(sessionId: string, runId: string, phase: RunCommitPhase): Promise<RunCommitJournalEntry> {
+    return this.withJournal((database) => {
+      const entry = this.byId(database, sessionId, runId);
       if (!entry) throw new Error(`Run ${runId} 缺少提交日志`);
-      const currentIndex = PHASE_ORDER.indexOf(entry.phase);
-      const nextIndex = PHASE_ORDER.indexOf(phase);
-      if (nextIndex < currentIndex) return { ...entry };
+      if (PHASE_ORDER.indexOf(phase) <= PHASE_ORDER.indexOf(entry.phase)) return entry;
       entry.phase = phase;
       entry.updatedAt = new Date().toISOString();
-      return { ...entry };
+      this.save(database, entry);
+      return entry;
     });
   }
 
-  async acknowledgeTask(
-    sessionId: string,
-    executionKey: string,
-  ): Promise<RunCommitJournalEntry | undefined> {
-    return this.state.update((journal) => {
-      const entries = Object.values(journal.entries).filter((candidate) =>
-        candidate.sessionId === sessionId
-        && candidate.executionKey === executionKey
-        && candidate.phase !== 'finalized');
-      if (!entries.length) return undefined;
-      const updatedAt = new Date().toISOString();
-      for (const entry of entries) {
-        if (PHASE_ORDER.indexOf(entry.phase) < PHASE_ORDER.indexOf('task_committed')) {
-          entry.phase = 'task_committed';
-        }
-        entry.updatedAt = updatedAt;
-      }
-      return { ...entries.at(-1)! };
-    });
+  async acknowledgeTask(sessionId: string, executionKey: string): Promise<RunCommitJournalEntry | undefined> {
+    return this.updateExecution(sessionId, executionKey, 'task_committed');
   }
 
-  async finalizeExecution(
-    sessionId: string,
-    executionKey: string,
+  async finalizeExecution(sessionId: string, executionKey: string): Promise<RunCommitJournalEntry | undefined> {
+    return this.updateExecution(sessionId, executionKey, 'finalized');
+  }
+
+  private async updateExecution(
+    sessionId: string, executionKey: string, phase: 'task_committed' | 'finalized',
   ): Promise<RunCommitJournalEntry | undefined> {
-    return this.state.update((journal) => {
-      const entries = Object.values(journal.entries).filter((candidate) =>
-        candidate.sessionId === sessionId && candidate.executionKey === executionKey);
-      if (!entries.length) return undefined;
-      const updatedAt = new Date().toISOString();
-      for (const entry of entries) {
-        entry.phase = 'finalized';
-        entry.updatedAt = updatedAt;
+    return this.withJournal((database) => {
+      const entries = database.prepare(`SELECT entry_json FROM run_commits
+        WHERE session_id=? AND execution_key=? ORDER BY sequence`).all(sessionId, executionKey)
+        .map((row) => this.decode(row)!);
+      const selected = phase === 'task_committed' ? entries.filter((entry) => entry.phase !== 'finalized') : entries;
+      for (const entry of selected) {
+        if (PHASE_ORDER.indexOf(entry.phase) >= PHASE_ORDER.indexOf(phase)) continue;
+        entry.phase = phase;
+        entry.updatedAt = new Date().toISOString();
+        this.save(database, entry);
       }
-      return { ...entries.at(-1)! };
+      return selected.at(-1);
     });
   }
 
   async get(sessionId: string, runId: string): Promise<RunCommitJournalEntry | undefined> {
-    const entry = (await this.state.read()).entries[runCommitJournalId(sessionId, runId)];
-    return entry ? this.cloneEntry(entry) : undefined;
+    return this.withJournal((database) => this.byId(database, sessionId, runId));
   }
 
-  async findByExecutionKey(
-    sessionId: string,
-    executionKey: string,
-  ): Promise<RunCommitJournalEntry | undefined> {
-    const entry = Object.values((await this.state.read()).entries).filter((candidate) =>
-      candidate.sessionId === sessionId && candidate.executionKey === executionKey).at(-1);
-    return entry ? this.cloneEntry(entry) : undefined;
+  async findByExecutionKey(sessionId: string, executionKey: string): Promise<RunCommitJournalEntry | undefined> {
+    return this.withJournal((database) => this.decode(database.prepare(`SELECT entry_json FROM run_commits
+      WHERE session_id=? AND execution_key=? ORDER BY sequence DESC LIMIT 1`).get(sessionId, executionKey)));
   }
 
   async recoverable(): Promise<RunCommitJournalEntry[]> {
-    return Object.values((await this.state.read()).entries)
-      .filter((entry) => entry.phase !== 'finalized')
-      .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))
-      .map((entry) => this.cloneEntry(entry));
-  }
-
-  private cloneEntry(entry: RunCommitJournalEntry): RunCommitJournalEntry {
-    return {
-      ...entry,
-      runtimeActions: entry.runtimeActions.map((action) => ({ ...action })),
-      ...(entry.finalization ? {
-        finalization: {
-          ...entry.finalization,
-          toolManifest: entry.finalization.toolManifest.map((call) => ({ ...call })),
-        },
-      } : {}),
-    };
+    return this.withJournal((database) => database.prepare(`SELECT entry_json FROM run_commits
+      WHERE phase != 'finalized' ORDER BY updated_at, sequence`).all().map((row) => this.decode(row)!));
   }
 }

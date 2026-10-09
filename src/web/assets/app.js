@@ -1,7 +1,7 @@
 import { createMessageQueue } from './queue.js';
 import { contextBreakdown } from './context.js';
 import { createManagement, managedViews, viewTitles } from './manage.js';
-import { historyExecution, projectEvent, finishAnswers, elapsedLabel } from './execution.js';
+import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal } from './execution.js';
 import { setupPickers, createSelectionQueue } from './pickers.js';
 const $ = (selector) => document.querySelector(selector);
 const icons = {
@@ -187,8 +187,8 @@ function updateComposer() {
   button.setAttribute('aria-busy', String(stopping));
   if (stopping) { button.setAttribute('aria-label', '正在停止'); button.title = '正在停止'; }
   button.innerHTML = stopping ? '<span class="stop-spinner" aria-hidden="true"></span>' : running && !queueing ? '<span class="stop-square" aria-hidden="true"></span>' : icon('up');
-  $('#composer-cat').classList.toggle('is-running', running);
-  if (!running) { $('#composer-cat').title = 'Mimi'; $('#composer-cat').setAttribute('aria-label', 'Mimi'); }
+  $('#composer-cat').classList.toggle('is-running', running || !!state.sending);
+  if (!running) { const label = state.sending ? '正在发送' : 'Mimi'; $('#composer-cat').title = label; $('#composer-cat').setAttribute('aria-label', label); }
   $('#run-elapsed').hidden = !running;
   updateContext();
   $('#mode').disabled =
@@ -744,32 +744,48 @@ function startStream(id) {
   $('#live-message')?.remove();
   const live = message('assistant', '', true), content = live.querySelector('.markdown'), details = executionDetails(run);
   content.before(details); $('#messages').append(live);
-  let source, settled = false, detached = false, recovering = false, paintTimer;
+  let source, settled = false, detached = false, recovering = false, finishing = false, paintTimer, frame;
+  const reveal = createTextReveal(run.answers);
+  let shown = [...run.answers];
   const current = () => !detached && revision === state.revision && state.streamId === id && !settled;
   function save() {
     try { const encoded = JSON.stringify(run); if (encoded.length < 1_500_000) sessionStorage.setItem(cacheKey,encoded); } catch { /* Daemon replay remains authoritative. */ }
   }
-  function renderAnswers() {
-    content.replaceChildren();
-    run.answers.forEach((text,index) => {
-      const part = document.createElement('div'); part.className = 'answer-part'; part.tabIndex = 0;
+  function renderAnswers(texts = shown) {
+    while (content.children.length > texts.length) content.lastElementChild.remove();
+    texts.forEach((text,index) => {
+      let part = content.children[index];
+      if (!part) { part = document.createElement('div'); part.className = 'answer-part'; part.tabIndex = 0; content.append(part); }
+      const final = !!run.endedAt && index === texts.length-1;
+      const key = `${final}:${text}`;
+      if (part._rendered === key) return;
+      part._rendered = key;
       part.innerHTML = markdown(text);
-      const final = !!run.endedAt && index === run.answers.length-1;
       part.append(messageFooter(text, {sentAt: final ? run.endedAt : run.answerTimes[index], copy: final, ...(final ? {duration:run.endedAt-run.startedAt} : {})}));
-      content.append(part);
     });
+  }
+  function animate() {
+    frame = null;
+    if (!current()) return;
+    const nearBottom = $('#chat-scroll').scrollHeight - $('#chat-scroll').scrollTop - $('#chat-scroll').clientHeight < 160;
+    shown = reveal.update(run.answers, performance.now(), document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches);
+    renderAnswers();
+    if (nearBottom) scrollEnd();
+    if (reveal.pending) frame = requestAnimationFrame(animate);
   }
   function paint() {
     clearTimeout(paintTimer); paintTimer = null;
     if (!current()) return;
     const nearBottom = $('#chat-scroll').scrollHeight - $('#chat-scroll').scrollTop - $('#chat-scroll').clientHeight < 160;
-    renderAnswers(); details.update(); save();
+    details.update(); save();
+    if (!frame) frame = requestAnimationFrame(animate);
     if (nearBottom) scrollEnd();
   }
-  function ingest(data) {
+  function ingest(data, replay = false) {
     if (!current() || !projectEvent(run,data)) return;
     if (data.kind === 'answer' && !run.answerTimes[run.answers.length-1]) run.answerTimes[run.answers.length-1] = Date.now();
     if (data.kind === 'status') runActivity(data.next || data.title);
+    if (replay) shown = reveal.update(run.answers, performance.now(), true);
     // A replay can contain thousands of deltas. Render once per batch, not once per token.
     if (!paintTimer) paintTimer = setTimeout(paint,80);
   }
@@ -779,11 +795,12 @@ function startStream(id) {
   const poll = setInterval(() => {
     if (!source || source.readyState !== EventSource.OPEN || Date.now() - lastPush > 20_000) void recover();
   },2500);
-  function dispose() { save(); detached = true; clearInterval(timer); clearInterval(poll); clearTimeout(paintTimer); source?.close(); }
+  function dispose() { save(); detached = true; clearInterval(timer); clearInterval(poll); clearTimeout(paintTimer); cancelAnimationFrame(frame); source?.close(); }
   state.disposeRun = dispose;
   async function finish(task, missing = false) {
-    if (!current()) return;
-    paint(); settled = true; clearInterval(timer); clearInterval(poll); clearTimeout(paintTimer); source?.close();
+    if (!current() || finishing) return;
+    finishing = true;
+    paint(); settled = true; clearInterval(timer); clearInterval(poll); clearTimeout(paintTimer); cancelAnimationFrame(frame); source?.close();
     state.source = null; state.streamId = null; state.recoverRun = null; state.finishRun = null; state.disposeRun = null;
     if (state.stopping === id) state.stopping = null;
     sessionStorage.removeItem(`mimi-run:${session}`); sessionStorage.removeItem(startKey); sessionStorage.removeItem(timesKey); sessionStorage.removeItem(cacheKey); liveRuns.delete(id);
@@ -799,6 +816,7 @@ function startStream(id) {
     const result = task?.result, finalText = cancelled ? undefined : typeof result === 'string' ? result : result?.answer;
     run.answers = finishAnswers(run.answers, finalText, run.boundary);
     if (!run.answers.length && !cancelled) run.answers.push(task?.error || (missing ? '运行记录已不可用，请刷新读取保存的对话。' : `任务${labels[task.status] || task.status}`));
+    shown = reveal.update(run.answers, performance.now(), true);
     details.update(); renderAnswers(); live.removeAttribute('id');
     const records = completedRuns.get(session) || []; records.push(run); completedRuns.set(session,records.slice(-20)); saveExecutions(); updateComposer();
     const changed = Array.isArray(result?.effects) ? result.effects.findLast(e => e.type === 'session_changed') : null;
@@ -806,6 +824,11 @@ function startStream(id) {
     void api(`session?id=${encodeURIComponent(session)}`).then(snapshot => {
       if (revision !== state.revision || state.streamId || state.sending || state.changing) return;
       snapshot.mode = modeId(snapshot.mode); state.snapshot = snapshot; state.draft = false; sessionStorage.setItem('mimi-draft','0');
+      // A refresh can precede SDK persistence of the new user item. Reconcile
+      // the terminal snapshot so the answer cannot remain attached to an old turn.
+      const latest = snapshot.items?.findLast(item => item.role === 'user');
+      const visible = [...$('#messages').querySelectorAll('.message.user')].at(-1)?.dataset.messageText;
+      if (latest && textOf(latest) !== visible) renderMessages(snapshot.items);
       updateContext(); renderPlan(snapshot.plan); updateComposer();
     }).catch(() => {});
     void refresh(true); void drainQueues();
@@ -818,7 +841,7 @@ function startStream(id) {
       do {
         page = await api(`progress?id=${encodeURIComponent(id)}&after=${run.sequence}`);
         if (!current()) return;
-        for (const event of page.events || []) ingest(event);
+        for (const event of page.events || []) ingest(event, true);
         paint();
       } while (page.hasMore && current());
       if (!active(page.task.status)) await finish(page.task);
@@ -913,6 +936,10 @@ async function send(event) {
   if (!pending || pending.input !== input)
     pending = { input, requestId: crypto.randomUUID(), sentAt: new Date().toISOString(), security: $('#security').value };
   sessionStorage.setItem(`mimi-pending:${session}`, JSON.stringify(pending));
+  const pendingArticle = message('user', input, false, pending.sentAt);
+  pendingArticle.dataset.requestId = pending.requestId;
+  pendingArticle.setAttribute('aria-busy','true');
+  $('#welcome').hidden = true; $('#messages').append(pendingArticle); scrollEnd();
   try {
     const accepted = await api('messages', {
       sessionId: session,
@@ -929,13 +956,14 @@ async function send(event) {
     if (revision !== state.revision) return;
     state.draft = false; sessionStorage.setItem('mimi-draft','0');
     $('#welcome').hidden = true;
-    $('#messages').append(message('user', input, false, pending.sentAt || new Date().toISOString()));
+    pendingArticle.removeAttribute('aria-busy');
     $('#message-input').value = '';
     resizeInput();
     startStream(accepted.eventId);
     scrollEnd();
     void refresh(true);
   } catch (error) {
+    pendingArticle.remove();
     if (revision === state.revision)
       toast(`${error.message}。原文已保留，重试相同消息不会重复提交。`);
   } finally {
