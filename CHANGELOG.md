@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- run the macOS Web/TUI daemon with normal app scheduling instead of launchd
+  Background I/O throttling, which can stall the shared SQLite event loop
+
 - invoke known authorized tools across turns without mandatory rediscovery; connect
   only the named MCP service and include bounded schemas for small search results
 - clarify the existing source-file requirement for workspace memory writes

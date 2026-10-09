@@ -809,3 +809,7 @@ revision 的多次 run，因此分母可以持续累计而不会混入不同口�
 上下文分项以小型 `context-manifests/<session>.json` 派生快照保存，读取不触发运行时/MCP初始化或修复原文件。未知历史继续标注估算；快照不是 canonical transcript。Host 的下一轮偏好更新不改变进行中 RunScope。
 
 ARC-303 原组合面及其已批准扩展之外，为本轮原文分页、派生快照、轻量控制、可靠终态与恢复增加 600 行显式预算，计入 `context-artifact.ts`、`context-manifest-store.ts`、`task-inspection.ts`；组合根单文件上限保持不变。设计与验收见 `docs/plans/20261009-execution-reliability.md`。
+
+### macOS 交互服务调度
+
+LaunchAgent 的 `ProcessType` 使用 `Interactive`，适用普通交互应用的资源限制。Daemon 的 Web/TUI 和控制面经 Unix socket 接收请求，不属于可由 XPC 自动提升优先级的 `Adaptive` 服务；也不能归为会限制磁盘 I/O 的 `Background` 作业。同步 SQLite 查询受到后台 I/O 限流时会阻塞共享事件循环，使其他异步阶段的墙钟耗时一起膨胀。此配置不调整 Nice、实时优先级或取消执行预算。已有 LaunchAgent 更新需重新加载 plist；只替换 JavaScript 或重启进程不足以改变 launchd 已缓存的作业类型。

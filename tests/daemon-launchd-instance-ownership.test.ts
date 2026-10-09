@@ -33,6 +33,13 @@ test('normal startup uses launchd only when the global plist belongs to this Mim
   assert.equal(launchAgentPlistBelongsTo(plist, second), false);
 });
 
+test('interactive daemon uses app scheduling rather than background disk throttling', () => {
+  const plist = launchAgentPlist(config('/tmp/mimi-launchd-policy', 'owner'), '/tmp/mimi-entry.js', []);
+  assert.match(plist, /<key>ProcessType<\/key>\s*<string>Interactive<\/string>/);
+  assert.doesNotMatch(plist, /<key>(?:LowPriorityIO|Nice|HardResourceLimits)<\/key>/);
+  assert.match(plist, /<key>ThrottleInterval<\/key>\s*<integer>10<\/integer>/);
+});
+
 test('concurrent installs serialize and reject a different instance without corrupting the plist', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-launchd-install-owner-'));
   const file = path.join(root, 'LaunchAgents', 'com.mimiagent.daemon.plist');
