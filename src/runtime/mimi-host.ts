@@ -327,6 +327,24 @@ export class MimiHost {
     return this.inspect(actor, () => actor.agent.sessionSnapshot(sessionId), sessionId);
   }
 
+  /** Read cached runtime observations without waiting behind an active model/tool call. */
+  inspectStatus(sessionId: string, operation: 'runtime' | 'mcp' | 'models' | 'modes') {
+    this.assertOpen();
+    const actor = this.resolvedActors.get(sessionId);
+    const read = async (): Promise<unknown> => {
+      const agent = actor?.agent ?? this.agent;
+      switch (operation) {
+        case 'runtime': return agent.runtimeInfo();
+        case 'mcp': return agent.mcpStatuses();
+        case 'models': return agent.availableModels();
+        case 'modes': return agent.availableModes();
+      }
+    };
+    if (!actor) return Promise.resolve(read());
+    this.reserveActor(sessionId);
+    return this.inspect(actor, read, sessionId);
+  }
+
   listSessionSummaries(): Promise<SessionSummary[]> {
     this.assertOpen();
     const now = Date.now();

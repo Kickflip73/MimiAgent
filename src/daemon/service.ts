@@ -1035,6 +1035,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const operation = requiredString(params.operation, 'operation');
         if (operation === 'sessions') return sanitizeSensitiveData(await host!.listSessionSummaries());
         const sessionId = chatSessionId(params);
+        if (operation === 'runtime' || operation === 'mcp' || operation === 'models' || operation === 'modes') {
+          return sanitizeSensitiveData(await host!.inspectStatus(sessionId, operation));
+        }
         const action = operation === 'model.control' ? object(params.value).action : undefined;
         if (['mode.set', 'output.set', 'model.set'].includes(operation)
           || (operation === 'model.control' && (action === 'use' || action === 'auto'))) {

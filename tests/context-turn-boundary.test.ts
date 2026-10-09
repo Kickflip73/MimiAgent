@@ -152,3 +152,20 @@ test('full runtime pipeline sends stopped history and new input as separate wire
     if (previousKey === undefined) delete process.env.MIMI_PROVIDER_API_KEY; else process.env.MIMI_PROVIDER_API_KEY = previousKey;
   }
 });
+
+test('owner media is durable during preparation and survives interruption without SDK duplicates', async t => {
+  const {sessionWithCommittedInput}=await import('../src/core/context-turn-boundary.js');
+  const root=await mkdtemp(path.join(os.tmpdir(),'mimi-media-commit-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const session=new FileSession(root,'a');
+  await session.addItems([{role:'user',content:'previous'}]);
+  await session.beginRun('voice','run');
+  const input=[{role:'user',content:'voice',displayText:'',mediaAttachments:[{kind:'audio',id:'a'.repeat(64)+'.wav',mediaType:'audio/wav',bytes:48,transcript:'voice',duration:2}]}] as unknown as AgentInputItem[];
+  const sdk=await sessionWithCommittedInput(session,input);
+  assert.equal((await new FileSession(root,'a').getItems()).length,2,'visible before the model starts');
+  assert.equal((await sdk.getItems()).length,1,'SDK receives pre-turn history');
+  await sdk.addItems(structuredClone(input));
+  assert.equal((await session.getItems()).length,2);
+  await session.rollbackRunItems('run');
+  assert.deepEqual(((await session.getItems())[1] as any)?.mediaAttachments,(input[0] as any).mediaAttachments);
+  assert.ok(((await session.getItems())[1] as any)?.timestamp);
+});

@@ -51,7 +51,7 @@ function redactAttachmentData(item: AgentInputItem): AgentInputItem {
     if (record.type === 'input_image' && typeof record.image === 'string' && record.image.startsWith('data:')) {
       changed = true;
       const image = inlineImageAttachment(record.image);
-      if (image && !(Array.isArray(value.mediaAttachments) && value.mediaAttachments.some((ref:any)=>ref.frames?.includes(image.id)))) images.push(image);
+      if (image && !(Array.isArray(value.mediaAttachments) && value.mediaAttachments.some((ref:any)=>ref.frames?.includes(image.id)))) if (!images.some(ref => (ref as {id?:string}).id === image.id)) images.push(image);
       return { type: 'input_text', text: '[图片附件：本轮已读取，二进制未写入 Session 历史]' };
     }
     if (record.type === 'input_file' && typeof record.file === 'string' && record.file.startsWith('data:')) {

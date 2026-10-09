@@ -5,7 +5,7 @@ import { createImageDrafts, imageUrl } from './images.js';
 import { createMessageQueue } from './queue.js';
 import { contextBreakdown } from './context.js';
 import { createManagement, managedViews, viewTitles } from './manage.js';
-import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal, presentAnswer, renderStreamText, executionGroups } from './execution.js';
+import { historyExecution, projectEvent, finishAnswers, runningActivity, elapsedLabel, createTextReveal, presentAnswer, renderStreamText, executionGroups } from './execution.js';
 import { setupPickers, createSelectionQueue } from './pickers.js';
 const $ = (selector) => document.querySelector(selector);
 const icons = {
@@ -144,16 +144,11 @@ function imagesMarkup(images, editable=false) {
   }).join('');
 }
 function renderImageDrafts() {
-  const images=imageDrafts.list(state.sessionId),hasVisual=images.length||mediaDrafts.list(state.sessionId).some(i=>i.kind==='video'),root=$('#image-drafts');
+  const images=imageDrafts.list(state.sessionId),root=$('#image-drafts');
   root.hidden=!images.length;root.innerHTML=imagesMarkup(images,true);
-  const target=selections.get(selectionKey('model'))?.value || state.defaultModel;
-  const selected=state.models.find(model=>model.target.providerId===target?.providerId&&model.target.modelId===target?.modelId);
-  const vision=state.models.find(model=>model.capabilities?.imageInput&&model.configured!==false);
-  const note=$('#image-model-note'); note.hidden=!hasVisual || !!selected?.capabilities?.imageInput;
-  note.innerHTML=vision ? `当前模型仅支持文字。<button type="button" id="use-vision-model">使用 ${esc(vision.target.modelId)} 看图</button>` : '请在模型接入中配置支持图片理解的模型。';
-  note.querySelector('button')?.addEventListener('click',()=>{selections.set(selectionKey('model'),vision.target);renderImageDrafts();});
-  // Host resolves automatic visual requests without changing the user's preference.
-  if(hasVisual && vision && !selections.get(selectionKey('model'))?.value) note.hidden=true;
+  // Perception has its own model route; uploading must never switch the conversation model.
+  $('#image-model-note').hidden=true;
+
 }
 async function addImages(files) {
   if(state.sending){toast('正在发送，请稍后添加图片');return;}
@@ -798,8 +793,9 @@ function executionDetails(run) {
   details.addEventListener('toggle', () => { if(details.open) details.update(); });
   details.update = () => {
     const steps = run.steps.filter(step => run.historical || state.defaults.outputLevel === 'trace' || (state.defaults.outputLevel === 'thinking' ? step.kind === 'reasoning' : step.kind !== 'reasoning'));
-    details.hidden = state.defaults.outputLevel === 'answer' || (!steps.length && !['partial','blocked','failed','uncertain','interrupted'].includes(run.status));
-    summary.querySelector('span').textContent = `${run.status ? (labels[run.status] || run.status) + ' · ' : ''}执行过程${steps.length ? ` · ${steps.length} 项` : ''}`;
+    details.hidden = state.defaults.outputLevel === 'answer' || (!run.running && !steps.length && !['partial','blocked','failed','uncertain','interrupted'].includes(run.status));
+    details.classList.toggle('is-running', !!run.running);
+    summary.querySelector('span').textContent = run.running ? runningActivity(run.steps, run.activity) : `${run.status ? (labels[run.status] || run.status) + ' · ' : ''}执行过程${steps.length ? ` · ${steps.length} 项` : ''}`;
     if (!details.open) return;
     const version = JSON.stringify(steps);
     if (version === rendered) return;
@@ -853,6 +849,10 @@ function startStream(id) {
   }
   function syncExecution() {
     const groups = executionGroups(run);
+    if (!groups.length && !run.endedAt) groups.push({afterAnswer:-1,steps:[]});
+    for (const [key, entry] of processNodes) if (!groups.some(group=>group.afterAnswer===key)) {
+      entry.node.remove(); if(entry.article.classList.contains('execution-message'))entry.article.remove(); processNodes.delete(key);
+    }
     for (const group of groups) {
       let entry = processNodes.get(group.afterAnswer);
       if (!entry) {
@@ -861,7 +861,7 @@ function startStream(id) {
         entry = {projection, node, article:executionMessage(node)};
         processNodes.set(group.afterAnswer,entry);
       }
-      Object.assign(entry.projection, {steps:group.steps, status:group === groups.at(-1) ? run.status : undefined});
+      Object.assign(entry.projection, {steps:group.steps, status:group === groups.at(-1) ? run.status : undefined, running:group === groups.at(-1) && !run.endedAt && !run.status});
       entry.node.update();
     }
   }
@@ -1078,7 +1078,8 @@ async function send(event) {
   const pendingArticle = message('user', input, false, pending.sentAt, images, media);
   pendingArticle.dataset.requestId = pending.requestId;
   pendingArticle.setAttribute('aria-busy','true');
-  $('#welcome').hidden = true; $('#messages').append(pendingArticle); scrollEnd();
+  const preparing = executionMessage(executionDetails({steps:[],running:true,activity:'正在发送'}));
+  $('#welcome').hidden = true; $('#messages').append(pendingArticle, preparing); scrollEnd();
   try {
     const accepted = await api('messages', {
       sessionId: session,
@@ -1100,10 +1101,12 @@ async function send(event) {
     pendingArticle.removeAttribute('aria-busy');
     $('#message-input').value = '';
     resizeInput();
+    preparing.remove();
     startStream(accepted.eventId);
     scrollEnd();
     void refresh(true);
   } catch (error) {
+    preparing.remove();
     pendingArticle.remove();
     if (revision === state.revision)
       toast(`${error.message}。原文已保留，重试相同消息不会重复提交。`);

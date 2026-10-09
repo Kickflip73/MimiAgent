@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- decouple image/video perception from the conversation model with a bounded, cached
+  vision runtime and session-scoped `understand_media` tool; retain the chosen main model
+- persist multimedia owner input before slow preparation and guard SDK projections
+  against duplicate transcript writes; recover unambiguous legacy attachment references
+  from accepted submissions and preserve media hashes through display sanitization
+- bypass execution/mutation queues for cached MCP/runtime/model status reads
+- show immediate, changing execution summaries with reduced-motion-aware shimmer,
+  and use white surfaces with emerald outgoing bubbles
+
 - restore verified recent image attachments for follow-up questions and route automatic
   visual requests to configured vision models; current inputs override stale capability memories
 - show the assistant avatar from the first execution step and reveal elapsed reply time on hover/focus

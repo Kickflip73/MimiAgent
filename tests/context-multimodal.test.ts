@@ -50,6 +50,8 @@ test('large image alone does not start semantic compression before the vision mo
   const {mkdtemp,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const path=await import('node:path');
   const {MimiAgent}=await import('../src/agent.js');
   const root=await mkdtemp(path.join(tmpdir(),'mimi-image-budget-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const {MediaUnderstandingRuntime}=await import('../src/runtime/media-understanding.js');
+  t.mock.method(MediaUnderstandingRuntime.prototype,'understand',async()=>({text:'图片包含一个红框',model:'fixture/vision',images:1}));
   let summaries=0;
   const agent=await MimiAgent.create({provider:'openai',defaultModel:'gpt-5.6',workspaceRoot:root,dataRoot:path.join(root,'state'),skillsRoot:path.join(root,'skills'),mcpConfig:path.join(root,'mcp.json'),contextWindow:1_048_576,historyLimit:100,maxTurns:null},'large-image',{
     contextSemanticSummarizer:{summarize:async()=>{summaries++;throw new Error('Image transport must not trigger a text summary');}},
@@ -59,7 +61,8 @@ test('large image alone does not start semantic compression before the vision mo
   const host=agent as unknown as {runner:{run:(...args:any[])=>Promise<unknown>}};
   host.runner.run=async(_runtime,_input,options)=>{
     const result=await options.callModelInputFilter({modelData:{input:history,instructions:'只读图片描述'}});
-    assert.ok(result.input.some((item:any)=>item.content?.some?.((block:any)=>block.image===data)));
+    assert.ok(!result.input.some((item:any)=>item.content?.some?.((block:any)=>block.image===data)));
+    assert.match(JSON.stringify(result.input),/图片包含一个红框/);
     return {};
   };
   await agent.stream([current]);await agent.failRun(new Error('test complete'),true);

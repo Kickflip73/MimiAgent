@@ -85,6 +85,7 @@ test('Web image preflight shares automatic vision routing without pinning a sess
   await backend.submit('auto','看图',randomUUID(),'safe',root,[image.id]);assert.equal(submits,1);
   const session=new FileSession(path.join(root,'sessions'),'pinned');await session.ensure();
   await session.setPreferences({modelTarget:text});
-  await assert.rejects(backend.submit('pinned','看图',randomUUID(),'safe',root,[image.id]),/不满足.*图片输入/);
-  assert.equal(submits,1,'explicit text model must not silently switch');
+  await backend.submit('pinned','看图',randomUUID(),'safe',root,[image.id]);
+  assert.deepEqual((await session.getPreferences()).modelTarget,text);
+  assert.equal(submits,2,'independent perception permits a pinned text model');
 });

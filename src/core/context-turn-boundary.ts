@@ -61,3 +61,33 @@ export function sessionWithoutDerivedItems(session: Session, derived: AgentInput
     },
   });
 }
+
+/** Commit owner input before slow preparation, while presenting the SDK its usual
+ * pre-turn history. SDK persistence must not append the same input a second time.
+ * The wrapper is local to one run, so identical messages in later turns survive. */
+export async function sessionWithCommittedInput<T extends Session>(session: T, input: AgentInputItem[], project: (items: AgentInputItem[]) => AgentInputItem[] = items => items): Promise<T> {
+  const start = (await session.getItems()).length;
+  await session.addItems(input.map(item => ({...item,timestamp:new Date().toISOString()}) as unknown as AgentInputItem));
+  const original = structuredClone(input);
+  return new Proxy(session, {
+    get(target, property) {
+      if (property === 'getItems') return async (limit?: number) => {
+        const all = await target.getItems();
+        const history = [...all.slice(0,start),...all.slice(start+input.length)];
+        return limit === undefined ? history : history.slice(-limit);
+      };
+      if (property === 'addItems') return async (items: AgentInputItem[]) => {
+        const filtered = items.filter(item => {
+          const persisted = [...original,...project(original)].some(record => {
+            const a = record as {role?:string;content?:unknown}, b = item as {role?:string;content?:unknown};
+            return a.role === b.role && isDeepStrictEqual(a.content,b.content);
+          });
+          return !persisted;
+        });
+        if (filtered.length) await target.addItems(filtered);
+      };
+      const value = Reflect.get(target,property,target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}

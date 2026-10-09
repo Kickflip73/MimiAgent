@@ -7,6 +7,7 @@ import type { AgentInputItem } from '@openai/agents';
 import { FileSession } from '../src/core/session.js';
 import { persistInputImages, recentImageHistory } from '../src/runtime/attachments.js';
 import { MimiAgent } from '../src/agent.js';
+import { MediaUnderstandingRuntime } from '../src/runtime/media-understanding.js';
 import { containsImageInput } from '../src/runtime/pipeline/run-pipeline.js';
 const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=','base64');
 const input=[{role:'user',content:[{type:'input_text',text:'图片内容是什么'},{type:'input_image',image:`data:image/png;base64,${png.toString('base64')}`,detail:'auto'}]}] as AgentInputItem[];
@@ -35,7 +36,7 @@ test('image follow-up restores verified pixels after restart without putting bin
   assert.equal(containsImageInput([...(await recentImageHistory(history,[root])).values()]),false);
 });
 
-test('text follow-up uses a vision route and sends restored pixels; no-history policy stays isolated',async t=>{
+test('media understanding is independent of the main route; no-history policy stays isolated',async t=>{
   const root=await mkdtemp(path.join(os.tmpdir(),'mimi-vision-route-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const oldKey=process.env.FAKE_KEY;process.env.FAKE_KEY='test-only';t.after(()=>{if(oldKey===undefined)delete process.env.FAKE_KEY;else process.env.FAKE_KEY=oldKey;});
   const target={providerId:'fake',modelId:'vision'};
@@ -48,20 +49,23 @@ test('text follow-up uses a vision route and sends restored pixels; no-history p
   });t.after(()=>agent.close());
   await persistInputImages(input,path.join(root,'attachments'));
   const session=new FileSession(path.join(root,'sessions'),'a');await session.addItems(input);
+  let perceptionCalls=0;
+  t.mock.method(MediaUnderstandingRuntime.prototype,'understand',async (items:any[])=>{perceptionCalls++;assert.ok(containsImageInput(items));return {text:'one image',images:1,model:'fake/vision'};});
   let calls=0;
   (agent as any).runner.run=async(runtime:any,current:any,options:any)=>{
     calls++;
     const currentItems=typeof current==='string'?[{role:'user',content:current}]:current;
     const composed=await options.sessionInputCallback(await session.getItems(),currentItems);
     if(calls===1){
-      assert.ok(containsImageInput(composed));
-      assert.match(runtime.instructions,/本轮 Host 已将图片像素/);
+      assert.equal(containsImageInput(composed),false);
+      assert.match(runtime.instructions,/独立视觉模型/);
       assert.match(runtime.instructions,/旧记忆/);
     }else assert.equal(containsImageInput(composed),false);
     return {};
   };
   await agent.stream('再描述一下这张图片');
-  assert.deepEqual((agent as any).lastModelBinding.target,target);
+  assert.equal((agent as any).lastModelBinding.target.modelId,'text');
+  assert.equal(perceptionCalls,1);
   await agent.failRun(new Error('test complete'),true);
   await agent.stream('独立问题',undefined,{policy:{allowSessionContext:false,allowedCapabilities:[]}});
   await agent.failRun(new Error('test complete'),true);

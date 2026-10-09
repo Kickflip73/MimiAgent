@@ -105,8 +105,8 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
       const next = imageInput ? new WorkUnitModelResolver({
         providers: models.providers, routing: models.routing,
         isConfigured: provider => Boolean(process.env[provider.apiKeyEnv]?.trim()),
-      }).resolve({scenario:'conversation.default',sessionTarget:preferences.modelTarget,
-        profile:{requirements:{imageInput:true,toolCalling:true}},routeVersion:models.routeVersion}).target
+      }).resolve({scenario:'media-understanding.default',
+        profile:{requirements:{imageInput:true,toolCalling:false}},routeVersion:models.routeVersion}).target
         : preferences.modelTarget ?? models.routing.scenarios['conversation.default']?.target ?? models.routing.globalDefault;
       return { choices: models.providers.flatMap(provider => provider.models.map(registration => ({ ...registration,
         provider: { id: provider.id, label: provider.label, transport: provider.transport }, configured: Boolean(process.env[provider.apiKeyEnv]?.trim()) }))),
@@ -170,7 +170,7 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
         const catalog=await availableModels(id,true);
         const target=catalog.current.next.target;
         const selected=catalog.choices.find(choice=>choice.target.providerId===target.providerId&&choice.target.modelId===target.modelId);
-        if(!selected?.capabilities.imageInput)throw new Error('当前模型不支持图片理解，请在输入框下方选择支持图片的模型后重新发送');
+        if(!selected?.capabilities.imageInput)throw new Error('未配置可用的视觉模型，请在模型接入中配置支持图像理解的模型');
       }
       let total = 0;
       for (const image of ids) total += (await readWebImage([path.join(daemonPaths.root,'web-images')],image)).data.length;

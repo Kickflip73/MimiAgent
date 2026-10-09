@@ -95,7 +95,6 @@ import type { CapabilityCatalogAccess } from './pipeline/capability-registry.js'
 import { ToolSetBuilder } from './pipeline/tool-set-builder.js';
 import { AgentRequestFactory } from './pipeline/request-factory.js';
 import {
-  containsImageInput,
   executeRunPipeline,
 } from './pipeline/run-pipeline.js';
 import {
@@ -655,7 +654,6 @@ export class MimiAgent {
         ...options?.modelProfile,
         requirements: {
           ...options?.modelProfile?.requirements,
-          ...(containsImageInput(input) ? { imageInput: true } : {}),
           toolCalling: options?.modelProfile?.requirements?.imageOutput ? false : true,
         },
       },

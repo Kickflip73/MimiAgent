@@ -166,3 +166,16 @@ test('persisted reply positions restore trace-only thinking between multiple ans
   assert.equal(result.items[2]!.execution!.steps[0]!.text,'between');
   assert.equal(result.items[1]!.executionAfter,undefined);
 });
+
+test('legacy failed media input is restored from its exact durable submission, never another session', async t=>{
+  const items=[message('user','image question')];const options=await fixture(t,items);
+  const database=new DatabaseSync(':memory:');t.after(()=>database.close());
+  database.exec('CREATE TABLE tasks(session_key TEXT,type TEXT,authority_event_id TEXT,created_at TEXT); CREATE TABLE events(id TEXT,payload_json TEXT,created_at TEXT)');
+  database.prepare('INSERT INTO tasks VALUES(?,?,?,?)').run('chat','conversation','event',at(1));
+  database.prepare('INSERT INTO events VALUES(?,?,?)').run('event',JSON.stringify({prompt:'image question',attachments:[{kind:'image',sha256:'a'.repeat(64),mediaType:'image/png',bytes:100}]}),at(1));
+  const result=await decorateSessionTimeline({...options,items,database});
+  assert.equal((result.items[0]!.imageAttachments as any[])[0].id,'a'.repeat(64)+'.png');
+  assert.equal((items[0] as any).imageAttachments,undefined,'read projection must not mutate canonical data');
+  const other=await decorateSessionTimeline({...options,sessionId:'other',canonicalItems:items,items,database});
+  assert.equal(other.items[0]!.imageAttachments,undefined);
+});

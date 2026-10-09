@@ -234,3 +234,10 @@ test('recursive sanitizer preserves non-sensitive data and handles cycles', () =
   assert.equal((sanitized.nested as Record<string, unknown>).apiKey?.toString().includes('REDACTED'), true);
   assert.equal(sanitized.self, '[REDACTED:circular]');
 });
+
+
+test('display sanitization preserves media hashes containing phone-like digit runs', () => {
+  const id='a'.repeat(20)+'13800138000'+'b'.repeat(33)+'.png';
+  assert.equal(sanitizeSensitiveData({id}).id,id);
+  assert.notEqual(sanitizeSensitiveData({text:'联系电话 13800138000'}).text,'联系电话 13800138000');
+});

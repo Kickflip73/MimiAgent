@@ -2,6 +2,8 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import path from 'node:path';
 import type { DatabaseSync } from 'node:sqlite';
+import { mediaSchema } from '../core/media-attachment.js';
+import { imageMediaType } from '../core/image-attachment.js';
 import { assertSessionId } from '../core/session-id.js';
 import { sanitizeSensitiveData } from '../core/data-sanitizer.js';
 
@@ -189,6 +191,34 @@ function canonicalSteps(items: Item[]): TimelineStep[] {
   return steps;
 }
 
+/** Recover legacy preparation failures from the immutable accepted submission.
+ * Only unambiguous same-session text matches are eligible; never guess by proximity. */
+function restoreSubmittedMedia(database: DatabaseSync | undefined, sessionId: string, items: Item[]): Item[] {
+  if (!database) return items;
+  let rows: Item[];
+  try {
+    rows = database.prepare(`SELECT e.id,e.payload_json,e.created_at FROM tasks t JOIN events e ON e.id=t.authority_event_id
+      WHERE t.session_key=? AND t.type='conversation' ORDER BY t.created_at DESC LIMIT 100`).all(sessionId) as Item[];
+  } catch(error) { if (/no such (?:table|column)/i.test(String(error))) return items; throw error; }
+  const records = rows.flatMap(row=>{try{return [{...row,created_at:row.created_at,payload:object(JSON.parse(String(row.payload_json)))}];}catch{return [];}});
+  return items.map(item=>{
+    if(item.role!=='user' || item.imageAttachments || item.mediaAttachments)return item;
+    const matches=records.filter(row=>String(row.payload.prompt??'').trim()===itemText(item));
+    if(matches.length!==1 || items.filter(other=>other.role==='user'&&itemText(other)===itemText(item)).length!==1)return item;
+    const record=matches[0]!,payload=record.payload;
+    const extensions:Record<string,string>={'image/png':'png','image/jpeg':'jpg','image/gif':'gif','image/webp':'webp'};
+    const images=(Array.isArray(payload.attachments)?payload.attachments:[]).flatMap(raw=>{
+      const ref=object(raw),extension=extensions[String(ref.mediaType)];
+      if(ref.kind!=='image'||!extension||typeof ref.sha256!=='string'||!/^[a-f0-9]{64}$/.test(ref.sha256))return [];
+      const id=`${ref.sha256}.${extension}`;
+      return [{id,mediaType:imageMediaType(id),bytes:Number(ref.bytes)}];
+    });
+    const media=(Array.isArray(payload.mediaAttachments)?payload.mediaAttachments:[]).flatMap(ref=>{const parsed=mediaSchema.safeParse(ref);return parsed.success?[parsed.data]:[];});
+    return {...item,...(images.length?{imageAttachments:images}:{}),...(media.length?{mediaAttachments:media,displayText:payload.mediaDisplayText??itemText(item)}:{}),
+      ...(images.length||media.length?{timestamp:item.timestamp??record.created_at}: {})};
+  });
+}
+
 /** A read-only display projection. Never modifies canonical history or initializes an Agent. */
 export async function decorateSessionTimeline(options: SessionTimelineOptions): Promise<{
   items: TimelineItem[];
@@ -203,7 +233,7 @@ export async function decorateSessionTimeline(options: SessionTimelineOptions): 
   const tails = await Promise.all(['.1.jsonl', '.jsonl'].map((suffix) => traceTail(path.join(options.dataRoot, 'traces', options.sessionId + suffix), bytes)));
   const turns = traceTurns(tails.flatMap((tail) => tail.events), options.sessionId);
   const rows = durableRuns(options.database, options.sessionId);
-  const projected = options.items.map((value) => ({ ...object(value) }) as TimelineItem);
+  const projected = restoreSubmittedMedia(options.database, options.sessionId, options.items.map(value=>({...object(value)}))) as TimelineItem[];
   // Match from the tail so identical repeated messages do not all bind to the newest run.
   const indices = new Map<number, number>();
   let cursor = canonical.length - 1;

@@ -537,6 +537,7 @@ export class MimiDispatcher {
       preemptTimer = setInterval(checkPreemption, this.options.preemptPollMs ?? 250);
       preemptTimer.unref();
       refreshRunIdleWatchdog();
+      this.options.onRuntimeEvent?.(task.id, {type:'run_progress',sessionId:decision.sessionId!,phase:'正在准备附件与运行环境'});
       let modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
       const mediaPayload = event.payload as {mediaAttachments?:unknown[];mediaDisplayText?:string};
       if(Array.isArray(mediaPayload?.mediaAttachments) && event.source==='local-cli' && event.trust==='owner') {

@@ -532,3 +532,16 @@ test('coalesces summary reads without caching a scan invalidated by a completed 
   assert.equal(scans, 2);
   await host.close();
 });
+
+test('MCP and runtime inspection bypass a busy session lane and do not create cold actors', async () => {
+  const started=deferred(),release=deferred();let created=0;
+  const agent={currentSessionId:'a',bindSessionActor:()=>{},runtimeInfo:()=>({ready:true}),mcpStatuses:()=>[{name:'fixture',connected:true}],close:async()=>{}} as unknown as MimiAgent;
+  const host=new MimiHost(agent,{execute:async()=>{started.resolve();await release.promise;return {answer:'ok',effects:[]};}},
+    {createSessionRuntime:async()=>{created++;throw new Error('inspection cannot start an actor');}});
+  const run=host.execute({sessionId:'a',input:'long task'});await started.promise;
+  try {
+    assert.deepEqual(await host.inspectStatus('a','mcp'),[{name:'fixture',connected:true}]);
+    assert.deepEqual(await host.inspectStatus('cold','runtime'),{ready:true});
+    assert.equal(created,0);
+  } finally {release.resolve();await run;await host.close();}
+});

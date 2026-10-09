@@ -80,7 +80,7 @@ const VALUE_PATTERNS: readonly {
   },
   {
     category: 'contact',
-    expression: /(?<!\d)(?:\+?86[- ]?)?1[3-9]\d{9}(?!\d)/gu,
+    expression: /(?<![\da-zA-Z])(?:\+?86[- ]?)?1[3-9]\d{9}(?![\da-zA-Z])/gu,
   },
 ];
 

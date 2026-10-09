@@ -217,11 +217,13 @@ export async function recentImageHistory(history: AgentInputItem[], roots: strin
     const item = history[index] as unknown as Record<string, unknown>;
     if (item.role !== 'user') continue;
     if (++turns > 8) break;
-    if (!Array.isArray(item.imageAttachments) || !item.imageAttachments.length) continue;
+    const frames = Array.isArray(item.mediaAttachments) ? item.mediaAttachments.flatMap((ref:any)=>ref.kind==='video'&&Array.isArray(ref.frames)?ref.frames.map((id:string)=>({id})):[]) : [];
+    const references = [...(Array.isArray(item.imageAttachments)?item.imageAttachments:[]),...frames];
+    if (!references.length) continue;
     const content = (Array.isArray(item.content) ? item.content : [{type:'input_text',text:String(item.content ?? '')}])
       .filter((part: any) => part.text !== '[图片附件：本轮已读取，二进制未写入 Session 历史]');
     let bytes = 0;
-    for (const ref of item.imageAttachments.slice(0, MAX_ATTACHMENTS)) {
+    for (const ref of references.slice(0, MAX_ATTACHMENTS)) {
       let restored = false;
       try {
         const type = imageMediaType(ref.id);
