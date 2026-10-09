@@ -1720,7 +1720,9 @@ dialog h2 {
 
 .execution summary { max-width: 100%; min-width: 0; }
 .execution summary > svg { flex-shrink: 0; }
-.execution summary > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.execution.is-running summary > span { background: linear-gradient(100deg, #777 0%, #777 35%, #ddd 48%, #777 62%, #777 100%); background-size: 240% 100%; background-clip: text; -webkit-text-fill-color: transparent; animation: execution-shimmer 2.1s linear infinite; }
+.execution summary > .execution-activity { display: none; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.execution.is-running:not([open]) summary > .execution-label { display: none; }
+.execution.is-running:not([open]) summary > .execution-activity { display: block; }
+.execution.is-running:not([open]) summary > .execution-activity { background: linear-gradient(100deg, #777 0%, #777 35%, #ddd 48%, #777 62%, #777 100%); background-size: 240% 100%; background-clip: text; -webkit-text-fill-color: transparent; animation: execution-shimmer 2.1s linear infinite; }
 @keyframes execution-shimmer { from { background-position: 160% 0; } to { background-position: -80% 0; } }
-@media (prefers-reduced-motion: reduce) { .execution.is-running summary > span { animation: none; background: none; -webkit-text-fill-color: currentColor; } }
+@media (prefers-reduced-motion: reduce) { .execution.is-running:not([open]) summary > .execution-activity { animation: none; background: none; -webkit-text-fill-color: currentColor; } }
