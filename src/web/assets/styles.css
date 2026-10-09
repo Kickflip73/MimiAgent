@@ -1726,3 +1726,14 @@ dialog h2 {
 .execution.is-running:not([open]) summary > .execution-activity { background: linear-gradient(100deg, #777 0%, #777 35%, #ddd 48%, #777 62%, #777 100%); background-size: 240% 100%; background-clip: text; -webkit-text-fill-color: transparent; animation: execution-shimmer 2.1s linear infinite; }
 @keyframes execution-shimmer { from { background-position: 160% 0; } to { background-position: -80% 0; } }
 @media (prefers-reduced-motion: reduce) { .execution.is-running:not([open]) summary > .execution-activity { animation: none; background: none; -webkit-text-fill-color: currentColor; } }
+
+/* The microphone meter shows captured samples, never a decorative animation. */
+.recording-state { flex-wrap: wrap; }
+.recording-meter { width: 44px; height: 4px; border-radius: 3px; background: #e6e6e6; overflow: hidden; }
+.recording-meter i { display: block; width: var(--level,0%); height: 100%; background: #181818; transition: width .1s linear; }
+#recording-device .picker-trigger { max-width: 240px; font-size: 12px; padding: 3px 6px; border: 0; background: transparent; }
+#recording-device .picker-trigger span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#recording-device .picker-popover { bottom: calc(100% + 8px); top: auto; width: min(320px,75vw); }
+#recording-device button { margin-left: 0; }
+#recording-signal { font-size: 11px; }
+.recording-state.no-signal #recording-signal { color: #a65c25; }

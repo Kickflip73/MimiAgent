@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- show live microphone input levels and a device picker; reject silent recordings before
+  local transcription, including legacy cached silence, instead of accepting hallucinated text
+
 - decouple image/video perception from the conversation model with a bounded, cached
   vision runtime and session-scoped `understand_media` tool; retain the chosen main model
 - persist multimedia owner input before slow preparation and guard SDK projections

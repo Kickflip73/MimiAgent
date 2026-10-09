@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { runManagedCommand } from '../core/managed-process.js';
 import { type MediaAttachment } from '../core/media-attachment.js';
 import { mediaRecord, readMedia, saveMedia } from '../runtime/media-input.js';
-import { transcribeAudio } from '../runtime/speech-input.js';
+import { transcribeAudio, assertAudioSignal } from '../runtime/speech-input.js';
 import { saveWebImage } from './images.js';
 
 export async function mediaBinary(name:'ffmpeg'|'ffprobe'):Promise<string> {
@@ -18,7 +18,8 @@ export async function prepareMedia(root:string,id:string):Promise<MediaAttachmen
   if(pending.has(key))return pending.get(key)!;
   if(pending.size>=8)throw new Error('媒体处理队列已满，请稍后重试');
   const job=preparationLane.then(async()=>{
-    const saved=await mediaRecord(root,id).read();if(saved&&(saved.kind==='video'||saved.playbackId))return saved;
+    const saved=await mediaRecord(root,id).read();if(saved?.kind==='video')return saved;
+    if(saved?.playbackId){assertAudioSignal((await readMedia(root,saved.playbackId)).data);return saved;}
     const {data,mediaType}=await readMedia(root,id);
     let kind:'audio'|'video'=mediaType.startsWith('audio/')?'audio':'video';
     const command=await mediaBinary('ffmpeg'),probe=await mediaBinary('ffprobe');
@@ -32,7 +33,7 @@ export async function prepareMedia(root:string,id:string):Promise<MediaAttachmen
       const ref:MediaAttachment={id,kind,mediaType,bytes:data.length};
       if(kind==='audio') {
         const wav=path.join(directory,'speech.wav');
-        await runManagedCommand(command,['-nostdin','-v','error','-protocol_whitelist','file,pipe','-i',key,'-t','601','-vn','-ac','1','-ar','16000','-threads','2','-y',wav],{timeoutMs:25_000});
+        await runManagedCommand(command,['-nostdin','-v','error','-protocol_whitelist','file,pipe','-i',key,'-t','601','-vn','-ac','1','-ar','16000','-c:a','pcm_s16le','-threads','2','-y',wav],{timeoutMs:25_000});
         // Browser MediaRecorder WebM commonly has no container duration. Probe the bounded decoded WAV.
         const decoded=JSON.parse((await runManagedCommand(probe,['-v','error','-show_entries','format=duration','-of','json',wav],{timeoutMs:10_000})).stdout);
         duration=Number(decoded.format?.duration);

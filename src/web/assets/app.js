@@ -6,7 +6,7 @@ import { createMessageQueue } from './queue.js';
 import { contextBreakdown } from './context.js';
 import { createManagement, managedViews, viewTitles } from './manage.js';
 import { historyExecution, projectEvent, finishAnswers, runningActivity, elapsedLabel, createTextReveal, presentAnswer, renderStreamText, executionGroups } from './execution.js';
-import { setupPickers, createSelectionQueue } from './pickers.js';
+import { setupPickers, createSelectionQueue, enhanceSelects } from './pickers.js';
 const $ = (selector) => document.querySelector(selector);
 const icons = {
   plus: 'M12 5v14M5 12h14',
@@ -126,8 +126,18 @@ function renderMediaDrafts() {
   root.innerHTML=items.map(item=>`<div class="media-draft">${mediaMarkup(item,esc)}<button type="button" class="image-remove" data-remove-media="${esc(item.key||item.id)}" aria-label="移除媒体">×</button>${item.pending?`<p class="media-progress"><span class="mini-spinner"></span>${item.id?(item.kind==='audio'?'正在识别…':'正在准备视频…'):'正在上传…'}</p>`:item.error?`<p class="media-error">${esc(item.error)} ${item.id?`<button type="button" data-retry-media="${esc(item.key||item.id)}">重试</button>`:''}</p>`:!item.ready?`<button type="button" class="media-resume" data-retry-media="${esc(item.key||item.id)}">继续${item.kind==='audio'?'识别':'准备'}</button>`:''}</div>`).join('');
 }
 async function addMedia(session,file){try{if(mediaDrafts.list(session).length+imageDrafts.list(session).length>=8)throw new Error('每条消息最多 8 个附件');await mediaDrafts.add(session,file);}catch(error){toast(error.message);}}
+let recordingDevicesKey;
 const recorder = createRecorder({
-  changed:({active,requesting,elapsed})=>{const button=$('#record-voice');button.classList.toggle('is-recording',active);button.disabled=requesting;button.setAttribute('aria-label',active?'结束录音':'录制语音');$('#recording-state').hidden=!active&&!requesting;$('#recording-time').textContent=requesting?'正在请求麦克风…':mediaTime(elapsed/1000);updateComposer();},
+  changed:({active,requesting,elapsed,devices=[],deviceId,deviceLabel,level=0,noSignal=false})=>{const button=$('#record-voice');button.classList.toggle('is-recording',active);button.disabled=requesting;button.setAttribute('aria-label',active?'结束录音':'录制语音');$('#recording-state').hidden=!active&&!requesting;$('#recording-time').textContent=requesting?'正在请求麦克风…':mediaTime(elapsed/1000);
+    const meter=$('.recording-meter'),volume=Math.min(100,Math.round(Math.sqrt(level)*300));meter.style.setProperty('--level',`${volume}%`);meter.setAttribute('aria-valuenow',String(volume));
+    $('#recording-signal').textContent=noSignal?'未收到声音，请检查静音或切换麦克风':'录音中';$('#recording-state').classList.toggle('no-signal',noSignal);
+    const key=JSON.stringify([devices.map(d=>[d.deviceId,d.label]),deviceId]);
+    if(key!==recordingDevicesKey){
+      recordingDevicesKey=key;const root=$('#recording-device');
+      root.innerHTML=devices.length?`<select aria-label="录音麦克风" title="更换麦克风将重新录音">${devices.map((d,i)=>`<option value="${esc(d.deviceId)}" ${d.deviceId===deviceId?'selected':''}>${esc(d.label||`麦克风 ${i+1}`)}</option>`).join('')}</select>`:esc(deviceLabel||'麦克风');
+      const select=root.querySelector('select');if(select){select.onchange=()=>void recorder.selectDevice(select.value);enhanceSelects(root);root.querySelector('.picker-trigger').setAttribute('aria-label','录音麦克风');root.querySelector('.picker-trigger').title='更换麦克风将重新录音';}
+    }
+    updateComposer();},
   complete:(session,file)=>{void addMedia(session,file);},error:error=>toast(error.message),
 });
 const imageDrafts = createImageDrafts({storage:sessionStorage,

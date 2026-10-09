@@ -75,3 +75,25 @@ test('recorder releases microphone on completion, failed startup and late permis
  const broken=createRecorder({...options,Recorder:Broken});await broken.start('a');assert.equal(broken.active,false);assert.equal(errors,1);assert.equal(stopped,2);
  let grant!:(v:any)=>void;const delayed=createRecorder({...options,mediaDevices:{getUserMedia:()=>new Promise(r=>grant=r)}});const starting=delayed.start('a');delayed.cancel();grant(stream);await starting;assert.equal(stopped,3);assert.equal(complete,1);assert.equal(delayed.active,false);
 });
+
+test('recorder measures the actual input, rejects silence and routes selected devices',{timeout:3000},async t=>{
+ let signal=0,uploads=0,stopped=0;const failures:string[]=[],constraints:any[]=[];
+ let notifySample!:(value:any)=>void;
+ const sample=()=>new Promise<any>(resolve=>{notifySample=resolve;});
+ class AudioContext {
+  state='running';resume(){return Promise.resolve();}close(){return Promise.resolve();}
+  createMediaStreamSource(){return {connect(){},disconnect(){}};}
+  createAnalyser(){return {fftSize:2048,getFloatTimeDomainData:(buffer:Float32Array)=>{buffer.fill(signal);},disconnect(){}};}
+ }
+ class Recorder {static isTypeSupported(){return true;}state='inactive';mimeType='audio/webm';ondataavailable:any;onstop:any;start(){this.state='recording';}stop(){this.state='inactive';this.ondataavailable({data:new Blob(['valid container even when silent'])});this.onstop();}}
+ const recording=createRecorder({Recorder,AudioContext,mediaDevices:{getUserMedia:async (value:any)=>{constraints.push(value);return {getTracks:()=>[{stop:()=>stopped++,getSettings:()=>({deviceId:'builtin'}),label:'Built-in microphone'}]};},enumerateDevices:async()=>[{kind:'audioinput',deviceId:'builtin',label:'Built-in microphone'}]},changed:(state:any)=>{if(state.level>0)notifySample?.(state);},complete:()=>uploads++,error:(e:Error)=>failures.push(e.message)});
+ t.after(()=>recording.cancel());
+ await recording.start('s');
+ // Coordinate on the analyser invocation, instead of waiting an assumed timer duration.
+ const measured=new Promise<void>(resolve=>{AudioContext.prototype.createAnalyser=function(){return {fftSize:2048,getFloatTimeDomainData:(buffer:Float32Array)=>{buffer.fill(signal);resolve();},disconnect(){}};};});
+ await recording.selectDevice('builtin');await measured;recording.stop();
+ assert.equal(uploads,0);assert.match(failures[0]!,/没有录到声音/);
+ signal=.02;const heard=sample();await recording.start('s');const state=await heard;
+ assert.ok(state.level>.01);recording.stop();assert.equal(uploads,1);
+ assert.deepEqual(constraints.at(-1).audio.deviceId,{exact:'builtin'});assert.equal(stopped,3);
+});

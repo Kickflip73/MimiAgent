@@ -94,7 +94,7 @@
               <div id="plan" class="plan" hidden></div>
               <div id="message-queue" class="message-queue" aria-label="待发送消息" hidden></div>
               <form class="composer" id="composer">
-                <div id="recording-state" class="recording-state" hidden><span class="recording-dot"></span><time id="recording-time">0:00</time><span>录音中</span><button id="cancel-recording" type="button" aria-label="取消录音">×</button></div>
+                <div id="recording-state" class="recording-state" hidden><span class="recording-dot"></span><time id="recording-time">0:00</time><span class="recording-meter" role="meter" aria-label="麦克风音量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></span><span id="recording-device"></span><span id="recording-signal" role="status">录音中</span><button id="cancel-recording" type="button" aria-label="取消录音">×</button></div>
                 <div id="media-drafts" class="media-drafts" aria-label="待发送媒体" hidden></div>
                 <div id="image-drafts" class="image-strip" aria-label="待发送图片" hidden></div>
                 <div id="image-model-note" class="image-model-note" hidden></div>
