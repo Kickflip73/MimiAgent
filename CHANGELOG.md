@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- paste or select images in Web chat, preview/remove thumbnails, send image-only
+  messages, and retain image references in queued messages and saved history
+- deliver Web images through the existing native vision input path; select an
+  available vision model for automatic routing and explain incompatible selections
+
 - record slow read-only IPC requests and event-loop stalls without logging
   request parameters, credentials or conversation content
 - interleave execution details with each assistant reply in Web conversations,

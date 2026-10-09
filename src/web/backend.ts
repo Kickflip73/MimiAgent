@@ -1,3 +1,5 @@
+import { imageIds, IMAGE_TOTAL_BYTES, type ImageAttachment } from '../core/image-attachment.js';
+import { saveWebImage, readWebImage } from './images.js';
 import { memoryEvidence, readMemoryEvidence } from './memory-browser.js';
 import { decorateSessionTimeline } from './session-timeline.js';
 import path from 'node:path';
@@ -27,7 +29,9 @@ export interface WebBackend {
   session(id: string, draft: boolean): Promise<unknown>;
   history(id: string): Promise<unknown>;
   context(id: string): Promise<unknown>;
-  submit(id: string, input: string, requestId: string, security?: SecurityProfile, workspaceRoot?: string): Promise<unknown>;
+  submit(id: string, input: string, requestId: string, security?: SecurityProfile, workspaceRoot?: string, images?: string[]): Promise<unknown>;
+  uploadImage?(data: Buffer, mediaType: string): Promise<ImageAttachment>;
+  image?(id: string): Promise<{data:Buffer;mediaType:string}>;
   stream(id: string, after: number): Promise<MimiStreamSnapshot>;
   tasks(): Promise<unknown>;
   task(id: string): Promise<unknown>;
@@ -82,6 +86,17 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
   let sessionsCachedAt = 0;
   const management = webManagement(config, (operation, value, session) => client.invoke(operation, value, session), (method, params) => mimiRpc(socket, method, params, 30_000));
   const modelConfig = () => config.modelsConfig ? new ModelConfigStore(config.modelsConfig).read() : Promise.resolve(legacyModelConfigurationForAppConfig(config));
+  const availableModels = async (id: string) => {
+      const [models, preferences] = await Promise.all([modelConfig(), readFile(path.join(config.dataRoot,'sessions',`${id}.json`),'utf8').then(source => {
+        // A Web-only build can be older than the daemon. Never run migration/recovery while inspecting its files.
+        const preferences = JSON.parse(source)?.preferences;
+        const target = modelTargetSchema.safeParse(preferences?.modelTarget);
+        return { modelTarget: target.success ? target.data : undefined };
+      }).catch((error: NodeJS.ErrnoException) => { if(error.code === 'ENOENT') return {modelTarget: undefined}; throw error; })]);
+      return { choices: models.providers.flatMap(provider => provider.models.map(registration => ({ ...registration,
+        provider: { id: provider.id, label: provider.label, transport: provider.transport }, configured: Boolean(process.env[provider.apiKeyEnv]?.trim()) }))),
+        current: { sessionTarget: preferences.modelTarget, next: { target: preferences.modelTarget ?? models.routing.scenarios['conversation.default']?.target ?? models.routing.globalDefault } } };
+    };
   return {
     manageRead: management.read, manageWrite: management.write,
     status: async () => {
@@ -120,10 +135,24 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
       const items = await client.history(id);
       return (await timeline(id, items)).items;
     },
-    submit: async (id, input, requestId, security, workspaceRoot) => {
+    uploadImage: (data,mediaType) => saveWebImage(path.join(daemonPaths.root,'web-images'),data,mediaType),
+    image: id => readWebImage([path.join(daemonPaths.root,'web-images'),path.join(daemonPaths.root,'attachments')],id),
+    submit: async (id, input, requestId, security, workspaceRoot, images) => {
+      const ids = imageIds(images);
+      if(ids.length) {
+        const daemon=await mimiRpc<{supportsWebImages?:boolean}>(socket,'status',undefined,8_000);
+        if(!daemon.supportsWebImages)throw new Error('后台仍运行旧版本，请在当前任务完成后重启 Mimi 后台以启用图片发送');
+        const catalog=await availableModels(id);
+        const target=catalog.current.next.target;
+        const selected=catalog.choices.find(choice=>choice.target.providerId===target.providerId&&choice.target.modelId===target.modelId);
+        if(!selected?.capabilities.imageInput)throw new Error('当前模型不支持图片理解，请在输入框下方选择支持图片的模型后重新发送');
+      }
+      let total = 0;
+      for (const image of ids) total += (await readWebImage([path.join(daemonPaths.root,'web-images')],image)).data.length;
+      if(total > IMAGE_TOTAL_BYTES) throw new Error('图片合计不能超过 20MB');
       const root = workspaceRoot ? await validateWorkspace(workspaceRoot) : sessionWorkspace(id);
       if (root === defaultWorkspaceRoot(options.homeDirectory)) await mkdir(root, { recursive: true, mode: 0o700 });
-      const submission=await client.submit(input, id, { requestId, requestedSecurityProfile: security, workspaceRoot: root });
+      const submission=await client.submit(input, id, { requestId, requestedSecurityProfile: security, workspaceRoot: root, ...(ids.length ? {webImages:ids} : {}) });
       if(root)rememberWorkspace(id,root);
       return submission;
     },
@@ -149,17 +178,7 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
     },
     memory: async (id) => memoryEvidence(config.dataRoot, sessionWorkspace(id)),
     memoryRead: async (id, scope, memoryId) => readMemoryEvidence(config.dataRoot, sessionWorkspace(id), scope, memoryId),
-    models: async (id) => {
-      const [models, preferences] = await Promise.all([modelConfig(), readFile(path.join(config.dataRoot,'sessions',`${id}.json`),'utf8').then(source => {
-        // A Web-only build can be older than the daemon. Never run migration/recovery while inspecting its files.
-        const preferences = JSON.parse(source)?.preferences;
-        const target = modelTargetSchema.safeParse(preferences?.modelTarget);
-        return { modelTarget: target.success ? target.data : undefined };
-      }).catch((error: NodeJS.ErrnoException) => { if(error.code === 'ENOENT') return {modelTarget: undefined}; throw error; })]);
-      return { choices: models.providers.flatMap(provider => provider.models.map(registration => ({ ...registration,
-        provider: { id: provider.id, label: provider.label, transport: provider.transport }, configured: Boolean(process.env[provider.apiKeyEnv]?.trim()) }))),
-        current: { sessionTarget: preferences.modelTarget, next: { target: preferences.modelTarget ?? models.routing.scenarios['conversation.default']?.target ?? models.routing.globalDefault } } };
-    },
+    models: availableModels,
     model: (id, target) => client.invoke('model.control', target ? { action: 'use', target } : { action: 'auto' }, id),
     mode: (id, mode) => client.invoke('mode.set', mode, id),
   };

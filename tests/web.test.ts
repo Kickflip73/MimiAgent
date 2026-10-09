@@ -212,3 +212,17 @@ test('SSE forwards consecutive live batches without the former 750ms gate', asyn
   assert.equal((content.match(/event: update/g) || []).length, 3);
   assert.ok(at[2]! - at[0]! < 650, 'new batches should not wait on a 750ms poll interval');
 });
+
+test('Web accepts binary image upload and image-only messages without passing image bytes through IPC',async t=>{
+  const id='a'.repeat(64)+'.png',calls:unknown[][]=[];
+  const server=new MimiWebServer(backend({uploadImage:async(data,mediaType)=>({id,bytes:data.length,mediaType}),
+    image:async()=>({data:Buffer.from('image bytes'),mediaType:'image/png'}),submit:async(...args)=>{calls.push(args);return {eventId:'task'};}}),0);
+  await server.start();t.after(()=>server.close());
+  const upload=await fetch(server.address+'/api/images',{method:'POST',headers:{...localHeaders(server),'content-type':'image/png'},body:Buffer.alloc(300_000,1)});
+  assert.equal(upload.status,201);assert.equal((await upload.json() as any).bytes,300_000);
+  const response=await fetch(server.address+'/api/messages',{method:'POST',headers:localHeaders(server),body:JSON.stringify({sessionId:'s',input:'',requestId:randomUUID(),images:[id]})});
+  assert.equal(response.status,202);assert.deepEqual(calls[0]![5],[id]);
+  const preview=await fetch(server.address+'/api/images?id='+id);assert.equal(preview.headers.get('content-type'),'image/png');
+  const blocked=await fetch(server.address+'/api/images',{method:'POST',headers:{'content-type':'image/png',origin:'https://evil.test'},body:'image'});
+  assert.equal(blocked.status,403);
+});

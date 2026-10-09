@@ -1643,3 +1643,26 @@ dialog h2 {
 .stream-ink { animation: stream-ink-in 160ms ease-out both; }
 @keyframes stream-ink-in { from { opacity: .18; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .stream-ink { animation: none; } }
+
+/* Image attachments share the quiet composer and bubble surfaces. */
+.image-strip, .message-images { display:flex; flex-wrap:wrap; gap:9px; }
+.image-strip { padding:12px 14px 3px; }
+.image-strip[hidden] { display:none; }
+.image-thumb { display:inline-block; position:relative; flex:none; }
+.image-thumb > button:first-child { display:block; padding:0; border:1px solid #e4e4e8; border-radius:12px; overflow:hidden; background:#f5f5f7; cursor:zoom-in; }
+.image-thumb img { display:block; width:72px; height:72px; object-fit:cover; }
+.image-remove { position:absolute; top:-6px; right:-6px; width:21px; height:21px; border:2px solid #fff; border-radius:50%; padding:0; color:#fff; background:#3b3b40; line-height:15px; font-size:16px; cursor:pointer; }
+.image-upload-status { position:absolute; left:0; bottom:4px; width:100%; text-align:center; font-size:10px; color:#fff; background:#333a; pointer-events:none; }
+.message-images { margin-bottom:9px; }
+.message-images:last-child { margin-bottom:0; }
+.message-images .image-thumb img { width:160px; height:120px; }
+.queued-content { min-width:0; }
+.queued-content .image-thumb img { width:38px; height:38px; }
+.image-preview { padding:36px 16px 16px; border:1px solid #ddd; border-radius:18px; background:#fff; max-width:90vw; max-height:90vh; }
+.image-preview::backdrop { background:#0009; backdrop-filter:blur(4px); }
+.image-preview > img { display:block; max-width:85vw; max-height:78vh; object-fit:contain; }
+.image-preview > button { position:absolute; top:4px; right:6px; font-size:22px; }
+#attach-image { width:28px; height:28px; color:#99999f; }
+#attach-image svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.4; }
+.image-model-note { padding:4px 16px 7px; font-size:11px; color:#888; }
+.image-model-note button { border:0; background:none; padding:0 4px; color:#333; text-decoration:underline; cursor:pointer; font:inherit; }

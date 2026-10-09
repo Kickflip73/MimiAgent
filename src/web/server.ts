@@ -1,3 +1,4 @@
+import { imageIds, imageMediaType, IMAGE_MAX_BYTES } from '../core/image-attachment.js';
 import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -6,6 +7,7 @@ import type { SecurityProfile } from '../config.js';
 import type { WebBackend } from './backend.js';
 
 const ASSETS: Record<string, [string, string]> = {
+  '/images.js': ['images.js', 'text/javascript; charset=utf-8'],
   '/queue.js': ['queue.js', 'text/javascript; charset=utf-8'],
   '/context.js': ['context.js', 'text/javascript; charset=utf-8'],
   '/execution.js': ['execution.js', 'text/javascript; charset=utf-8'],
@@ -77,7 +79,7 @@ export class MimiWebServer {
       response.setHeader('x-content-type-options', 'nosniff');
       response.setHeader('referrer-policy', 'no-referrer');
       response.setHeader('x-frame-options', 'DENY');
-      response.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+      response.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
       void this.route(request, response).catch((error: unknown) => {
         if (response.destroyed) return;
         if (response.headersSent) { response.end(); return; }
@@ -134,6 +136,28 @@ export class MimiWebServer {
       const input = await body(request);
       json(response, 200, await this.backend.manageWrite(identifier(input.action), identifier(input.sessionId), input.value)); return;
     }
+    if (url.pathname === '/api/images') {
+      if (get && this.backend.image) {
+        const id=String(url.searchParams.get('id')||'');
+        try {imageMediaType(id);}catch{throw new HttpError(400,'无效的图片标识');}
+        let image;
+        try {image=await this.backend.image(id);}catch(error){if((error as {status?:number}).status===404)throw new HttpError(404,'图片已不存在');throw error;}
+        response.writeHead(200, {'content-type':image.mediaType,'cache-control':'private, max-age=86400','x-content-type-options':'nosniff'});
+        response.end(image.data); return;
+      }
+      if (request.method === 'POST' && this.backend.uploadImage) {
+        const chunks:Buffer[]=[]; let size=0;
+        for await (const chunk of request) {
+          size+=chunk.length;
+          if(size>IMAGE_MAX_BYTES) throw new HttpError(413,'图片不能超过 10MB');
+          chunks.push(Buffer.from(chunk));
+        }
+        try { json(response,201,await this.backend.uploadImage(Buffer.concat(chunks),String(request.headers['content-type']||'').split(';')[0]!)); }
+        catch(error) { throw new HttpError(400,error instanceof Error ? error.message : '图片上传失败'); }
+        return;
+      }
+      throw new HttpError(503,'图片接口不可用');
+    }
     if (get && url.pathname === '/api/status') { json(response, 200, await this.backend.status()); return; }
     if (get && url.pathname === '/api/sessions') { json(response, 200, await this.backend.sessions()); return; }
     if (get && url.pathname === '/api/session') {
@@ -172,11 +196,17 @@ export class MimiWebServer {
     if (request.method === 'POST' && url.pathname === '/api/messages') {
       const input = await body(request);
       const id = identifier(input.sessionId);
-      if (typeof input.input !== 'string' || !input.input.trim() || input.input.length > 60_000) throw new HttpError(400, '消息不能为空或超过 60000 字');
+      let images:string[];
+      try { images=imageIds(input.images); } catch(error) {throw new HttpError(400,(error as Error).message);}
+      if (typeof input.input !== 'string' || (!input.input.trim() && !images.length) || input.input.length > 60_000) throw new HttpError(400, '消息不能为空或超过 60000 字');
       if (typeof input.requestId !== 'string' || !UUID.test(input.requestId)) throw new HttpError(400, '无效的请求 ID');
       if (input.security !== undefined && !['safe', 'workstation', 'full-owner'].includes(String(input.security))) throw new HttpError(400, '无效的安全等级');
       if(input.workspaceRoot!==undefined && (typeof input.workspaceRoot!=='string' || input.workspaceRoot.length>4096))throw new HttpError(400,'无效的工作区');
-      json(response, 202, await this.backend.submit(id, input.input, input.requestId, input.security as SecurityProfile | undefined, ...(input.workspaceRoot === undefined ? [] : [input.workspaceRoot as string]))); return;
+      const security = input.security as SecurityProfile | undefined;
+      const result = images.length ? await this.backend.submit(id,input.input,input.requestId,security,input.workspaceRoot as string | undefined,images)
+        : input.workspaceRoot === undefined ? await this.backend.submit(id,input.input,input.requestId,security)
+        : await this.backend.submit(id,input.input,input.requestId,security,input.workspaceRoot as string);
+      json(response,202,result); return;
     }
     if (request.method === 'POST' && url.pathname === '/api/tasks/action') {
       const input = await body(request);

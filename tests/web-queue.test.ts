@@ -91,3 +91,11 @@ test('repeated send-now clicks serialize one interruption and submission', async
   const first=q.drain('a',item.id);await Promise.resolve();const second=q.drain('a',item.id);
   release();await Promise.all([first,second]);assert.equal(interrupts,1);assert.equal(f.submitted.length,1);
 });
+
+test('image-only queued messages preserve attachments through edit, reload and retry',async()=>{
+  const f=fixture();const images=[{id:'a'.repeat(64)+'.png',bytes:10,mediaType:'image/png'}];
+  const item=f.queue.add('a','','safe',images);
+  f.queue.edit(item.id,'');
+  const restored=createMessageQueue(f.config);await restored.drain('a');
+  assert.deepEqual(f.submitted[0].images,images);assert.equal(f.submitted[0].input,'');
+});

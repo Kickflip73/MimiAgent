@@ -1,3 +1,4 @@
+import { createImageDrafts, imageUrl } from './images.js';
 import { createMessageQueue } from './queue.js';
 import { contextBreakdown } from './context.js';
 import { createManagement, managedViews, viewTitles } from './manage.js';
@@ -112,6 +113,39 @@ function saveExecutions() {
   } catch { /* Execution details remain available in this page if storage is full. */ }
 }
 const drafts = new Map();
+const imageDrafts = createImageDrafts({storage:sessionStorage,
+  upload:async file => {
+    const response=await fetch('/api/images',{method:'POST',headers:{'content-type':file.type,'x-mimi-web':'1'},body:file,signal:AbortSignal.timeout(30_000)});
+    const result=await response.json(); if(!response.ok)throw new Error(result.error||'图片上传失败'); return result;
+  },
+  changed:session=>{if(session===state.sessionId){renderImageDrafts();updateComposer();}},
+});
+function imagesMarkup(images, editable=false) {
+  return (images||[]).map(item=>{
+    const src=item.src||imageUrl(item.id); if(!src)return '';
+    return `<span class="image-thumb${item.pending?' is-uploading':''}"><button type="button" data-image-preview aria-label="放大查看图片"><img src="${esc(src)}" alt="${esc(item.name||'图片附件')}" /></button>${editable?`<button type="button" class="image-remove" data-remove-image="${esc(item.key||item.id)}" aria-label="移除图片">×</button>`:''}${item.pending?'<span class="image-upload-status">上传中</span>':''}</span>`;
+  }).join('');
+}
+function renderImageDrafts() {
+  const images=imageDrafts.list(state.sessionId),root=$('#image-drafts');
+  root.hidden=!images.length;root.innerHTML=imagesMarkup(images,true);
+  const target=selections.get(selectionKey('model'))?.value || state.defaultModel;
+  const selected=state.models.find(model=>model.target.providerId===target?.providerId&&model.target.modelId===target?.modelId);
+  const vision=state.models.find(model=>model.capabilities?.imageInput&&model.configured!==false);
+  const note=$('#image-model-note'); note.hidden=!images.length || !!selected?.capabilities?.imageInput;
+  note.innerHTML=vision ? `当前模型仅支持文字。<button type="button" id="use-vision-model">使用 ${esc(vision.target.modelId)} 看图</button>` : '请在模型接入中配置支持图片理解的模型。';
+  note.querySelector('button')?.addEventListener('click',()=>{selections.set(selectionKey('model'),vision.target);renderImageDrafts();});
+  // Auto mode can select the configured vision model. Explicit choices stay explicit.
+  if(images.length && vision && state.models.length && !selections.get(selectionKey('model'))?.value && !selected?.capabilities?.imageInput) {
+    selections.set(selectionKey('model'),vision.target);
+    note.hidden=true;
+  }
+}
+async function addImages(files) {
+  if(state.sending){toast('正在发送，请稍后添加图片');return;}
+  const session=state.sessionId;
+  for(const file of files)try{await imageDrafts.add(session,file);}catch(error){toast(error.message);}
+}
 const labels = {
   queued: '等待中',
   running: '进行中',
@@ -177,15 +211,18 @@ function connection(online) {
 function updateComposer() {
   const running = !!state.streamId;
   const button = $('#send');
-  const queueing = running && !!$('#message-input').value.trim();
+  const images=imageDrafts.list(state.sessionId);
+  const hasInput=!!$('#message-input').value.trim()||images.length>0;
+  const queueing = running && hasInput;
   button.type = running && !queueing ? 'button' : 'submit';
   button.setAttribute('aria-label', queueing ? '加入待发送队列' : running ? '停止生成' : '发送消息');
   button.title = queueing ? '加入待发送队列' : running ? '停止生成' : '发送消息';
   const stopping = running && state.stopping === state.streamId;
-  button.disabled = running && !queueing ? stopping : !state.online || !$('#message-input').value.trim() || !!state.sending || state.loading || state.changing;
+  button.disabled = running && !queueing ? stopping : !state.online || !hasInput || images.some(i=>i.pending) || !!state.sending || state.loading || state.changing;
   button.classList.toggle('is-stopping', stopping);
   button.setAttribute('aria-busy', String(stopping));
   if (stopping) { button.setAttribute('aria-label', '正在停止'); button.title = '正在停止'; }
+  $('#attach-image').disabled=!!state.sending || state.loading;
   button.innerHTML = stopping ? '<span class="stop-spinner" aria-hidden="true"></span>' : running && !queueing ? '<span class="stop-square" aria-hidden="true"></span>' : icon('up');
   $('#composer-cat').classList.toggle('is-running', running || !!state.sending);
   if (!running) { const label = state.sending ? '正在发送' : 'Mimi'; $('#composer-cat').title = label; $('#composer-cat').setAttribute('aria-label', label); }
@@ -378,7 +415,7 @@ function markdown(source) {
 function textOf(item) {
   if (typeof item.content === 'string') return item.content;
   return (item.content || [])
-    .map((part) => part.text || (part.type === 'input_image' ? '[图片]' : ''))
+    .map((part) => item.imageAttachments?.length && part.text === '[图片附件：本轮已读取，二进制未写入 Session 历史]' ? '' : part.text || (part.type === 'input_image' ? '[图片]' : ''))
     .join('\n');
 }
 function messageFooter(text, { role = 'assistant', sentAt, timestampSource, duration, copy = true } = {}) {
@@ -413,7 +450,7 @@ function setMessageFooter(article, text, metadata) {
   content.querySelector(':scope > .message-footer')?.remove();
   content.querySelector('.markdown').after(messageFooter(text, metadata));
 }
-function message(role, text, live = false, sentAt) {
+function message(role, text, live = false, sentAt, images = []) {
   if (role === 'assistant') text = presentAnswer(text).text;
   const el = document.createElement('article');
   el.className = `message ${role}`;
@@ -422,13 +459,14 @@ function message(role, text, live = false, sentAt) {
   if (sentAt) el.dataset.sentAt = String(sentAt);
   if (live) el.id = 'live-message';
   el.innerHTML = `<div class="message-avatar">${role === 'user' ? '我' : '<img src="/cat.svg" alt="" />'}</div><div class="message-content"><div class="message-author">${role === 'user' ? '你' : 'Mimi'}</div><div class="markdown">${markdown(text)}</div></div>`;
+  if(images.length)el.querySelector('.markdown').insertAdjacentHTML('afterbegin',`<div class="message-images">${imagesMarkup(images)}</div>`);
   if (!live) setMessageFooter(el, text, { role, sentAt });
   return el;
 }
 function renderMessages(items) {
   $('#messages').replaceChildren();
   const visible = (items || []).filter(
-    (item) => ['user', 'assistant'].includes(item.role) && textOf(item).trim(),
+    (item) => ['user', 'assistant'].includes(item.role) && (textOf(item).trim() || item.imageAttachments?.length),
   );
   $('#welcome').hidden = visible.length > 0;
   if (visible.length) {
@@ -455,7 +493,7 @@ function renderMessages(items) {
     $('#messages').append(older);
   }
   for (const item of visible) {
-    const article = message(item.role, textOf(item), false, item.timestamp || item.createdAt);
+    const article = message(item.role, textOf(item), false, item.timestamp || item.createdAt, item.imageAttachments);
     setMessageFooter(article, textOf(item), {role:item.role,sentAt:item.timestamp || item.createdAt,timestampSource:item.timestampSource,duration:item.duration});
     if (item.timelineRunId) article.dataset.timelineRun = item.timelineRunId;
     if (item.role === 'assistant') {
@@ -573,6 +611,7 @@ async function selectSession(id, draft = false, preserveInput = false) {
   renderSessions();
   renderMessages([]);
   renderQueue();
+  renderImageDrafts();
   if (!preserveInput) $('#message-input').value = drafts.get(id) || '';
   resizeInput();
   updateComposer();
@@ -942,6 +981,7 @@ async function loadModels(
   try {
     const value = await api(`models?session=${encodeURIComponent(session)}`);
     if (revision !== state.revision) return;
+    state.defaultModel=value.current?.next?.target;
     state.models = (value.choices || []).filter(
       (m) => m.kind === 'agent' && m.capabilities?.toolCalling,
     );
@@ -956,7 +996,7 @@ async function loadModels(
       state.models
         .map(
           (m, i) =>
-            `<option value="${i}" ${m.configured === false ? 'disabled' : ''}>${esc(m.target.modelId)} · ${esc(m.provider?.label || m.target.providerId)}${m.configured === false ? '（未配置）' : ''}</option>`,
+            `<option value="${i}" ${m.configured === false ? 'disabled' : ''}>${esc(m.target.modelId)}${m.capabilities?.imageInput?' · 可看图':''} · ${esc(m.provider?.label || m.target.providerId)}${m.configured === false ? '（未配置）' : ''}</option>`,
         )
         .join('');
     const index = state.models.findIndex(
@@ -965,7 +1005,7 @@ async function loadModels(
     $('#model').value = index < 0 ? 'auto' : String(index);
     $('#model').title =
       `当前模型：${value.current?.next?.target?.modelId || state.snapshot?.model || '自动选择'}。切换后用于下一次回复。`;
-    syncSelections();
+    syncSelections(); renderImageDrafts();
   } catch (error) {
     if (revision === state.revision) {
       $('#retry-models').hidden = false;
@@ -977,8 +1017,9 @@ async function loadModels(
 async function send(event) {
   event.preventDefault();
   const input = $('#message-input').value.trim();
+  const images = imageDrafts.list(state.sessionId).map(i=>({...i}));
   if (
-    !input ||
+    (!input && !images.length) || images.some(i=>i.pending) ||
     state.sending ||
     !state.online ||
     state.changing ||
@@ -987,7 +1028,7 @@ async function send(event) {
     return;
   const session = state.sessionId;
   if (state.streamId || queue.list(session).length) {
-    queue.add(session, input, $('#security').value); $('#message-input').value = ''; resizeInput(); updateComposer(); void drainQueues(); return;
+    queue.add(session, input, $('#security').value, images); imageDrafts.clear(session); $('#message-input').value = ''; resizeInput(); updateComposer(); void drainQueues(); return;
   }
   const revision = state.revision;
   state.sending = true;
@@ -1000,10 +1041,10 @@ async function send(event) {
   } catch {
     pending = null;
   }
-  if (!pending || pending.input !== input)
-    pending = { input, requestId: crypto.randomUUID(), sentAt: new Date().toISOString(), security: $('#security').value };
+  if (!pending || pending.input !== input || JSON.stringify(pending.images||[]) !== JSON.stringify(images.map(i=>i.id)))
+    pending = { input, images:images.map(i=>i.id), requestId: crypto.randomUUID(), sentAt: new Date().toISOString(), security: $('#security').value };
   sessionStorage.setItem(`mimi-pending:${session}`, JSON.stringify(pending));
-  const pendingArticle = message('user', input, false, pending.sentAt);
+  const pendingArticle = message('user', input, false, pending.sentAt, images);
   pendingArticle.dataset.requestId = pending.requestId;
   pendingArticle.setAttribute('aria-busy','true');
   $('#welcome').hidden = true; $('#messages').append(pendingArticle); scrollEnd();
@@ -1012,6 +1053,7 @@ async function send(event) {
       sessionId: session,
       input,
       requestId: pending.requestId,
+      images:pending.images,
       security: pending.security || $('#security').value,
       workspaceRoot:sessionStorage.getItem(`mimi-workspace:${session}`)||undefined,
     });
@@ -1020,6 +1062,7 @@ async function send(event) {
     if (!sessionStorage.getItem(`mimi-start:${accepted.eventId}`)) sessionStorage.setItem(`mimi-start:${accepted.eventId}`, String(Date.now()));
     sessionStorage.setItem(`mimi-times:${accepted.eventId}`, JSON.stringify({ sentAt: pending.sentAt }));
     drafts.delete(session);
+    imageDrafts.clear(session,pending.images);
     if (revision !== state.revision) return;
     state.draft = false; sessionStorage.setItem('mimi-draft','0');
     $('#welcome').hidden = true;
@@ -1314,7 +1357,7 @@ const queue = createMessageQueue({
     // Cancellation acknowledgement is sufficient. Progress replay is observation, not a send prerequisite.
     if (session === state.sessionId && state.streamId === id) void state.finishRun?.({ id, status: 'cancelled' }).catch(() => {});
   },
-  submit: item => api('messages',{sessionId:item.session,input:item.input,requestId:item.id,security:item.security,workspaceRoot:sessionStorage.getItem(`mimi-workspace:${item.session}`)||undefined}),
+  submit: item => api('messages',{sessionId:item.session,input:item.input,images:(item.images||[]).map(i=>i.id),requestId:item.id,security:item.security,workspaceRoot:sessionStorage.getItem(`mimi-workspace:${item.session}`)||undefined}),
   accepted: async (item,result) => {
     const session = item.session;
     sessionStorage.setItem(`mimi-run:${session}`,result.eventId);
@@ -1324,7 +1367,7 @@ const queue = createMessageQueue({
     if (state.streamId === result.eventId) return;
     state.draft = false; sessionStorage.setItem('mimi-draft','0'); $('#welcome').hidden = true;
     if (![...$('#messages').querySelectorAll('[data-request-id]')].some(el => el.dataset.requestId === item.id)) {
-      const article = message('user',item.input,false,new Date().toISOString()); article.dataset.requestId = item.id; $('#messages').append(article);
+      const article = message('user',item.input,false,new Date().toISOString(),item.images); article.dataset.requestId = item.id; $('#messages').append(article);
     }
     startStream(result.eventId); scrollEnd(); void refresh(true);
   },
@@ -1342,14 +1385,14 @@ function renderQueue() {
     const waiting = ['interrupting','sending','accepted'].includes(item.state);
     const status = item.state === 'interrupting' ? '正在停止当前执行' : item.state === 'accepted' ? '已发送，正在同步' : '正在发送';
     return `<div class="queued-message${editing?' is-editing':''}" data-queue-id="${esc(item.id)}">
-      ${editing ? `<textarea aria-label="编辑待发送消息" maxlength="60000" rows="2">${esc(editValue ?? item.input)}</textarea>` : `<p title="${esc(item.input)}">${esc(item.input)}</p>`}
+      ${editing ? `<textarea aria-label="编辑待发送消息" maxlength="60000" rows="2">${esc(editValue ?? item.input)}</textarea>` : `<div class="queued-content">${item.images?.length?`<div class="message-images">${imagesMarkup(item.images)}</div>`:''}<p title="${esc(item.input)}">${esc(item.input)}</p></div>`}
       <div class="queue-actions">${waiting ? `<span class="queue-pending"><span class="queue-pulse"></span>${status}</span>` : editing ? `<button type="button" class="queue-icon" data-queue-action="discard" aria-label="取消编辑" title="取消编辑">${icon('close')}</button><button type="button" class="queue-icon queue-save" data-queue-action="save" aria-label="保存修改" title="保存修改">${icon('check')}</button>` : `<button type="button" class="queue-send" data-queue-action="now" title="停止当前执行并发送此消息">${item.state==='failed'?'确认发送':'立即发送'}${icon('up')}</button>${item.state==='queued'?`<button type="button" class="queue-icon" data-queue-action="edit" aria-label="编辑待发送消息" title="编辑">${icon('edit')}</button><button type="button" class="queue-icon" data-queue-action="cancel" aria-label="移除待发送消息" title="移除">${icon('close')}</button>`:''}`}</div>
       ${item.error?`<span class="queue-error" role="status">${esc(item.state==='failed'?'发送回执未确认，原文已保留；确认发送不会重复提交。':item.error)}</span>`:''}</div>`;
   }).join('')}`;
   if (focused) { const input=root.querySelector('textarea'); input?.focus(); input?.setSelectionRange(caret,caret); }
 }
 function saveQueuedEdit(row) {
-  const input = row.querySelector('textarea').value.trim(); if (!input) return;
+  const input = row.querySelector('textarea').value.trim();
   editingQueued = null; queue.edit(row.dataset.queueId,input);
 }
 $('#message-queue').addEventListener('click',event => {
@@ -1372,6 +1415,20 @@ async function drainQueues() {
 }
 setInterval(() => void drainQueues(),3000);
 $('#composer').addEventListener('submit', send);
+$('#message-input').addEventListener('paste',event=>{
+  const files=[...(event.clipboardData?.items||[])].filter(item=>item.kind==='file'&&item.type.startsWith('image/')).map(item=>item.getAsFile()).filter(Boolean);
+  if(!files.length)return;
+  event.preventDefault(); void addImages(files);
+});
+$('#attach-image').onclick=()=>$('#image-input').click();
+$('#image-input').onchange=event=>{void addImages([...event.target.files]);event.target.value='';};
+$('#image-drafts').onclick=event=>{const button=event.target.closest('[data-remove-image]');if(button)imageDrafts.remove(state.sessionId,button.dataset.removeImage);};
+document.addEventListener('click',event=>{
+  const button=event.target.closest('[data-image-preview]');if(!button)return;
+  const dialog=$('#image-preview');dialog.querySelector('img').src=button.querySelector('img').src;dialog.showModal();
+});
+$('#image-preview button').onclick=()=>$('#image-preview').close();
+$('#image-preview').onclick=event=>{if(event.target===$('#image-preview'))event.target.close();};
 function resizeInput() {
   const el = $('#message-input');
   el.style.height = 'auto';
@@ -1450,6 +1507,7 @@ function changeSelection(kind) {
   const value = kind === 'mode' ? $('#mode').value : $('#model').value === 'auto' ? null : state.models[Number($('#model').value)]?.target;
   if (value === undefined) return;
   selections.set(selectionKey(kind), value);
+  if(kind==='model')renderImageDrafts();
 }
 $('#security').onchange = () => changeSelection('security');
 $('#mode').onchange = () => {

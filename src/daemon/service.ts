@@ -29,6 +29,7 @@ import {
   providerBackupRouteFromEnvironment,
 } from '../runtime/run-service.js';
 import { resolveTaskWorkspace } from '../runtime/workspace-resolution.js';
+import { imageIds, IMAGE_TOTAL_BYTES } from '../core/image-attachment.js';
 import { stageAttachments, type LocalAttachmentRequest } from '../runtime/attachments.js';
 import { MimiDispatcher } from './dispatcher.js';
 import {
@@ -275,6 +276,7 @@ interface SubmitParams extends Partial<Pick<EventEnvelope,
   resumeState?: boolean;
   approvedPersonalMessageText?: string;
   attachments?: LocalAttachmentRequest[];
+  webImages?: string[];
   requestedSecurityProfile?: unknown;
 }
 
@@ -808,6 +810,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       } : undefined;
       return {
         ...status,
+        supportsWebImages: true,
         lifecycle: lifecycleEpoch,
         ...(providerHealth ? { providerHealth } : {}),
         ...(providerHealthRoutes?.length ? { providerHealthRoutes } : {}),
@@ -1131,6 +1134,13 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
               path.join(mimiPaths(config).root, 'attachments'),
             )
           : [];
+        if (source === 'local-cli' && trust === 'owner' && params.webImages?.length) {
+          const ids = imageIds(params.webImages);
+          const images = await stageAttachments(ids.map(id => ({path:id,kind:'image' as const})),
+            path.join(mimiPaths(config).root,'web-images'),path.join(mimiPaths(config).root,'attachments'));
+          stagedAttachments.push(...images);
+          if(stagedAttachments.length>8 || stagedAttachments.reduce((sum,item)=>sum+item.bytes,0)>IMAGE_TOTAL_BYTES) throw new Error('附件最多 8 个，合计不超过 20MB');
+        }
         const prompt = params.payload === undefined ? requiredString(params.text, 'text') : undefined;
         const submittedPayload = params.payload ?? {
           ...(requestedWorkspaceRoot ? { workspaceRoot: requestedWorkspaceRoot } : {}),

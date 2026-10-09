@@ -247,6 +247,7 @@ export class MimiChatClient {
     options?: {
       /** Stable across browser retries, so a lost HTTP response cannot duplicate the task. */
       requestId?: string;
+      webImages?: string[];
       workspaceRoot?: string | null;
       resumeState?: boolean;
       approvedPersonalMessageText?: string;
@@ -258,9 +259,10 @@ export class MimiChatClient {
     }
     const eventId = options?.requestId ?? randomUUID();
     const parsed = parseAttachmentInput(input);
-    if (!parsed.text && !parsed.attachments.length) throw new Error('命令不能为空');
+    if (!parsed.text && !parsed.attachments.length && !options?.webImages?.length) throw new Error('命令不能为空');
     const params = {
-      text: parsed.text || '请检查随附文件。',
+      text: parsed.text || (options?.webImages?.length ? '请查看随附图片。' : '请检查随附文件。'),
+      ...(options?.webImages?.length ? {webImages:options.webImages} : {}),
       ...(parsed.attachments.length ? { attachments: parsed.attachments } : {}),
       source: 'local-cli',
       trust: 'owner',
