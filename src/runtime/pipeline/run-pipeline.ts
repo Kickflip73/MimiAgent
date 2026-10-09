@@ -93,6 +93,19 @@ export async function executeRunPipeline(
   options?: MimiRunOptions,
 ) {
     if (host.activeRun) throw new Error('当前 Session 仍有任务运行中，请等待完成或先中止');
+    const preparationStarted = performance.now();
+    let lastPreparationStage = preparationStarted;
+    const preparation: Record<string, number> = {};
+    const stage = (name: string) => {
+      const now = performance.now();
+      preparation[name] = now - lastPreparationStage;
+      lastPreparationStage = now;
+    };
+    const timed = async <T>(name: string, operation: () => Promise<T>): Promise<T> => {
+      const started = performance.now();
+      try { return await operation(); }
+      finally { preparation[name] = performance.now() - started; }
+    };
     await host.refreshModelConfiguration();
     const securityProfile = effectiveSecurityProfile(host.runtimeSecurity.id, options?.securityProfile);
     options = { ...options, securityProfile };
@@ -137,6 +150,7 @@ export async function executeRunPipeline(
       input: textInput,
       options,
     });
+    stage('identityModelMs');
     const mode = scope.mode;
     const runRuntimeAccess = runtimeAccessForSecurity(host.runtimeAccess, securityProfile);
     const ephemeralSensitiveAccess = activateEphemeralOwnerInput(options?.ephemeralOwnerInput, {
@@ -255,24 +269,25 @@ export async function executeRunPipeline(
         binding,
       );
     }
+    stage('sessionRecoveryMs');
     const memoryContext = host.runContexts.forRun(run, options?.cause);
     const personalContextOptions = { now: new Date(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
     const state = await new RunStateLoader({
-      hotProfile: () => host.components.memory.hotProfile(memoryContext),
-      searchMemories: (recallState) => host.components.memory.search(
+      hotProfile: () => timed('memoryHotProfileMs', () => host.components.memory.hotProfile(memoryContext)),
+      searchMemories: (recallState) => timed('memorySearchMs', () => host.components.memory.search(
         host.runContexts.memoryQuery(textInput, options?.cause, recallState),
         memoryContext,
-      ),
-      loadPersonalContextCandidates: () => loadPersonalContextCandidates(host.components.memory, memoryContext, personalContextOptions),
-      loadPlan: () => runPlans.get(),
-      loadGoal: () => runPlans.getGoal(),
-      loadTeamSummary: () => runTeam.summary(),
-      loadHistory: () => run.session.getItems().then(prepareRunHistory),
-      loadSoul: () => host.components.soul.load(),
-      loadPreferences: () => host.components.preferences.load(),
-      loadProjectGuidance: () => host.components.projectGuidance.loadForDevelopment(),
-      loadArchive: () => run.session.getContextArchive(),
-      loadActiveSkills: () => run.session.getActiveSkills(),
+      )),
+      loadPersonalContextCandidates: () => timed('memoryPersonalMs', () => loadPersonalContextCandidates(host.components.memory, memoryContext, personalContextOptions)),
+      loadPlan: () => timed('planMs', () => runPlans.get()),
+      loadGoal: () => timed('goalMs', () => runPlans.getGoal()),
+      loadTeamSummary: () => timed('teamMs', () => runTeam.summary()),
+      loadHistory: () => timed('historyMs', () => run.session.getItems().then(prepareRunHistory)),
+      loadSoul: () => timed('soulMs', () => host.components.soul.load()),
+      loadPreferences: () => timed('preferencesMs', () => host.components.preferences.load()),
+      loadProjectGuidance: () => timed('projectGuidanceMs', () => host.components.projectGuidance.loadForDevelopment()),
+      loadArchive: () => timed('archiveMs', () => run.session.getContextArchive()),
+      loadActiveSkills: () => timed('activeSkillsMs', () => run.session.getActiveSkills()),
     }).load(capabilities, {
       loadOwnerSoul: directOwnerRun,
       loadOwnerPreferences: directOwnerRun,
@@ -280,6 +295,7 @@ export async function executeRunPipeline(
       loadTaskDetails: resumesCheckpoint || options?.resumeState === true,
       now: personalContextOptions.now, ownerTimeZone: personalContextOptions.timeZone,
     });
+    stage('stateLoadMs');
     const {
       storedGoal,
       teamSummary,
@@ -710,6 +726,7 @@ export async function executeRunPipeline(
       instructionBudget,
       budget.inputBudget - estimateTokens(input) - 512,
     );
+    stage('toolContextAssemblyMs');
     const invocation = parseSkillInvocation(
       textInput,
       options?.cause === undefined || options.cause.trust === 'owner',
@@ -725,7 +742,7 @@ export async function executeRunPipeline(
       const availability = host.components.skills.evaluateAvailability(skill, { canReadLocal, availableTools: run.availableToolNames, binding, instructionBudget });
       return availability.reasons.every(reason => reason === 'missing-required-tool')
         && availability.missingTools.some(name => name.startsWith('mcp_'));
-    })) await capabilityRegistry.prepareMcp();
+    })) await timed('explicitSkillMcpMs', () => capabilityRegistry.prepareMcp());
 
     for (const name of invocation.names) {
       const skill = host.components.skills.activate(name, {
@@ -820,7 +837,8 @@ export async function executeRunPipeline(
       focusedOutputLimit: focusedOwnerRun ? 4_096 : undefined,
       reasoning: run.scope.modelBinding?.reasoning,
     });
-    await run.session.updateRunProgress('模型执行中', undefined, run.runId);
+    stage('instructionRequestMs');
+    await timed('modelStartCheckpointMs', () => run.session.updateRunProgress('模型执行中', undefined, run.runId));
     const sessionInputCallback = async (
       sessionHistory: AgentInputItem[],
       currentInput: AgentInputItem[],
@@ -981,6 +999,7 @@ export async function executeRunPipeline(
       await host.persistContextManifest?.(host.lastContextManifest);
       return { input: view.input, instructions: view.instructions };
     };
+    const sdkStarted = performance.now();
     const streamResult = await host.runner.run(request.agent, input, {
       session: run.session,
       sessionInputCallback,
@@ -990,6 +1009,12 @@ export async function executeRunPipeline(
       signal,
       toolExecution: { maxFunctionToolConcurrency: mode === 'ultra' ? 1 : 2 },
     });
+    preparation.sdkStreamHandleMs = performance.now() - sdkStarted;
+    preparation.totalMs = performance.now() - preparationStarted;
+    // Dependencies in stateLoad run concurrently; their durations must not be summed.
+    await host.components.state.traces.record(run.sessionId, 'run_prepare_timing', {
+      runId: run.runId, ...preparation,
+    }).catch(() => undefined);
     runUsage = (streamResult as unknown as {
       runContext?: { usage?: { add(usage: Usage): void } };
     }).runContext?.usage;

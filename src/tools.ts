@@ -14,6 +14,7 @@ import { PRE_MIMI_DATA_DIRECTORY } from './core/mimi-legacy.js';
 import { withExclusiveFileLock } from './core/state-file.js';
 import { diagnoseWrittenFiles } from './runtime/file-diagnostics.js';
 import { tool } from './tool-factory.js';
+import { hasUnmanagedShellProcess } from './shell-process-policy.js';
 import type { FileMutationObserver } from './core/file-change-journal.js';
 
 const MAX_TEXT_BYTES = 200_000;
@@ -1297,9 +1298,7 @@ export async function runShellCommand(
     },
     ...(executionBoundary ? { executionBoundary } : {}),
   });
-  if (/(?:^|[;&|()\s])(?:nohup|disown|setsid)(?:$|[;&|()\s])/u.test(command)
-    || /(^|[^&])&(?!&)(?:\s*(?:#.*)?)$/u.test(command)
-    || /(^|[^&])&(?!&)[\s;]+disown(?:\s|;|$)/u.test(command)) {
+  if (hasUnmanagedShellProcess(command)) {
     return result({
       exitCode: 1,
       stdout: '',
