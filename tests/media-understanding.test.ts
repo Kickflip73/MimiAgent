@@ -54,8 +54,19 @@ test('perception cache reuses immutable pixels and cancellation is enforced even
   await assert.rejects(new MediaUnderstandingRuntime(stalled,resolver,root,1).understand(pixels,'different',controller.signal),/stop/);
 });
 
-test('running activity shows the current thought tail or tool path',()=>{
+test('collapsed activity keeps the step prefix stable and changes only when the current step changes',()=>{
   assert.equal(runningActivity([]),'正在准备回答');
-  assert.equal(runningActivity([{kind:'status',tone:'tool',title:'read_file',detail:'{"path":"run-pipeline.ts"}'}]),'正在读取 run-pipeline.ts');
-  assert.ok(runningActivity([{kind:'reasoning',text:'old '.repeat(100)+'new thought'}]).endsWith('new thought'));
+  assert.equal(runningActivity([{kind:'status',tone:'tool',title:'read_file',detail:'{"path":"run-pipeline.ts"}'}]),'read_file run-pipeline.ts');
+  const text='先检查项目的配置与依赖。'+ '完整思考内容。'.repeat(60);
+  const steps:any[]=[{kind:'reasoning',text}];
+  const prefix=runningActivity(steps);
+  assert.ok(prefix.startsWith('✦ 思考 先检查项目的配置与依赖。'));assert.ok(prefix.endsWith('…'));
+  steps[0].text+='追加的推理尾部，不应替换开头。';
+  assert.equal(runningActivity(steps),prefix);
+  const argumentsText=JSON.stringify({command:'npm run check '+ 'x'.repeat(350)});
+  steps.push({kind:'status',tone:'tool',title:'run_shell',detail:argumentsText.slice(0,160),fullDetail:argumentsText});
+  assert.ok(runningActivity(steps).startsWith('run_shell npm run check '));assert.ok(runningActivity(steps).endsWith('…'));
+  assert.equal(steps[0].text,text+'追加的推理尾部，不应替换开头。');assert.equal(steps[1].fullDetail,argumentsText);
+  steps.push({kind:'reasoning',text:'现在核对检查结果。'});
+  assert.equal(runningActivity(steps),'✦ 思考 现在核对检查结果。');
 });

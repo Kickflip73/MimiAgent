@@ -159,17 +159,19 @@ export function renderStreamText(container, html, now, immediate = false) {
   container.replaceChildren(...body.childNodes);
 }
 
-/** Latest live activity; never infer progress from a completed run. */
+/** Closed summary only: keep the current step's beginning stable as more text arrives. */
 export function runningActivity(steps, fallback = '正在准备回答') {
   const step = steps?.at(-1);
   if (!step) return fallback;
-  if (step.kind === 'reasoning') return `✦ ${String(step.text || '正在思考').replace(/\s+/g,' ').trim().slice(-220)}`;
-  let detail = step.detail || '';
+  const prefix = value => {
+    const chars = Array.from(String(value).replace(/\s+/g, ' ').trim());
+    return chars.length > 220 ? `${chars.slice(0, 220).join('')}…` : chars.join('');
+  };
+  if (step.kind === 'reasoning') return prefix(`✦ 思考 ${step.text || ''}`);
+  let detail = step.fullDetail || step.detail || '';
   try {
     const args = JSON.parse(detail);
-    detail = args.path || args.file_path || args.command || args.query || '';
-  } catch { /* Plain activity text remains readable. */ }
-  const names = {read_file:'正在读取',write_file:'正在写入',edit_file:'正在编辑',run_shell:'正在运行',web_search:'正在搜索',understand_media:'正在理解媒体'};
-  const title = step.tone === 'tool' ? (names[step.title] || step.title) : step.title;
-  return `${title || step.next || fallback}${detail ? ' ' + detail : ''}`.replace(/\s+/g,' ').trim().slice(0,300);
+    detail = args?.path || args?.file_path || args?.command || args?.query || detail;
+  } catch { /* Plain text keeps its original beginning as well. */ }
+  return prefix(`${step.title || step.next || fallback}${detail ? ' ' + detail : ''}`);
 }
