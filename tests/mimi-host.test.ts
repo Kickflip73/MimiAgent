@@ -139,38 +139,60 @@ test('runs different Session actors concurrently while preserving each Session F
   await host.close();
 });
 
-test('reads TUI snapshots from the requested keyed Session actor', async () => {
+test('reads cold Session snapshots without constructing an execution actor', async () => {
+  const inspected: string[] = [];
   const primary = {
     currentSessionId: 'session-a',
     bindSessionActor: () => undefined,
-    switchSession: async () => undefined,
-    sessionSnapshot: async () => assert.fail('primary actor must not answer session-b snapshot'),
-    listSessionSummaries: async () => [],
-    close: async () => undefined,
-  } as unknown as MimiAgent;
-  const secondary = {
-    currentSessionId: 'session-b',
-    bindSessionActor: (sessionId: string) => assert.equal(sessionId, 'session-b'),
-    switchSession: async () => undefined,
-    sessionSnapshot: async (sessionId: string) => ({
-      sessionId,
-      context: { status: { value: 42 } },
-    }),
-    listSessionSummaries: async () => [],
+    sessionSnapshot: async (sessionId: string) => {
+      inspected.push(sessionId);
+      return { sessionId, context: { status: { value: 42 } } };
+    },
     close: async () => undefined,
   } as unknown as MimiAgent;
   const host = new MimiHost(primary, {
     execute: async () => ({ answer: 'unused', effects: [] }),
   }, {
-    createSessionRuntime: async () => ({
-      agent: secondary,
-      runs: { execute: async () => ({ answer: 'unused', effects: [] }) },
-    }),
+    createSessionRuntime: async () => assert.fail('read-only snapshot must not start MCP/runtime'),
   });
-
   const snapshot = await host.snapshot('session-b');
   assert.equal(snapshot.sessionId, 'session-b');
   assert.equal(snapshot.context.status.value, 42);
+  assert.deepEqual(inspected, ['session-b']);
+  await host.close();
+});
+
+test('reads history while an execution runtime is still starting', async () => {
+  const startup = deferred();
+  const starting = deferred();
+  const primary = {
+    currentSessionId: 'session-a',
+    bindSessionActor: () => undefined,
+    sessionSnapshot: async (sessionId: string) => ({ sessionId, items: ['persisted'] }),
+    close: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(primary, {
+    execute: async () => ({ answer: 'unused', effects: [] }),
+  }, {
+    createSessionRuntime: async (sessionId) => {
+      starting.resolve();
+      await startup.promise;
+      return {
+        agent: { ...primary, currentSessionId: sessionId } as unknown as MimiAgent,
+        runs: { execute: async () => ({ answer: 'done', effects: [] }) },
+      };
+    },
+  });
+  const running = host.execute({ sessionId: 'session-b', input: 'work' });
+  await starting.promise;
+  try {
+    const snapshot = await host.snapshot('session-b');
+    assert.equal(snapshot.sessionId, 'session-b');
+    assert.deepEqual(snapshot.items, ['persisted']);
+  } finally {
+    startup.resolve();
+  }
+  assert.equal((await running).answer, 'done');
   await host.close();
 });
 
@@ -482,4 +504,31 @@ test('reuses a durable completed execution receipt instead of running the model 
   assert.equal(host.currentSessionId, 'new-session');
   assert.deepEqual(selected, []);
   assert.deepEqual(finalized, [{ sessionId: 'owner', executionKey: 'event:event-1' }]);
+});
+
+test('coalesces summary reads without caching a scan invalidated by a completed run', async () => {
+  const releaseScan = deferred();
+  let scans = 0;
+  const agent = {
+    currentSessionId: 'session-a',
+    bindSessionActor: () => undefined,
+    listSessionSummaries: async () => {
+      scans += 1;
+      if (scans === 1) await releaseScan.promise;
+      return [];
+    },
+    close: async () => undefined,
+  } as unknown as MimiAgent;
+  const host = new MimiHost(agent, { execute: async () => ({ answer: 'done', effects: [] }) });
+  const first = host.listSessionSummaries();
+  const concurrent = host.listSessionSummaries();
+  assert.equal(scans, 1);
+  await host.execute({ sessionId: 'session-a', input: 'work' });
+  releaseScan.resolve();
+  await Promise.all([first, concurrent]);
+  await host.listSessionSummaries();
+  assert.equal(scans, 2);
+  await host.listSessionSummaries();
+  assert.equal(scans, 2);
+  await host.close();
 });

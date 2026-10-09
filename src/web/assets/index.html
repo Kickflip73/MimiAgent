@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Mimi · 个人工作空间</title>
+    <link rel="icon" href="/cat.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">跳至主要内容</a>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar" aria-label="主导航">
+        <a class="brand" href="/" aria-label="Mimi 首页"
+          ><span class="brand-mark"><img src="/cat.svg" alt="" /></span
+          ><span>Mimi<span class="brand-caption">PERSONAL AGENT</span></span></a
+        >
+        <button class="new-chat" id="new-chat">
+          <span data-icon="plus"></span>新的对话<span class="shortcut"
+            >⌘ K</span
+          >
+        </button>
+        <nav class="navigation" aria-label="功能导航">
+          <div class="nav-group-label">工作</div>
+          <button class="nav-item active" data-view="chat"><span data-icon="chat"></span>对话</button>
+          <button class="nav-item" data-view="tasks"><span data-icon="stack"></span>后台任务<span class="nav-count" id="task-count">—</span></button>
+          <button class="nav-item" data-view="memory"><span data-icon="spark"></span>记忆</button>
+          <button class="nav-item" data-view="schedules"><span data-icon="clock"></span>定时任务</button>
+          <div class="nav-group-label">扩展</div>
+          <button class="nav-item" data-view="skills"><span data-icon="leaf"></span>Skills</button>
+          <button class="nav-item" data-view="mcp"><span data-icon="branch"></span>MCP</button>
+          <button class="nav-item" data-view="models"><span data-icon="stack"></span>模型接入</button>
+          <button class="nav-item" data-view="connectors"><span data-icon="branch"></span>连接器</button>
+          <div class="nav-group-label">系统</div>
+          <button class="nav-item" data-view="status"><span data-icon="sun"></span>运行状态</button>
+          <button class="nav-item" data-view="runtime"><span data-icon="file"></span>运行时指令</button>
+          <button class="nav-item" data-view="settings"><span data-icon="settings"></span>设置</button>
+        </nav>
+        <div class="session-heading"><span>最近对话</span><div class="session-search-control"><div id="session-search-wrap" class="session-search-wrap" hidden><input class="session-search" id="session-search" type="search" placeholder="搜索对话…" aria-label="搜索会话"/></div><button class="icon-button" id="search-toggle" aria-label="搜索会话" aria-expanded="false"><span data-icon="search"></span></button></div></div>
+        <div class="sessions" id="sessions">
+          <p class="sidebar-hint">连接后，你的对话会出现在这里。</p>
+        </div>
+        <div class="sidebar-bottom">
+          <button class="about-trigger" data-view="about"><img src="/cat.svg" alt=""/><span>MimiAgent<small>关于你的个人 Agent</small></span><span aria-hidden="true">↗</span></button>
+        </div>
+      </aside>
+      <div class="scrim" id="scrim" hidden></div>
+      <div class="workspace">
+        <header class="topbar">
+          <button
+            class="icon-button mobile-menu"
+            id="mobile-menu"
+            aria-label="打开导航"
+            aria-expanded="false"
+          >
+            <span data-icon="menu"></span>
+          </button>
+          <div class="breadcrumb">
+            个人空间<span>/</span><strong id="view-title">对话</strong>
+          </div>
+          <div class="topbar-right">
+            <span class="connection" id="connection"><i></i>正在连接</span
+            ><button class="icon-button" id="refresh" aria-label="刷新状态">
+              <span data-icon="refresh"></span>
+            </button>
+          </div>
+        </header>
+        <div class="banner" id="banner" role="status" hidden></div>
+        <main id="main" tabindex="-1">
+          <section id="chat-view" class="view chat-view">
+            <div id="session-loading" class="session-loading" role="status" hidden>
+              <div class="cat-activity loading-cat"><img src="/cat.svg" alt=""/><span></span></div>
+              <strong id="loading-title">正在打开对话</strong><p id="loading-description">Mimi 正在整理这段对话…</p>
+              <button id="retry-session" class="secondary-button" hidden>重新加载</button>
+            </div>
+            <div class="chat-workspace" id="chat-workspace" title="当前工作区"></div>
+            <div class="chat-scroll" id="chat-scroll">
+              <div class="welcome" id="welcome">
+                <div class="mascot">
+                  <img src="/cat.svg" alt="Mimi，一只黑猫" />
+                </div>
+                <h1>嗨，我是 Mimi。</h1>
+                <p class="welcome-description">陪你思考，也帮你把事情做好。</p>
+                <button type="button" class="workspace-choose secondary-button" id="workspace-choose"><span data-icon="file"></span><span>选择工作区</span></button><button type="button" class="text-button" id="workspace-reset" hidden>使用默认工作区</button>
+                <div class="welcome-footnote">
+                  在这里开始，对话和记忆始终相伴。
+                </div>
+              </div>
+              <div class="messages" id="messages" aria-label="对话记录"></div>
+            </div>
+            <div class="composer-dock">
+              <div id="plan" class="plan" hidden></div>
+              <div id="message-queue" class="message-queue" aria-label="待发送消息" hidden></div>
+              <form class="composer" id="composer">
+                <label class="sr-only" for="message-input"
+                  >给 Mimi 发消息</label
+                >
+                <textarea
+                  id="message-input"
+                  placeholder="有什么想交给 Mimi 的？"
+                  rows="1"
+                  maxlength="60000"
+                ></textarea>
+                <div class="composer-toolbar">
+                  <div class="composer-options">
+                    <span class="mini-logo" id="composer-cat" role="img" aria-label="Mimi"><img src="/cat.svg" alt="" /></span
+                    ><label class="sr-only" for="mode">工作模式</label
+                    ><select id="mode" aria-label="工作模式">
+                      <option value="general">通用模式</option>
+                      <option value="plan">只读规划</option>
+                      <option value="ultra">协作模式</option></select
+                    ><label class="sr-only" for="model">选择模型</label
+                    ><select id="model" aria-label="选择模型" disabled>
+                      <option>读取模型…</option></select
+                    ><button
+                      type="button"
+                      id="retry-models"
+                      class="text-button"
+                      hidden
+                    >
+                      重试模型
+                    </button>
+                    <label class="sr-only" for="security">安全等级</label>
+                    <select id="security" aria-label="安全等级"><option value="safe">安全</option><option value="workstation">工作区</option><option value="full-owner">完全访问</option></select>
+                  </div>
+                  <div class="composer-actions">
+                    <time id="run-elapsed" hidden>0s</time>
+                    <button type="button" id="context-indicator" class="context-indicator" aria-haspopup="dialog" aria-label="上下文占用" hidden>
+                      <svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7"/><circle id="context-ring" cx="10" cy="10" r="7" pathLength="100"/></svg>
+                      <span id="context-label"></span>
+                    </button>
+                  <button
+                    class="send-button"
+                    id="send"
+                    aria-label="发送消息"
+                    type="submit"
+                    disabled
+                  >
+                    <span data-icon="up"></span>
+                  </button>
+                  </div>
+                </div>
+              </form>
+              <p
+                class="selection-status"
+                id="selection-status"
+                role="status"
+              ></p>
+            </div>
+          </section>
+          <section id="tasks-view" class="view page-view" hidden>
+            <div class="page-heading">
+              <div>
+                <div class="eyebrow">持续推进，每一件事</div>
+                <h1>后台任务</h1>
+                <p>Mimi 已接手、会在后台持续执行的任务。关闭对话不会停止它们，可在这里查看进展、暂停或取消。</p>
+              </div>
+              <button class="secondary-button" id="refresh-tasks">
+                <span data-icon="refresh"></span>刷新
+              </button>
+            </div>
+            <div class="task-metrics" id="task-metrics"></div>
+            <div class="filter-bar" id="task-filters">
+              <button class="filter active" data-filter="all">全部</button
+              ><button class="filter" data-filter="active">进行中</button
+              ><button class="filter" data-filter="attention">需要关注</button
+              ><button class="filter" data-filter="completed">已完成</button>
+            </div>
+            <div id="task-list" class="task-list"></div>
+          </section>
+          <section id="memory-view" class="view page-view" hidden>
+            <div class="page-heading">
+              <div>
+                <div class="eyebrow">让每次对话，都多一点了解</div>
+                <h1>Mimi 的记忆</h1>
+                <p>查看已保存的背景、偏好与经验。</p>
+              </div>
+            </div>
+            <div class="search-field">
+              <span data-icon="search"></span
+              ><input
+                id="memory-search"
+                type="search"
+                placeholder="搜索记忆"
+                aria-label="搜索记忆"
+              />
+            </div>
+            <div class="filter-bar" id="memory-filters"><button class="filter active" data-memory-filter="all">全部</button><button class="filter" data-memory-filter="L0">L0 · 原始材料</button><button class="filter" data-memory-filter="L1">L1 · 原子记忆</button><button class="filter" data-memory-filter="L2">L2 · 场景主题</button><button class="filter" data-memory-filter="private">个人</button><button class="filter" data-memory-filter="workspace">工作区</button></div>
+            <div id="memory-list" class="memory-grid"></div>
+          </section>
+          <section id="manage-view" class="view page-view" hidden><div id="manage-content"></div></section>
+        </main>
+      </div>
+    </div>
+    <dialog id="detail-dialog" aria-labelledby="detail-title">
+      <div class="dialog-top">
+        <span class="eyebrow" id="detail-eyebrow">详情</span
+        ><button class="icon-button" id="close-dialog" aria-label="关闭详情">
+          <span data-icon="close"></span>
+        </button>
+      </div>
+      <h2 id="detail-title"></h2>
+      <div id="detail-content"></div>
+    </dialog>
+    <div class="toast" id="toast" role="status" hidden></div>
+  </body>
+</html>

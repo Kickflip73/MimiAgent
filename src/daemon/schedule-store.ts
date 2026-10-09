@@ -1,3 +1,4 @@
+import { nextCronTime } from './cron.js';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
@@ -111,6 +112,7 @@ export class ScheduleStore extends SqliteDomain {
   }
 
   add(input: Omit<ScheduleRecord, 'id' | 'enabled' | 'lastRunAt' | 'createdAt' | 'updatedAt'>): ScheduleRecord {
+    if (input.type === 'cron') nextCronTime(input.value);
     const id = randomUUID();
     const timestamp = new Date().toISOString();
     const sessionKey = input.sessionKey === undefined ? undefined : assertSessionId(input.sessionKey);
@@ -152,6 +154,24 @@ export class ScheduleStore extends SqliteDomain {
       context === undefined ? null : JSON.stringify(sanitizeSensitiveData(context)),
     );
     return this.get(id)!;
+  }
+
+  update(id:string, patch:Partial<Pick<ScheduleRecord,'name'|'prompt'|'type'|'value'|'enabled'>>, expectedUpdatedAt:string, at=new Date()):ScheduleRecord {
+    return this.transaction(()=>{
+      const previous=this.get(id);if(!previous)throw new Error('定时任务不存在');
+      if(previous.updatedAt!==expectedUpdatedAt)throw new Error('计划已变化，请重新读取后合并');
+      const next={...previous,...patch};
+      if(!next.name.trim() || next.name.length>200 || !next.prompt.trim() || next.prompt.length>20000)throw new Error('名称或执行内容无效');
+      const changedTime=next.type!==previous.type || next.value!==previous.value || next.enabled&&!previous.enabled;
+      if(next.type==='cron') {const future=nextCronTime(next.value,at);if(changedTime)next.nextRunAt=future.toISOString();}
+      else if(next.type==='interval') {const interval=Number(next.value);if(!Number.isSafeInteger(interval)||interval<=0)throw new Error('执行间隔无效');if(changedTime)next.nextRunAt=new Date(at.getTime()+interval).toISOString();}
+      else if(next.type==='at') {if(!Number.isFinite(Date.parse(next.value)) || changedTime && Date.parse(next.value)<=at.getTime())throw new Error('单次任务需使用未来时间');if(changedTime)next.nextRunAt=next.value;}
+      else throw new Error('计划类型无效');
+      const timestamp=new Date(Math.max(at.getTime(),Date.parse(previous.updatedAt)+1)).toISOString();
+      this.database.prepare('UPDATE schedules SET name=?,prompt=?,schedule_type=?,schedule_value=?,enabled=?,next_run_at=?,updated_at=? WHERE id=?').run(next.name,next.prompt,next.type,next.value,next.enabled?1:0,next.nextRunAt,timestamp,id);
+      this.audit('schedule.updated',id,{enabled:next.enabled,type:next.type},timestamp);
+      return this.get(id)!;
+    });
   }
 
   get(id: string): ScheduleRecord | undefined {
@@ -204,6 +224,11 @@ export class ScheduleStore extends SqliteDomain {
         updatedAt: String(row.updated_at),
       };
     });
+  }
+
+
+  history(id: string, requestedOffset = 0, requestedLimit = 50) {
+    return listScheduleExecutions(this.database, id, requestedOffset, requestedLimit);
   }
 
   count(): number {
@@ -309,7 +334,10 @@ export class ScheduleStore extends SqliteDomain {
         }, schedule).event;
         events.push(event);
         let nextRunAt: string | undefined;
-        if (schedule.type !== 'at') {
+        if (schedule.type === 'cron') {
+          try { nextRunAt = nextCronTime(schedule.value, at).toISOString(); }
+          catch { this.audit('schedule.disabled', schedule.id, { reason: 'invalid_cron' }, timestamp); }
+        } else if (schedule.type !== 'at') {
           const interval = Number(schedule.value);
           if (Number.isSafeInteger(interval) && interval > 0) {
             const previous = Date.parse(schedule.nextRunAt);
@@ -325,4 +353,29 @@ export class ScheduleStore extends SqliteDomain {
       return events;
     });
   }
+}
+
+/** Includes queued tasks and every run attempt; reads the existing durable ledger. */
+export function listScheduleExecutions(database: DatabaseSync, id: string, requestedOffset = 0, requestedLimit = 50) {
+  const offset = Number.isSafeInteger(requestedOffset) ? Math.max(0, requestedOffset) : 0;
+  const limit = managementLimit(requestedLimit);
+  const rows = database.prepare(`
+    SELECT tasks.id AS task_id, tasks.session_key AS task_session, tasks.status AS task_status,
+      tasks.created_at, tasks.error AS task_error, runs.id AS run_id, runs.session_key,
+      runs.attempt_no, runs.status, runs.started_at, runs.completed_at, runs.error,
+      events.occurred_at, CASE WHEN json_valid(runs.answer_json) THEN json_extract(runs.answer_json,'$.finalization.outcome') END AS outcome
+    FROM tasks JOIN events ON events.id = tasks.trigger_event_id
+    LEFT JOIN runs ON runs.task_id = tasks.id
+    WHERE events.source = ?
+    ORDER BY tasks.created_at DESC, tasks.rowid DESC, runs.attempt_no DESC LIMIT ? OFFSET ?
+  `).all(`schedule:${id}`, limit + 1, offset) as Row[];
+  return sanitizeSensitiveData({
+    items: rows.slice(0, limit).map(row => ({ taskId: String(row.task_id), runId: optional(row.run_id),
+      sessionId: optional(row.session_key) ?? optional(row.task_session),
+      status: String(row.status ?? row.task_status), outcome: optional(row.outcome), attempt: Number(row.attempt_no ?? 0),
+      scheduledAt: String(row.occurred_at), createdAt: String(row.created_at),
+      startedAt: optional(row.started_at), completedAt: optional(row.completed_at),
+      error: optional(row.error) ?? optional(row.task_error),
+    })), nextOffset: rows.length > limit ? offset + limit : undefined,
+  });
 }

@@ -8,7 +8,7 @@ import type { MemoryHit, SourceRef } from '../core/memory.js';
 import type { PlanStep } from '../core/plan.js';
 import type { RunCheckpoint } from '../core/session.js';
 import type { RunFailureRecord } from '../core/run-failure.js';
-import type { MimiContextStatus } from '../core/context.js';
+import type { ContextManifest, MimiContextStatus } from '../core/context.js';
 import type { DailyResourceTrend } from './resource-slo.js';
 import type {
   AutonomousBudgetExhaustion,
@@ -277,7 +277,7 @@ export interface MimiOutboxSummary {
   error?: string;
 }
 
-export type ScheduleType = 'at' | 'interval' | 'watch';
+export type ScheduleType = 'at' | 'interval' | 'cron' | 'watch';
 
 export interface ScheduleRecord {
   id: string;
@@ -494,6 +494,7 @@ export interface MimiChatSnapshot {
   contextUsed: number;
   contextWindow: number;
   contextStatus?: MimiContextStatus;
+  contextManifest?: ContextManifest;
   items: AgentInputItem[];
   plan: PlanStep[];
   recovery?: RunCheckpoint;

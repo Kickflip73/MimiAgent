@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const temporary = await mkdtemp(path.join(projectRoot, '.package-smoke-'));
+// Keep Unix socket paths below the macOS limit even in deeply nested worktrees.
+const temporary = await mkdtemp(path.join(os.tmpdir(), 'mimi-package-'));
 
 try {
   await execFileAsync('npm', [
@@ -32,10 +34,23 @@ try {
     packageRoot,
   ]);
 
+  // Resolve dependencies for this isolated extraction; the consumer install below
+  // still verifies the actual published dependency declarations.
+  await symlink(path.join(projectRoot, 'node_modules'), path.join(packageRoot, 'node_modules'), 'junction');
+
   await Promise.all([
     access(path.join(packageRoot, 'dist', 'agent.d.ts')),
     access(path.join(packageRoot, 'dist', 'orchestration.d.ts')),
     access(path.join(packageRoot, 'dist', 'build-identity.json')),
+    access(path.join(packageRoot, 'dist', 'web', 'assets', 'index.html')),
+    access(path.join(packageRoot, 'dist', 'web', 'assets', 'app.js')),
+    access(path.join(packageRoot, 'dist', 'web', 'assets', 'execution.js')),
+    access(path.join(packageRoot, 'dist', 'web', 'assets', 'pickers.js')),
+    access(path.join(packageRoot, 'dist', 'web', 'assets', 'manage.js')),
+    access(path.join(packageRoot, 'dist', 'web', 'assets', 'queue.js')),
+    access(path.join(packageRoot, 'dist', 'web', 'assets', 'context.js')),
+    access(path.join(packageRoot, 'dist', 'web', 'assets', 'cat.svg')),
+    access(path.join(packageRoot, 'dist', 'web', 'assets', 'styles.css')),
     access(path.join(packageRoot, 'MIMI.md')),
     access(path.join(packageRoot, 'skills', 'manifest.json')),
     access(path.join(packageRoot, 'knowledge', 'mimi-agent.md')),
@@ -197,6 +212,7 @@ try {
 
   const consumerRoot = path.join(temporary, 'consumer');
   await mkdir(consumerRoot);
+  await writeFile(path.join(consumerRoot, 'package.json'), JSON.stringify({ name: 'mimi-package-consumer', private: true, type: 'module' }));
   await execFileAsync('npm', [
     'install',
     '--ignore-scripts',

@@ -1,4 +1,4 @@
-import { access, readdir } from 'node:fs/promises';
+import { access, readdir, readFile, lstat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { AgentInputItem, Session } from '@openai/agents';
@@ -390,6 +390,26 @@ function summarizeSession(session: SessionFile): SessionSummary {
       || session.checkpoint?.status === 'failed',
     progress: session.checkpoint?.lastEvent ?? session.checkpoint?.phase,
   };
+}
+
+interface SessionSummaryIndex {
+  entries: Map<string, { fingerprint: string; summary?: SessionSummary }>;
+  pending?: Promise<SessionSummary[]>;
+}
+
+// Derived, process-local metadata only. Canonical transcripts remain authoritative.
+const summaryIndexes = new Map<string, SessionSummaryIndex>();
+
+async function mapSessions<T>(ids: string[], read: (id: string) => Promise<T>): Promise<T[]> {
+  const results = new Array<T>(ids.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(8, ids.length) }, async () => {
+    while (next < ids.length) {
+      const index = next++;
+      results[index] = await read(ids[index]!);
+    }
+  }));
+  return results;
 }
 
 const activeRunOwners = new Set<string>();
@@ -945,6 +965,28 @@ export class FileSession implements Session {
     });
   }
 
+  /** Inspect one atomic transcript without initialization, repair, locks, or permission writes. */
+  async readSnapshot(): Promise<(SessionFile & { summary: SessionSummary }) | undefined> {
+    try {
+      await lstat(`${this.file}.corrupt-state`);
+      throw new StateFileCorruptError(this.file, `${this.file}.corrupt-state`, {
+        cause: new Error('Session 已标记损坏，需要显式恢复'),
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    let source: string;
+    try {
+      source = await readFile(this.file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+    const session = decodeSessionFile(JSON.parse(source) as unknown);
+    if (session.id !== this.id) throw new SyntaxError(`Session 文件身份不匹配：${this.id}`);
+    return { ...session, summary: summarizeSession(session) };
+  }
+
   async summary(): Promise<SessionSummary> {
     return summarizeSession(await this.load());
   }
@@ -1005,19 +1047,50 @@ export class FileSession implements Session {
   }
 
   static async listSummaries(directory: string): Promise<SessionSummary[]> {
-    const ids = await FileSession.list(directory);
-    const summaries = (await Promise.all(ids.map(async (id) => {
-      try {
-        return await new FileSession(directory, id).summary();
-      } catch (error) {
-        if (error instanceof StateFileCorruptError) return undefined;
-        throw error;
-      }
-    }))).filter((summary): summary is SessionSummary => summary !== undefined);
-    return summaries.sort((left, right) => {
-      const active = right.updatedAt.localeCompare(left.updatedAt);
-      return active || left.id.localeCompare(right.id);
-    });
+    const root = path.resolve(directory);
+    let index = summaryIndexes.get(root);
+    if (!index) {
+      index = { entries: new Map() };
+      summaryIndexes.set(root, index);
+      // Bound independent workspace indexes without evicting canonical data.
+      if (summaryIndexes.size > 32) summaryIndexes.delete(summaryIndexes.keys().next().value!);
+    }
+    const current = index;
+    current.pending ??= (async () => {
+      const listed = await FileSession.list(root);
+      const blocked = listed.length ? new Set((await readdir(root)).filter((name) => name.endsWith('.json.corrupt-state'))) : new Set<string>();
+      const ids = listed.filter((id) => !blocked.has(`${id}.json.corrupt-state`));
+      const present = new Set(ids);
+      for (const id of current.entries.keys()) if (!present.has(id)) current.entries.delete(id);
+      const summaries = await mapSessions(ids, async (id) => {
+        try {
+          const info = await lstat(path.join(root, `${id}.json`), { bigint: true });
+          if (!info.isFile()) return undefined;
+          const fingerprint = `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+          const cached = current.entries.get(id);
+          if (cached?.fingerprint === fingerprint) return cached.summary;
+          let snapshot;
+          try {
+            snapshot = await new FileSession(root, id).readSnapshot();
+          } catch (error) {
+            // Browsing must never quarantine or repair a damaged transcript.
+            if (!(error instanceof StateFileCorruptError || error instanceof SyntaxError || error instanceof z.ZodError)) throw error;
+          }
+          const summary = snapshot?.summary;
+          current.entries.set(id, { fingerprint, summary });
+          return summary;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            current.entries.delete(id);
+            return undefined;
+          }
+          throw error;
+        }
+      });
+      return summaries.filter((summary): summary is SessionSummary => summary !== undefined)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
+    })().finally(() => { current.pending = undefined; });
+    return (await current.pending).map((summary) => ({ ...summary }));
   }
 
   /** Fast O(1) existence check that avoids loading every session file. */

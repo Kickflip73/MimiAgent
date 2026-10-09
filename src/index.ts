@@ -21,6 +21,7 @@ function cliHelp(): string {
 用法：
   mimi                    开始对话
   mimi "任务"             执行单次任务
+  mimi web [--port 3210]  打开本机 Web 界面
   mimi provider add <providerId/modelId> [能力选项]
                            为已有 Provider 注册模型；新 Provider 需完整连接参数
   mimi provider set <providerId/modelId>
@@ -88,6 +89,11 @@ async function main(): Promise<void> {
     return;
   }
   const config = loadConfig();
+  if (args[0] === 'web') {
+    const { runWebCommand } = await import('./web/cli.js');
+    await runWebCommand(config, args.slice(1));
+    return;
+  }
   if (args[0] === 'daemon') {
     await runDaemonCommand(config, args.slice(1));
     return;

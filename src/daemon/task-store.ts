@@ -1,3 +1,4 @@
+import { savedSessionWorkspace } from './session-workspace.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -139,6 +140,10 @@ export class TaskStore {
     if (!task) throw new Error(`Task 写入失败：${input.idempotencyKey}`);
     if (!sameTask(task, input)) throw new Error(`Task 幂等键冲突：${input.idempotencyKey}`);
     return { task, inserted: Number(inserted.changes) === 1 };
+  }
+
+  workspaceRootForSession(sessionId: string): string | undefined {
+    return savedSessionWorkspace(this.database, sessionId);
   }
 
   get(id: string): TaskRecord | undefined {

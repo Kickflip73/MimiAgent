@@ -126,6 +126,8 @@ export class MimiHost {
   private readonly slots: Semaphore;
   private readonly pending = new Map<string, PendingExecution>();
   private closing = false;
+  private summariesPending?: Promise<SessionSummary[]>;
+  private summaryGeneration = 0;
   private summaryCache: { summaries: import('../core/session.js').SessionSummary[]; until: number } | undefined;
 
   constructor(
@@ -309,20 +311,12 @@ export class MimiHost {
 
   snapshot(sessionId: string): Promise<AgentSessionSnapshot> {
     this.assertOpen();
-    return this.actorFor(sessionId).then((actor) => {
-      if (actor.activeRuns === 0) {
-        return this.enqueue(
-          actor,
-          () => actor.agent.sessionSnapshot(sessionId),
-          sessionId,
-        );
-      }
-      return this.inspect(
-        actor,
-        () => actor.agent.sessionSnapshot(sessionId),
-        sessionId,
-      );
-    });
+    // An inspection must not instantiate an execution runtime (and its MCP children).
+    // Also bypass an actor still starting: its committed transcript is already readable.
+    const actor = this.resolvedActors.get(sessionId);
+    if (!actor) return this.agent.sessionSnapshot(sessionId);
+    this.reserveActor(sessionId);
+    return this.inspect(actor, () => actor.agent.sessionSnapshot(sessionId), sessionId);
   }
 
   listSessionSummaries(): Promise<SessionSummary[]> {
@@ -331,13 +325,16 @@ export class MimiHost {
     if (this.summaryCache && this.summaryCache.until > now) {
       return Promise.resolve(this.summaryCache.summaries);
     }
-    return this.agent.listSessionSummaries().then((summaries) => {
-      this.summaryCache = { summaries, until: now + 30_000 };
+    const generation = this.summaryGeneration;
+    this.summariesPending ??= this.agent.listSessionSummaries().then((summaries) => {
+      if (generation === this.summaryGeneration) this.summaryCache = { summaries, until: Date.now() + 30_000 };
       return summaries;
-    });
+    }).finally(() => { this.summariesPending = undefined; });
+    return this.summariesPending;
   }
 
   private invalidateSummaryCache(_sessionId: string): void {
+    this.summaryGeneration += 1;
     this.summaryCache = undefined;
   }
 

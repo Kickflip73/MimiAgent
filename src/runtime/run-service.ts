@@ -162,6 +162,17 @@ export class AgentRunService {
     let streamedAnswer = '';
     let interruptedAnswer = '';
     let selectedProvider = this.lastProviderId;
+    let traceRunId: string | undefined;
+    let reasoning = '', reasoningStartedAt: string | undefined;
+    let reasoningTruncated = false, reasoningBudget = 256_000;
+    const flushReasoning = async (): Promise<void> => {
+      if (!reasoning || !traceRunId) return;
+      const observation = { runId: traceRunId, text: reasoning, startedAt: reasoningStartedAt,
+        endedAt: new Date().toISOString(), truncated: reasoningTruncated };
+      reasoning = ''; reasoningStartedAt = undefined; reasoningTruncated = false;
+      // One durable entry per reasoning phase, never one Session write per delta.
+      await this.agent.recordEvent('reasoning', observation, traceRunId).catch(() => undefined);
+    };
     const stopRuntimeEvents = this.agent.onRuntimeEvent((event) => observe(
       observer.onRuntimeEvent,
       this.agent.redactActiveRunData?.(event) ?? event,
@@ -203,6 +214,7 @@ export class AgentRunService {
       );
       selectedProvider = acquired.provider;
       stream = acquired.value;
+      traceRunId = this.agent.activeRunId;
       for await (const event of stream) {
         const projection = projectRunStreamEvent(event);
         const answerDelta = projection?.kind === 'answer' ? projection.text : '';
@@ -217,6 +229,15 @@ export class AgentRunService {
         // redacted final answer plus non-model status events.
         const sensitiveModelStream = this.agent.activeRunHasEphemeralSensitiveAccess
           && event.type === 'raw_model_stream_event';
+        if (!sensitiveModelStream && projection?.kind === 'reasoning' && traceRunId) {
+          reasoningStartedAt ??= new Date().toISOString();
+          const available = Math.max(0, Math.min(64_000 - reasoning.length, reasoningBudget));
+          const piece = projection.text.slice(0, available);
+          reasoning += piece; reasoningBudget -= piece.length;
+          reasoningTruncated ||= piece.length < projection.text.length;
+        } else if (projection && projection.kind !== 'reasoning') {
+          await flushReasoning();
+        }
         if (!hiddenCandidate && !sensitiveModelStream) {
           interruptedAnswer += answerDelta;
           await observe(observer.onStreamEvent, safeEvent);
@@ -224,6 +245,7 @@ export class AgentRunService {
         const progress = progressFrom(safeEvent);
         if (progress) await this.agent.recordEvent('status', progress);
       }
+      await flushReasoning();
       await stream.completed;
       assertRunCanComplete(stream, request.signal);
       this.providerReliability.success(selectedProvider);
@@ -244,6 +266,7 @@ export class AgentRunService {
       await observe(observer.onComplete, result);
       return result;
     } catch (error) {
+      await flushReasoning();
       if (stream && classifyProviderFault(error).kind !== 'other') {
         this.providerReliability.failure(selectedProvider, error);
       }

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   OpenAIChatCompletionsModel,
   type AgentInputItem,
@@ -318,7 +319,12 @@ export function normalizeChatCompletionsInput(items: AgentInputItem[]): AgentInp
       // Truly standalone reasoning has no legal Chat Completions message form.
       pendingReasoning = [];
     }
-    portable.push(item);
+    if (value.type === 'function_call' && (typeof value.namespace === 'string' && value.namespace.trim() || typeof value.name === 'string' && !/^[a-zA-Z0-9_-]{1,64}$/.test(value.name))) {
+      // Historical identifiers are display/protocol metadata, not a new tool dispatch.
+      // Hash the qualified identity to avoid collisions while preserving call/result IDs.
+      const { namespace, name, ...rest } = value;
+      portable.push({ ...rest, name: `history_${createHash('sha256').update(JSON.stringify([namespace ?? '', name])).digest('hex').slice(0,48)}` } as unknown as AgentInputItem);
+    } else portable.push(item);
   }
   const unchanged = portable.length === items.length
     && portable.every((item, index) => item === items[index]);

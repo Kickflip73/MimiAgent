@@ -1,4 +1,5 @@
 import process from 'node:process';
+import path from 'node:path';
 import {
   preferredEnvironmentValue,
   resolveEnvironmentFile,
@@ -17,6 +18,7 @@ export function daemonLaunchEnvironment(config: AppConfig): Record<string, strin
   const paths = mimiPaths(config);
   const session = preferredEnvironmentValue('MIMI_SESSION', 'AGENT_SESSION') ?? 'mimi-system';
   const environment: Record<string, string> = {
+    PATH: [...new Set([path.dirname(process.execPath), ...(process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin').split(path.delimiter)].filter(directory => path.isAbsolute(directory)))].join(path.delimiter),
     MIMI_MODEL_PROVIDER: config.provider,
     MIMI_CONFIG_VERSION: '4',
     MIMI_WORKSPACE: config.workspaceRoot,

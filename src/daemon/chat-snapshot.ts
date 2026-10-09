@@ -44,6 +44,7 @@ export async function createMimiChatSnapshot(
     contextUsed: snapshot.context.status.value,
     contextWindow: snapshot.context.contextWindow,
     contextStatus: snapshot.context.status,
+    contextManifest: snapshot.context.manifest,
     items: boundedChatItems(snapshot.items, itemLimit),
     plan: snapshot.plan.slice(0, 20).map((step) => ({
       ...step,

@@ -510,9 +510,13 @@ export function adoptRuntimeWorkspaceConfig(
   };
 }
 
+export function defaultWorkspaceRoot(homeDirectory = os.homedir()): string {
+  return path.join(homeDirectory, 'Mimi', 'WorkSpace', 'default');
+}
+
 export function loadConfig(homeDirectory = os.homedir()): AppConfig {
   const explicitWorkspace = preferredEnvironmentValue('MIMI_WORKSPACE', 'AGENT_WORKSPACE');
-  const workspaceRoot = explicitWorkspace ? expandHome(explicitWorkspace, homeDirectory) : path.resolve(process.cwd());
+  const workspaceRoot = explicitWorkspace ? expandHome(explicitWorkspace, homeDirectory) : defaultWorkspaceRoot(homeDirectory);
   const explicitDataRoot = preferredEnvironmentValue('MIMI_DATA_DIR', 'AGENT_DATA_DIR');
   const dataRoot = explicitDataRoot
     ? expandHome(explicitDataRoot, homeDirectory)

@@ -6,7 +6,7 @@ import test from 'node:test';
 import type { AgentInputItem } from '@openai/agents';
 import { PlanStore } from '../src/core/plan.js';
 import { FileSession, registerSessionRunOwner } from '../src/core/session.js';
-import { AtomicJsonStore } from '../src/core/state-file.js';
+import { AtomicJsonStore, StateFileCorruptError } from '../src/core/state-file.js';
 
 test('skips the atomic rename when a conditional state mutation is unchanged', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-state-noop-'));
@@ -63,7 +63,7 @@ test('preserves concurrent plan writes from separate store instances', async () 
   assert.equal((await second.get())[0]?.description, 'second');
 });
 
-test('isolates a corrupt session instead of breaking the whole session list', async () => {
+test('lists valid sessions without mutating corruption, while explicit session initialization preserves quarantine', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-corrupt-'));
   const valid = new FileSession(root, 'valid');
   await valid.addItems([{ role: 'user', content: 'still available' }] as AgentInputItem[]);
@@ -72,7 +72,20 @@ test('isolates a corrupt session instead of breaking the whole session list', as
   const summaries = await FileSession.listSummaries(root);
 
   assert.deepEqual(summaries.map((item) => item.id), ['valid']);
-  assert.ok((await readdir(root)).some((name) => name.startsWith('broken.json.corrupt-')));
+  assert.equal(await readFile(path.join(root, 'broken.json'), 'utf8'), '{not-json');
+  assert.deepEqual((await readdir(root)).sort(), ['broken.json', 'valid.json']);
+
+  // Listing is read-only; the explicit execution-state path still fails closed
+  // and keeps a recoverable copy instead of silently overwriting corruption.
+  let backup = '';
+  await assert.rejects(new FileSession(root, 'broken').ensure(), (error: unknown) => {
+    assert.ok(error instanceof StateFileCorruptError);
+    backup = error.backup;
+    return true;
+  });
+  assert.equal(await readFile(backup, 'utf8'), '{not-json');
+  await access(path.join(root, 'broken.json.corrupt-state'));
+  assert.deepEqual((await FileSession.listSummaries(root)).map((item) => item.id), ['valid']);
 });
 
 test('preserves forward-compatible finalization media anchors in a Session', async () => {
@@ -213,12 +226,14 @@ test('clears derived context state together with the Session transcript', async 
 test('isolates a Session whose persisted transcript contains invalid items', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-invalid-items-'));
   const now = new Date().toISOString();
-  await writeFile(path.join(root, 'broken.json'), JSON.stringify({
+  const source = JSON.stringify({
     id: 'broken', createdAt: now, updatedAt: now, items: [null],
-  }));
+  });
+  await writeFile(path.join(root, 'broken.json'), source);
 
   assert.deepEqual(await FileSession.listSummaries(root), []);
-  assert.ok((await readdir(root)).some((name) => name.startsWith('broken.json.corrupt-')));
+  assert.equal(await readFile(path.join(root, 'broken.json'), 'utf8'), source);
+  assert.deepEqual(await readdir(root), ['broken.json']);
 });
 
 test('recovers an old incomplete lock but never evicts a lock owned by a live process', async () => {

@@ -289,6 +289,10 @@ export class MimiStore extends ActivityStore {
     return this.taskStore.get(id);
   }
 
+  workspaceRootForSession(sessionId: string): string | undefined {
+    return this.taskStore.workspaceRootForSession(sessionId);
+  }
+
   listTasks(limit = 50, selector: TaskListSelector = {}): TaskRecord[] {
     return this.taskStore.list(managementLimit(limit), selector);
   }

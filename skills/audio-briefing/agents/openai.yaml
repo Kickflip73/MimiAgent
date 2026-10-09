@@ -1,0 +1,4 @@
+interface:
+  display_name: "音频简报"
+  short_description: "使用系统语音串行生成中文长简报，保存音频并验证，不自动播放"
+  default_prompt: "使用 $audio-briefing 将中文简报改写为讲解稿，分段合成音频并保存，不自动播放。"

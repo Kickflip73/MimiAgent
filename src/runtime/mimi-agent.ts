@@ -324,7 +324,10 @@ export class MimiAgent {
         : event.type === 'run_end'
           ? 'turn_end'
           : event.type === 'run_error' ? (event.interrupted ? 'turn_interrupted' : 'error') : event.type;
-      await components.state.traces.record(event.sessionId, traceType, event);
+      await components.state.traces.record(event.sessionId, traceType, {
+        ...event,
+        ...(this.activeRun ? { runId: this.activeRun.runId } : {}),
+      });
     });
     const createToolsForAccess = (
       access: Parameters<typeof createTools>[3],
@@ -652,19 +655,14 @@ export class MimiAgent {
   history = (): Promise<AgentInputItem[]> => this.session.getItems();
 
   async sessionSnapshot(sessionId = this.sessionId) {
-    if (!this.activeRun) await this.refreshModelConfiguration();
-    const session = this.components.state.sessions.open(sessionId);
-    await session.ensure();
-    const [items, checkpoint, preferences, summary, plan] = await Promise.all([
-      session.getItems(),
-      session.getCheckpoint(),
-      session.getPreferences(),
-      session.summary(),
-      this.components.state.goalsAndPlans.open(sessionId).get(),
+    const [snapshot, plan] = await Promise.all([
+      this.components.state.sessions.open(sessionId).readSnapshot(),
+      this.components.state.goalsAndPlans.open(sessionId).readSnapshot(),
     ]);
-    const runtime = this.sessionRuntime(preferences);
+    if (!snapshot) throw new Error(`Session ${sessionId} 不存在`);
+    const { items, checkpoint, summary } = snapshot;
+    const runtime = this.sessionRuntime(snapshot.preferences ?? {});
     const permissionMode = this.runtimeSecurity.permissionMode;
-    if (!summary) throw new Error(`Session ${sessionId} 不存在`);
 
     return {
       sessionId,
@@ -682,6 +680,7 @@ export class MimiAgent {
         permissionMode,
       },
       context: {
+        manifest: this.lastContextManifest?.sessionId === sessionId ? structuredClone(this.lastContextManifest) : undefined,
         contextWindow: runtime.model.profile.contextWindow,
         status: this.contextStatusFor(sessionId, items, runtime.model.profile.contextWindow),
       },
@@ -964,8 +963,9 @@ export class MimiAgent {
   mcpStatuses = () => this.components.mcp.statuses();
   reloadMcp = () => this.components.mcp.reload();
 
-  async recordEvent(type: string, data?: unknown): Promise<void> {
+  async recordEvent(type: string, data?: unknown, expectedRunId?: string): Promise<void> {
     const run = this.activeRun;
+    if (expectedRunId && run?.runId !== expectedRunId) return;
     const sessionId = run?.sessionId ?? this.sessionId;
     const session = run?.session ?? this.session;
     const safeData = redactActiveEphemeralData(data, run?.ephemeralSensitiveAccess);
@@ -993,6 +993,10 @@ export class MimiAgent {
     this.runCommitCoordinator.complete({ answer, usage });
   get completionGateRequired(): boolean {
     return this.activeRun?.completionRequired === true;
+  }
+
+  get activeRunId(): string | undefined {
+    return this.activeRun?.runId;
   }
 
   get activeRunHasEphemeralSensitiveAccess(): boolean {

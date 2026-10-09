@@ -1,3 +1,5 @@
+import { ModelConfigStore } from '../runtime/model-config.js';
+import { nextCronTime } from './cron.js';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -754,7 +756,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       takeEphemeralSecrets: (eventId, sessionId, references) =>
         ephemeralSecrets.take(eventId, sessionId, references),
       resolveWorkspace: async (event, sessionId, task) => {
-        const current = host!.workspaceRootFor(sessionId);
+        const current = host!.workspaceRootFor(sessionId) ?? store.workspaceRootForSession(sessionId);
         const authority = store.getImmutableEvent(task.authorityEventId);
         if (authority?.trust !== 'owner') return current ?? config.workspaceRoot;
         const payload = task.objective && typeof task.objective === 'object' && !Array.isArray(task.objective)
@@ -913,6 +915,13 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return activeConnectors.executeAction(params.request);
       }
       assertDaemonControlAuth(controlToken, auth);
+      if (method === 'models.credentials.reload') return mutationGate.run(async () => {
+        if(!config.modelsConfig)throw new Error('未配置模型注册表');
+        const models=await new ModelConfigStore(config.modelsConfig).read();
+        const values=parseDotenv(await readFile(resolveEnvironmentFile(),'utf8').catch(error=>{if(error.code==='ENOENT')return '';throw error;}));
+        for(const provider of models.providers)if(values[provider.apiKeyEnv])process.env[provider.apiKeyEnv]=values[provider.apiKeyEnv];
+        return {reloaded:true};
+      });
       if (method === 'ping' || method === 'status') return {
         protocolVersion: DAEMON_PROTOCOL_VERSION,
         buildVersion: MIMI_BUILD_VERSION,
@@ -1002,7 +1011,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return sanitizeSensitiveData(await createMimiChatSnapshot(
           host!,
           sessionId,
-          host!.workspaceRootFor(sessionId) ?? config.workspaceRoot,
+          host!.workspaceRootFor(sessionId) ?? store.workspaceRootForSession(sessionId) ?? config.workspaceRoot,
           limit(params.limit, 30),
         ));
       }
@@ -1172,6 +1181,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         'attention.reload': () => mutationGate.run(() => activeAttention.reload()),
         'attention.brief': () => activeAttention.forceBriefing(),
         'connectors.list': () => activeConnectors.listCapabilities(),
+        'schedules.capabilities': () => ({ cron: true, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
         'schedule.get': () => store.schedules.get(requestedId()),
         'schedules.list': () => store.schedules.listSummaries(),
         'schedules.remove': () => store.schedules.remove(requestedId()),
@@ -1247,10 +1257,18 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           total,
         } satisfies MimiSchedulePage);
       }
+      if (method === 'schedules.history') return store.schedules.history(requiredString(params.id, 'id'), Number(params.offset ?? 0), limit(params.limit, 50));
+      if (method === 'schedules.update') {
+        const patch=object(params.patch);
+        for(const key of Object.keys(patch))if(!['name','prompt','type','value','enabled'].includes(key))throw new Error('不支持的计划字段');
+        for(const key of ['name','prompt','type','value'])if(patch[key]!==undefined && typeof patch[key]!=='string')throw new Error('计划字段必须为文本');
+        if(patch.enabled!==undefined && typeof patch.enabled!=='boolean')throw new Error('enabled 必须为 boolean');
+        return store.schedules.update(requiredString(params.id,'id'),patch,requiredString(params.updatedAt,'updatedAt'));
+      }
       if (method === 'schedules.add') {
         const type = requiredString(params.type, 'type');
-        if (type !== 'at' && type !== 'interval') throw new Error('type 必须是 at 或 interval');
-        const nextRunAt = requiredString(params.nextRunAt, 'nextRunAt');
+        if (type !== 'at' && type !== 'interval' && type !== 'cron') throw new Error('type 必须是 at、interval 或 cron');
+        const nextRunAt = type === 'cron' ? nextCronTime(requiredString(params.value, 'value')).toISOString() : requiredString(params.nextRunAt, 'nextRunAt');
         if (!Number.isFinite(Date.parse(nextRunAt))) throw new Error('nextRunAt 不是有效时间');
         return sanitizeSensitiveData(store.schedules.add({
           name: requiredString(params.name, 'name'), type, value: requiredString(params.value, 'value'),

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- default new workspaces to `~/Mimi/WorkSpace/default`, retaining explicit and
+  historical workspace selections across runtime eviction and restart
+- read chat snapshots and memory details without starting MCP or joining a running
+  conversation's mutation queue; incrementally cache archive summaries
+- restore message times and execution details from durable history, and persist
+  bounded reasoning for new runs without writing every streamed token
+- separate queued-message acceptance from stream recovery, retain idempotency
+  through lost acknowledgements, and use a compact inline queue editor
+
 - query retained conversation, background and scheduled results through one
   owner-scoped `task_history` tool, including observed file references and explicit
   pagination; reuse existing outputs without interpreting a lookup miss as a new task

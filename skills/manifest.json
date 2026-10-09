@@ -12,6 +12,11 @@
       "published": true
     },
     {
+      "name": "audio-briefing",
+      "status": "product",
+      "published": true
+    },
+    {
       "name": "code-review",
       "status": "product",
       "published": true
@@ -28,6 +33,11 @@
     },
     {
       "name": "guizang-social-card-skill",
+      "status": "experimental",
+      "published": false
+    },
+    {
+      "name": "meeting-notebooklm-km-skill",
       "status": "experimental",
       "published": false
     },

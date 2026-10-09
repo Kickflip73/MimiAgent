@@ -174,7 +174,12 @@ async function acquireLock(file: string, signal?: AbortSignal): Promise<() => Pr
     signal?.throwIfAborted();
     try {
       try {
-        await stat(reapFile);
+        const gate = await stat(reapFile);
+        const source = await readFile(reapFile, 'utf8');
+        const owner = parseLockMetadata(source);
+        if ((owner && !processIsAlive(owner.pid)) || (!owner && Date.now() - gate.mtimeMs > 5_000)) {
+          if (await removeObservedLock(reapFile, gate, owner?.token, source)) continue;
+        }
         throw Object.assign(new Error('状态锁正在回收'), { code: 'EEXIST' });
       } catch (gateError) {
         if (!isCode(gateError, 'ENOENT')) throw gateError;

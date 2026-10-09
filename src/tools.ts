@@ -1125,7 +1125,7 @@ export async function requestUrl(
   let requestBody = body;
   let requestHeaders = { ...headers };
   const dispatcher = allowPrivateNetwork ? undefined : new HttpAgent({
-    connect: { lookup: guardedPublicLookup },
+    connect: { lookup: createPublicHttpLookup() },
   });
   try {
     for (let redirects = 0; redirects <= MAX_HTTP_REDIRECTS; redirects += 1) {
@@ -1178,21 +1178,25 @@ export async function requestUrl(
   }
 }
 
-const guardedPublicLookup: LookupFunction = (hostname, options, callback) => {
-  dnsLookup(hostname, { ...options, all: true, verbatim: true }, (error, addresses) => {
-    if (error) {
-      callback(error, '', 0);
-      return;
-    }
-    const selected = addresses.find(({ address }) => isPublicAddress(address));
-    if (!selected || addresses.some(({ address }) => !isPublicAddress(address))) {
-      const denied = Object.assign(new Error('DNS 解析包含非公网地址，HTTP 请求已拒绝'), { code: 'EACCES' });
-      callback(denied, '', 0);
-      return;
-    }
-    callback(null, selected.address, selected.family);
-  });
-};
+export function createPublicHttpLookup(resolve: typeof dnsLookup = dnsLookup): LookupFunction {
+  return (hostname, options, callback) => {
+    resolve(hostname, { ...options, all: true, verbatim: true }, (error, addresses) => {
+      if (error) {
+        callback(error, '', 0);
+        return;
+      }
+      const selected = addresses.find(({ address }) => isPublicAddress(address));
+      if (!selected || addresses.some(({ address }) => !isPublicAddress(address))) {
+        const denied = Object.assign(new Error('DNS 解析包含非公网地址，HTTP 请求已拒绝'), { code: 'EACCES' });
+        callback(denied, '', 0);
+        return;
+      }
+      // Node's automatic family selection requests all addresses, not one address/family pair.
+      if (options.all) callback(null, addresses);
+      else callback(null, selected.address, selected.family);
+    });
+  };
+}
 
 async function assertPublicHttpTarget(target: URL, allowPrivateNetwork: boolean): Promise<void> {
   if (!['http:', 'https:'].includes(target.protocol)) throw new Error('只支持 HTTP 和 HTTPS URL');

@@ -245,12 +245,18 @@ export class MimiChatClient {
     input: string,
     sessionKey?: string,
     options?: {
+      /** Stable across browser retries, so a lost HTTP response cannot duplicate the task. */
+      requestId?: string;
+      workspaceRoot?: string | null;
       resumeState?: boolean;
       approvedPersonalMessageText?: string;
       requestedSecurityProfile?: SecurityProfile;
     },
   ): Promise<AcceptedMimiEvent> {
-    const eventId = randomUUID();
+    if (options?.requestId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(options.requestId)) {
+      throw new Error('无效的请求 ID');
+    }
+    const eventId = options?.requestId ?? randomUUID();
     const parsed = parseAttachmentInput(input);
     if (!parsed.text && !parsed.attachments.length) throw new Error('命令不能为空');
     const params = {
@@ -260,7 +266,7 @@ export class MimiChatClient {
       trust: 'owner',
       profileId: 'owner',
       sessionKey,
-      workspaceRoot: this.config.workspaceRoot,
+      ...(options?.workspaceRoot === null ? {} : {workspaceRoot: options?.workspaceRoot ?? this.config.workspaceRoot}),
       ...(options?.resumeState ? { resumeState: true } : {}),
       ...(options?.approvedPersonalMessageText
         ? { approvedPersonalMessageText: options.approvedPersonalMessageText }
