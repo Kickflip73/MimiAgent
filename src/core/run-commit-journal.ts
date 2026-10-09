@@ -137,7 +137,12 @@ export class RunCommitJournal {
           if (error.code === 'ENOENT') return undefined;
           throw error;
         });
-        const entries = source === undefined ? [] : Object.entries(journalSchema.parse(JSON.parse(source)).entries);
+        let entries: Array<[string, RunCommitJournalEntry]>;
+        try {
+          entries = source === undefined ? [] : Object.entries(journalSchema.parse(JSON.parse(source)).entries);
+        } catch (cause) {
+          throw new Error('提交日志迁移失败：旧日志损坏，已保留原文件，拒绝丢弃执行证据', { cause });
+        }
         for (const [key, entry] of entries) {
           if (key !== entry.id || key !== runCommitJournalId(entry.sessionId, entry.runId)) {
             throw new Error('Run commit journal 的旧日志标识不一致，拒绝导入');

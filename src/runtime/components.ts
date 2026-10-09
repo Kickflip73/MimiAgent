@@ -209,6 +209,7 @@ export async function createRuntimeComponents(
     userSoulFile: soul.userFile,
     packagedSoulFile,
     embeddingClient,
+    onTiming: (context, operation, phases) => state.traces.record(context.sessionId, 'memory_operation_timing', {runId: context.runId, operation, ...phases}),
     retrievalMode: process.env.MIMI_MEMORY_RETRIEVAL_MODE === 'lexical' ? 'lexical' : 'auto',
   });
   await Promise.all([skills.load(), mcp.prepare()]);

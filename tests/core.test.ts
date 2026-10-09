@@ -443,8 +443,9 @@ test('releases the active run when failure finalization persistence also fails',
   try {
     await assert.rejects(
       new AgentRunService(agent).execute({ input: 'trigger finalization' }),
-      /状态文件损坏，已隔离/,
+      /旧日志损坏，已保留原文件/,
     );
+    assert.equal(await readFile(path.join(dataRoot, 'run-commit-journal.json'), 'utf8'), '{broken');
     await assert.doesNotReject(agent.switchSession('after-finalization-failure'));
     await assert.doesNotReject(
       new FileSession(path.join(dataRoot, 'sessions'), blockedSessionId).beginRun('retry', 'retry-run'),

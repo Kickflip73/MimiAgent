@@ -277,6 +277,7 @@ export class SqliteMemoryCatalog {
     const occurredAt = page.metadata.sourceRefs.map((source) => source.occurredAt).sort().at(-1) ?? page.metadata.updatedAt;
     this.database.exec('BEGIN IMMEDIATE');
     try {
+      const existing = this.database.prepare('SELECT 1 FROM documents WHERE ref_key = ?').get(key);
       this.database.prepare(`
         INSERT INTO documents (
           ref_key, id, scope, profile_id, title, aliases_json, tags_json, kind, status,
@@ -302,16 +303,18 @@ export class SqliteMemoryCatalog {
         page.metadata.schemaVersion === 2 ? JSON.stringify(page.metadata.facets) : null,
         page.metadata.schemaVersion === 2 ? JSON.stringify(page.metadata.derivedFrom) : null,
       );
-      this.database.prepare('DELETE FROM links WHERE source_ref = ?').run(key);
+      if (existing) this.database.prepare('DELETE FROM links WHERE source_ref = ?').run(key);
       const links = [...page.body.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]+)?\]\]/g)].map((match) => match[1]!.trim());
       const insertLink = this.database.prepare('INSERT OR IGNORE INTO links (source_ref, target_title) VALUES (?, ?)');
       links.forEach((title) => insertLink.run(key, title));
       if (this.fts5) {
-        this.database.prepare('DELETE FROM documents_fts WHERE ref_key = ?').run(key);
+        // FTS ref_key is UNINDEXED: looking for a nonexistent new episode scans
+        // the entire text corpus. Atomic insertion needs no old rows removed.
+        if (existing) this.database.prepare('DELETE FROM documents_fts WHERE ref_key = ?').run(key);
         this.database.prepare('INSERT INTO documents_fts (ref_key, title, aliases, tags, body) VALUES (?, ?, ?, ?, ?)')
           .run(key, page.metadata.title, page.metadata.aliases.join(' '), page.metadata.tags.join(' '), page.body);
       }
-      this.deleteVectorRows(key);
+      if (existing) this.deleteVectorRows(key);
       if (embedding) this.storeEmbedding(key, page.digest, embedding);
       this.database.exec('COMMIT');
     } catch (error) {
@@ -338,11 +341,13 @@ export class SqliteMemoryCatalog {
   pruneEpisodes(maxUnreferenced = 10_000): number {
     this.assertWritable();
     const limit = Math.max(0, Math.trunc(maxUnreferenced));
+    const count = Number(this.database.prepare(`SELECT COUNT(*) AS count FROM documents
+      WHERE document_type = 'episode'`).get()?.count ?? 0);
+    if (count <= limit) return 0;
     const episodeRows = this.database.prepare(`
-      SELECT * FROM documents WHERE document_type = 'episode'
-      ORDER BY updated_at DESC, ref_key DESC
-    `).all() as Row[];
-    if (episodeRows.length <= limit) return 0;
+      SELECT ref_key, scope, profile_id, id, source_refs_json FROM documents WHERE document_type = 'episode'
+      ORDER BY updated_at DESC, ref_key DESC LIMIT -1 OFFSET ?
+    `).all(limit) as Row[];
     const referencedSources = new Set<string>();
     const wikiRows = this.database.prepare(`
       SELECT source_refs_json FROM documents
@@ -354,12 +359,13 @@ export class SqliteMemoryCatalog {
       }
     }
     let removed = 0;
-    for (const row of episodeRows.slice(limit)) {
+    for (const row of episodeRows) {
       const episodeSources = json<MemoryDocument['metadata']['sourceRefs']>(row.source_refs_json);
       if (episodeSources.some((source) => referencedSources.has(`${source.type}\0${source.id}\0${source.digest}`))) {
         continue;
       }
-      this.remove(hitFromRow(row).ref);
+      this.remove({ scope: String(row.scope) as MemoryScope, id: String(row.id),
+        ...(row.profile_id ? { profileId: String(row.profile_id) } : {}) });
       removed += 1;
     }
     return removed;

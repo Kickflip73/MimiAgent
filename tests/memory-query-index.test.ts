@@ -45,3 +45,38 @@ test('memory metadata queries use type ordering index, preserve body matching an
     database?.close(); catalog.close(); await rm(root, { recursive: true, force: true });
   }
 });
+
+test('new episodes avoid FTS cleanup scans; retention below its limit reads only the covering count', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-episode-write-'));
+  const catalog = new SqliteMemoryCatalog(path.join(root, 'memory.db'), 'private', 'owner');
+  try {
+    const internal = (catalog as unknown as { database: DatabaseSync }).database;
+    const prepare = internal.prepare.bind(internal);
+    const queries: string[] = [];
+    internal.prepare = ((sql: string) => { queries.push(sql); return prepare(sql); }) as typeof internal.prepare;
+    const at = '2026-10-09T08:00:00.000Z';
+    const page = { ref: { scope: 'private' as const, profileId: 'owner', id: 'episode-test' },
+      digest: 'before', body: 'uniquebeforeword', metadata: {
+        schemaVersion: 1 as const, id: 'episode-test', title: 'Episode', kind: 'source-summary' as const,
+        scope: 'private' as const, profileId: 'owner', status: 'active' as const,
+        confidence: 'source-grounded' as const, aliases: [], tags: [], sourceRefs: [],
+        validFrom: null, validUntil: null, supersedes: [], createdAt: at, updatedAt: at,
+      } };
+    catalog.index(page, undefined, 'episode');
+    assert.equal(queries.some(sql => /DELETE FROM documents_fts/.test(sql)), false);
+    assert.equal(catalog.search('uniquebeforeword', { documentTypes: ['episode'] }).length, 1);
+    queries.length = 0;
+    catalog.index({ ...page, digest: 'after', body: 'uniqueafterword' }, undefined, 'episode');
+    assert.equal(queries.filter(sql => /DELETE FROM documents_fts/.test(sql)).length, 1);
+    assert.equal(catalog.search('uniquebeforeword', { documentTypes: ['episode'] }).length, 0);
+    assert.equal(catalog.search('uniqueafterword', { documentTypes: ['episode'] }).length, 1);
+    queries.length = 0;
+    assert.equal(catalog.pruneEpisodes(), 0);
+    assert.equal(queries.length, 1);
+    assert.match(queries[0]!, /COUNT\(\*\)/);
+    const plan = prepare(`EXPLAIN QUERY PLAN ${queries[0]}`).all().map(row => row.detail).join('\n');
+    assert.match(plan, /COVERING INDEX documents_type_updated_idx/);
+    assert.equal(catalog.pruneEpisodes(0), 1);
+    assert.equal(catalog.readDocument(page.ref), undefined);
+  } finally { catalog.close(); await rm(root, { recursive: true, force: true }); }
+});
