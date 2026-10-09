@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AgentInputItem } from '@openai/agents';
+import { imageAttachment, imageMediaType, inlineImageAttachment } from '../core/image-attachment.js';
 
 const MAX_ATTACHMENTS = 8;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -184,4 +185,64 @@ export function inputText(input: string | AgentInputItem[]): string {
       'text' in part && typeof part.text === 'string' ? [part.text] : []
     ));
   }).join('\n');
+}
+
+/** Keep pixels outside canonical JSON, also for direct library inputs without a daemon. */
+export async function persistInputImages(input: string | AgentInputItem[], root: string): Promise<void> {
+  if (typeof input === 'string') return;
+  for (const item of input) {
+    if (!('role' in item) || item.role !== 'user' || !Array.isArray(item.content)) continue;
+    for (const part of item.content) {
+      if (part.type !== 'input_image' || typeof part.image !== 'string') continue;
+      const ref = inlineImageAttachment(part.image);
+      if (!ref) continue;
+      await mkdir(root, { recursive: true, mode: 0o700 });
+      const destination = path.join(root, ref.id.split('.')[0]!);
+      const temporary = `${destination}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(temporary, Buffer.from(part.image.slice(part.image.indexOf(',') + 1), 'base64'), { flag: 'wx', mode: 0o600 });
+        await rename(temporary, destination);
+      } finally { await rm(temporary, { force: true }); }
+    }
+  }
+}
+
+/** One bounded visual working set: the latest image message within eight user turns.
+ * Return transport-only replacements, never change the durable transcript.
+ */
+export async function recentImageHistory(history: AgentInputItem[], roots: string[]): Promise<Map<number, AgentInputItem>> {
+  const replacements = new Map<number, AgentInputItem>();
+  let turns = 0;
+  for (let index = history.length - 1; index >= 0; index--) {
+    const item = history[index] as unknown as Record<string, unknown>;
+    if (item.role !== 'user') continue;
+    if (++turns > 8) break;
+    if (!Array.isArray(item.imageAttachments) || !item.imageAttachments.length) continue;
+    const content = (Array.isArray(item.content) ? item.content : [{type:'input_text',text:String(item.content ?? '')}])
+      .filter((part: any) => part.text !== '[图片附件：本轮已读取，二进制未写入 Session 历史]');
+    let bytes = 0;
+    for (const ref of item.imageAttachments.slice(0, MAX_ATTACHMENTS)) {
+      let restored = false;
+      try {
+        const type = imageMediaType(ref.id);
+        for (const root of roots) {
+          try {
+            const data = await readBoundedRegularFile(path.join(root, ref.id.split('.')[0]!));
+            if (imageAttachment(data, type).id !== ref.id) throw new Error('图片校验失败');
+            if (bytes + data.length > MAX_TOTAL_ATTACHMENT_BYTES) break;
+            bytes += data.length;
+            content.push({type:'input_image',image:`data:${type};base64,${data.toString('base64')}`,detail:'auto'});
+            restored = true;
+            break;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') break;
+          }
+        }
+      } catch { /* Invalid references never become filesystem paths. */ }
+      if (!restored) content.push({type:'input_text',text:'[历史图片附件暂不可读取；不能据此推断画面内容，如需查看请用户重新上传。]'});
+    }
+    replacements.set(index, {...item,content} as unknown as AgentInputItem);
+    break;
+  }
+  return replacements;
 }

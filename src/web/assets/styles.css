@@ -1415,11 +1415,13 @@ dialog h2 {
 
 /* Quiet message metadata; reserve the row to avoid jumps on hover. */
 .message-footer { position: absolute; top: 100%; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 20px; margin-top: 2px; font-size: 10px; line-height: 1.4; color: #a0a0a6; }
-.message-time, .message-footer .copy-button { opacity: 0; transition: opacity .16s; }
+.message-time, .message-footer .copy-button, .message-footer .answer-duration { opacity: 0; transition: opacity .16s; }
 .message-time { font-variant-numeric: tabular-nums; }
 .message:hover > .message-content > .message-footer .message-time, .message:focus-within > .message-content > .message-footer .message-time,
+.message:hover > .message-content > .message-footer .answer-duration, .message:focus-within > .message-content > .message-footer .answer-duration,
 .message:hover > .message-content > .message-footer .copy-button, .message:focus-within > .message-content > .message-footer .copy-button { opacity: 1; }
-@media (hover: none) { .message-footer .copy-button { opacity: 1; } }
+@media (hover: none) { .message-footer .copy-button, .message-footer .answer-duration { opacity: 1; } }
+.message.assistant.execution-message .message-content { flex: 1; width: 100%; }
 .message.user .message-footer { justify-content: flex-end; }
 .message-footer .message-actions { margin: 0 0 0 auto; align-items: center; gap: 8px; }
 .message-footer .copy-button { margin: 0; width: 24px; height: 22px; }

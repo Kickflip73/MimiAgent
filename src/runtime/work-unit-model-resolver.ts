@@ -94,6 +94,11 @@ export class WorkUnitModelResolver {
         reason: 'global-default',
         strict: false,
       },
+      // Auto routing must satisfy native image input even when the text default
+      // cannot. Explicit user/route targets above remain strict.
+      ...(requirements.imageInput ? [...this.models.values()]
+        .filter(({registration}) => registration.capabilities.imageInput)
+        .map(({registration}) => ({target:registration.target,reason:'safe-fallback' as const,strict:false})) : []),
     ];
     const seen = new Set<string>();
     for (const candidate of candidates) {

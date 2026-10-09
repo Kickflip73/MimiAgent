@@ -483,6 +483,13 @@ function message(role, text, live = false, sentAt, images = [], media = []) {
   if (!live) setMessageFooter(el, text, { role, sentAt });
   return el;
 }
+function executionMessage(panel) {
+  const article = message('assistant', '', true);
+  article.removeAttribute('id');
+  article.classList.add('execution-message');
+  article.querySelector('.message-bubble').before(panel);
+  return article;
+}
 function renderMessages(items) {
   $('#messages').replaceChildren();
   const visible = (items || []).filter(
@@ -522,15 +529,14 @@ function renderMessages(items) {
     }
     $('#messages').append(article);
     if (item.executionAfter || (item.execution && item.role === 'user')) {
-      const process = document.createElement('div'); process.className = 'orphan-execution';
-      process.append(executionDetails({...item.executionAfter || item.execution,historical:true})); $('#messages').append(process);
+      const process = executionMessage(executionDetails({...item.executionAfter || item.execution,historical:true})); $('#messages').append(process);
     }
   }
   if (state.snapshot?.timeline?.truncated) {
     const note = document.createElement('p'); note.className = 'timeline-note'; note.textContent = '部分较早的执行过程未完整加载'; $('#messages').prepend(note);
   }
   const attached = new Set();
-  const articles = [...$('#messages').querySelectorAll('article')];
+  const articles = [...$('#messages').querySelectorAll('article:not(.execution-message)')];
   for (const record of [...(completedRuns.get(state.sessionId) || [])].reverse()) {
     const index = visible.findLastIndex((item, index) => !attached.has(index) && item.role === 'user' && textOf(item) === record.userText);
     attached.add(index);
@@ -549,7 +555,7 @@ function renderMessages(items) {
         previous.after(partial); previous = partial;
       });
       for (const group of executionGroups(record)) if(group.afterAnswer + 1 >= record.answers.length) {
-        const tail=document.createElement('div');tail.className='orphan-execution';tail.append(executionDetails({...record,steps:group.steps}));previous.after(tail);previous=tail;
+        const tail=executionMessage(executionDetails({...record,steps:group.steps}));previous.after(tail);previous=tail;
       }
     }
     if (articles[index + 1]?.classList.contains('assistant')) {
@@ -561,7 +567,7 @@ function renderMessages(items) {
         const target = replies[group.afterAnswer + 1];
         const panel = executionDetails({...record,steps:group.steps});
         if (target) target.querySelector('.message-bubble').before(panel);
-        else { const tail=document.createElement('div');tail.className='orphan-execution';tail.append(panel);replies.at(-1)?.after(tail); }
+        else { const tail=executionMessage(panel);replies.at(-1)?.after(tail); }
       }
       let end = index + 1;
       while (end + 1 < visible.length && visible[end + 1].role === 'assistant') end++;
@@ -854,7 +860,8 @@ function startStream(id) {
       let entry = processNodes.get(group.afterAnswer);
       if (!entry) {
         const projection = {...run, steps:group.steps};
-        entry = {projection, node:executionDetails(projection)};
+        const node = executionDetails(projection);
+        entry = {projection, node, article:executionMessage(node)};
         processNodes.set(group.afterAnswer,entry);
       }
       Object.assign(entry.projection, {steps:group.steps, status:group === groups.at(-1) ? run.status : undefined});
@@ -866,7 +873,7 @@ function startStream(id) {
     texts.forEach((text,index) => {
       let part = answerNodes[index];
       if (!part) {
-        part = message('assistant', '', true); part.removeAttribute('id'); part.classList.add('answer-part'); answerNodes.push(part);
+        part = processNodes.get(index - 1)?.article || message('assistant', '', true); part.removeAttribute('id'); part.classList.remove('execution-message'); part.classList.add('answer-part'); answerNodes.push(part);
       }
       const final = !!run.endedAt && index === texts.length-1;
       const key = `${final}:${text}`;
@@ -883,7 +890,7 @@ function startStream(id) {
       nodes.push(node);
     });
     for (const [after, entry] of processNodes) if (after + 1 >= answerNodes.length) {
-      entry.node.classList.add('pending-execution'); nodes.push(entry.node);
+      entry.node.classList.add('pending-execution'); nodes.push(entry.article);
     } else entry.node.classList.remove('pending-execution');
     // Move only newly inserted nodes; preserve expanded panels, scroll and text animation.
     nodes.forEach((node,index) => { if(content.children[index]!==node) content.insertBefore(node,content.children[index]||null); });
@@ -1171,7 +1178,7 @@ async function openExecutionSession(session, execution, runId, alreadySelected=f
       const user=[...$('#messages').querySelectorAll('article.user')].at(-1);
       if(user)setMessageFooter(user,user.querySelector('.markdown')?.textContent || '',{role:'user',sentAt:saved.startedAt});
       if(!saved.completedAt && state.streamId===execution)return;
-      if(run.steps.length){const panel=executionDetails(run);panel.open=true;panel.hidden=false;panel.classList.add('historical-execution');heading.after(panel);return;}
+      if(run.steps.length){const panel=executionDetails(run);panel.open=true;panel.hidden=false;panel.classList.add('historical-execution');heading.after(executionMessage(panel));return;}
     }
     let page;
     do {
@@ -1188,7 +1195,7 @@ async function openExecutionSession(session, execution, runId, alreadySelected=f
       if(!run.steps.length)run.steps.push({kind:'status',tone:'agent',title:'历史记录',fullDetail:'这次运行未保留可恢复的工具或思考步骤，已展示保存的对话正文。',next:''});
     }
     const panel=executionDetails(run);panel.open=true;panel.hidden=false;panel.classList.add('historical-execution');
-    $('#messages').prepend(panel);panel.scrollIntoView({block:'start'});
+    $('#messages').prepend(executionMessage(panel));panel.scrollIntoView({block:'start'});
   }catch(error){if(revision===state.revision)toast(error.message);}
 }
 function resultText(result) {

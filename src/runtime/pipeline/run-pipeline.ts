@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import {
   type AgentInputItem,
   type Usage,
@@ -31,7 +32,7 @@ import { withExecutionLedger } from '../tool-ledger.js';
 import { materializeMcpTools } from '../mcp-ledger.js';
 import { ModelContextSemanticSummarizer } from '../context-semantic-summarizer.js';
 import { createTeamWorkerTools } from '../team-worker-tools.js';
-import { inputText } from '../attachments.js';
+import { inputText, persistInputImages, recentImageHistory } from '../attachments.js';
 import { isTerminalRunInterruption, RunContextLimitReachedError } from '../run-outcome.js';
 import { createCompletionTools } from '../completion.js';
 import { createPlanTools } from '../plan-tools.js';
@@ -112,6 +113,16 @@ export async function executeRunPipeline(
     options = { ...options, securityProfile };
     const textInput = inputText(input);
     if (!textInput.trim() && typeof input === 'string') throw new Error('输入不能为空');
+    const imageRoot = path.join(host.config.dataRoot, 'attachments');
+    await persistInputImages(input, imageRoot);
+    const imageHistory = options?.policy?.allowSessionContext === false || containsImageInput(input)
+      ? new Map<number, AgentInputItem>()
+      : await recentImageHistory(await host.session.getItems(), [
+          imageRoot,
+          path.join(host.config.daemonDataRoot ?? path.join(host.config.dataRoot, 'mimi'), 'attachments'),
+        ]);
+    const visualInput = [...imageHistory.values(), ...(typeof input === 'string' ? [] : input)];
+    const hasImages = containsImageInput(visualInput);
     const preferences = await host.session.getPreferences();
     host.applySessionPreferences?.(preferences);
     const routeConfig = options?.providerRoute
@@ -126,14 +137,14 @@ export async function executeRunPipeline(
     }
     if (
       host.fixedModelBinding
-      && containsImageInput(input)
+      && hasImages
       && !host.components.modelGateway.inspect(host.fixedModelBinding.target).capabilities.imageInput
     ) {
       throw new Error('冻结模型不满足 imageInput/图片输入硬能力');
     }
     const binding = options?.providerRoute
       ? undefined
-      : host.resolveRunModelBinding(input, options, preferences);
+      : host.resolveRunModelBinding(hasImages ? visualInput : input, options, preferences);
     const routeModel = options?.providerRoute
       ? createModel(routeConfig, options.providerRoute.model)
       : host.runtimeForBinding(binding!);
@@ -230,7 +241,15 @@ export async function executeRunPipeline(
       || (tool.name !== 'computer_observe' && tool.name !== 'computer_act'));
     const personalConnectorOnly = options?.personalConnectorOnly === true;
     const prepareRunHistory = (items: AgentInputItem[]) => {
-      const prepared = prepareComputerHistoryForModelInput(items);
+      // Pair repairs may shift offsets between preparation and SDK history reads.
+      const restored = [...imageHistory.values()][0] as (AgentInputItem & {imageAttachments?: unknown}) | undefined;
+      let imageIndex = -1;
+      if (restored) for (let index = items.length - 1; index >= 0; index--) {
+        if (JSON.stringify((items[index] as {imageAttachments?:unknown}).imageAttachments) === JSON.stringify(restored.imageAttachments)) {
+          imageIndex = index; break;
+        }
+      }
+      const prepared = prepareComputerHistoryForModelInput(items.map((item, index) => index === imageIndex ? restored! : item));
       return personalConnectorOnly
         ? withoutPersonalMessageFallbackHistory(prepared)
         : prepared;
@@ -788,6 +807,9 @@ export async function executeRunPipeline(
       behaviorPreferences: directOwnerRun ? preferences.instructions : '',
       runtimeContext: [
         `当前模式：${currentMode.label}。${currentMode.instruction}`,
+        hasImages
+          ? '本轮 Host 已将图片像素作为原生 input_image 提供给当前视觉模型（含需要恢复的近期附件）。直接观察图片回答，不需要额外视觉工具。历史占位文字只描述持久化方式，不代表当前看不到图片；Memory 或旧回答中的能力失效结论不能覆盖本轮真实输入。看不清的细节应如实说明，不要猜测。'
+          : '',
         canReadLocal
           ? `当前工作区：${host.config.workspaceRoot}。MimiAgent 运行时代码目录：${host.runtimeRoot}。Capability set：${run.capabilitySnapshot?.snapshotDigest ?? 'unavailable'}。用户要求检查或修改项目/Agent 自身时，使用当前能力集合提供的文件工具和 Shell（若可用）实际读取、编辑并验证。`
           : '本轮来源无权读取本地工作区、Skills、记忆或持久状态；不要猜测、泄露或声称访问了这些数据。',

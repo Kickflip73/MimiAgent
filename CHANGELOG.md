@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- restore verified recent image attachments for follow-up questions and route automatic
+  visual requests to configured vision models; current inputs override stale capability memories
+- show the assistant avatar from the first execution step and reveal elapsed reply time on hover/focus
+
 - budget native image blocks as visual input instead of tokenizing Base64 transport;
   keep full images for vision calls and omit binary encodings from text-only semantic summaries
 
