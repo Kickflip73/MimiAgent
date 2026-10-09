@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- soften streamed text with short per-fragment fades and bounded adaptive pacing;
+  keep existing text stable and respect reduced-motion preferences
+- display answer prose without internal Host finalization envelopes, including
+  saved conversations and copied answers; retain execution outcomes and evidence
+
 - default new workspaces to `~/Mimi/WorkSpace/default`, retaining explicit and
   historical workspace selections across runtime eviction and restart
 - read chat snapshots and memory details without starting MCP or joining a running

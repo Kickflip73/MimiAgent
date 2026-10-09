@@ -1,7 +1,7 @@
 import { createMessageQueue } from './queue.js';
 import { contextBreakdown } from './context.js';
 import { createManagement, managedViews, viewTitles } from './manage.js';
-import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal } from './execution.js';
+import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal, presentAnswer, renderStreamText } from './execution.js';
 import { setupPickers, createSelectionQueue } from './pickers.js';
 const $ = (selector) => document.querySelector(selector);
 const icons = {
@@ -382,6 +382,7 @@ function textOf(item) {
     .join('\n');
 }
 function messageFooter(text, { role = 'assistant', sentAt, timestampSource, duration, copy = true } = {}) {
+  if (role === 'assistant') text = presentAnswer(text).text;
   const footer = document.createElement('div');
   footer.className = 'message-footer';
   const time = document.createElement('time');
@@ -413,6 +414,7 @@ function setMessageFooter(article, text, metadata) {
   content.append(messageFooter(text, metadata));
 }
 function message(role, text, live = false, sentAt) {
+  if (role === 'assistant') text = presentAnswer(text).text;
   const el = document.createElement('article');
   el.className = `message ${role}`;
   el.tabIndex = 0;
@@ -456,7 +458,10 @@ function renderMessages(items) {
     const article = message(item.role, textOf(item), false, item.timestamp || item.createdAt);
     setMessageFooter(article, textOf(item), {role:item.role,sentAt:item.timestamp || item.createdAt,timestampSource:item.timestampSource,duration:item.duration});
     if (item.timelineRunId) article.dataset.timelineRun = item.timelineRunId;
-    if (item.execution && item.role === 'assistant') article.querySelector('.markdown').before(executionDetails({...item.execution,historical:true}));
+    if (item.role === 'assistant') {
+      const display = presentAnswer(textOf(item));
+      if (item.execution || display.outcome) article.querySelector('.markdown').before(executionDetails({...item.execution, steps:item.execution?.steps || [], ...(display.outcome ? {status:display.outcome} : {}), historical:true}));
+    }
     $('#messages').append(article);
     if (item.execution && item.role === 'user') {
       const process = document.createElement('div'); process.className = 'orphan-execution';
@@ -480,6 +485,8 @@ function renderMessages(items) {
       articles[index].after(partial);
     }
     if (articles[index + 1]?.classList.contains('assistant')) {
+      // Replace the legacy-envelope fallback with the cached detailed execution.
+      articles[index + 1].querySelector('.execution')?.remove();
       articles[index + 1].querySelector('.markdown')?.before(executionDetails(record));
       let end = index + 1;
       while (end + 1 < visible.length && visible[end + 1].role === 'assistant') end++;
@@ -746,7 +753,7 @@ function startStream(id) {
   content.before(details); $('#messages').append(live);
   let source, settled = false, detached = false, recovering = false, finishing = false, paintTimer, frame;
   const reveal = createTextReveal(run.answers);
-  let shown = [...run.answers];
+  let shown = [...run.answers], replayPaint = run.answers.length > 0;
   const current = () => !detached && revision === state.revision && state.streamId === id && !settled;
   function save() {
     try { const encoded = JSON.stringify(run); if (encoded.length < 1_500_000) sessionStorage.setItem(cacheKey,encoded); } catch { /* Daemon replay remains authoritative. */ }
@@ -760,9 +767,10 @@ function startStream(id) {
       const key = `${final}:${text}`;
       if (part._rendered === key) return;
       part._rendered = key;
-      part.innerHTML = markdown(text);
+      renderStreamText(part, markdown(presentAnswer(text).text), performance.now(), replayPaint || document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches);
       part.append(messageFooter(text, {sentAt: final ? run.endedAt : run.answerTimes[index], copy: final, ...(final ? {duration:run.endedAt-run.startedAt} : {})}));
     });
+    replayPaint = false;
   }
   function animate() {
     frame = null;
@@ -785,7 +793,7 @@ function startStream(id) {
     if (!current() || !projectEvent(run,data)) return;
     if (data.kind === 'answer' && !run.answerTimes[run.answers.length-1]) run.answerTimes[run.answers.length-1] = Date.now();
     if (data.kind === 'status') runActivity(data.next || data.title);
-    if (replay) shown = reveal.update(run.answers, performance.now(), true);
+    if (replay) { shown = reveal.update(run.answers, performance.now(), true); replayPaint = true; }
     // A replay can contain thousands of deltas. Render once per batch, not once per token.
     if (!paintTimer) paintTimer = setTimeout(paint,80);
   }
@@ -813,7 +821,10 @@ function startStream(id) {
     }
     const cancelled = task?.status === 'cancelled';
     if (task?.error && !cancelled) run.steps.push({kind:'status',tone:'failure',title:'执行未完成',fullDetail:task.error});
-    const result = task?.result, finalText = cancelled ? undefined : typeof result === 'string' ? result : result?.answer;
+    const result = task?.result, rawFinal = cancelled ? undefined : typeof result === 'string' ? result : result?.answer;
+    const presentation = presentAnswer(rawFinal);
+    const finalText = rawFinal == null ? undefined : presentation.text;
+    if (presentation.outcome) run.status = presentation.outcome;
     run.answers = finishAnswers(run.answers, finalText, run.boundary);
     if (!run.answers.length && !cancelled) run.answers.push(task?.error || (missing ? '运行记录已不可用，请刷新读取保存的对话。' : `任务${labels[task.status] || task.status}`));
     shown = reveal.update(run.answers, performance.now(), true);
@@ -1076,7 +1087,7 @@ async function showTask(id) {
     if (task.error)
       html += `<div class="detail-section"><h4>需要关注</h4><p class="error-text">${esc(task.error)}</p></div>`;
     if (result)
-      html += `<div class="detail-section"><h4>结果</h4><div class="markdown">${markdown(result)}</div></div>`;
+      html += `<div class="detail-section"><h4>结果</h4><div class="markdown">${markdown(presentAnswer(result).text)}</div></div>`;
     if (!progress && !result && !task.error)
       html +=
         '<p class="settings-note">尚未提供实质进展记录。运行状态和心跳不代表任务已完成。</p>';

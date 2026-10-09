@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 // @ts-expect-error Browser module is intentionally dependency-free JavaScript.
-import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal } from '../src/web/assets/execution.js';
+import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal, createTextFade, presentAnswer } from '../src/web/assets/execution.js';
 
 test('stream keeps answer chunks together but separates replies around tools and reasoning', () => {
   const run: { sequence: number; answers: string[]; steps: Array<{ text?: string }>; boundary: boolean } = { sequence: 0, answers: [], steps: [], boundary: true };
@@ -62,4 +62,38 @@ test('live burst text is frame-paced, bounded and preserves graphemes; replay is
   assert.equal(reveal.pending, false);
   assert.deepEqual(reveal.update([answer, '恢复的历史'], 820, true), [answer, '恢复的历史']);
   assert.deepEqual(reveal.update(['更正后的完整结果'], 840, true), ['更正后的完整结果']);
+});
+
+
+test('presentation removes only the generated Host envelope and keeps outcome separate', () => {
+  const envelope = 'Host 终态：outcome=partial；本轮不构成整体完成声明。\n\n原因：未核验\n\n下一步：继续核验\n\n模型草稿（仅作未验证的执行摘要）：\n已整理资料。\n\n还需核对来源。';
+  assert.deepEqual(presentAnswer(envelope), {text:'已整理资料。\n\n还需核对来源。',outcome:'partial'});
+  assert.deepEqual(presentAnswer(envelope.replaceAll('\n','\r\n')), presentAnswer(envelope));
+  assert.equal(presentAnswer('引用：\n'+envelope).text, '引用：\n'+envelope);
+  assert.equal(presentAnswer('普通回答').text, '普通回答');
+  assert.deepEqual(presentAnswer('Host 终态：outcome=failed；本轮不构成整体完成声明。\n\n原因：失败'), {text:'本次执行未完成。',outcome:'failed'});
+  const prose = 'Host 终态：outcome=partial；本轮不构成整体完成声明。\n这是用户提供的示例。';
+  assert.equal(presentAnswer(prose).text, prose);
+});
+
+test('new ink retains its fade age across rerenders without dimming existing text', () => {
+  const fade = createTextFade();
+  assert.deepEqual(fade('old',0,true), []);
+  assert.deepEqual(fade('old new',10), [{start:3,end:7,born:10}]);
+  assert.deepEqual(fade('old new猫',40), [{start:3,end:7,born:10},{start:7,end:8,born:40}]);
+  assert.deepEqual(fade('old new猫!',180), [{start:7,end:8,born:40},{start:8,end:9,born:180}]);
+  assert.deepEqual(fade('old corrected',190), [{start:4,end:13,born:190}]);
+  assert.deepEqual(fade('restored history',200,true), []);
+});
+
+test('burst pacing uses steady frame increments and catches up within 350ms', () => {
+  const reveal = createTextReveal();
+  const text = '字'.repeat(300);
+  const lengths: number[] = [];
+  for(let now=100;now<450;now+=16) lengths.push(reveal.update([text],now)[0].length);
+  assert.ok(lengths[0]! < 30);
+  assert.ok(lengths.every((n,i)=>i===0 || n>=lengths[i-1]!));
+  assert.ok(Math.max(...lengths.slice(1).map((n,i)=>n-lengths[i]!))<50);
+  assert.deepEqual(reveal.update([text],451),[text]);
+  assert.deepEqual(reveal.update([text+'🐱'],460,true),[text+'🐱']);
 });
