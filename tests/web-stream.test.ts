@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 // @ts-expect-error Browser module is intentionally dependency-free JavaScript.
-import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal, createTextFade, presentAnswer } from '../src/web/assets/execution.js';
+import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal, createTextFade, presentAnswer, executionGroups } from '../src/web/assets/execution.js';
 
 test('stream keeps answer chunks together but separates replies around tools and reasoning', () => {
   const run: { sequence: number; answers: string[]; steps: Array<{ text?: string }>; boundary: boolean } = { sequence: 0, answers: [], steps: [], boundary: true };
@@ -96,4 +96,30 @@ test('burst pacing uses steady frame increments and catches up within 350ms', ()
   assert.ok(Math.max(...lengths.slice(1).map((n,i)=>n-lengths[i]!))<50);
   assert.deepEqual(reveal.update([text],451),[text]);
   assert.deepEqual(reveal.update([text+'🐱'],460,true),[text+'🐱']);
+});
+
+
+test('execution groups retain answer boundaries after persistence and replay', () => {
+  let run: any = {sequence:0,answers:[],steps:[],boundary:true};
+  const events = [
+    {sequence:1,kind:'reasoning',text:'before'},
+    {sequence:2,kind:'answer',text:'first'},
+    {sequence:3,kind:'reasoning',text:'between'},
+    {sequence:4,kind:'status',tone:'tool',title:'read'},
+    {sequence:5,kind:'answer',text:'second'},
+    {sequence:6,kind:'reasoning',text:'after'},
+  ];
+  events.slice(0,4).forEach(e=>projectEvent(run,e));
+  run=JSON.parse(JSON.stringify(run));
+  events.slice(3).forEach(e=>projectEvent(run,e));
+  assert.deepEqual(executionGroups(run).map((g:any)=>[g.afterAnswer,g.steps.map((s:any)=>s.text||s.title)]),
+    [[-1,['before']],[0,['between','read']],[1,['after']]]);
+  assert.deepEqual(run.answers,['first','second']);
+});
+
+test('adjacent reasoning phases separated by an answer never merge', () => {
+  const run:any={sequence:0,answers:[],steps:[],boundary:true};
+  [{sequence:1,kind:'reasoning',text:'initial'}, {sequence:2,kind:'answer',text:'reply'},
+    {sequence:3,kind:'reasoning',text:'next'}, {sequence:4,kind:'reasoning',text:' phase'}].forEach(e=>projectEvent(run,e));
+  assert.deepEqual(executionGroups(run).map((g:any)=>g.steps[0].text),['initial','next phase']);
 });

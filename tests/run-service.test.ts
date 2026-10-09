@@ -105,7 +105,7 @@ test('shared run service streams visible deltas and records bounded progress eve
       next: '正在执行 read_file',
     },
     { kind: 'status', tone: 'success', title: 'read_file', next: '模型继续思考' },
-  ]);
+  ].map(event => ({...event, afterAnswer:-1})));
 });
 
 test('shared run service does not reinterpret model answers with keyword heuristics', async () => {
@@ -613,4 +613,21 @@ test('an unfinished Goal completes the Event once with the Host-committed safe a
   assert.equal(result.answer, safeAnswer);
   assert.equal(failed, false);
   assert.deepEqual(streamed, []);
+});
+
+
+test('persisted progress records the reply boundary without storing answer deltas', async () => {
+  const events = [
+    {type:'raw_model_stream_event',data:{type:'output_text_delta',delta:'first'}},
+    {type:'raw_model_stream_event',data:{type:'output_text_delta',delta:' reply'}},
+    {type:'run_item_stream_event',name:'tool_called',item:{rawItem:{name:'read_file',arguments:'{}'}}},
+    {type:'raw_model_stream_event',data:{type:'output_text_delta',delta:'second'}},
+    {type:'run_item_stream_event',name:'tool_called',item:{rawItem:{name:'read_file',arguments:'{}'}}},
+  ];
+  const saved: any[]=[];
+  const agent={onRuntimeEvent:()=>()=>undefined,stream:async()=>({rawResponses:[],runContext:{usage:{}},completed:Promise.resolve(),cancelled:false,interruptions:[],async *[Symbol.asyncIterator](){yield* events;}}),
+    recordEvent:async(type:string,data:unknown)=>{if(type==='status')saved.push(data);},completeRun:async(answer:string)=>committed(answer)} as unknown as MimiAgent;
+  await new AgentRunService(agent).execute({input:'work'});
+  assert.deepEqual(saved.map(s=>s.afterAnswer),[0,1]);
+  assert.ok(saved.every(s=>s.title==='read_file'));
 });

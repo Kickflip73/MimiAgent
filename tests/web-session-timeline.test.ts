@@ -138,3 +138,31 @@ test('finalization rejects another run and overrides only provisional legacy wor
   assert.equal(result.items[3]!.execution!.status, 'partial');
   assert.equal(result.items[3]!.timelineRunId, 'second');
 });
+
+
+test('history places tools between the replies that surrounded them, including a tail snapshot', async (t) => {
+  const items = [message('user','work'), {type:'reasoning',content:[{text:'initial'}]},
+    message('assistant','checking'), {type:'function_call',name:'read_file',callId:'c',arguments:'{}'},
+    {type:'function_call_result',callId:'c',output:'data'}, message('assistant','done'),
+    {type:'reasoning',content:[{text:'follow-up'}]}];
+  const options = await fixture(t,items);
+  const result = await decorateSessionTimeline({...options,items:items.filter(i=>'role' in i)});
+  assert.deepEqual(result.items[1]!.execution!.steps.map(s=>s.text),['initial']);
+  assert.equal(result.items[1]!.executionAfter!.steps[0]!.title,'read_file');
+  assert.match(result.items[1]!.executionAfter!.steps[0]!.fullDetail!,/data/);
+  assert.deepEqual(result.items[2]!.executionAfter!.steps.map(s=>s.text),['follow-up']);
+  const tail = await decorateSessionTimeline({...options,items:[items[5]]});
+  assert.ok(tail.items[0]!.execution!.steps.some(s=>s.title==='read_file'));
+});
+
+
+test('persisted reply positions restore trace-only thinking between multiple answers', async (t) => {
+  const items=[message('user','work'),message('assistant','first'),message('assistant','second')];
+  const options=await fixture(t,items,[event('turn_start',1,{input:'work',runId:'r'}),
+    event('reasoning',2,{runId:'r',text:'initial',afterAnswer:-1}),
+    event('reasoning',4,{runId:'r',text:'between',afterAnswer:0}),event('turn_end',6,{answer:'second'})]);
+  const result=await decorateSessionTimeline({...options,items});
+  assert.equal(result.items[1]!.execution!.steps[0]!.text,'initial');
+  assert.equal(result.items[1]!.executionAfter!.steps[0]!.text,'between');
+  assert.equal(result.items[2]!.execution,undefined);
+});

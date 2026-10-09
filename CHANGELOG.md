@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- record slow read-only IPC requests and event-loop stalls without logging
+  request parameters, credentials or conversation content
+- interleave execution details with each assistant reply in Web conversations,
+  retaining boundaries during streaming, reconnection and saved-history replay
+- give both chat roles matching bubbles with distinct neutral colors; render
+  collapsed process details only when opened to avoid repeated hidden DOM work
+
 - run the macOS Web/TUI daemon with normal app scheduling instead of launchd
   Background I/O throttling, which can stall the shared SQLite event loop
 

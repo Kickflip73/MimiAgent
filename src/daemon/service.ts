@@ -1316,6 +1316,22 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return { accepted: true, forced: force };
       }
       throw new Error(`未知 MimiAgent RPC 方法：${method}`);
+    }, {
+      onRequestTiming: (timing) => {
+        // Only known read paths: never log caller input, credentials, results or
+        // arbitrary method strings. Full timings distinguish sync work from waits.
+        if (timing.totalMs >= 1_000 && [
+          'ping', 'status', 'tasks.list', 'chat.sessions', 'chat.snapshot',
+          'event.stream', 'runs.list', 'activity.get', 'usage.get',
+        ].includes(timing.method)) {
+          process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), type: 'ipc_slow_request', ...timing })}\n`);
+        }
+      },
+      onEventLoopDelay: (delayMs) => {
+        if (delayMs >= 1_000) process.stderr.write(`${JSON.stringify({
+          timestamp: new Date().toISOString(), type: 'daemon_event_loop_delay', delayMs,
+        })}\n`);
+      },
     });
     process.once('SIGINT', onSignal);
     process.once('SIGTERM', onSignal);

@@ -8,11 +8,22 @@ export function projectEvent(run, event) {
     run.boundary = false;
   } else {
     run.boundary = true;
+    const afterAnswer = run.answers.length - 1;
     const last = run.steps.at(-1);
-    if (event.kind === 'reasoning' && last?.kind === 'reasoning') last.text += event.text;
-    else run.steps.push({ ...event });
+    if (event.kind === 'reasoning' && last?.kind === 'reasoning' && last.afterAnswer === afterAnswer) last.text += event.text;
+    else run.steps.push({ ...event, afterAnswer });
   }
   return true;
+}
+/** Stable positions relative to replies; legacy caches keep their original leading group. */
+export function executionGroups(run) {
+  const groups = new Map();
+  for (const step of run.steps || []) {
+    const afterAnswer = Number.isInteger(step.afterAnswer) ? step.afterAnswer : -1;
+    if (!groups.has(afterAnswer)) groups.set(afterAnswer, {afterAnswer, steps:[]});
+    groups.get(afterAnswer).steps.push(step);
+  }
+  return [...groups.values()].sort((a,b)=>a.afterAnswer-b.afterAnswer);
 }
 export function finishAnswers(answers, finalText, boundary = false) {
   if (!finalText) return answers;

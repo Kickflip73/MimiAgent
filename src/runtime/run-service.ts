@@ -170,10 +170,11 @@ export class AgentRunService {
     let selectedProvider = this.lastProviderId;
     let traceRunId: string | undefined;
     let reasoning = '', reasoningStartedAt: string | undefined;
+    let afterAnswer = -1, answerBoundary = true;
     let reasoningTruncated = false, reasoningBudget = 256_000;
     const flushReasoning = async (): Promise<void> => {
       if (!reasoning || !traceRunId) return;
-      const observation = { runId: traceRunId, text: reasoning, startedAt: reasoningStartedAt,
+      const observation = { runId: traceRunId, afterAnswer, text: reasoning, startedAt: reasoningStartedAt,
         endedAt: new Date().toISOString(), truncated: reasoningTruncated };
       reasoning = ''; reasoningStartedAt = undefined; reasoningTruncated = false;
       // One durable entry per reasoning phase, never one Session write per delta.
@@ -251,11 +252,15 @@ export class AgentRunService {
           await flushReasoning();
         }
         if (!hiddenCandidate && !sensitiveModelStream) {
+          if (projection?.kind === 'answer') {
+            if (answerBoundary) afterAnswer += 1;
+            answerBoundary = false;
+          } else if (projection) answerBoundary = true;
           interruptedAnswer += answerDelta;
           await observe(observer.onStreamEvent, safeEvent);
         }
         const progress = progressFrom(safeEvent);
-        if (progress) await this.agent.recordEvent('status', progress);
+        if (progress) await this.agent.recordEvent('status', {...progress, afterAnswer});
       }
       await flushReasoning();
       await stream.completed;

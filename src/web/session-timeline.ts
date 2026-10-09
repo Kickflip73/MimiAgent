@@ -14,6 +14,7 @@ export interface TimelineStep {
   text?: string;
   timestamp?: string;
   next?: string;
+  afterAnswer?: number;
 }
 export interface SessionExecution {
   id: string;
@@ -31,6 +32,7 @@ export interface TimelineItem extends Item {
   timestampSource?: 'message' | 'run-start' | 'run-end' | 'event';
   timelineRunId?: string;
   execution?: SessionExecution;
+  executionAfter?: SessionExecution;
   duration?: number;
 }
 export interface SessionTimelineOptions {
@@ -142,9 +144,9 @@ function traceTurns(events: Item[], sessionId: string): TraceTurn[] {
       current = undefined;
     } else if (current && event.type === 'reasoning' && typeof data.text === 'string'
       && (!data.runId || data.runId === current.id) && current.steps.length < MAX_STEPS) {
-      current.steps.push({ kind: 'reasoning', text: detail(data.text) + (data.truncated ? '\n[思考内容达到保存上限]' : ''), timestamp: date(data.startedAt) ?? at });
+      current.steps.push({ kind: 'reasoning', text: detail(data.text) + (data.truncated ? '\n[思考内容达到保存上限]' : ''), timestamp: date(data.startedAt) ?? at, ...(Number.isInteger(data.afterAnswer) && Number(data.afterAnswer) >= -1 ? {afterAnswer:Number(data.afterAnswer)} : {}) });
     } else if (current && event.type === 'status' && current.steps.length < MAX_STEPS) {
-      current.steps.push({ kind: 'status', tone: String(data.tone ?? 'agent'), title: String(data.title ?? ''), fullDetail: detail(data.detail), next: String(data.next ?? ''), timestamp: at });
+      current.steps.push({ kind: 'status', tone: String(data.tone ?? 'agent'), title: String(data.title ?? ''), fullDetail: detail(data.detail), next: String(data.next ?? ''), timestamp: at, ...(Number.isInteger(data.afterAnswer) && Number(data.afterAnswer) >= -1 ? {afterAnswer:Number(data.afterAnswer)} : {}) });
     }
   }
   return turns;
@@ -165,21 +167,23 @@ function durableRuns(database: DatabaseSync | undefined, sessionId: string): Ite
 
 function canonicalSteps(items: Item[]): TimelineStep[] {
   const steps: TimelineStep[] = [], calls = new Map<string, TimelineStep>();
+  let afterAnswer = -1;
   for (const item of items) {
+    if (item.role === 'assistant' && itemText(item)) afterAnswer += 1;
     if (steps.length >= MAX_STEPS) break;
     const at = date(item.timestamp) ?? date(item.createdAt);
     if (item.type === 'reasoning') {
       // Only persisted, explicit text; encrypted/raw provider payloads are not reasoning text.
       const content = text(item.summary) || text(item.content);
-      if (content.trim()) steps.push({ kind: 'reasoning', text: detail(content), ...(at ? { timestamp: at } : {}) });
+      if (content.trim()) steps.push({ kind: 'reasoning', afterAnswer, text: detail(content), ...(at ? { timestamp: at } : {}) });
     } else if (item.type === 'function_call') {
-      const step: TimelineStep = { kind: 'status', tone: 'tool', title: String(item.name ?? '工具调用'), fullDetail: `参数\n${detail(item.arguments)}`, next: '', ...(at ? { timestamp: at } : {}) };
+      const step: TimelineStep = { kind: 'status', afterAnswer, tone: 'tool', title: String(item.name ?? '工具调用'), fullDetail: `参数\n${detail(item.arguments)}`, next: '', ...(at ? { timestamp: at } : {}) };
       steps.push(step);
       if (item.callId || item.call_id) calls.set(String(item.callId ?? item.call_id), step);
     } else if (item.type === 'function_call_result' || item.type === 'function_call_output') {
       const step = calls.get(String(item.callId ?? item.call_id));
       if (step) step.fullDetail += `\n\n结果\n${detail(item.output)}`;
-      else steps.push({ kind: 'status', tone: 'tool', title: String(item.name ?? '工具结果'), fullDetail: detail(item.output), next: '', ...(at ? { timestamp: at } : {}) });
+      else steps.push({ kind: 'status', afterAnswer, tone: 'tool', title: String(item.name ?? '工具结果'), fullDetail: detail(item.output), next: '', ...(at ? { timestamp: at } : {}) });
     }
   }
   return steps;
@@ -249,7 +253,20 @@ export async function decorateSessionTimeline(options: SessionTimelineOptions): 
       }
       if (!steps.some((step) => step.kind === 'reasoning') && turn.steps.some((step) => step.kind === 'reasoning')) {
         let toolIndex = 0;
-        steps = turn.steps.map((step) => {
+        let afterAnswer = -1;
+        steps = turn.steps.map((step, traceIndex) => {
+          const followingTool = turn!.steps.slice(traceIndex).find((entry) => entry.tone === 'tool' && steps.slice(toolIndex).some((candidate) => candidate.title === entry.title));
+          const anchor = followingTool && steps.slice(toolIndex).find((candidate) => candidate.title === followingTool.title);
+          if (anchor) afterAnswer = anchor.afterAnswer ?? afterAnswer;
+          // Prefer actual message timestamps where available. Never invent boundaries from prose.
+          if (step.timestamp) {
+            const precedingIndex = [...assistants].reverse().find((index) => {
+              const at = date(canonical[index]!.timestamp) ?? date(canonical[index]!.createdAt);
+              return at && Date.parse(at) <= Date.parse(step.timestamp!);
+            });
+            if (precedingIndex !== undefined) afterAnswer = assistants.indexOf(precedingIndex);
+          }
+          step = {...step, afterAnswer:step.afterAnswer ?? afterAnswer};
           if (step.kind !== 'status' || step.tone !== 'tool') return step;
           const match = steps.findIndex((candidate, index) => index >= toolIndex && candidate.title === step.title && candidate.tone === 'tool');
           if (match < 0) return step;
@@ -294,8 +311,22 @@ export async function decorateSessionTimeline(options: SessionTimelineOptions): 
       else if (index === final && endedAt) { item.timestamp = endedAt; item.timestampSource = 'run-end'; }
       if (index === final && startedAt && endedAt && Date.parse(endedAt) >= Date.parse(startedAt)) item.duration = Date.parse(endedAt) - Date.parse(startedAt);
     }
-    const anchor = assistants.find((index) => indices.has(index)) ?? (indices.has(start) ? start : undefined);
-    if (anchor !== undefined && steps.length) projected[indices.get(anchor)!]!.execution = execution;
+    const groups = new Map<number, TimelineStep[]>();
+    for (const step of steps) {
+      const after = step.afterAnswer ?? -1;
+      if (!groups.has(after)) groups.set(after, []);
+      groups.get(after)!.push(step);
+    }
+    for (const [after, group] of groups) {
+      const previous = after >= 0 ? assistants[after] : undefined;
+      const anchor = previous !== undefined && indices.has(previous) ? previous
+        : assistants.find((index) => indices.has(index)) ?? (indices.has(start) ? start : undefined);
+      if (anchor === undefined) continue;
+      const item = projected[indices.get(anchor)!]!;
+      const field = previous === anchor ? 'executionAfter' : 'execution';
+      if (item[field]) item[field]!.steps.push(...group);
+      else item[field] = {...execution, steps:[...group]};
+    }
   }
   return { items: projected, timeline: { truncated, reasoningAvailable, runCount } };
 }

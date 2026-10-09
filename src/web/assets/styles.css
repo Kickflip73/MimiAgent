@@ -1328,7 +1328,7 @@ dialog h2 {
 .execution-step + .execution-step { border-top: 1px solid #ececee; }
 .execution-step strong { color: #626267; font-size: 11px; font-weight: 500; }
 .execution-step pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.75 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 6px 0 0; color: #77777d; }
-.answer-part + .answer-part { margin-top: 20px; padding-top: 4px; }
+.answer-part + .answer-part { margin-top: 14px; }
 .execution-empty { padding: 10px 0; }
 .welcome h1 { margin-top: 24px; }
 .welcome-description { margin-bottom: 16px; }
@@ -1366,11 +1366,18 @@ dialog h2 {
 .message.user { flex-direction: row-reverse; margin-left: auto; max-width: 85%; gap: 10px; }
 .message.user .message-content { flex: 0 1 auto; max-width: calc(100% - 40px); }
 .message.user .message-author, .message.assistant .message-author { display: none; }
-.message.user .markdown { background: #f2f2f4; border-radius: 17px 4px 17px 17px; padding: 11px 16px; text-align: left; }
-.message.user .markdown > :last-child { margin-bottom: 0; }
+.message .markdown { width: fit-content; max-width: 100%; box-sizing: border-box; border: 1px solid #ececef; border-radius: 17px; padding: 11px 16px; text-align: left; background: #fff; }
+.message.user .markdown { background: #f0f0f3; border-color: #f0f0f3; border-top-right-radius: 5px; }
+.message.assistant .markdown { border-top-left-radius: 5px; }
+.message .markdown > :last-child { margin-bottom: 0; }
+.message .markdown:empty { display: none; }
+.answer-part { width: fit-content; max-width: 100%; }
+.live-content > .execution { margin: 4px 0 16px; }
+.live-content > .answer-part { margin-bottom: 8px; }
+.message-content > .message-footer { max-width: 100%; }
 .message.user .message-avatar { margin-top: 5px; }
-.message.assistant { margin-right: 20px; }
-.message.assistant .message-content { padding-top: 3px; }
+.message.assistant { margin-right: auto; max-width: 90%; }
+.message.assistant .message-content { padding-top: 3px; flex: 0 1 auto; width: fit-content; max-width: calc(100% - 45px); }
 .copy-button { width: 27px; height: 27px; color: #9b9ba1; margin-top: 2px; }
 .copy-button svg { width: 15px; height: 15px; }
 .copy-button:hover { color: #343438; background: #f4f4f6; }

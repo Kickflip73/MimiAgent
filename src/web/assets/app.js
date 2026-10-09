@@ -1,7 +1,7 @@
 import { createMessageQueue } from './queue.js';
 import { contextBreakdown } from './context.js';
 import { createManagement, managedViews, viewTitles } from './manage.js';
-import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal, presentAnswer, renderStreamText } from './execution.js';
+import { historyExecution, projectEvent, finishAnswers, elapsedLabel, createTextReveal, presentAnswer, renderStreamText, executionGroups } from './execution.js';
 import { setupPickers, createSelectionQueue } from './pickers.js';
 const $ = (selector) => document.querySelector(selector);
 const icons = {
@@ -411,7 +411,7 @@ function messageFooter(text, { role = 'assistant', sentAt, timestampSource, dura
 function setMessageFooter(article, text, metadata) {
   const content = article.querySelector('.message-content');
   content.querySelector(':scope > .message-footer')?.remove();
-  content.append(messageFooter(text, metadata));
+  content.querySelector('.markdown').after(messageFooter(text, metadata));
 }
 function message(role, text, live = false, sentAt) {
   if (role === 'assistant') text = presentAnswer(text).text;
@@ -462,6 +462,7 @@ function renderMessages(items) {
       const display = presentAnswer(textOf(item));
       if (item.execution || display.outcome) article.querySelector('.markdown').before(executionDetails({...item.execution, steps:item.execution?.steps || [], ...(display.outcome ? {status:display.outcome} : {}), historical:true}));
     }
+    if (item.executionAfter) article.querySelector('.message-content').append(executionDetails({...item.executionAfter,historical:true}));
     $('#messages').append(article);
     if (item.execution && item.role === 'user') {
       const process = document.createElement('div'); process.className = 'orphan-execution';
@@ -479,15 +480,30 @@ function renderMessages(items) {
     if (index < 0 || visible[index].timelineRunId || visible[index + 1]?.execution) continue;
     setMessageFooter(articles[index], record.userText, { role: 'user', sentAt: record.sentAt || record.startedAt });
     if (!articles[index + 1]?.classList.contains('assistant') && record.status === 'cancelled' && record.answers?.length) {
-      const partial = message('assistant', record.answers.join('\n\n'));
-      partial.querySelector('.markdown').before(executionDetails(record));
-      setMessageFooter(partial, record.answers.join('\n\n'), { sentAt: record.endedAt, duration: record.endedAt - record.startedAt });
-      articles[index].after(partial);
+      let previous = articles[index];
+      record.answers.forEach((text, answerIndex) => {
+        const partial = message('assistant', text);
+        const final = answerIndex === record.answers.length - 1;
+        setMessageFooter(partial, text, {sentAt:final ? record.endedAt : record.answerTimes?.[answerIndex], ...(final ? {duration:record.endedAt-record.startedAt} : {})});
+        for (const group of executionGroups(record)) {
+          const panel = () => executionDetails({...record,steps:group.steps});
+          if (group.afterAnswer === -1 && answerIndex === 0) partial.querySelector('.markdown').before(panel());
+          else if (group.afterAnswer === answerIndex) partial.querySelector('.message-content').append(panel());
+        }
+        previous.after(partial); previous = partial;
+      });
     }
     if (articles[index + 1]?.classList.contains('assistant')) {
       // Replace the legacy-envelope fallback with the cached detailed execution.
       articles[index + 1].querySelector('.execution')?.remove();
-      articles[index + 1].querySelector('.markdown')?.before(executionDetails(record));
+      const replies = [];
+      for (let at = index + 1; at < articles.length && articles[at].classList.contains('assistant'); at++) replies.push(articles[at]);
+      for (const group of executionGroups(record)) {
+        const target = replies[Math.max(0, group.afterAnswer)] || replies.at(-1);
+        const panel = executionDetails({...record,steps:group.steps});
+        if(group.afterAnswer < 0) target?.querySelector('.markdown')?.before(panel);
+        else target?.querySelector('.message-content')?.append(panel);
+      }
       let end = index + 1;
       while (end + 1 < visible.length && visible[end + 1].role === 'assistant') end++;
       for (let at = index + 1; at <= end; at++) {
@@ -714,10 +730,16 @@ function executionDetails(run) {
   summary.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg><span></span>';
   const body = document.createElement('div'); body.className = 'execution-body'; body.tabIndex = 0;
   details.append(summary, body);
+  let rendered;
+  details.addEventListener('toggle', () => { if(details.open) details.update(); });
   details.update = () => {
-    details.hidden = state.defaults.outputLevel === 'answer';
     const steps = run.steps.filter(step => run.historical || state.defaults.outputLevel === 'trace' || (state.defaults.outputLevel === 'thinking' ? step.kind === 'reasoning' : step.kind !== 'reasoning'));
+    details.hidden = state.defaults.outputLevel === 'answer' || (!steps.length && !['partial','blocked','failed','uncertain','interrupted'].includes(run.status));
     summary.querySelector('span').textContent = `${run.status ? (labels[run.status] || run.status) + ' · ' : ''}执行过程${steps.length ? ` · ${steps.length} 项` : ''}`;
+    if (!details.open) return;
+    const version = JSON.stringify(steps);
+    if (version === rendered) return;
+    rendered = version;
     const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 50;
     body.innerHTML = steps.length ? steps.map((step) => {
       const title = step.kind === 'reasoning' ? '思考' : step.kind === 'plan' ? '执行计划' : step.title;
@@ -749,8 +771,10 @@ function startStream(id) {
   sessionStorage.setItem(startKey, String(run.startedAt));
   $('#welcome').hidden = true;
   $('#live-message')?.remove();
-  const live = message('assistant', '', true), content = live.querySelector('.markdown'), details = executionDetails(run);
-  content.before(details); $('#messages').append(live);
+  const live = message('assistant', '', true), content = live.querySelector('.markdown');
+  content.className = 'live-content';
+  const answerNodes = [], processNodes = new Map();
+  $('#messages').append(live);
   let source, settled = false, detached = false, recovering = false, finishing = false, paintTimer, frame;
   const reveal = createTextReveal(run.answers);
   let shown = [...run.answers], replayPaint = run.answers.length > 0;
@@ -758,18 +782,43 @@ function startStream(id) {
   function save() {
     try { const encoded = JSON.stringify(run); if (encoded.length < 1_500_000) sessionStorage.setItem(cacheKey,encoded); } catch { /* Daemon replay remains authoritative. */ }
   }
+  function syncExecution() {
+    const groups = executionGroups(run);
+    for (const group of groups) {
+      let entry = processNodes.get(group.afterAnswer);
+      if (!entry) {
+        const projection = {...run, steps:group.steps};
+        entry = {projection, node:executionDetails(projection)};
+        processNodes.set(group.afterAnswer,entry);
+      }
+      Object.assign(entry.projection, {steps:group.steps, status:group === groups.at(-1) ? run.status : undefined});
+      entry.node.update();
+    }
+  }
   function renderAnswers(texts = shown) {
-    while (content.children.length > texts.length) content.lastElementChild.remove();
+    while (answerNodes.length > texts.length) answerNodes.pop().remove();
     texts.forEach((text,index) => {
-      let part = content.children[index];
-      if (!part) { part = document.createElement('div'); part.className = 'answer-part'; part.tabIndex = 0; content.append(part); }
+      let part = answerNodes[index];
+      if (!part) {
+        part = document.createElement('div'); part.className = 'answer-part'; part.tabIndex = 0;
+        part.innerHTML = '<div class="markdown"></div>'; answerNodes.push(part);
+      }
       const final = !!run.endedAt && index === texts.length-1;
       const key = `${final}:${text}`;
       if (part._rendered === key) return;
       part._rendered = key;
-      renderStreamText(part, markdown(presentAnswer(text).text), performance.now(), replayPaint || document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches);
-      part.append(messageFooter(text, {sentAt: final ? run.endedAt : run.answerTimes[index], copy: final, ...(final ? {duration:run.endedAt-run.startedAt} : {})}));
+      renderStreamText(part.querySelector('.markdown'), markdown(presentAnswer(text).text), performance.now(), replayPaint || document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches);
+      part.querySelector('.message-footer')?.remove();
+      part.append(messageFooter(text, {sentAt: final ? run.endedAt : run.answerTimes[index], copy: !!text, ...(final ? {duration:run.endedAt-run.startedAt} : {})}));
     });
+    const nodes = [];
+    if (processNodes.has(-1)) nodes.push(processNodes.get(-1).node);
+    answerNodes.forEach((node,index) => {
+      nodes.push(node);
+      if (processNodes.has(index)) nodes.push(processNodes.get(index).node);
+    });
+    // Move only newly inserted nodes; preserve expanded panels, scroll and text animation.
+    nodes.forEach((node,index) => { if(content.children[index]!==node) content.insertBefore(node,content.children[index]||null); });
     replayPaint = false;
   }
   function animate() {
@@ -785,7 +834,7 @@ function startStream(id) {
     clearTimeout(paintTimer); paintTimer = null;
     if (!current()) return;
     const nearBottom = $('#chat-scroll').scrollHeight - $('#chat-scroll').scrollTop - $('#chat-scroll').clientHeight < 160;
-    details.update(); save();
+    syncExecution(); save();
     if (!frame) frame = requestAnimationFrame(animate);
     if (nearBottom) scrollEnd();
   }
@@ -808,6 +857,7 @@ function startStream(id) {
   async function finish(task, missing = false) {
     if (!current() || finishing) return;
     finishing = true;
+    const followEnd = $('#chat-scroll').scrollHeight - $('#chat-scroll').scrollTop - $('#chat-scroll').clientHeight < 160;
     paint(); settled = true; clearInterval(timer); clearInterval(poll); clearTimeout(paintTimer); cancelAnimationFrame(frame); source?.close();
     state.source = null; state.streamId = null; state.recoverRun = null; state.finishRun = null; state.disposeRun = null;
     if (state.stopping === id) state.stopping = null;
@@ -820,7 +870,7 @@ function startStream(id) {
       heading.dataset.running='false';
     }
     const cancelled = task?.status === 'cancelled';
-    if (task?.error && !cancelled) run.steps.push({kind:'status',tone:'failure',title:'执行未完成',fullDetail:task.error});
+    if (task?.error && !cancelled) run.steps.push({kind:'status',tone:'failure',title:'执行未完成',fullDetail:task.error,afterAnswer:run.answers.length-1});
     const result = task?.result, rawFinal = cancelled ? undefined : typeof result === 'string' ? result : result?.answer;
     const presentation = presentAnswer(rawFinal);
     const finalText = rawFinal == null ? undefined : presentation.text;
@@ -828,7 +878,8 @@ function startStream(id) {
     run.answers = finishAnswers(run.answers, finalText, run.boundary);
     if (!run.answers.length && !cancelled) run.answers.push(task?.error || (missing ? '运行记录已不可用，请刷新读取保存的对话。' : `任务${labels[task.status] || task.status}`));
     shown = reveal.update(run.answers, performance.now(), true);
-    details.update(); renderAnswers(); live.removeAttribute('id');
+    syncExecution(); renderAnswers(); live.removeAttribute('id');
+    if (followEnd) scrollEnd();
     const records = completedRuns.get(session) || []; records.push(run); completedRuns.set(session,records.slice(-20)); saveExecutions(); updateComposer();
     const changed = Array.isArray(result?.effects) ? result.effects.findLast(e => e.type === 'session_changed') : null;
     if (changed?.sessionId) { await selectSession(changed.sessionId); return; }
