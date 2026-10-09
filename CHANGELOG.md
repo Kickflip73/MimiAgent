@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- invoke known authorized tools across turns without mandatory rediscovery; connect
+  only the named MCP service and include bounded schemas for small search results
+- clarify the existing source-file requirement for workspace memory writes
+- bound semantic extraction to 20 seconds with auxiliary reasoning disabled;
+  avoid repeated preparation on small context growth, stop retrying after a failure
+  within a run, preserve canonical evidence, and
+  count failed auxiliary requests against operator model-call limits
+
 - soften streamed text with short per-fragment fades and bounded adaptive pacing;
   keep existing text stable and respect reduced-motion preferences
 - display answer prose without internal Host finalization envelopes, including

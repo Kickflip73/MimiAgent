@@ -245,11 +245,12 @@ export class MCPManager {
     }))];
   }
 
-  async ensureConnected(): Promise<string[]> {
+  async ensureConnected(serverNames?: readonly string[]): Promise<string[]> {
     return this.serialized(async () => {
       if (this.closed) throw new Error('MCP Manager 已关闭');
-      if (this.statusList.length && this.statusList.every(status => ['connected', 'disabled'].includes(status.state))) return this.servers.map(server => server.name);
-      return this.replaceConnections(true, true);
+      const selected = serverNames ? new Set(serverNames) : undefined;
+      if (this.statusList.length && this.statusList.filter(status => !selected || selected.has(status.name)).every(status => ['connected', 'disabled'].includes(status.state))) return this.servers.map(server => server.name);
+      return this.replaceConnections(true, true, selected);
     });
   }
 
@@ -264,7 +265,7 @@ export class MCPManager {
     });
   }
 
-  private async replaceConnections(preserveFailed: boolean, reuseConnected = false): Promise<string[]> {
+  private async replaceConnections(preserveFailed: boolean, reuseConnected = false, selected?: ReadonlySet<string>): Promise<string[]> {
     if (this.closed) throw new Error('MCP Manager 已关闭');
     if (this.options.enabled === false) return [];
     const { definitions, invalid } = await this.load();
@@ -276,6 +277,9 @@ export class MCPManager {
       const existing = oldByName.get(name), existingStatus = oldStatus.get(name);
       if (reuseConnected && existing && existingStatus?.state === 'connected') return { server: existing, retained: true, status: existingStatus };
       const transport = 'url' in config ? 'streamable-http' : 'stdio';
+      if (selected && !selected.has(name)) return {
+        status: existingStatus ?? { name, transport, state: 'configured', tools: 0 } satisfies MCPServerStatus,
+      };
       if (transport === 'stdio' && this.options.allowStdio === false) {
         return { status: {
           name,

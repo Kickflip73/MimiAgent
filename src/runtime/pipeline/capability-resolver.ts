@@ -205,7 +205,7 @@ export function renderEffectiveCapabilitySnapshot(
   if (routedItems.length === 0 && snapshot.hiddenToolCount === 0) return '';
   return [
     '## Effective Capability Snapshot',
-    '可信 Host 统一能力索引：hiddenTools 已授权、仅隐藏 schema；使用前以 inspect_capabilities 按 source/name/query 查询，再由 invoke_capability 调用。Connector 摘要只含公开 action，缺项不代表其他 Host 能力不存在；判定不可用或换路前必须查统一目录，MCP configured 表示尚未按需连接，使用 source=mcp 发现；其他 unavailable/unknown 禁止猜替代路线。',
+    '可信 Host 索引：hiddenTools 已授权，仅隐藏 schema。已知工具直接 invoke_capability，未知时 inspect_capabilities；Host 重新校验权限。Connector action 必须精确发现；Connector 摘要只含公开 action，缺项不代表不可用。MCP configured 表示待连接，按服务名查询或精确工具名调用；unavailable/unknown 禁止猜替代路线。',
     JSON.stringify({
       schemaVersion: snapshot.schemaVersion,
       policyRevision: snapshot.policyRevision,

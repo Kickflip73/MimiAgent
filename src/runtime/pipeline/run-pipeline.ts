@@ -608,9 +608,9 @@ export async function executeRunPipeline(
       (filter) => host.components.skills.inspectCatalog(filter, { canReadLocal, availableTools: run.availableToolNames }),
       mcpAllowed ? {
         statuses: () => host.components.mcp.statuses(),
-        load: async () => {
+        load: async (serverNames) => {
           assertCurrentRun('MCP 能力发现');
-          await host.components.mcp.ensureConnected();
+          await host.components.mcp.ensureConnected(serverNames);
           assertCurrentRun('MCP 连接完成');
           return materializeMcpTools({
             servers: host.components.mcp.servers,
@@ -856,12 +856,11 @@ export async function executeRunPipeline(
     );
     const modelCallLimit = binding?.maxTurns ?? host.config.maxTurns;
     let modelCalls = 0;
-    let semanticRetryAfter = 0;
+    let semanticSummaryFailed = false;
     const workingSetBudgetTokens = Math.min(budget.inputBudget, 64_000);
     let runUsage: { add(usage: Usage): void } | undefined;
     const pendingSemanticUsages: Usage[] = [];
     const recordSemanticUsage = (usage: Usage): void => {
-      modelCalls += usage.requests;
       if (runUsage) runUsage.add(usage);
       else pendingSemanticUsages.push(usage);
     };
@@ -912,12 +911,19 @@ export async function executeRunPipeline(
         // A hard overflow may still be recoverable by a new semantic snapshot.
       }
       const semanticBoundary = context.semanticSnapshotBoundary(modelData.input);
+      const newSemanticTokens = estimateTokens(modelData.input.slice(reusableSnapshot?.coveredItems ?? 0, semanticBoundary));
+      // Prepare at 70%, renew at 80%; tiny prefix growth is not worth a model call.
+      const semanticThreshold = reusableSnapshot ? 0.8 : 0.7;
+      const worthwhilePrefix = newSemanticTokens >= Math.min(4_000, workingSetBudgetTokens * 0.1);
       if (semanticBoundary > 0 && semanticBoundary !== reusableSnapshot?.coveredItems
-        && workingTokens / Math.max(1, workingSetBudgetTokens) >= 0.7
+        && (!preparedView || worthwhilePrefix)
+        && workingTokens / Math.max(1, workingSetBudgetTokens) >= semanticThreshold
         && semanticSummarizer
-        && modelCalls >= semanticRetryAfter
+        && !semanticSummaryFailed
         && (modelCallLimit === null || modelCalls < modelCallLimit)) {
         const startedAt = Date.now();
+        // A timed-out request still consumes an operator model-call slot.
+        modelCalls += 1;
         try {
           semanticSnapshot = await context.prepareSemanticSnapshot(modelData.input, semanticSummarizer, {
             persistedSnapshot: persistedContextSnapshot,
@@ -938,9 +944,10 @@ export async function executeRunPipeline(
             recordSemanticUsage(usage);
           }
           if (signal?.aborted) throw error;
-          semanticRetryAfter = modelCalls + 3;
+          // An optional optimization must not stall every few tool rounds. Retry on the next run.
+          semanticSummaryFailed = true;
           await host.components.state.traces.record(run.sessionId, 'context_semantic_summary', {
-            runId: run.runId, status: 'failed', durationMs: Date.now() - startedAt,
+            runId: run.runId, status: 'failed', retry: 'next_run', durationMs: Date.now() - startedAt,
             error: error instanceof Error ? error.message : String(error),
           });
         }

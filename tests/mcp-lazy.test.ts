@@ -28,18 +28,18 @@ test('cold Agent creates no MCP process, owns scoped credentials after worker cl
   }finally{await agent.close();await rm(root,{recursive:true,force:true});}
 });
 
-test('lazy MCP registry preserves exact discovery, deferred invocation and evolving snapshots',async()=>{
+test('lazy MCP registry rejects unknown services and preserves deferred invocation and evolving snapshots',async()=>{
   let loads=0,calls=0,state='configured';
-  const candidate=tool({name:'mcp_probe_echo',description:'echo',parameters:z.object({text:z.string()}),execute:async({text})=>{calls++;return text;}});
+  const candidate=tool({name:'mcp_probe__echo',description:'echo',parameters:z.object({text:z.string()}),execute:async({text})=>{calls++;return text;}});
   const registry=new HostCapabilityRegistry([],undefined,undefined,{statuses:()=>[{name:'probe',state,tools:state==='connected'?1:0}],load:async()=>{loads++;state='connected';return [candidate];}});
   const gateway=registry.gatewayTools([]);const inspect=gateway[0] as any,invoke=gateway[1] as any;const context=new RunContext({});
   assert.equal(registry.snapshot({runId:'r',policyRevision:'owner',modelTools:gateway}).items.find(item=>item.id==='mcp-server:probe')?.readiness,'unknown');
   await inspect.invoke(context,JSON.stringify({source:'builtin',query:'files'}),{});assert.equal(loads,0);
-  const denied=await invoke.invoke(context,JSON.stringify({name:'mcp_probe_echo',argumentsJson:'{"text":"hello"}'}),{});assert.match(String(denied),/未授权/);assert.equal(loads,0);
-  const found=await inspect.invoke(context,JSON.stringify({source:'mcp',name:'mcp_probe_echo'}),{});assert.equal(found.resolution.status,'deferred');assert.equal(found.mcpCatalog[0].state,'connected');
-  assert.equal(await invoke.invoke(context,JSON.stringify({name:'mcp_probe_echo',argumentsJson:'{"text":"hello"}'}),{}),'hello');assert.equal(calls,1);
-  await inspect.invoke(context,JSON.stringify({source:'mcp',name:'mcp_probe_echo'}),{});assert.equal(loads,1);
-  const snapshot=registry.snapshot({runId:'r',policyRevision:'owner',modelTools:gateway});assert.equal(snapshot.items.find(item=>item.id==='mcp-server:probe')?.readiness,'ready');assert.equal(snapshot.hiddenTools[0]?.names[0],'mcp_probe_echo');
+  const denied=await invoke.invoke(context,JSON.stringify({name:'mcp_unknown__echo',argumentsJson:'{"text":"hello"}'}),{});assert.match(String(denied),/未授权/);assert.equal(loads,0);
+  const found=await inspect.invoke(context,JSON.stringify({source:'mcp',name:'mcp_probe__echo'}),{});assert.equal(found.resolution.status,'deferred');assert.equal(found.mcpCatalog[0].state,'connected');
+  assert.equal(await invoke.invoke(context,JSON.stringify({name:'mcp_probe__echo',argumentsJson:'{"text":"hello"}'}),{}),'hello');assert.equal(calls,1);
+  await inspect.invoke(context,JSON.stringify({source:'mcp',name:'mcp_probe__echo'}),{});assert.equal(loads,1);
+  const snapshot=registry.snapshot({runId:'r',policyRevision:'owner',modelTools:gateway});assert.equal(snapshot.items.find(item=>item.id==='mcp-server:probe')?.readiness,'ready');assert.equal(snapshot.hiddenTools[0]?.names[0],'mcp_probe__echo');
 });
 
 test('failed lazy connection can be retried explicitly and closed managers never restart',async()=>{
@@ -71,7 +71,9 @@ test('real lazy pipeline respects denied policy and preserves MCP at-most-once l
       assert.match(runtime.instructions,/MCP_SKILL_INSTRUCTION/);
       assert.equal(agent.activeRun?.availableToolNames?.includes('mcp_probe__echo'),true);
       const inspect=runtime.tools.find((t:any)=>t.name==='inspect_capabilities'),invoke=runtime.tools.find((t:any)=>t.name==='invoke_capability');
-      const context=new RunContext({});const catalog=await inspect.invoke(context,JSON.stringify({source:'mcp',query:'echo'}),{});
+      const context=new RunContext({});
+      await invoke.invoke(context,JSON.stringify({name:'mcp_probe__echo',argumentsJson:'{"text":"fixture"}'}),{toolCall:{callId:'known-name'}});
+      const catalog=await inspect.invoke(context,JSON.stringify({source:'mcp',query:'echo'}),{});
       const name=catalog.capabilities[0].name;await inspect.invoke(context,JSON.stringify({source:'mcp',name}),{});
       const args=JSON.stringify({name,argumentsJson:'{"text":"fixture"}'});
       await invoke.invoke(context,args,{toolCall:{callId:'one'}});await invoke.invoke(context,args,{toolCall:{callId:'two'}});

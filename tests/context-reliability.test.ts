@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import type { AgentInputItem, Model } from '@openai/agents';
+import { Usage, type AgentInputItem, type Model } from '@openai/agents';
 import { ContextManager, ContextProtocolBudgetError, estimateTokens, type ContextSemanticSummarizer, type ContextSemanticSummaryRequest } from '../src/core/context.js';
 import { contextArtifactPage } from '../src/core/context-artifact.js';
 import { FileSession } from '../src/core/session.js';
@@ -140,4 +140,122 @@ test('a digest-valid snapshot cannot split a tool call from its result', async (
   let previous: unknown = 'not-called';
   await manager.prepareSemanticSnapshot(input, { summarize: async (request) => { previous = request.previous; return emptySnapshot; } }, { persistedSnapshot: invalid });
   assert.equal(previous, undefined);
+});
+
+test('a failed semantic summary does not block every third tool round again', async (t) => {
+  const { MimiAgent } = await import('../src/agent.js');
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-summary-breaker-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let attempts = 0;
+  const agent = await MimiAgent.create({
+    provider: 'openai', workspaceRoot: root, dataRoot: path.join(root, '.mimi-agent'),
+    skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'),
+    contextWindow: 1_048_576, historyLimit: 100, maxTurns: null,
+  }, 'summary-breaker', { contextSemanticSummarizer: { summarize: async () => {
+    attempts++; throw new Error('summary deadline exceeded');
+  } } });
+  t.after(() => agent.close());
+  const host = agent as unknown as { runner: { run: (...args: any[]) => Promise<unknown> } };
+  const input = [{role:'user',content:'保留原始任务和所有证据'}] as AgentInputItem[];
+  for(let i=0;i<8;i++) input.push(...batch(i,'x'.repeat(32_000)));
+  host.runner.run = async (_runtime, _input, options) => {
+    await options.session.addItems(input);
+    for(let i=0;i<10;i++) {
+      const view = await options.callModelInputFilter({modelData:{input,instructions:''}});
+      assert.equal(createHash('sha256').update(JSON.stringify(view.input.filter((item: { role?: string }) => item.role !== 'system'))).digest('hex'),
+        createHash('sha256').update(JSON.stringify(input)).digest('hex')); // Derived turn boundary is not canonical evidence.
+    }
+    return {};
+  };
+  for (let turn = 1; turn <= 2; turn++) {
+    await agent.stream('保留原始任务和所有证据');
+    await agent.failRun(new Error('fixture cleanup'), true);
+    assert.equal(attempts, turn); // A new run can retry; the failed run cannot retry-storm.
+  }
+});
+
+
+test('semantic extraction disables deliberation, bounds output and preserves structured facts', async () => {
+  const snapshot = { ...emptySnapshot, constraints: ['Never replay uncertain writes'], keyFacts: ['Limit=7600'], references: ['artifact://a'] };
+  const model = { getResponse: async (request: any) => {
+    assert.deepEqual(request.modelSettings, { maxTokens: 3000, reasoning: { effort: 'none' } });
+    assert.deepEqual(request.tools, []);
+    return { usage: new Usage({ requests: 1 }), output: [{ content: [{ type: 'output_text', text: JSON.stringify(snapshot) }] }] };
+  } } as unknown as Model;
+  const summarizer = new ModelContextSemanticSummarizer(model);
+  assert.deepEqual(await summarizer.summarize({ input: [], seed: {}, maxSnapshotTokens: 6000 }), snapshot);
+  assert.equal(summarizer.drainUsages().length, 1);
+  assert.equal(summarizer.drainUsages().length, 0);
+});
+
+test('Host cancellation finishes semantic extraction even when the provider ignores its signal', async () => {
+  const abort = new AbortController();
+  let finish!: (value: unknown) => void;
+  const model = { getResponse: () => new Promise((resolve) => { finish = resolve; }) } as unknown as Model;
+  const summarizer = new ModelContextSemanticSummarizer(model);
+  const pending = summarizer.summarize({ input: [], seed: {}, maxSnapshotTokens: 2000, signal: abort.signal });
+  abort.abort(new Error('stop uncooperative provider'));
+  await assert.rejects(pending, /stop uncooperative provider/);
+  finish({ usage: new Usage({ requests: 1 }), output: [] });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(summarizer.drainUsages(), []); // A late response cannot become the next run's snapshot/usage.
+});
+
+test('a failed semantic request still counts against the configured model-call limit', async (t) => {
+  const { MimiAgent } = await import('../src/agent.js');
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-summary-limit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let attempts = 0;
+  const agent = await MimiAgent.create({
+    provider: 'openai', workspaceRoot: root, dataRoot: path.join(root, '.mimi-agent'),
+    skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'),
+    contextWindow: 1_048_576, historyLimit: 100, maxTurns: 1,
+  }, 'summary-limit', { contextSemanticSummarizer: { summarize: async () => {
+    attempts++; throw new Error('summary deadline exceeded');
+  } } });
+  t.after(() => agent.close());
+  const input = [{ role: 'user', content: 'Keep evidence' }] as AgentInputItem[];
+  for (let i = 0; i < 8; i++) input.push(...batch(i, 'x'.repeat(32_000)));
+  const host = agent as unknown as { runner: { run: (...args: any[]) => Promise<unknown> }; session: FileSession };
+  host.runner.run = async (_runtime, _input, options) => {
+    await options.session.addItems(input);
+    await options.callModelInputFilter({ modelData: { input, instructions: '' } });
+    assert.fail('A failed auxiliary request cannot bypass the operator limit');
+  };
+  await assert.rejects(agent.stream('Keep evidence'), /达到操作员配置的 1 次模型调用上限/);
+  assert.equal(attempts, 1);
+  assert.deepEqual(await host.session.getItems(), input);
+});
+
+for (const scenario of [
+  { name: 'successful semantic preparation does not repeat on each small tool exchange before compaction', outputChars: 8000, instructionTokens: 32000, expected: 1 },
+  { name: 'small compressible prefixes do not start an expensive semantic request', outputChars: 300, instructionTokens: 46000, expected: 0 },
+]) test(scenario.name, async (t) => {
+  const { MimiAgent } = await import('../src/agent.js');
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-summary-growth-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let attempts = 0;
+  const agent = await MimiAgent.create({
+    provider: 'openai', workspaceRoot: root, dataRoot: path.join(root, '.mimi-agent'),
+    skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'),
+    contextWindow: 1_048_576, historyLimit: 100, maxTurns: null,
+  }, 'summary-growth', { contextSemanticSummarizer: { summarize: async () => {
+    attempts++; return { ...emptySnapshot, progress: ['Read-only fixture results recorded'] };
+  } } });
+  t.after(() => agent.close());
+  const input = [{ role: 'user', content: 'Keep evidence' }] as AgentInputItem[];
+  for (let i = 0; i < 8; i++) input.push(...batch(i, 'x'.repeat(scenario.outputChars)));
+  const instructions = 'i'.repeat(scenario.instructionTokens * 4);
+  const host = agent as unknown as { runner: { run: (...args: any[]) => Promise<unknown> } };
+  host.runner.run = async (_runtime, _input, options) => {
+    await options.session.addItems(input);
+    for (let i = 8; i < 16; i++) {
+      await options.callModelInputFilter({ modelData: { input, instructions } });
+      input.push(...batch(i, 'x'.repeat(300)));
+    }
+    return {};
+  };
+  await agent.stream('Keep evidence');
+  await agent.failRun(new Error('fixture cleanup'), true);
+  assert.equal(attempts, scenario.expected);
 });

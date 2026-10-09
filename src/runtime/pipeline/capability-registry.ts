@@ -1,4 +1,4 @@
-import type { RunContext, Tool } from '@openai/agents';
+import { getAllMcpTools, type MCPServer, type RunContext, type Tool } from '@openai/agents';
 import { z } from 'zod';
 import { tool } from '../../tool-factory.js';
 import { toolDescriptor } from '../tool-policy.js';
@@ -28,7 +28,8 @@ export interface CapabilityCatalogAccess {
 
 export interface DeferredMcpCatalog {
   statuses(): readonly { name: string; state: string; tools: number; error?: string }[];
-  load(): Promise<readonly Tool[]>;
+  /** Returns the cumulative tools of all connected authorized services. */
+  load(serverNames?: readonly string[]): Promise<readonly Tool[]>;
   changed?(): void;
 }
 
@@ -128,7 +129,8 @@ export class HostCapabilityRegistry {
   private readonly byName: Map<string, Tool>;
   private entries: readonly RegistryEntry[];
   private mcpPending?: Promise<void>;
-  private mcpLoaded = false;
+  private readonly materializedMcpServers = new Set<string>();
+  private readonly mcpRoutingPrefixes = new Map<string, Promise<string>>();
   private loadedMcpNames = new Set<string>();
   private deferredNames = new Set<string>();
   private readonly discoveredNames = new Set<string>();
@@ -198,7 +200,7 @@ export class HostCapabilityRegistry {
         execute: async ({ source, name, capability, query }, _context, details) => {
           const inspectMcp = source === 'mcp' || (!source && name?.startsWith('mcp_'));
           if (inspectMcp && this.mcpCatalog) {
-            await this.loadMcp(deferredNames);
+            await this.loadMcp(deferredNames, await this.mcpServersFor(name, query));
             entries = this.entries.filter(entry => deferredNames.has(entry.name));
           }
           this.refreshCatalogRevision(connectorInvokerEntry);
@@ -317,7 +319,9 @@ export class HostCapabilityRegistry {
             && !directMatches.some((entry) => entry.name === connectorInvokerEntry.name)
             ? [...directMatches, connectorInvokerEntry]
             : directMatches;
-          if (toolName) {
+          const includeQuerySchemas = matches.length <= 3
+            && JSON.stringify(matches.map(entry => ({ description: entry.description, parameters: entry.parameters }))).length <= 12_000;
+          if (toolName || includeQuerySchemas) {
             for (const match of matches) this.discoveredNames.add(match.name);
           }
           if (connectorMatched && connectorInvokerEntry) {
@@ -335,7 +339,7 @@ export class HostCapabilityRegistry {
               name: entry.name,
               source: entry.source,
               effect: entry.effect,
-              ...(toolName || (connectorMatched && entry.name === connectorInvokerEntry?.name) ? {
+              ...(toolName || includeQuerySchemas || (connectorMatched && entry.name === connectorInvokerEntry?.name) ? {
                 description: entry.description,
                 parameters: entry.parameters,
                 invokeWith: 'invoke_capability',
@@ -370,24 +374,27 @@ export class HostCapabilityRegistry {
       }),
       tool({
         name: 'invoke_capability',
-        description: '调用 inspect_capabilities 精确返回的一项本轮授权能力；实际工具仍执行原 Host Policy、参数 schema 与 ExecutionLedger。',
+        description: '按已知精确名调用；参数未知或 Connector action 先 inspect_capabilities。Host 校验权限、schema 与 ExecutionLedger。',
         parameters: z.object({
           name: z.string().trim().min(1).max(200),
           argumentsJson: z.string().min(1).max(100_000),
         }).strict(),
         execute: async ({ name, argumentsJson }, context, details) => {
           this.refreshCatalogRevision(connectorInvokerEntry);
-          const selected = deferredNames.has(name)
-            ? this.byName.get(name) as InvokableTool | undefined
-            : undefined;
+          if (!this.byName.has(name) && name.startsWith('mcp_')) {
+            await this.loadMcp(deferredNames, await this.mcpServersFor(name));
+            entries = this.entries.filter(entry => deferredNames.has(entry.name));
+          }
+          const selected = this.byName.get(name) as InvokableTool | undefined;
           if (!selected?.invoke) throw new Error(`能力未授权、不可调用或不存在：${name}`);
-          if (!this.discoveredNames.has(name)) {
+          const connectorAction = name === 'connector_capability' || name === 'connector_action';
+          if (connectorAction && !this.discoveredNames.has(name)) {
             throw new Error(
               `能力 ${name} 尚未通过 inspect_capabilities 精确发现；`
               + '先按精确 name 查询并取得调用 schema，再调用。',
             );
           }
-          if (name === connectorInvokerEntry?.name) {
+          if (connectorAction) {
             const actionKey = requestedConnectorAction(argumentsJson);
             if (!actionKey || !this.discoveredConnectorActions.has(actionKey)) {
               throw new Error(
@@ -454,11 +461,53 @@ export class HostCapabilityRegistry {
     });
   }
 
-  private async loadMcp(deferredNames: Set<string>): Promise<void> {
-    if (!this.mcpCatalog || this.mcpLoaded) return;
-    if (this.mcpPending) return this.mcpPending;
+  private async mcpServersFor(name?: string, query?: string): Promise<string[] | undefined> {
+    const statuses = this.mcpCatalog?.statuses() ?? [];
+    if (name) {
+      const matches = await Promise.all(statuses.map(async status => ({ name: status.name, prefix: await this.mcpRoutingPrefix(status.name) })));
+      return matches.filter(match => match.prefix && name.startsWith(match.prefix)).map(match => match.name);
+    }
+    if (query) {
+      const normalized = ` ${normalizeCapabilityQuery(query)} `;
+      const matches = statuses.filter(status => normalized.includes(` ${normalizeCapabilityQuery(status.name)} `));
+      if (matches.length) return matches.map(status => status.name);
+    }
+    return undefined;
+  }
+
+  private mcpRoutingPrefix(serverName: string): Promise<string> {
+    let pending = this.mcpRoutingPrefixes.get(serverName);
+    if (!pending) {
+      pending = (async () => {
+        // Use the public SDK conversion for both namespace and Function Tool
+        // normalization. These in-memory descriptors never connect to a service.
+        // Two long, distinct tool names expose the shared (possibly shortened)
+        // server stem without copying the SDK's sanitizing/truncation algorithm.
+        const probes = await getAllMcpTools({ includeServerInToolNames: true, mcpServers: [{
+          name: serverName, cacheToolsList: false,
+          listTools: async () => ['a', 'z'].map(letter => ({ name: letter.repeat(100), inputSchema: { type: 'object', properties: {} } })),
+        } as unknown as MCPServer] });
+        const stems = probes.map(probe => probe.name.slice(0, probe.name.lastIndexOf('_')));
+        const first = stems[0] ?? '';
+        let length = 0;
+        while (length < first.length && stems.every(stem => stem[length] === first[length])) length += 1;
+        // Only a connection hint: invocation still requires an exact tool in the
+        // current authorized, real materialized catalog (including its schema).
+        return first.slice(0, length);
+      })();
+      this.mcpRoutingPrefixes.set(serverName, pending);
+    }
+    return pending;
+  }
+
+  private async loadMcp(deferredNames: Set<string>, serverNames?: readonly string[]): Promise<void> {
+    if (!this.mcpCatalog || serverNames?.length === 0) return;
+    while (this.mcpPending) await this.mcpPending;
+    const requested = this.mcpCatalog.statuses().filter(status => !serverNames || serverNames.includes(status.name));
+    if (requested.length && requested.every(status => status.state === 'disabled'
+      || (status.state === 'connected' && this.materializedMcpServers.has(status.name)))) return;
     this.mcpPending = (async () => {
-      const loaded = await this.mcpCatalog!.load();
+      const loaded = await this.mcpCatalog!.load(serverNames);
       const existingMcp = this.loadedMcpNames;
       if (new Set(loaded.map(candidate => candidate.name)).size !== loaded.length) throw new Error('MCP Tool 名称重复');
       for (const candidate of loaded) {
@@ -473,7 +522,10 @@ export class HostCapabilityRegistry {
       }
       this.loadedMcpNames = new Set(loaded.map(candidate => candidate.name));
       this.entries = Object.freeze(next); this.discoveryCache.clear();
-      this.mcpLoaded = this.mcpCatalog!.statuses().every(status => ['connected', 'disabled'].includes(status.state));
+      for (const status of this.mcpCatalog!.statuses()) {
+        if (status.state === 'connected') this.materializedMcpServers.add(status.name);
+        else this.materializedMcpServers.delete(status.name);
+      }
       this.mcpCatalog!.changed?.();
     })();
     try { await this.mcpPending; } finally { this.mcpPending = undefined; }
