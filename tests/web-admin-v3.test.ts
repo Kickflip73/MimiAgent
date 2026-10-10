@@ -46,7 +46,9 @@ test('execution history selects one attempt and recovers trace times after strea
  const db=new DatabaseSync(':memory:');t.after(()=>db.close());db.exec('CREATE TABLE runs(id TEXT, task_id TEXT, session_key TEXT, started_at TEXT, completed_at TEXT,status TEXT,error TEXT)');
  db.prepare('INSERT INTO runs VALUES(?,?,?,?,?,?,?)').run('run','task','session','2026-10-08T01:00:00Z','2026-10-08T01:05:00Z','failed','fixture failure');
  await writeFile(path.join(root,'traces/session.jsonl'),[...['00:59','01:02','01:06'].map(time=>JSON.stringify({sessionId:'session',timestamp:`2026-10-08T${time}:00Z`,type:'status',data:{title:'Tool',tone:'tool',detail:'Details'}})),'{unfinished'].join('\n'));
- const value=await executionHistory(db,root,'run');assert.ok(value);assert.equal(value.steps.length,1);assert.equal(value.steps[0]!.timestamp,'2026-10-08T01:02:00Z');assert.equal(value.steps[0]!.fullDetail,'Details');assert.equal(value.startedAt,'2026-10-08T01:00:00Z');
+ db.exec('ALTER TABLE runs ADD COLUMN answer_json TEXT');
+ db.prepare('UPDATE runs SET answer_json=? WHERE id=?').run(JSON.stringify({answer:'原始执行结果'}),'run');
+ const value=await executionHistory(db,root,'run');assert.equal(value?.answer,'原始执行结果');assert.ok(value);assert.equal(value.steps.length,1);assert.equal(value.steps[0]!.timestamp,'2026-10-08T01:02:00Z');assert.equal(value.steps[0]!.fullDetail,'Details');assert.equal(value.startedAt,'2026-10-08T01:00:00Z');
 });
 
 test('execution history resolves latest session attempt without a queued run ID',async t=>{

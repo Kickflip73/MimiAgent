@@ -309,3 +309,12 @@ mimi daemon brief
 owner 也可以直接说“现在给我汇总一下”。`request_mimi_briefing` 会原子领取当前待处理摘要并创建同样的普通 briefing Event；工具结果只包含创建状态和路由元数据，不返回其他 Event 正文。
 
 简报正文把所有外部 payload 明确标为不可信数据，并限制单项长度。简报默认继承 `owner.replyRoute`；需要独立目的地时可设置 `replyChannel` 和 `replyTarget`。旧配置中已有的显式 `replyChannel:"system"` 继续保持原行为。
+
+
+## Web 与 macOS 通知
+
+Web 右上角铃铛显示未读通知。通知中心直接读取 owner 的持久 Outbox，保留完整正文、时间和关联会话；打开消息后标记已读，也可全部已读或加载更早的通知。已读状态只影响界面，不改变投递状态，不会重发任务。新消息在页面前台轻提示；首次打开时不会重复弹出历史积压消息。独立提醒没有执行会话时只展示完整消息。
+
+macOS 使用 `terminal-notifier`（`brew install terminal-notifier`），系统设置 → 通知中需要允许该应用。若初次安装尚未显示该应用，先启动 Homebrew 中的 `terminal-notifier.app` 完成系统注册，再允许通知；`terminal-notifier -diagnose` 可检查授权状态。横幅显示短摘要，点击打开 `mimi web` 上一次启动地址中的完整通知，再可进入关联对话。Web 须保持运行；默认地址为 `http://127.0.0.1:3210`，`mimi web --port` 会记录自定义端口。旧 AppleScript 已送出的通知不支持补加跳转，修复只作用于新的通知。
+
+缺少通知程序或系统权限时，原消息仍在站内通知中心；不会退回到点击打开脚本编辑器的 AppleScript 通知。系统投递失败与站内已读分别显示，通知读取无需等待 Agent 空闲。

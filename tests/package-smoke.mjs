@@ -47,6 +47,7 @@ try {
     access(path.join(packageRoot, 'dist', 'web', 'assets', 'execution.js')),
     access(path.join(packageRoot, 'dist', 'web', 'assets', 'pickers.js')),
     access(path.join(packageRoot, 'dist', 'web', 'assets', 'manage.js')),
+    access(path.join(packageRoot, 'dist', 'web', 'assets', 'notifications.js')),
     access(path.join(packageRoot, 'dist', 'web', 'assets', 'queue.js')),
     access(path.join(packageRoot, 'dist', 'web', 'assets', 'context.js')),
     access(path.join(packageRoot, 'dist', 'web', 'assets', 'cat.svg')),

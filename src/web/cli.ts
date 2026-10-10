@@ -1,3 +1,5 @@
+import { mimiPaths } from '../daemon/client-runtime.js';
+import { webEndpoint } from '../daemon/web-endpoint.js';
 import type { AppConfig } from '../config.js';
 import { daemonWebBackend } from './backend.js';
 import { MimiWebServer } from './server.js';
@@ -8,6 +10,7 @@ export async function runWebCommand(config: AppConfig, args: string[]): Promise<
   }
   const server = new MimiWebServer(daemonWebBackend(config), args[1] ? Number(args[1]) : 3210);
   await server.start();
+  await webEndpoint(mimiPaths(config).root).replace({origin:server.address,pid:process.pid});
   console.log(`Mimi Web\n${server.launchUrl}\n\n仅本机可访问。请保留此终端；Ctrl+C 关闭 Web，后台任务继续运行。`);
   let stopping = false;
   const stop = () => {

@@ -8,6 +8,7 @@ import type { SecurityProfile } from '../config.js';
 import type { WebBackend } from './backend.js';
 
 const ASSETS: Record<string, [string, string]> = {
+  '/notifications.js': ['notifications.js','text/javascript; charset=utf-8'],
   '/media.js': ['media.js','text/javascript; charset=utf-8'],
   '/recorder.js': ['recorder.js','text/javascript; charset=utf-8'],
   '/message-view.js': ['message-view.js', 'text/javascript; charset=utf-8'],
@@ -131,6 +132,28 @@ export class MimiWebServer {
       }
     }
     const get = request.method === 'GET';
+    if (url.pathname === '/api/notifications' || url.pathname === '/api/notifications/read') {
+      if (!this.backend.notifications) throw new HttpError(503, '通知中心暂不可用');
+      if (get && url.pathname === '/api/notifications') {
+        const id = url.searchParams.get('id');
+        if (id) {
+          const item = await this.backend.notifications.detail(identifier(id));
+          if (!item) throw new HttpError(404, '通知不存在或已归档');
+          json(response,200,item);
+        } else {
+          const before=url.searchParams.get('before');
+          if(before && (!/^\d+$/.test(before) || !Number.isSafeInteger(Number(before)))) throw new HttpError(400,'无效分页');
+          json(response,200,await this.backend.notifications.list(before?Number(before):undefined));
+        }
+        return;
+      }
+      if(request.method === 'POST' && url.pathname === '/api/notifications/read') {
+        const input=await body(request);
+        try { json(response,200,await this.backend.notifications.markRead(input)); }
+        catch(error) { throw new HttpError(400,(error as Error).message); }
+        return;
+      }
+    }
     if (get && url.pathname === '/api/manage') {
       if (!this.backend.manageRead) throw new HttpError(503, '管理接口不可用');
       json(response, 200, await this.backend.manageRead(identifier(url.searchParams.get('area')), identifier(url.searchParams.get('session')))); return;

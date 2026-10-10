@@ -237,3 +237,19 @@ test('media upload, media-only submission and byte-range playback preserve attac
  const result=await fetch(server.address+'/api/messages',{method:'POST',headers,body:JSON.stringify({sessionId:'s',input:'',requestId:randomUUID(),media:[ref.id]})});assert.equal(result.status,202);assert.deepEqual(submitted[6],[ref.id]);
  assert.equal((await fetch(server.address+'/api/media',{method:'POST',headers:{...headers,origin:'https://evil.example'},body:data})).status,403);
 });
+
+test('notification inbox remains available while daemon is unavailable, validates paging and protects read receipts', async t => {
+  const {WebNotifications}=await import('../src/web/notifications.js');
+  const root=await mkdtemp(path.join(os.tmpdir(),'mimi-notice-http-'));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const server=new MimiWebServer(backend({status:async()=>{throw new Error('offline');},notifications:new WebNotifications(path.join(root,'absent.db'),path.join(root,'read.json'))}),0);
+  await server.start();t.after(()=>server.close());
+  assert.equal((await fetch(`${server.address}/api/notifications`)).status,200);
+  assert.equal((await fetch(`${server.address}/notifications.js`)).status,200);
+  assert.equal((await fetch(`${server.address}/api/notifications?before=NaN`)).status,400);
+  assert.equal((await fetch(`${server.address}/api/notifications?id=missing`)).status,404);
+  assert.equal((await fetch(`${server.address}/api/notifications/read`,{method:'POST',headers:{'content-type':'application/json'},body:'{"through":0}'})).status,403);
+  const request={method:'POST',headers:localHeaders(server),body:'{"through":0}'};
+  assert.equal((await fetch(`${server.address}/api/notifications/read`,request)).status,200);
+  assert.equal((await fetch(`${server.address}/api/notifications/read`,{...request,body:'{"through":-1}'})).status,400);
+});

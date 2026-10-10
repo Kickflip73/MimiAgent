@@ -23,6 +23,8 @@ test('cron occurrences survive reopen, skip missed slots, and retain paged execu
   const file=path.join(root,'mimi.db'); let store=new MimiStore(file);
   t.after(()=>store.close());
   const due=new Date(2026,9,8,9);
+  // Routing also reads wall time; keep the entire fixture on the same clock.
+  t.mock.timers.enable({apis:['Date'],now:due});
   const schedule=store.schedules.add({name:'morning',type:'cron',value:'0 9 * * *',prompt:'test',profileId:'owner',trust:'owner',sessionKey:'schedule-owner',nextRunAt:due.toISOString()});
   assert.throws(()=>store.schedules.add({...schedule,value:'bad cron'}),/cron/);
   assert.equal(store.schedules.count(),1);

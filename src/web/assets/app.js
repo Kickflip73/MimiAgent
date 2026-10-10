@@ -1,3 +1,4 @@
+import { createNotifications } from './notifications.js';
 import { createRecorder } from './recorder.js';
 import { createMediaDrafts, mediaMarkup, mediaTime, bindMediaPlayers, outputMedia } from './media.js';
 import { createMessageBody, messageBlocks, observeMessageMotion } from './message-view.js';
@@ -9,6 +10,7 @@ import { historyExecution, projectEvent, finishAnswers, runningActivity, isPrepa
 import { setupPickers, createSelectionQueue, enhanceSelects } from './pickers.js';
 const $ = (selector) => document.querySelector(selector);
 const icons = {
+  bell: 'M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4',
   plus: 'M12 5v14M5 12h14',
   hammer: 'm14 4 6 6-3 3-3-3-8 10-3-3 10-8-3-3 4-4Zm-4 2 3-3 4 1 4 4-1 4',
   chat: 'M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-6 3V6a2 2 0 0 1 2-2Z M7 9h10M7 13h6',
@@ -1193,6 +1195,8 @@ async function openExecutionSession(session, execution, runId, alreadySelected=f
       heading.dataset.execution=String(saved.taskId);heading.dataset.startedAt=String(Date.parse(saved.startedAt));heading.dataset.running=String(!saved.completedAt);
       $('#messages .execution-history-heading')?.remove();
       $('#messages').prepend(heading);
+      $('#welcome').hidden = true;
+      if(saved.answer && !$('#messages article.assistant:not(.execution-message)')) $('#messages').append(message('assistant',saved.answer,false,saved.completedAt));
       const user=[...$('#messages').querySelectorAll('article.user')].at(-1);
       if(user)setMessageFooter(user,user.querySelector('.markdown')?.textContent || '',{role:'user',sentAt:saved.startedAt});
       if(!saved.completedAt && state.streamId===execution)return;
@@ -1648,6 +1652,7 @@ function resumePage() {
 document.addEventListener('visibilitychange', resumePage);
 window.addEventListener('pageshow', resumePage);
 window.addEventListener('online', resumePage);
+createNotifications({api,esc,icon,markdown,openSession:(session,task,run)=>run?openExecutionSession(session,task,run):selectSession(session)});
 void init();
 
 observeMessageMotion($('#messages'), $('#chat-scroll'));

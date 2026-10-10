@@ -690,7 +690,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return { agent: sessionAgent, runs: runService(sessionAgent) };
       },
     });
-    const notifier = new NotifierRegistry();
+    const notifier = new NotifierRegistry({ daemonRoot: paths.root });
     connectors = await ConnectorManager.load(paths.connectorsConfig, store, notifier);
     attention = await AttentionEngine.load(paths.assistantConfig, store);
     store.setIngressRoutePolicy((event, at) => attention!.routeIngress(event, at));

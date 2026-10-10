@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+- add a persistent Web notification inbox with unread receipts, full message details,
+  foreground alerts and conversation links; macOS notifications open the same message
+  through terminal-notifier instead of opening Script Editor
+
 - keep host preparation notices in the transient execution preview only; exclude them
   from expanded details and step counts, including legacy cached conversations
 

@@ -1,3 +1,4 @@
+import { sanitizeSensitiveData } from '../core/data-sanitizer.js';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
@@ -30,5 +31,9 @@ export async function executionHistory(database: DatabaseSync, dataRoot: string,
     finally { lines.close(); input.destroy(); }
     if (truncated) break;
   }
-  return { runId: String(row.id), taskId: row.task_id, sessionId: session, startedAt, completedAt, status: row.status, error: row.error, steps, truncated };
+  let answer: string | undefined;
+  if (typeof row.answer_json === 'string') {
+    try { const result = sanitizeSensitiveData(JSON.parse(row.answer_json)); answer = typeof result === 'string' ? result : typeof result?.answer === 'string' ? result.answer : undefined; } catch { /* Older malformed receipts remain inspectable through their trace. */ }
+  }
+  return { answer, runId: String(row.id), taskId: row.task_id, sessionId: session, startedAt, completedAt, status: row.status, error: row.error, steps, truncated };
 }

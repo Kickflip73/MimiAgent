@@ -1,0 +1,38 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { WebNotifications } from '../src/web/notifications.js';
+
+test('inbox preserves full messages, paginates, resolves sessions and persists read state independently of delivery', async t => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-inbox-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'mimi.db');
+  const db = new DatabaseSync(file);
+  t.after(() => db.close());
+  db.exec(`CREATE TABLE tasks (id TEXT PRIMARY KEY, session_key TEXT, profile_id TEXT);
+    CREATE TABLE runs (id TEXT, task_id TEXT, attempt_no INTEGER);
+    CREATE TABLE outbox (id TEXT PRIMARY KEY, task_id TEXT, payload_json TEXT, channel TEXT, status TEXT, created_at TEXT);
+    INSERT INTO tasks VALUES ('task', 'mimi-task-task', 'owner'), ('other', 'private', 'guest');`);
+  const add = (id:string, task='task', status='sent') => db.prepare('INSERT INTO outbox VALUES (?, ?, ?, ?, ?, ?)').run(id,task,JSON.stringify({text: '完整内容'.repeat(1000)}),'system',status,'2026-10-10T00:00:00Z');
+  add('one'); add('two', 'task', 'dead_letter'); add('hidden', 'other');
+  const inbox = new WebNotifications(file, path.join(root, 'read.json'));
+  const first = await inbox.list(undefined, 1);
+  assert.equal(first.unreadCount, 2);
+  assert.equal(first.items[0]?.id, 'two');
+  assert.equal((await inbox.detail('two'))?.text?.length, 4000);
+  assert.equal((await inbox.detail('two'))?.sessionId, 'mimi-task-task');
+  assert.equal(await inbox.detail('hidden'), null);
+  assert.equal((await inbox.list(first.nextBefore ?? undefined, 1)).items[0]?.id, 'one');
+  await Promise.all([inbox.markRead({id:'two'}), inbox.markRead({id:'one'})]);
+  assert.equal((await new WebNotifications(file,path.join(root,'read.json')).list()).unreadCount,0);
+  add('three');
+  await inbox.markRead({through:first.latest});
+  assert.equal((await inbox.list()).unreadCount,1, 'mark all must not consume arrivals after the displayed snapshot');
+  assert.equal(db.prepare("SELECT status FROM outbox WHERE id='two'").get()?.status,'dead_letter');
+  await inbox.markRead({through:(await inbox.list()).latest});
+  db.exec('DELETE FROM outbox'); add('after-retention');
+  assert.equal((await inbox.list()).unreadCount,1,'SQLite rowid reuse must not inherit another message’s read receipt');
+});

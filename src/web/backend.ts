@@ -1,3 +1,4 @@
+import { WebNotifications } from './notifications.js';
 import { readOutputMedia } from './media-output.js';
 import { mediaIds, type MediaAttachment } from '../core/media-attachment.js';
 import { saveMedia, readMedia } from '../runtime/media-input.js';
@@ -27,6 +28,7 @@ import { DAEMON_PROTOCOL_VERSION, type DaemonStatus, type MimiChatSnapshot, type
 
 /** A browser transport over the existing daemon; never owns an Agent or durable state. */
 export interface WebBackend {
+  notifications?: WebNotifications;
   manageRead?(area: string, session: string): Promise<unknown>;
   manageWrite?(action: string, session: string, value: unknown): Promise<unknown>;
   status(): Promise<unknown>;
@@ -113,6 +115,7 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
         current: { sessionTarget: preferences.modelTarget, next: { target: next } } };
     };
   return {
+    notifications: new WebNotifications(daemonPaths.database, path.join(daemonPaths.root, 'web-notification-reads.json')),
     manageRead: management.read, manageWrite: management.write,
     status: async () => {
       const status = await mimiRpc<DaemonStatus>(socket, 'status', undefined, 8_000);
