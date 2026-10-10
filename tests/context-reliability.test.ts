@@ -224,7 +224,7 @@ test('a failed semantic request still counts against the configured model-call l
   };
   await assert.rejects(agent.stream('Keep evidence'), /达到操作员配置的 1 次模型调用上限/);
   assert.equal(attempts, 1);
-  assert.deepEqual(await host.session.getItems(), input);
+  assert.deepEqual((await host.session.getItems()).map(item=>{const {timestamp,...rest}=item as any;return rest;}), input);
 });
 
 for (const scenario of [

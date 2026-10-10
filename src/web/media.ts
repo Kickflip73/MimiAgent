@@ -18,7 +18,7 @@ export async function prepareMedia(root:string,id:string):Promise<MediaAttachmen
   if(pending.has(key))return pending.get(key)!;
   if(pending.size>=8)throw new Error('媒体处理队列已满，请稍后重试');
   const job=preparationLane.then(async()=>{
-    const saved=await mediaRecord(root,id).read();if(saved?.kind==='video')return saved;
+    const saved=await mediaRecord(root,id).read();if(saved?.kind==='video'||saved?.kind==='file'){await readMedia(root,id);return saved;}
     if(saved?.playbackId){assertAudioSignal((await readMedia(root,saved.playbackId)).data);return saved;}
     const {data,mediaType}=await readMedia(root,id);
     let kind:'audio'|'video'=mediaType.startsWith('audio/')?'audio':'video';

@@ -99,7 +99,7 @@
                 <div id="media-drafts" class="media-drafts" aria-label="待发送媒体" hidden></div>
                 <div id="image-drafts" class="image-strip" aria-label="待发送图片" hidden></div>
                 <div id="image-model-note" class="image-model-note" hidden></div>
-                <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,audio/mpeg,audio/wav,audio/mp4,audio/ogg,audio/flac,audio/webm,video/mp4,video/webm,video/quicktime" multiple hidden />
+                <input id="image-input" type="file"  multiple hidden />
                 <label class="sr-only" for="message-input"
                   >给 Mimi 发消息</label
                 >
@@ -133,7 +133,7 @@
                   </div>
                   <div class="composer-actions">
                     <button id="record-voice" type="button" class="icon-button" aria-label="录制语音" title="录制语音，最长 5 分钟"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/></svg></button>
-                    <button id="attach-image" type="button" class="icon-button" aria-label="添加图片、音频或视频" title="添加图片、音频或视频"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8" cy="8" r="1.5"/><path d="m3 16 5-5 4 4 3-3 6 6"/></svg></button>
+                    <button id="attach-image" type="button" class="icon-button" aria-label="添加文件、图片、音频或视频" title="添加文件、图片、音频或视频"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 12 7-7a4 4 0 0 1 6 6L10 22a6 6 0 0 1-8-8L13 3a2 2 0 0 1 3 3L5 17"/></svg></button>
                     <time id="run-elapsed" hidden>0s</time>
                     <button type="button" id="context-indicator" class="context-indicator" aria-haspopup="dialog" aria-label="上下文占用" hidden>
                       <svg viewBox="0 0 20 20" aria-hidden="true"><circle class="context-track" cx="10" cy="10" r="7"/><circle id="context-ring" cx="10" cy="10" r="7" pathLength="100"/></svg>
@@ -213,6 +213,6 @@
       <div id="detail-content"></div>
     </dialog>
     <div class="toast" id="toast" role="status" hidden></div>
-  <dialog id="image-preview" class="image-preview" aria-label="图片预览"><button type="button" class="icon-button" aria-label="关闭图片预览">×</button><img alt="图片预览" /></dialog>
+  <dialog id="image-preview" class="image-preview" aria-label="图片预览"><header><span>图片预览</span><span data-zoom-label>100%</span><button type="button" data-image-fit>适应窗口</button><button type="button" class="icon-button" data-image-close aria-label="关闭图片预览">×</button></header><div class="image-stage"><img alt="图片预览" draggable="false" /></div></dialog>
   </body>
 </html>

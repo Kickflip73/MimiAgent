@@ -179,3 +179,10 @@ test('legacy failed media input is restored from its exact durable submission, n
   const other=await decorateSessionTimeline({...options,sessionId:'other',canonicalItems:items,items,database});
   assert.equal(other.items[0]!.imageAttachments,undefined);
 });
+
+test('stream reply timestamps restore intermediate bubbles and filter host preparation notices',async t=>{
+ const items=[message('user','work'),message('assistant','checking'),message('assistant','done')];
+ const options=await fixture(t,items,[event('turn_start',1,{input:'work',runId:'r'}),event('answer_started',2,{runId:'r',answerIndex:0}),event('status',3,{tone:'thinking',title:'正在准备上下文'}),event('answer_started',4,{runId:'r',answerIndex:1}),event('turn_end',5,{answer:'done'})]);
+ const result=await decorateSessionTimeline({...options,items});
+ assert.equal(result.items[1]!.timestamp,at(2));assert.equal(result.items[1]!.execution,undefined);
+});

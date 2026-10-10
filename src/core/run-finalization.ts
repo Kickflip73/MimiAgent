@@ -300,3 +300,12 @@ export function createRunFinalization(input: {
     toolManifest: toolExecutionManifest(input.calls),
   });
 }
+
+/** Tool health alone cannot determine whether the user's deliverable is incomplete.
+ * Keep the conservative scheduler outcome; expose the basis in the conversation. */
+export function conversationOutcome(record: {outcome?:string;completionDecision?:string;toolManifest?:readonly {status:string}[]}): string | undefined {
+  return record.outcome === 'partial' && !record.completionDecision
+    && record.toolManifest?.some(call=>call.status==='failed')
+    && !record.toolManifest.some(call=>call.status==='started'||call.status==='uncertain')
+    ? 'issues' : record.outcome;
+}

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Web conversation reliability
+
+- Upload ordinary files alongside image/audio/video messages; retain downloadable file cards across reloads and queued sends. Text previews are bounded and never base64-expanded into context.
+- Fit image previews to the viewport with wheel zoom, pan, and reset; preserve thumbnail aspect ratios. Move copy feedback to a top-center toast and recognize plain URLs safely.
+- Avoid duplicate active-run history during stream replay. Persist message write times and stream reply start timestamps; distinguish tool-process failures from explicit incomplete delivery in conversation labels while retaining scheduler evidence.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

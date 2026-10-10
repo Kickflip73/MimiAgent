@@ -1,7 +1,7 @@
 import { WebNotifications } from './notifications.js';
 import { readOutputMedia } from './media-output.js';
 import { mediaIds, type MediaAttachment } from '../core/media-attachment.js';
-import { saveMedia, readMedia } from '../runtime/media-input.js';
+import { saveMedia, saveFile, readMedia } from '../runtime/media-input.js';
 import { prepareMedia } from './media.js';
 import { imageIds, IMAGE_TOTAL_BYTES, type ImageAttachment } from '../core/image-attachment.js';
 import { saveWebImage, readWebImage } from './images.js';
@@ -38,7 +38,7 @@ export interface WebBackend {
   context(id: string): Promise<unknown>;
   submit(id: string, input: string, requestId: string, security?: SecurityProfile, workspaceRoot?: string, images?: string[], media?: string[]): Promise<unknown>;
   outputMedia?(session:string,file:string):Promise<{data:Buffer;mediaType:string}>;
-  uploadMedia?(data:Buffer,type:string):Promise<MediaAttachment>;
+  uploadMedia?(data:Buffer,type:string,name?:string):Promise<MediaAttachment>;
   media?(id:string):Promise<{data:Buffer;mediaType:string}>;
   prepareMedia?(id:string):Promise<MediaAttachment>;
   uploadImage?(data: Buffer, mediaType: string): Promise<ImageAttachment>;
@@ -154,7 +154,7 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
       return (await timeline(id, items)).items;
     },
     outputMedia:(session,file)=>readOutputMedia(config.dataRoot,sessionWorkspace(session),session,file),
-    uploadMedia:(data,type)=>saveMedia(path.join(daemonPaths.root,'web-media'),data,type),
+    uploadMedia:(data,type,name)=>name?saveFile(path.join(daemonPaths.root,'web-media'),data,name):saveMedia(path.join(daemonPaths.root,'web-media'),data,type),
     media:id=>readMedia(path.join(daemonPaths.root,'web-media'),id),
     prepareMedia:id=>prepareMedia(path.join(daemonPaths.root,'web-media'),id),
     uploadImage: (data,mediaType) => saveWebImage(path.join(daemonPaths.root,'web-images'),data,mediaType),
@@ -162,7 +162,8 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
     submit: async (id, input, requestId, security, workspaceRoot, images, media) => {
       const mediaRefs=mediaIds(media),prepared:MediaAttachment[]=[];
       if(mediaRefs.length) {
-        const daemon=await mimiRpc<{supportsWebMedia?:boolean}>(socket,'status',undefined,8000);
+        const daemon=await mimiRpc<{supportsWebMedia?:boolean;supportsWebFiles?:boolean}>(socket,'status',undefined,8000);
+        if(mediaRefs.some(ref=>ref.endsWith('.file'))&&!daemon.supportsWebFiles)throw new Error('后台需要更新后才能接收文件附件，请先重启 Mimi 后台');
         if(!daemon.supportsWebMedia)throw new Error('需要在当前任务结束后重启后台以启用音视频消息');
         for(const ref of mediaRefs)prepared.push(await prepareMedia(path.join(daemonPaths.root,'web-media'),ref));
       }

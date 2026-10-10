@@ -1,3 +1,4 @@
+import { conversationOutcome } from '../core/run-finalization.js';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import path from 'node:path';
@@ -54,6 +55,7 @@ interface TraceTurn {
   endedAt?: string;
   status: string;
   steps: TimelineStep[];
+  answerTimes: Record<number,string>;
 }
 const MAX_SESSION_BYTES = 8 * 1024 * 1024;
 const MAX_STEPS = 400;
@@ -124,7 +126,7 @@ function traceTurns(events: Item[], sessionId: string): TraceTurn[] {
     if (event.sessionId !== sessionId || !date(event.timestamp)) continue;
     const at = String(event.timestamp), data = object(event.data);
     if (event.type === 'turn_start') {
-      current = { id: typeof data.runId === 'string' ? data.runId : `trace:${at}`, ...(typeof data.runId === 'string' ? { explicitRunId: data.runId } : {}), input: String(data.input ?? '').trim(), startedAt: at, status: 'unknown', steps: [] };
+      current = { id: typeof data.runId === 'string' ? data.runId : `trace:${at}`, ...(typeof data.runId === 'string' ? { explicitRunId: data.runId } : {}), input: String(data.input ?? '').trim(), startedAt: at, status: 'running', steps: [], answerTimes:{} };
       turns.push(current);
     } else if (current && current.id.startsWith('trace:') && event.type === 'model_binding_event' && ['conversation', 'background'].includes(String(data.workUnitKind)) && typeof data.workUnitId === 'string') {
       current.id = data.workUnitId;
@@ -136,7 +138,7 @@ function traceTurns(events: Item[], sessionId: string): TraceTurn[] {
           ?? (current && !current.explicitRunId ? current : undefined)
         : current;
       if (owner) {
-        owner.status = String(data.outcome);
+        owner.status = conversationOutcome(data as {outcome:string;toolManifest?:{status:string}[]}) ?? String(data.outcome);
         if (typeof data.runId === 'string') { owner.id = data.runId; owner.explicitRunId = data.runId; }
       }
     } else if (current && ['turn_end', 'turn_interrupted', 'error'].includes(String(event.type))) {
@@ -144,10 +146,13 @@ function traceTurns(events: Item[], sessionId: string): TraceTurn[] {
       if (['unknown', 'running'].includes(current.status)) current.status = event.type === 'turn_end' ? 'completed' : event.type === 'turn_interrupted' ? 'cancelled' : 'failed';
       if (typeof data.answer === 'string') current.answer = data.answer.trim();
       current = undefined;
+    } else if (current && event.type === 'answer_started' && data.runId === current.id && Number.isInteger(data.answerIndex)) {
+      current.answerTimes[Number(data.answerIndex)] = at;
     } else if (current && event.type === 'reasoning' && typeof data.text === 'string'
       && (!data.runId || data.runId === current.id) && current.steps.length < MAX_STEPS) {
       current.steps.push({ kind: 'reasoning', text: detail(data.text) + (data.truncated ? '\n[思考内容达到保存上限]' : ''), timestamp: date(data.startedAt) ?? at, ...(Number.isInteger(data.afterAnswer) && Number(data.afterAnswer) >= -1 ? {afterAnswer:Number(data.afterAnswer)} : {}) });
     } else if (current && event.type === 'status' && current.steps.length < MAX_STEPS) {
+      if(data.transient === true || (data.tone === 'thinking' && !data.detail && !data.next && ['正在准备附件与运行环境','正在准备回答','正在理解图片与视频画面','正在准备上下文','正在等待模型响应'].includes(String(data.title))))continue;
       current.steps.push({ kind: 'status', tone: String(data.tone ?? 'agent'), title: String(data.title ?? ''), fullDetail: detail(data.detail), next: String(data.next ?? ''), timestamp: at, ...(Number.isInteger(data.afterAnswer) && Number(data.afterAnswer) >= -1 ? {afterAnswer:Number(data.afterAnswer)} : {}) });
     }
   }
@@ -306,7 +311,7 @@ export async function decorateSessionTimeline(options: SessionTimelineOptions): 
       } else if (!steps.length) steps = turn.steps;
       reasoningAvailable ||= steps.some((step) => step.kind === 'reasoning');
     }
-    const run = turn ? rows.find((row) => {
+    const run = turn ? rows.find(row=>{try{return object(object(JSON.parse(String(row.answer_json))).finalization).runId===turn!.id;}catch{return false;}}) ?? rows.find((row) => {
       const first = date(row.started_at), last = date(row.completed_at);
       return first && Date.parse(first) <= Date.parse(turn.startedAt) && (!last || Date.parse(last) >= Date.parse(turn.startedAt));
     }) : (() => {
@@ -334,7 +339,7 @@ export async function decorateSessionTimeline(options: SessionTimelineOptions): 
       ...(startedAt ? { startedAt: Date.parse(startedAt) } : {}), ...(endedAt ? { endedAt: Date.parse(endedAt) } : {}) };
     for (const index of visible) {
       const item = projected[indices.get(index)!]!;
-      const ownTime = date(canonical[index]!.timestamp) ?? date(canonical[index]!.createdAt);
+      const ownTime = turn?.answerTimes[assistants.indexOf(index)] ?? date(canonical[index]!.timestamp) ?? date(canonical[index]!.createdAt);
       item.timelineRunId = id;
       if (ownTime) { item.timestamp = ownTime; item.timestampSource = 'message'; }
       else if (index === start && startedAt) { item.timestamp = startedAt; item.timestampSource = 'run-start'; }
@@ -357,7 +362,7 @@ export async function decorateSessionTimeline(options: SessionTimelineOptions): 
       const item = projected[indices.get(anchor)!]!;
       const field = next === undefined && previous === anchor ? 'executionAfter' : 'execution';
       if (item[field]) item[field]!.steps.push(...group);
-      else item[field] = {...execution, steps:[...group]};
+      else item[field] = {...execution, status:after===Math.max(...groups.keys())?execution.status:'', steps:[...group]};
     }
   }
   return { items: projected, timeline: { truncated, reasoningAvailable, runCount } };

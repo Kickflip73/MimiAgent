@@ -54,7 +54,7 @@ export function sessionWithoutDerivedItems(session: Session, derived: AgentInput
     get(target, property) {
       if (property === 'addItems') return async (items: AgentInputItem[]) => {
         const canonical = items.filter(item => !records.some(record => isDeepStrictEqual(record, item)));
-        if (canonical.length) await target.addItems(canonical);
+        if (canonical.length) await target.addItems(canonical.map(item => 'role' in item && ['user','assistant'].includes(item.role) ? {...item,timestamp:(item as unknown as {timestamp?:string}).timestamp ?? new Date().toISOString()} as unknown as AgentInputItem : item));
       };
       const value = Reflect.get(target, property, target);
       return typeof value === 'function' ? value.bind(target) : value;

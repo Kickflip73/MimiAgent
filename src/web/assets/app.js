@@ -1,3 +1,6 @@
+import { replayHistory, conversationStatus } from './execution.js';
+import { bindImageViewer } from './image-viewer.js';
+import { inlineMarkup } from './inline.js';
 import { createNotifications } from './notifications.js';
 import { createRecorder } from './recorder.js';
 import { createMediaDrafts, mediaMarkup, mediaTime, bindMediaPlayers, outputMedia } from './media.js';
@@ -119,7 +122,7 @@ function saveExecutions() {
 }
 const drafts = new Map();
 const mediaDrafts = createMediaDrafts({storage:sessionStorage,
-  upload:async file=>{const response=await fetch('/api/media',{method:'POST',headers:{'content-type':file.type,'x-mimi-web':'1'},body:file,signal:AbortSignal.timeout(60_000)});const result=await response.json();if(!response.ok)throw new Error(result.error||'媒体上传失败');return result;},
+  upload:async file=>{const response=await fetch(`/api/media${/^(audio|video)\//.test(file.type)?'':'?name='+encodeURIComponent(file.name)}`,{method:'POST',headers:{'content-type':file.type,'x-mimi-web':'1'},body:file,signal:AbortSignal.timeout(60_000)});const result=await response.json();if(!response.ok)throw new Error(result.error||'媒体上传失败');return result;},
   prepare:async id=>{const response=await fetch('/api/media/prepare',{method:'POST',headers:{'content-type':'application/json','x-mimi-web':'1'},body:JSON.stringify({id}),signal:AbortSignal.timeout(180_000)});const result=await response.json();if(!response.ok)throw new Error(result.error||'识别失败');return result;},
   changed:session=>{if(session===state.sessionId){renderMediaDrafts();renderImageDrafts();updateComposer();}},
 });
@@ -165,13 +168,14 @@ function renderImageDrafts() {
 async function addImages(files) {
   if(state.sending){toast('正在发送，请稍后添加图片');return;}
   const session=state.sessionId;
-  for(const file of files)try{if(mediaDrafts.list(session).length+imageDrafts.list(session).length>=8)throw new Error('每条消息最多 8 个附件');if(file.type.startsWith('image/'))await imageDrafts.add(session,file);else await mediaDrafts.add(session,file);}catch(error){toast(error.message);}
+  for(const file of files)try{if(mediaDrafts.list(session).length+imageDrafts.list(session).length>=8)throw new Error('每条消息最多 8 个附件');if(['image/png','image/jpeg','image/gif','image/webp'].includes(file.type))await imageDrafts.add(session,file);else await mediaDrafts.add(session,file);}catch(error){toast(error.message);}
 }
 const labels = {
   queued: '等待中',
   running: '进行中',
   completed: '已完成',
   partial: '部分完成',
+  issues: '过程有失败',
   uncertain: '结果待核实',
   interrupted: '已中断',
   failed: '失败',
@@ -342,19 +346,7 @@ async function api(path, data) {
   }
   return value;
 }
-function inline(source) {
-  const escaped = esc(source);
-  return escaped.replace(
-    /`([^`]+)`|\[([^\]]+)\]\(((?:https?:\/\/|file:\/\/\/|\/)[^\n)]+)\)|\*\*([^*]+)\*\*/g,
-    (match, code, label, url, bold) => {
-      if (code !== undefined) return `<code>${code}</code>`;
-      if (url !== undefined && !/^https?:/.test(url)) return /\.(png|jpe?g|gif|webp|mp3|wav|m4a|ogg|flac|mp4|webm|mov)$/i.test(url) ? `<span class="media-reference">${label}</span>` : match;
-      if (url !== undefined)
-        return `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-      return `<strong>${bold}</strong>`;
-    },
-  );
-}
+function inline(source) { return inlineMarkup(String(source ?? ''), esc); }
 function markdown(source) {
   const lines = String(source ?? '').split('\n');
   let html = '',
@@ -512,7 +504,7 @@ function renderMessages(items) {
         if (id === state.sessionId) {
           const live = $('#live-message');
           const lastUser = history.findLastIndex((item) => item.role === 'user');
-          renderMessages(state.streamId && lastUser >= 0 ? history.slice(0, lastUser + 1) : history);
+          renderMessages(state.streamId && lastUser >= 0 ? replayHistory(history) : history);
           if (live && state.streamId) $('#messages').append(live);
           $('#messages > button')?.remove();
         }
@@ -523,13 +515,16 @@ function renderMessages(items) {
     };
     $('#messages').append(older);
   }
-  for (const item of visible) {
+  for (const [visibleIndex, original] of visible.entries()) {
+    // The stream replay owns the active turn. Do not also attach its partial snapshot.
+    const item = state.streamId && visibleIndex === visible.length-1 && original.role==='user'
+      ? {...original,execution:undefined,executionAfter:undefined} : original;
     const article = message(item.role, textOf(item), false, item.timestamp || item.createdAt, item.imageAttachments, item.mediaAttachments);
     setMessageFooter(article, textOf(item), {role:item.role,sentAt:item.timestamp || item.createdAt,timestampSource:item.timestampSource,duration:item.duration});
     if (item.timelineRunId) article.dataset.timelineRun = item.timelineRunId;
     if (item.role === 'assistant') {
       const display = presentAnswer(textOf(item));
-      if (item.execution || display.outcome) article.querySelector('.message-bubble').before(executionDetails({...item.execution, steps:item.execution?.steps || [], ...(display.outcome ? {status:display.outcome} : {}), historical:true}));
+      if (item.execution || display.outcome) article.querySelector('.message-bubble').before(executionDetails({...item.execution, steps:item.execution?.steps || [], ...(display.outcome && item.execution?.status!=='issues' ? {status:display.outcome} : {}), historical:true}));
     }
     $('#messages').append(article);
     if (item.executionAfter || (item.execution && item.role === 'user')) {
@@ -676,7 +671,7 @@ async function selectSession(id, draft = false, preserveInput = false) {
     }
     const items = snapshot.items || [];
     const lastUser = items.findLastIndex((item) => item.role === 'user');
-    renderMessages(runningId && lastUser >= 0 ? items.slice(0, lastUser + 1) : items);
+    renderMessages(runningId && lastUser >= 0 ? replayHistory(items) : items);
     renderPlan(snapshot.plan);
     $('#mode').value = snapshot.mode;
     $('#model').innerHTML =
@@ -810,7 +805,7 @@ function executionDetails(run) {
     const steps = run.steps.filter(step => !isPreparationStatus(step) && (run.historical || state.defaults.outputLevel === 'trace' || (state.defaults.outputLevel === 'thinking' ? step.kind === 'reasoning' : step.kind !== 'reasoning')));
     details.hidden = state.defaults.outputLevel === 'answer' || (!run.running && !steps.length && !['partial','blocked','failed','uncertain','interrupted'].includes(run.status));
     details.classList.toggle('is-running', !!run.running);
-    summary.querySelector('.execution-label').textContent = `${run.status ? (labels[run.status] || run.status) + ' · ' : ''}执行过程${steps.length ? ` · ${steps.length} 项` : ''}`;
+    summary.querySelector('.execution-label').textContent = `${run.status && run.status!=='unknown' ? (labels[run.status] || run.status) + ' · ' : ''}执行过程${steps.length ? ` · ${steps.length} 项` : ''}`;
     // The activity preview belongs only to the closed summary. Never project it
     // into the expanded evidence or replace the full tool/thinking content.
     summary.querySelector('.execution-activity').textContent = run.running ? (run.activity || runningActivity(run.steps)) : '';
@@ -962,11 +957,11 @@ function startStream(id) {
       heading.dataset.running='false';
     }
     const cancelled = task?.status === 'cancelled';
-    if (task?.error && !cancelled) run.steps.push({kind:'status',tone:'failure',title:'执行未完成',fullDetail:task.error,afterAnswer:run.answers.length-1});
+    if (task?.error && !cancelled && conversationStatus(task?.result?.finalization)!=='issues') run.steps.push({kind:'status',tone:'failure',title:'执行未完成',fullDetail:task.error,afterAnswer:run.answers.length-1});
     const result = task?.result, rawFinal = cancelled ? undefined : typeof result === 'string' ? result : result?.answer;
     const presentation = presentAnswer(rawFinal);
     const finalText = rawFinal == null ? undefined : presentation.text;
-    if (presentation.outcome) run.status = presentation.outcome;
+    if (presentation.outcome) run.status = conversationStatus(result?.finalization) || presentation.outcome;
     run.answers = finishAnswers(run.answers, finalText, run.boundary);
     if (!run.answers.length && !cancelled) run.answers.push(task?.error || (missing ? '运行记录已不可用，请刷新读取保存的对话。' : `任务${labels[task.status] || task.status}`));
     shown = reveal.update(run.answers, performance.now(), true);
@@ -1472,7 +1467,7 @@ async function drainQueues() {
 setInterval(() => void drainQueues(),3000);
 $('#composer').addEventListener('submit', send);
 $('#message-input').addEventListener('paste',event=>{
-  const files=[...(event.clipboardData?.items||[])].filter(item=>item.kind==='file'&&item.type.startsWith('image/')).map(item=>item.getAsFile()).filter(Boolean);
+  const files=[...(event.clipboardData?.items||[])].filter(item=>item.kind==='file').map(item=>item.getAsFile()).filter(Boolean);
   if(!files.length)return;
   event.preventDefault(); void addImages(files);
 });
@@ -1486,10 +1481,9 @@ $('#image-input').onchange=event=>{void addImages([...event.target.files]);event
 $('#image-drafts').onclick=event=>{const button=event.target.closest('[data-remove-image]');if(button)imageDrafts.remove(state.sessionId,button.dataset.removeImage);};
 document.addEventListener('click',event=>{
   const button=event.target.closest('[data-image-preview]');if(!button)return;
-  const dialog=$('#image-preview');dialog.querySelector('img').src=button.querySelector('img').src;dialog.showModal();
+  showImage(button.querySelector('img').src);
 });
-$('#image-preview button').onclick=()=>$('#image-preview').close();
-$('#image-preview').onclick=event=>{if(event.target===$('#image-preview'))event.target.close();};
+const showImage=bindImageViewer($('#image-preview'));
 function resizeInput() {
   const el = $('#message-input');
   el.style.height = 'auto';
@@ -1657,4 +1651,4 @@ void init();
 
 observeMessageMotion($('#messages'), $('#chat-scroll'));
 
-document.addEventListener('click',async event=>{const button=event.target.closest('[data-copy-code]');if(!button)return;try{await navigator.clipboard.writeText(button.closest('.code-block').querySelector('code').textContent);button.title='已复制';}catch{toast('复制失败，请手动选择代码');}});
+document.addEventListener('click',async event=>{const button=event.target.closest('[data-copy-code]');if(!button)return;try{await navigator.clipboard.writeText(button.closest('.code-block').querySelector('code').textContent);button.title='已复制';button.innerHTML=icon('check');toast('已复制');setTimeout(()=>{if(button.isConnected){button.innerHTML=icon('copy');button.title='复制代码';}},1800);}catch{toast('复制失败，请手动选择代码');}});

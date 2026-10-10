@@ -195,3 +195,10 @@ test('Host final answer constrains non-completed model claims and binds one fina
   assert.doesNotMatch(answer.split('\n')[0]!, /全部业务已经完成/);
   assert.match(record.answerDigest, /^[a-f0-9]{64}$/u);
 });
+
+test('conversation distinguishes process failures from an explicit incomplete delivery',async()=>{
+ const {conversationOutcome}=await import('../src/core/run-finalization.js');
+ assert.equal(conversationOutcome({outcome:'partial',toolManifest:[{status:'failed'},{status:'succeeded'}]}),'issues');
+ assert.equal(conversationOutcome({outcome:'partial',completionDecision:'continue',toolManifest:[{status:'failed'}]}),'partial');
+ assert.equal(conversationOutcome({outcome:'uncertain',toolManifest:[{status:'uncertain'}]}),'uncertain');
+});

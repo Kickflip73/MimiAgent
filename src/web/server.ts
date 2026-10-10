@@ -13,6 +13,8 @@ const ASSETS: Record<string, [string, string]> = {
   '/recorder.js': ['recorder.js','text/javascript; charset=utf-8'],
   '/message-view.js': ['message-view.js', 'text/javascript; charset=utf-8'],
   '/images.js': ['images.js', 'text/javascript; charset=utf-8'],
+  '/image-viewer.js': ['image-viewer.js', 'text/javascript; charset=utf-8'],
+  '/inline.js': ['inline.js', 'text/javascript; charset=utf-8'],
   '/queue.js': ['queue.js', 'text/javascript; charset=utf-8'],
   '/context.js': ['context.js', 'text/javascript; charset=utf-8'],
   '/execution.js': ['execution.js', 'text/javascript; charset=utf-8'],
@@ -168,7 +170,7 @@ export class MimiWebServer {
       if(url.pathname==='/api/media')try{mediaMime(id);}catch{throw new HttpError(400,'无效的媒体标识');}
       const value=url.pathname==='/api/media/output' && this.backend.outputMedia ? await this.backend.outputMedia(identifier(url.searchParams.get('session')),String(url.searchParams.get('path')||'')) : await this.backend.media(id);
       const size=value.data.length,range=request.headers.range;
-      const headers={'content-type':value.mediaType,'accept-ranges':'bytes','cache-control':'private, max-age=86400','x-content-type-options':'nosniff'};
+      const headers={'content-type':value.mediaType,'accept-ranges':'bytes','cache-control':'private, max-age=86400','x-content-type-options':'nosniff',...(id.endsWith('.file')?{'content-disposition':'attachment'}:{})};
       if(range) {
         const match=/^bytes=(\d*)-(\d*)$/.exec(range);
         if(!match||(!match[1]&&!match[2])){response.writeHead(416,{'content-range':`bytes */${size}`});response.end();return;}
@@ -180,8 +182,8 @@ export class MimiWebServer {
     }
     if(url.pathname === '/api/media' && request.method==='POST' && this.backend.uploadMedia) {
       const chunks:Buffer[]=[];let size=0;
-      for await(const chunk of request){size+=chunk.length;if(size>MEDIA_MAX_BYTES)throw new HttpError(413,'媒体不能超过 100MB');chunks.push(Buffer.from(chunk));}
-      json(response,201,await this.backend.uploadMedia(Buffer.concat(chunks),String(request.headers['content-type']||'').split(';')[0]!));return;
+      for await(const chunk of request){size+=chunk.length;if(size>(url.searchParams.has('name')?10*1024*1024:MEDIA_MAX_BYTES))throw new HttpError(413,'附件超过大小限制（文件 10MB，音视频 100MB）');chunks.push(Buffer.from(chunk));}
+      json(response,201,await this.backend.uploadMedia(Buffer.concat(chunks),String(request.headers['content-type']||'').split(';')[0]!,url.searchParams.get('name')||undefined));return;
     }
     if(url.pathname === '/api/media/prepare' && request.method==='POST' && this.backend.prepareMedia) {
       const input=await body(request);const ids=mediaIds([input.id]);json(response,200,await this.backend.prepareMedia(ids[0]!));return;

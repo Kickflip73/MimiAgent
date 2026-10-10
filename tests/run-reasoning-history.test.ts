@@ -24,7 +24,8 @@ function fakeAgent(sensitive = false, fail = false) {
 test('reasoning deltas persist once per phase with immutable owner and real observed times', async () => {
   const { agent, recorded } = fakeAgent();
   await new AgentRunService(agent).execute({ input: 'work' });
-  assert.equal(recorded.length, 1); assert.equal(recorded[0]!.type, 'reasoning');
+  assert.equal(recorded.length, 2); assert.equal(recorded[0]!.type, 'reasoning');
+  assert.equal(recorded[1]!.type,'answer_started');assert.equal(recorded[1]!.data.answerIndex,0);assert.equal(recorded[1]!.owner,'run-fixture');
   assert.equal(recorded[0]!.data.text, 'check evidence'); assert.equal(recorded[0]!.owner, 'run-fixture');
   assert.ok(Date.parse(String(recorded[0]!.data.startedAt)) <= Date.parse(String(recorded[0]!.data.endedAt)));
 });

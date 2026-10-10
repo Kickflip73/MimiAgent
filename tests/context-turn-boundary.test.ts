@@ -66,7 +66,9 @@ test('per-run persistence guard removes cloned/repeated derived records but pres
   const sdk = sessionWithoutDerivedItems(canonical, [boundary]);
   await sdk.addItems([structuredClone(boundary), real[0]!, structuredClone(boundary)]);
   await sdk.addItems([structuredClone(boundary)]); // Retry/cached projection.
-  assert.deepEqual(await sdk.getItems(), [real[1], real[0]]);
+  const saved=await sdk.getItems() as any[];
+  assert.ok(Number.isFinite(Date.parse(saved[1].timestamp)));
+  assert.deepEqual(saved.map(({timestamp,...item})=>item), [real[1], real[0]]);
   assert.equal(await sdk.getSessionId(), 'guard');
 });
 

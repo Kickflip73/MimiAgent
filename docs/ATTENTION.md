@@ -318,3 +318,11 @@ Web 右上角铃铛显示未读通知。通知中心直接读取 owner 的持久
 macOS 使用 `terminal-notifier`（`brew install terminal-notifier`），系统设置 → 通知中需要允许该应用。若初次安装尚未显示该应用，先启动 Homebrew 中的 `terminal-notifier.app` 完成系统注册，再允许通知；`terminal-notifier -diagnose` 可检查授权状态。横幅显示短摘要，点击打开 `mimi web` 上一次启动地址中的完整通知，再可进入关联对话。Web 须保持运行；默认地址为 `http://127.0.0.1:3210`，`mimi web --port` 会记录自定义端口。旧 AppleScript 已送出的通知不支持补加跳转，修复只作用于新的通知。
 
 缺少通知程序或系统权限时，原消息仍在站内通知中心；不会退回到点击打开脚本编辑器的 AppleScript 通知。系统投递失败与站内已读分别显示，通知读取无需等待 Agent 空闲。
+
+### Web file attachments and conversation evidence
+
+The composer accepts ordinary files (10 MiB each) through the attachment button or paste, alongside images/audio/video. Files reuse the immutable attachment reference and queued-message lifecycle. Markdown/text/code files expose a bounded 24,000-character preview plus a local snapshot path for further reads; other formats require an appropriate parser. Binary bytes stay outside canonical transcripts. File downloads always use attachment disposition and `nosniff`.
+
+Image preview starts fitted to the window without cropping; wheel zoom and drag pan preserve aspect ratio. “适应窗口” or double click resets the view. Copy controls show a temporary check and top-center feedback.
+
+Conversation display distinguishes `issues` (failed tool attempts without a completion-contract decision) from `partial` (an explicit unmet completion decision). Durable scheduler outcomes and tool evidence are unchanged: a prose success claim is not proof of an external side effect. Missing historical timestamps are never fabricated; new SDK writes retain timestamps and stream reply starts are traced separately. An active turn is rendered by stream replay once, not by both its partial history snapshot and replay.

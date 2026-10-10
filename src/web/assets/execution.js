@@ -186,3 +186,13 @@ export function runningActivity(steps, fallback = '正在准备回答') {
   } catch { /* Plain text keeps its original beginning as well. */ }
   return prefix(`${step.title || step.next || fallback}${detail ? ' ' + detail : ''}`);
 }
+
+export function conversationStatus(finalization) {
+  return finalization?.outcome==='partial' && !finalization.completionDecision && finalization.toolManifest?.some(call=>call.status==='failed') && !finalization.toolManifest.some(call=>['started','uncertain'].includes(call.status)) ? 'issues' : finalization?.outcome;
+}
+
+/** Stream owns all replies/process in the latest turn; keep its user message only. */
+export function replayHistory(items) {
+  const index=items.findLastIndex(item=>item.role==='user');
+  return index<0?items:items.slice(0,index+1).map((item,i)=>i===index?{...item,execution:undefined,executionAfter:undefined}:item);
+}

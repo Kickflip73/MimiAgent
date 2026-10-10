@@ -816,6 +816,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         ...status,
         supportsWebImages: true,
         supportsWebMedia: true,
+        supportsWebFiles: true,
         lifecycle: lifecycleEpoch,
         ...(providerHealth ? { providerHealth } : {}),
         ...(providerHealthRoutes?.length ? { providerHealthRoutes } : {}),

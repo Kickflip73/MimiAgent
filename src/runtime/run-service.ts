@@ -253,7 +253,10 @@ export class AgentRunService {
         }
         if (!hiddenCandidate && !sensitiveModelStream) {
           if (projection?.kind === 'answer') {
-            if (answerBoundary) afterAnswer += 1;
+            if (answerBoundary) {
+              afterAnswer += 1;
+              if(traceRunId) await this.agent.recordEvent('answer_started',{runId:traceRunId,answerIndex:afterAnswer},traceRunId).catch(()=>undefined);
+            }
             answerBoundary = false;
           } else if (projection) answerBoundary = true;
           interruptedAnswer += answerDelta;
