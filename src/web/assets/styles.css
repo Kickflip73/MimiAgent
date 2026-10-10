@@ -1320,8 +1320,8 @@ dialog h2 {
 .execution summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; width: fit-content; padding: 5px 0; user-select: none; }
 .execution summary::-webkit-details-marker { display: none; }
 .execution summary:hover { color: #1d1d1f; }
-.execution summary svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4; transition: transform .15s; }
-.execution[open] summary svg { transform: rotate(90deg); }
+.execution summary > svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4; transition: transform .15s; }
+.execution[open] summary > svg { transform: rotate(90deg); }
 .execution time { margin-left: 6px; }
 .execution-body { max-height: 280px; overflow: auto; overscroll-behavior: contain; margin-top: 10px; padding: 4px 16px; border: 1px solid #e9e9eb; border-radius: 12px; background: #fafafa; }
 .execution-step { padding: 12px 0; }
@@ -1737,3 +1737,6 @@ dialog h2 {
 #recording-device button { margin-left: 0; }
 #recording-signal { font-size: 11px; }
 .recording-state.no-signal #recording-signal { color: #a65c25; }
+
+.execution summary > .execution-activity-icon { display: none; }
+.execution.is-running:not([open]) summary > .execution-activity-icon { display: inline-flex; }

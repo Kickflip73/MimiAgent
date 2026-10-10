@@ -178,7 +178,7 @@ export function runningActivity(steps, fallback = '正在准备回答') {
     const chars = Array.from(String(value).replace(/\s+/g, ' ').trim());
     return chars.length > 220 ? `${chars.slice(0, 220).join('')}…` : chars.join('');
   };
-  if (step.kind === 'reasoning') return prefix(`✦ 思考 ${step.text || ''}`);
+  if (step.kind === 'reasoning') return prefix(`思考 ${step.text || ''}`);
   let detail = step.fullDetail || step.detail || '';
   try {
     const args = JSON.parse(detail);

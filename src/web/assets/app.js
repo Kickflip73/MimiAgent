@@ -789,6 +789,9 @@ async function refresh(forceArchive = false) {
     }
   }
 }
+function executionSymbol(step) {
+  return step.kind === 'reasoning' || step.tone === 'thinking' ? '<span class="thinking-star">✦</span>' : icon(step.tone === 'tool' ? 'hammer' : step.tone === 'success' ? 'check' : step.kind === 'plan' ? 'stack' : step.tone === 'failure' ? 'close' : 'spark');
+}
 function executionDetails(run) {
   const details = document.createElement('details');
   details.className = 'execution';
@@ -796,7 +799,7 @@ function executionDetails(run) {
   if (run.historical) details.dataset.historical = 'true';
   details.open = state.defaults.expandExecution;
   const summary = document.createElement('summary');
-  summary.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg><span class="execution-label"></span><span class="execution-activity"></span>';
+  summary.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 4 4 4-4 4"/></svg><span class="execution-label"></span><span class="execution-activity-icon event-symbol" aria-hidden="true"></span><span class="execution-activity"></span>';
   const body = document.createElement('div'); body.className = 'execution-body'; body.tabIndex = 0;
   details.append(summary, body);
   let rendered;
@@ -809,6 +812,8 @@ function executionDetails(run) {
     // The activity preview belongs only to the closed summary. Never project it
     // into the expanded evidence or replace the full tool/thinking content.
     summary.querySelector('.execution-activity').textContent = run.running ? (run.activity || runningActivity(run.steps)) : '';
+    const currentStep = run.activity ? {tone:'thinking'} : run.steps.at(-1) || {tone:'thinking'};
+    summary.querySelector('.execution-activity-icon').innerHTML = run.running ? executionSymbol(currentStep) : '';
     if (!details.open) return;
     const version = JSON.stringify(steps);
     if (version === rendered) return;
@@ -817,7 +822,7 @@ function executionDetails(run) {
     body.innerHTML = steps.length ? steps.map((step) => {
       const title = step.kind === 'reasoning' ? '思考' : step.kind === 'plan' ? '执行计划' : step.title;
       const content = step.kind === 'reasoning' ? step.text : step.kind === 'plan' ? step.steps.map((s) => `${s.description} · ${labels[s.status] || s.status}`).join('\n') : step.fullDetail || step.detail || step.next || '';
-      const symbol = step.kind === 'reasoning' || step.tone === 'thinking' ? '<span class="thinking-star">✦</span>' : icon(step.tone === 'tool' ? 'hammer' : step.tone === 'success' ? 'check' : step.kind === 'plan' ? 'stack' : step.tone === 'failure' ? 'close' : 'spark');
+      const symbol = executionSymbol(step);
       return `<section class="execution-step"><strong><span class="event-symbol" aria-hidden="true">${symbol}</span>${esc(title)}${step.timestamp?`<time class="event-time">${esc(new Date(step.timestamp).toLocaleTimeString())}</time>`:''}</strong><pre>${esc(content)}</pre></section>`;
     }).join('') : `<p class="execution-empty">${run.historical ? '没有保存的执行过程' : '正在等待执行进展…'}</p>`;
     if (run.truncated) { const note=document.createElement('p'); note.className='timeline-note'; note.textContent='部分执行过程未完整加载'; body.append(note); }
