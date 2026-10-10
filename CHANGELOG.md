@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Bounded execution and tool recovery
+
+- Bound filename/content search by time and scan budgets, retain partial matches, and align nested filename globs across engines. Filename lookup no longer depends on ripgrep availability.
+- Separate explicit Shell invocations from SDK/durable replays; do not cache a completed process as business success. Atomically fence unfinished, failed, or nonzero-exit commands across intervening calls.
+- Expose authorized Skill activation directly and use references on demand; prioritize current capability evidence and bounded file discovery over repeated planning and full-home scans.
+
 ## Unreleased — Web conversation reliability
 
 - Upload ordinary files alongside image/audio/video messages; retain downloadable file cards across reloads and queued sends. Text previews are bounded and never base64-expanded into context.

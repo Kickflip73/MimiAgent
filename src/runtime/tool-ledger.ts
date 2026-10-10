@@ -213,6 +213,7 @@ export function withExecutionLedger(
   currentRun: () => RunIdentity | undefined,
 ): Tool[] {
   const semanticOccurrences = new Map<string, number>();
+  const shellCallOccurrences = new Map<string, number>();
   let previousSemanticKey: string | undefined;
   let uncertainActionFence: UncertainActionFence | undefined;
   return tools.map((tool) => {
@@ -283,14 +284,21 @@ export function withExecutionLedger(
         const ledgerInput = (tool as LedgerAwareTool)[TOOL_LEDGER_ARGUMENTS]?.(input) ?? input;
         const argumentsJson = run?.semanticCallIds ? semanticArguments(ledgerInput) : ledgerInput;
         const semanticKey = `${tool.name}\0${argumentsJson}`;
-        const consecutiveDuplicate = run?.semanticCallIds && previousSemanticKey === semanticKey;
+        // A shell command is a process invocation, not a business idempotency key.
+        // New model calls may intentionally rerun a completed process (e.g. setup).
+        // SDK re-delivery and durable replay still address the same occurrence.
+        const shellInvocation = tool.name === 'run_shell' && !action;
+        const shellSdkKey = `${run?.sessionId}\0${run?.runId}\0${sdkCallId}\0${semanticKey}`;
+        const knownShellOccurrence = shellInvocation && sdkCallId ? shellCallOccurrences.get(shellSdkKey) : undefined;
+        const consecutiveDuplicate = run?.semanticCallIds && !shellInvocation && previousSemanticKey === semanticKey;
         const occurrence = run?.semanticCallIds
-          ? consecutiveDuplicate
+          ? knownShellOccurrence ?? (consecutiveDuplicate
             ? semanticOccurrences.get(semanticKey) ?? 1
-            : (semanticOccurrences.get(semanticKey) ?? 0) + 1
+            : (semanticOccurrences.get(semanticKey) ?? 0) + 1)
           : undefined;
         if (occurrence !== undefined) {
-          semanticOccurrences.set(semanticKey, occurrence);
+          if (shellInvocation && sdkCallId) shellCallOccurrences.set(shellSdkKey, occurrence);
+          semanticOccurrences.set(semanticKey, Math.max(occurrence, semanticOccurrences.get(semanticKey) ?? 0));
           previousSemanticKey = semanticKey;
         }
         const callId = run?.semanticCallIds

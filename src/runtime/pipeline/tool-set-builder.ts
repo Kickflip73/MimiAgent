@@ -61,6 +61,7 @@ export class ToolSetBuilder {
     const core = new Set([
       'current_time',
       'read_file',
+      'use_skill',
       'write_file',
       'edit_file',
       'apply_patch',
@@ -93,7 +94,7 @@ export class ToolSetBuilder {
     ]);
     const direct = tools.filter((candidate) => core.has(candidate.name)
       && !alwaysDeferred.has(candidate.name)
-      && !candidate.name.includes('skill')
+      && (!candidate.name.includes('skill') || candidate.name === 'use_skill')
       && !candidate.name.startsWith('mcp_'));
     const directNames = new Set(direct.map((candidate) => candidate.name));
     return {

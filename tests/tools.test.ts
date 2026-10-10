@@ -855,7 +855,11 @@ test('bounds local reads and recursive search work', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-tool-limits-'));
   await writeFile(path.join(root, 'large.txt'), 'x'.repeat(200_001));
   await assert.rejects(readLocalFile(root, 'large.txt'), /200000 字节限制/);
-  await assert.rejects(searchLocalFiles(root, 'x', '.', 10, undefined, { maxScannedEntries: 1 }), /扫描项超过 1/);
+  await writeFile(path.join(root, 'other.txt'), 'x');
+  const report = { truncated: false, limitsReached: [] as string[], scannedEntries: 0 };
+  await searchLocalFiles(root, 'x', '.', 10, undefined, { maxScannedEntries: 1, report });
+  assert.equal(report.truncated, true);
+  assert.ok(report.limitsReached.includes('entries'));
   const controller = new AbortController();
   controller.abort(new Error('search cancelled'));
   await assert.rejects(searchLocalFiles(root, 'x', '.', 10, controller.signal), /search cancelled/);

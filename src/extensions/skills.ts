@@ -422,7 +422,7 @@ export class SkillLoader {
     return [
       tool({
         name: 'use_skill',
-        description: '按名称激活匹配的 Agent Skill，返回完整说明和资源根目录。',
+        description: '直接按名称激活 Skill，返回说明和资源根目录；引用文件按需读取。',
         parameters: z.object({ name: z.string().min(1) }),
         execute: async ({ name }) => {
           const skill = this.get(name);
