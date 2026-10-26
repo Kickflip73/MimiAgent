@@ -1,10 +1,14 @@
-import { OpenAIChatCompletionsModel, type AgentInputItem } from '@openai/agents';
-import OpenAI from 'openai';
+import type { AgentInputItem } from '@openai/agents';
 import type { AppConfig } from '../config.js';
 import { ContextManager } from '../core/context.js';
 import type { ProviderTransport, RunModelBinding } from '../core/model-routing.js';
 import type { AgentModel } from '../extensions/model-port.js';
 import type { ModelGateway } from './model-gateway.js';
+import {
+  createOpenAICompatibleModel,
+  normalizeChatCompletionsInput,
+  stripChatCompletionsMetadata,
+} from './providers/openai-compatible-model.js';
 
 export type { AgentModel } from '../extensions/model-port.js';
 
@@ -62,8 +66,16 @@ export function normalizeModelInput(
   provider: AppConfig['provider'] | ProviderTransport,
   items: AgentInputItem[],
 ): AgentInputItem[] {
-  if (provider !== 'openai' && provider !== 'openai-responses') return items;
-  return items.map((item) => {
+  const chatCompletions = provider === 'deepseek'
+    || provider === 'openai-compatible'
+    || provider === 'openai-chat-completions';
+  const portableItems = chatCompletions
+    ? normalizeChatCompletionsInput(items)
+    : stripChatCompletionsMetadata(items);
+  if (provider !== 'openai' && provider !== 'openai-responses') {
+    return portableItems;
+  }
+  return portableItems.map((item) => {
     const value = item as unknown as Record<string, unknown>;
     if (value.type !== 'message' || typeof value.id !== 'string' || value.id.startsWith('msg')) {
       return item;
@@ -173,17 +185,15 @@ export function createModel(config: AppConfig, name?: string): ModelRuntime {
   const profile = resolveModelProfile(config, modelName);
   if (config.provider === 'openai') return { model: modelName, name: modelName, profile };
   return {
-    model: new OpenAIChatCompletionsModel(
-      new OpenAI({
-        apiKey: config.provider === 'deepseek'
-          ? process.env.DEEPSEEK_API_KEY
-          : process.env.MIMI_PROVIDER_API_KEY,
-        baseURL: config.provider === 'deepseek'
-          ? config.providerBaseUrl ?? 'https://api.deepseek.com'
-          : config.providerBaseUrl,
-        fetch: globalThis.fetch,
-      }),
+    model: createOpenAICompatibleModel(
+      config.provider === 'deepseek'
+        ? process.env.DEEPSEEK_API_KEY
+        : process.env.MIMI_PROVIDER_API_KEY,
+      config.provider === 'deepseek'
+        ? config.providerBaseUrl ?? 'https://api.deepseek.com'
+        : config.providerBaseUrl,
       modelName,
+      config.provider === 'deepseek' ? { reasoningContentDialect: true } : undefined,
     ),
     name: modelName,
     profile,

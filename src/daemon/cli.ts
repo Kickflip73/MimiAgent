@@ -14,6 +14,7 @@ export function daemonHelp(): string {
   mimi daemon backup verify <备份目录>     校验备份文件、摘要与数据库完整性
   mimi daemon restore <备份目录>           仅向离线且不存在的空白数据目录恢复
   mimi daemon activity [数量]              查看积压、失败与近期活动
+  mimi daemon usage [天数]                 查看使用统计（默认 7 天，区分对话/后台/定时）
   mimi daemon events [数量]                查看不可变事件时间线
   mimi daemon tasks [数量]                 查看任务队列与执行状态
   mimi daemon runs [数量]                  查看执行尝试
@@ -27,6 +28,7 @@ export function daemonHelp(): string {
                                              原子启停已配置 Connector，不改命令、凭证或 action
   mimi daemon probe <profile>               认证执行固定只读 probe；profile 为 browser-tabs、
                                              shortcuts-catalog、computer-window、screen-window
+                                             
   mimi daemon attention [reload]           查看或重载注意力策略
   mimi daemon digest [数量]                 查看待简报摘要
   mimi daemon brief                        立即生成主动简报
@@ -277,6 +279,10 @@ export async function runDaemonCommand(config: AppConfig, args: string[]): Promi
   }
   if (command === 'activity') {
     output(await mimiRpc(socket, 'activity.get', { limit: Number(args[1] ?? 10) }));
+    return;
+  }
+  if (command === 'usage') {
+    output(await mimiRpc(socket, 'usage.get', { days: Number(args[1] ?? 7) }));
     return;
   }
   if (command === 'probe') {

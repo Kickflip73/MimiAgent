@@ -297,13 +297,13 @@ test('direct tools stay out of the gateway while deferred families remain invoka
   assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_wait'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_assert'));
   assert.ok(modelFacing.some((candidate) => candidate.name === 'browser_close'));
-  assert.ok(modelFacing.some((candidate) => candidate.name === 'list_sessions'));
-  assert.ok(modelFacing.some((candidate) => candidate.name === 'get_session_history'));
+  assert.ok(modelFacing.some((candidate) => candidate.name === 'web_search'));
+  assert.equal(modelFacing.some((candidate) => candidate.name === 'list_sessions'), false);
+  assert.equal(modelFacing.some((candidate) => candidate.name === 'get_session_history'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'inspect_mimi_capabilities'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'invoke_runtime_capability'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'connector_capability'), false);
   assert.equal(modelFacing.some((candidate) => candidate.name === 'send_owner_message'), false);
-  assert.equal(modelFacing.some((candidate) => candidate.name === 'web_search'), false);
   const inspect = gateway.find((candidate) => candidate.name === 'inspect_capabilities') as Tool & {
     invoke: (context: RunContext<unknown>, input: string, details: unknown) => Promise<unknown>;
   };
@@ -316,20 +316,55 @@ test('direct tools stay out of the gateway while deferred families remain invoka
     JSON.stringify({ query: '会话 历史 Session 列表 搜索 读取' }),
     {},
   ) as { capabilities: Array<{ name: string }> };
-  assert.deepEqual(naturalSessionQuery.capabilities, []);
-  assert.match(String(await inspect.invoke(
+  assert.deepEqual(
+    naturalSessionQuery.capabilities.map((candidate) => candidate.name).sort(),
+    ['get_session_history', 'list_sessions'],
+  );
+  const directComputer = await inspect.invoke(
     context,
     JSON.stringify({ name: 'computer_observe' }),
     {},
-  )), /不是 deferred capability/);
-  assert.match(String(await inspect.invoke(
+  ) as { resolution: { status: string }; capabilities: Array<{ invokeWith: string }> };
+  assert.equal(directComputer.resolution.status, 'direct');
+  assert.equal(directComputer.capabilities[0]?.invokeWith, 'computer_observe');
+  const directBrowser = await inspect.invoke(
     context,
-    JSON.stringify({ name: 'browser_open' }),
+    JSON.stringify({ source: 'browser', name: 'browser_open' }),
     {},
-  )), /不是 deferred capability/);
+  ) as { resolution: { status: string }; capabilities: Array<{ invokeWith: string }> };
+  assert.equal(directBrowser.resolution.status, 'direct');
+  assert.equal(directBrowser.capabilities[0]?.invokeWith, 'browser_open');
+  assert.equal(
+    (await inspect.invoke(
+      context,
+      JSON.stringify({ source: 'browser', name: 'browser_missing' }),
+      {},
+    ) as { resolution: { status: string } }).resolution.status,
+    'unavailable',
+  );
+  const sourceMismatch = await inspect.invoke(
+    context,
+    JSON.stringify({ source: 'computer', name: 'browser_open' }),
+    {},
+  ) as { resolution: { status: string; actualSource: string } };
+  assert.deepEqual(sourceMismatch.resolution, {
+    name: 'browser_open',
+    status: 'source_mismatch',
+    requestedSource: 'computer',
+    actualSource: 'browser',
+    instruction: '改用 source=browser 查询；不要调用当前 source 下不存在的能力。',
+  });
+  const directWeb = await inspect.invoke(
+    context,
+    JSON.stringify({ source: 'builtin', name: 'web_search' }),
+    {},
+  ) as { resolution: { status: string; instruction: string } };
+  assert.equal(directWeb.resolution.status, 'direct');
+  assert.match(directWeb.resolution.instruction, /立即调用 web_search/);
   for (const [source, name, result] of [
-    ['builtin', 'web_search', 'web-ok'],
     ['memory', 'memory_read', 'memory-ok'],
+    ['builtin', 'list_sessions', 'session-list-ok'],
+    ['builtin', 'get_session_history', 'session-history-ok'],
     ['goal', 'show_goal', 'goal-ok'],
     ['skill', 'list_skills', 'skill-ok'],
     ['mcp', 'custom_mcp_lookup', 'mcp-ok'],
@@ -794,6 +829,21 @@ test('Workstation retains sandboxed shell and excludes external or GUI transacti
   );
 });
 
+test('Safe filters dynamically-added memory, plan, and team write tools', () => {
+  const tool = (name: string) => ({ name }) as Tool;
+  assert.deepEqual(
+    toolsForSecurity('safe', [
+      tool('memory_read'),
+      tool('remember'),
+      tool('show_plan'),
+      tool('update_plan'),
+      tool('delegate_research'),
+      tool('run_team'),
+    ]).map((item) => item.name),
+    ['memory_read', 'show_plan', 'delegate_research'],
+  );
+});
+
 test('tool selection is independent from shell command strings', () => {
   const tool = (name: string) => ({ name }) as Tool;
   const builder = new ToolSetBuilder();
@@ -808,7 +858,7 @@ test('tool selection is independent from shell command strings', () => {
 
 test('personal message history excludes completed desktop fallback turns', () => {
   const items = [
-    { role: 'user', content: '旧的示例消息查询' },
+    { role: 'user', content: '旧的查询' },
     { type: 'function_call', name: 'mcp_cua_driver__list_windows', callId: 'old-call', arguments: '{}' },
     {
       type: 'function_call_result',
@@ -817,14 +867,14 @@ test('personal message history excludes completed desktop fallback turns', () =>
       output: { type: 'text', text: 'old desktop data' },
     },
     { role: 'assistant', content: '旧桌面结果' },
-    { role: 'user', content: '检查待处理的示例消息消息' },
+    { role: 'user', content: '检查待处理的消息' },
   ] as AgentInputItem[];
   assert.deepEqual(withoutPersonalMessageFallbackHistory(items), [
-    { role: 'user', content: '检查待处理的示例消息消息' },
+    { role: 'user', content: '检查待处理的消息' },
   ]);
 
   const activeTurn = [
-    { role: 'user', content: '检查待处理的示例消息消息' },
+    { role: 'user', content: '检查待处理的消息' },
     { type: 'function_call', name: 'mcp_cua_driver__list_windows', callId: 'active-call', arguments: '{}' },
     {
       type: 'function_call_result',
@@ -841,6 +891,7 @@ test('state loader skips every unauthorized source', async () => {
   const loader = new RunStateLoader({
     hotProfile: denied,
     searchMemories: denied,
+    loadPersonalContextCandidates: denied,
     loadPlan: denied,
     loadGoal: denied,
     loadTeamSummary: denied,
@@ -877,6 +928,7 @@ test('state loader can inject direct-owner Soul and preferences without granting
   const loader = new RunStateLoader({
     hotProfile: denied,
     searchMemories: denied,
+    loadPersonalContextCandidates: denied,
     loadPlan: denied,
     loadGoal: denied,
     loadTeamSummary: denied,
@@ -900,8 +952,55 @@ test('state loader can inject direct-owner Soul and preferences without granting
   assert.equal(state.projectGuidance.instructions, '');
 });
 
-test('state loader never injects hot profiles and caps automatic recall at three cards', async () => {
+test('state loader keeps ordinary turns query-relevant without loading proactive or task-detail context', async () => {
+  let memorySearches = 0;
+  let goalLoads = 0;
+  const unexpected = () => Promise.reject(new Error('broad context loader was called'));
+  const loader = new RunStateLoader({
+    hotProfile: unexpected,
+    searchMemories: async () => {
+      memorySearches += 1;
+      return [];
+    },
+    loadPersonalContextCandidates: unexpected,
+    loadPlan: unexpected,
+    loadGoal: async () => {
+      goalLoads += 1;
+      return undefined;
+    },
+    loadTeamSummary: unexpected,
+    loadHistory: async () => [{ role: 'user', content: 'current question' }],
+    loadSoul: async () => ({ files: [], instructions: 'identity' }),
+    loadPreferences: async () => ({ files: [], instructions: 'preference' }),
+    loadProjectGuidance: async () => ({ files: [], instructions: 'project' }),
+    loadArchive: async () => undefined,
+    loadActiveSkills: async () => [],
+  });
+
+  const state = await loader.load({
+    canReadLocal: true,
+    canReadMemory: true,
+    canReadState: true,
+    canReadSessionContext: true,
+    completionToolsAllowed: true,
+    computerAccess: 'none',
+  }, {
+    includePersonalContext: false,
+    loadTaskDetails: false,
+    loadOwnerSoul: true,
+    loadOwnerPreferences: true,
+  });
+
+  assert.equal(memorySearches, 1);
+  assert.equal(goalLoads, 1);
+  assert.deepEqual(state.plan, []);
+  assert.equal(state.teamSummary, '');
+  assert.deepEqual(state.memories, []);
+});
+
+test('state loader never injects hot profiles and budgets Personal Context instead of fixing card count', async () => {
   let hotProfileCalls = 0;
+  const relations = ['today-focus', 'commitment', 'waiting-on', 'project-risk'] as const;
   const memories = Array.from({ length: 4 }, (_, index) => ({
     ref: { scope: 'private' as const, profileId: 'owner', id: `memory-${index}` },
     title: `memory-${index}`,
@@ -912,13 +1011,32 @@ test('state loader never injects hot profiles and caps automatic recall at three
     score: 1,
     sourceRefs: [],
     documentType: 'wiki' as const,
+    layer: 'L1' as const,
+    facets: {
+      kind: 'fact' as const,
+      entities: [],
+      relations: [{
+        kind: relations[index]!,
+        target: { scope: 'private' as const, profileId: 'owner', id: `target-${index}` },
+      }],
+      time: { occurredAt: new Date().toISOString(), validFrom: null, validUntil: null },
+      sources: [],
+    },
+    derivedFrom: [],
   }));
+  const queryOnlyMemory = {
+    ...memories[0]!,
+    ref: { scope: 'private' as const, profileId: 'owner', id: 'query-only' },
+    title: 'query-only',
+    summary: 'A directly relevant query result.',
+  };
   const loader = new RunStateLoader({
     hotProfile: async () => {
       hotProfileCalls += 1;
       throw new Error('hot profiles must not be loaded');
     },
-    searchMemories: async () => memories,
+    searchMemories: async () => [memories[1]!, queryOnlyMemory],
+    loadPersonalContextCandidates: async () => memories,
     loadPlan: async () => [],
     loadGoal: async () => undefined,
     loadTeamSummary: async () => '',
@@ -938,7 +1056,15 @@ test('state loader never injects hot profiles and caps automatic recall at three
     computerAccess: 'none',
   });
   assert.equal(hotProfileCalls, 0);
-  assert.equal(state.memories.length, 3);
+  assert.equal(state.memories.length, 5);
+  assert.equal(state.memories.filter((item) => item.ref.id === 'memory-1').length, 1);
+  assert.equal(state.memories[0]?.ref.id, 'query-only');
+  assert.equal(state.memories[0]?.summary, 'A directly relevant query result.');
+  assert.equal(state.personalContext.layer, 'L3');
+  assert.equal(state.personalContext.complete, true);
+  assert.equal(state.personalContext.status, 'complete');
+  assert.ok(state.personalContext.estimatedTokens <= 900);
+  assert.match(state.memories.find((item) => item.ref.id === 'memory-0')!.summary, /^\[today-focus\]/);
 });
 
 test('request factory freezes the model-facing tool order and output cap', () => {

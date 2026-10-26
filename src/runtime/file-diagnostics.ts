@@ -7,6 +7,8 @@ export interface FileDiagnosticReport {
   command?: string;
   files: string[];
   output?: string;
+  uncheckedFiles?: string[];
+  nextChecks?: string[];
 }
 
 const CODE_EXTENSIONS = new Set(['.js', '.jsx', '.ts', '.tsx']);
@@ -52,6 +54,13 @@ export async function diagnoseWrittenFiles(
   const files = [...new Set(writtenFiles.map((file) => path.resolve(workspaceRoot, file)))];
   if (!files.length) return { status: 'unavailable', files: [] };
   const jsonFiles = files.filter((file) => path.extname(file).toLowerCase() === '.json');
+  const uncheckedFiles = files.filter(file => !CODE_EXTENSIONS.has(path.extname(file).toLowerCase())
+    && path.extname(file).toLowerCase() !== '.json');
+  const visual = files.some(file => /\.(?:html?|svg|css|jsx|tsx)$/i.test(file));
+  const nextChecks = visual
+    ? ['在浏览器实际渲染并查看截图，核对布局、文字、裁切；动画观察不同时间点，交互实际操作验收。语法检查不能证明视觉或行为正确。']
+    : ['按用户要求核对内容或运行相关行为测试；语法检查不代表业务验收。'];
+  const coverage = { uncheckedFiles, nextChecks };
   const jsonIssues: string[] = [];
   for (const file of jsonFiles) {
     try {
@@ -60,21 +69,26 @@ export async function diagnoseWrittenFiles(
       jsonIssues.push(`${path.relative(workspaceRoot, file)}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (jsonIssues.length) return { status: 'issues', command: 'JSON.parse', files, output: jsonIssues.join('\n') };
+  if (jsonIssues.length) return { status: 'issues', command: 'JSON.parse', files, ...coverage, output: jsonIssues.join('\n') };
   if (!files.some((file) => CODE_EXTENSIONS.has(path.extname(file).toLowerCase()))) {
-    return { status: 'clean', command: jsonFiles.length ? 'JSON.parse' : 'syntax-only', files };
+    return { status: uncheckedFiles.length ? 'unavailable' : 'clean', files, ...coverage,
+      ...(jsonFiles.length ? { command: 'JSON.parse' } : {}),
+      ...(uncheckedFiles.length ? { output: '这些格式未检查，不得声称语法或效果校验通过。' } : {}),
+    };
   }
   const compiler = path.join(workspaceRoot, 'node_modules', '.bin', 'tsc');
   const tsconfig = path.join(workspaceRoot, 'tsconfig.json');
   if (!await exists(compiler) || !await exists(tsconfig)) {
-    return { status: 'unavailable', files, output: '未找到工作区 node_modules/.bin/tsc 或 tsconfig.json' };
+    return { status: 'unavailable', files, ...coverage, output: '未找到工作区 node_modules/.bin/tsc 或 tsconfig.json' };
   }
   const result = await runBounded(compiler, ['--noEmit', '--pretty', 'false'], workspaceRoot);
-  if (result.code === null) return { status: 'unavailable', command: 'tsc --noEmit', files, output: result.output };
+  if (result.code === null) return { status: 'unavailable', command: 'tsc --noEmit', files, ...coverage, output: result.output };
   return {
-    status: result.code === 0 ? 'clean' : 'issues',
+    status: result.code !== 0 ? 'issues' : uncheckedFiles.length ? 'unavailable' : 'clean',
     command: 'tsc --noEmit',
     files,
+    ...coverage,
+    ...(uncheckedFiles.length ? { output: '部分文件格式未检查，tsc 只检查当前项目配置包含的代码。' } : {}),
     ...(result.output ? { output: result.output } : {}),
   };
 }

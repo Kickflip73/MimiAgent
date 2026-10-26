@@ -10,7 +10,7 @@ import {
 const fingerprint = `sha256:${'a'.repeat(64)}`;
 
 test('all personal channels share one bounded payload schema', () => {
-  for (const channel of ['qq', 'qq'] as const) {
+  for (const channel of ['qq'] as const) {
     const payload = personalMessagePayloadSchema.parse({
       version: 1,
       channel,

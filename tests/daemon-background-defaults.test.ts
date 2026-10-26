@@ -8,12 +8,14 @@ import {
   defaultConnectorEnabled,
   LEGACY_VISIBLE_MACOS_CONNECTORS,
   legacyVisibleConnectorsToDisable,
+  personalMessageConnectorsToAdd,
+  PERSONAL_MESSAGE_CONNECTOR_IDS,
 } from '../src/daemon/background-defaults.js';
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('fresh macOS defaults enable the system connector and bounded desktop open route', () => {
-  assert.equal(BACKGROUND_DEFAULTS_VERSION, 1);
+  assert.equal(BACKGROUND_DEFAULTS_VERSION, 3);
   assert.equal(defaultConnectorEnabled('macos-system', 'darwin'), true);
   assert.equal(defaultConnectorEnabled('macos-desktop', 'darwin'), true);
   for (const id of LEGACY_VISIBLE_MACOS_CONNECTORS) {
@@ -38,6 +40,19 @@ test('legacy canonical defaults are silenced once and later explicit opt-in is p
   assert.deepEqual(explicit, { version: 1, disabled: [], changed: false });
   const custom = legacyVisibleConnectorsToDisable(0, enabled, new Set());
   assert.deepEqual(custom, { version: 1, disabled: [], changed: true });
+});
+
+test('supported personal message connector templates are added disabled exactly once', () => {
+  const migration = personalMessageConnectorsToAdd(1, new Set(['personal-qq']));
+  assert.equal(migration.version, 3);
+  assert.deepEqual(migration.added, []);
+  assert.equal(migration.changed, true);
+
+  assert.deepEqual(
+    personalMessageConnectorsToAdd(3, new Set()),
+    { version: 3, added: [], changed: false },
+  );
+  assert.deepEqual(PERSONAL_MESSAGE_CONNECTOR_IDS, ['personal-qq']);
 });
 
 test('background data access avoids launching closed GUI applications', async () => {

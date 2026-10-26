@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { Agent, Runner, tool, type Tool } from '@openai/agents';
+import { Agent, Runner, type Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import type { AgentMode } from '../core/agent-mode.js';
 import { subAgentToolNames } from '../core/tool-role-policy.js';
 import type {

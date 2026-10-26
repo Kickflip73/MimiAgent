@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { SecurityProfile } from '../../config.js';
 import type { ComputerAccess } from '../../extensions/computer/types.js';
 import type { ToolCapability } from '../tool-policy.js';
 import type { RunScope } from './run-scope.js';
@@ -24,6 +25,20 @@ export interface RuntimeAccess {
   mcp: boolean;
   ephemeralSensitiveModelAccess: boolean;
   policyRevision: string;
+}
+
+export function runtimeAccessForSecurity(
+  runtime: RuntimeAccess,
+  securityProfile: SecurityProfile,
+): Readonly<RuntimeAccess> {
+  return Object.freeze({
+    workspaceWrite: runtime.workspaceWrite && securityProfile !== 'safe',
+    computer: runtime.computer && securityProfile === 'full-owner',
+    mcp: runtime.mcp && securityProfile === 'full-owner',
+    ephemeralSensitiveModelAccess: runtime.ephemeralSensitiveModelAccess
+      && securityProfile === 'full-owner',
+    policyRevision: `${runtime.policyRevision}:${securityProfile}`,
+  });
 }
 
 export interface ResolvedCapabilities {
@@ -56,7 +71,7 @@ export interface ProgressiveCapabilityGroup {
 
 export interface EffectiveCapabilityItem {
   id: string;
-  kind: 'tool' | 'skill' | 'connector' | 'computer';
+  kind: 'tool' | 'skill' | 'connector' | 'computer' | 'mcp';
   availability: CapabilityAvailability;
   readiness: CapabilityReadiness;
   freshness: CapabilityFreshness;
@@ -175,7 +190,7 @@ export function renderEffectiveCapabilitySnapshot(
   snapshot: Readonly<EffectiveCapabilitySnapshot>,
 ): string {
   const routedItems = snapshot.items
-    .filter((item) => item.kind === 'connector' || item.kind === 'computer')
+    .filter((item) => item.kind === 'connector' || item.kind === 'computer' || item.kind === 'mcp')
     .map((item) => ({
       id: item.id,
       kind: item.kind,
@@ -185,11 +200,12 @@ export function renderEffectiveCapabilitySnapshot(
       selectedRoute: item.selectedRoute,
       capabilities: item.capabilities,
       actionCount: item.actionCount,
+      ...(item.kind === 'mcp' ? { connection: item.routeOwner } : {}),
     }));
   if (routedItems.length === 0 && snapshot.hiddenToolCount === 0) return '';
   return [
     '## Effective Capability Snapshot',
-    '可信 Host 统一能力索引：hiddenTools 已授权、仅隐藏 schema；使用前以 inspect_capabilities 按 source/name/query 查询，再由 invoke_capability 调用。Connector 摘要只含公开 action，缺项不代表其他 Host 能力不存在；判定不可用或换路前必须查统一目录，unavailable/unknown 禁止猜替代路线。',
+    '可信 Host 索引：hiddenTools 已授权，仅隐藏 schema。已知工具直接 invoke_capability，未知时 inspect_capabilities；Host 重新校验权限。Connector action 必须精确发现；Connector 摘要只含公开 action，缺项不代表不可用。MCP configured 表示待连接，按服务名查询或精确工具名调用；unavailable/unknown 禁止猜替代路线。',
     JSON.stringify({
       schemaVersion: snapshot.schemaVersion,
       policyRevision: snapshot.policyRevision,

@@ -137,6 +137,15 @@ export class ModelGateway {
     );
   }
 
+  /** Tool-free perception also supports vision registrations without tool calling. */
+  createPerceptionRuntime(target: ModelTarget): AgentModelRuntime {
+    const {provider,registration} = this.registered(target);
+    if (registration.kind !== 'agent' || !registration.capabilities.imageInput) {
+      throw new Error(`模型 ${modelTargetKey(target)} 不支持图片理解`);
+    }
+    return this.adapter(provider).createAgentRuntime(provider,registration,this.credential(provider),'off');
+  }
+
   createImageRuntime(target: ModelTarget): ImageModelRuntime {
     const { provider, registration } = this.registered(target);
     if (registration.kind !== 'image-generation' || !registration.capabilities.imageOutput) {

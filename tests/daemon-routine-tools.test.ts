@@ -23,12 +23,12 @@ test('routine tools atomically list, upsert and remove fixed local-time work', a
   const tools = createMimiRoutineTools(attention);
   try {
     const initial = await invoke(tools, 'list_mimi_routines', {}) as Array<{ id: string }>;
-    assert.deepEqual(initial.map((routine) => routine.id), ['morning-plan', 'evening-close']);
+    assert.deepEqual(initial, []);
 
     const created = await invoke(tools, 'upsert_mimi_routine', {
       id: 'workday-inbox', enabled: true, time: '09:15', weekdays: [1, 2, 3, 4, 5],
       prompt: '检查重要邮件并直接处理；没有变化时静默完成', priority: 72,
-      sessionKey: 'mimi-workday-inbox', replyChannel: 'connector:messages', replyTarget: 'qq:owner',
+      sessionKey: 'mimi-workday-inbox', replyChannel: 'connector:messages', replyTarget: 'chat:owner',
     }) as { created: boolean; routine: { id: string } };
     assert.equal(created.created, true);
     assert.equal(created.routine.id, 'workday-inbox');

@@ -1,0 +1,128 @@
+import { speechHistoryFiles, withSpeechLinks } from '../src/core/speech-media.js';
+import { decorateSessionTimeline } from '../src/web/session-timeline.js';
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtemp, mkdir, writeFile, readFile, symlink, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { mediaAttachment, mediaIds } from '../src/core/media-attachment.js';
+import { saveMedia, readMedia, inputWithMedia, mediaRecord } from '../src/runtime/media-input.js';
+import { FileSession } from '../src/core/session.js';
+import { readOutputMedia } from '../src/web/media-output.js';
+// @ts-expect-error Browser module.
+import { createMediaDrafts, outputMedia } from '../src/web/assets/media.js';
+// @ts-expect-error Browser module.
+import { createRecorder } from '../src/web/assets/recorder.js';
+const wav=Buffer.from('RIFF0000WAVEfmt synthetic test payload');
+
+test('voice reaches model as transcript, retaining a small playable reference in canonical history',async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'mimi-media-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const ref={...await saveMedia(root,wav,'audio/x-wav'),duration:3,transcript:'明天下午检查项目'};
+ await mediaRecord(root,ref.id).replace(ref);
+ assert.deepEqual(await mediaRecord(root,ref.id).read(),ref);
+ assert.deepEqual((await readMedia(root,ref.id)).data,wav);
+ const input=await inputWithMedia('','',[ref],root) as any[];
+ assert.match(input[0].content.at(-1).text,/明天下午检查项目/);
+ const session=new FileSession(path.join(root,'sessions'),'voice');await session.addItems(input);
+ const restored=await new FileSession(path.join(root,'sessions'),'voice').getItems();
+ assert.deepEqual((restored[0] as any).mediaAttachments,[ref]);assert.equal((restored[0] as any).displayText,'');
+ assert.ok(!(await readFile(path.join(root,'sessions','voice.json'),'utf8')).includes(wav.toString('base64')));
+ await assert.rejects(inputWithMedia('','',[{...ref,transcript:undefined}],root),/尚未识别/);
+});
+
+test('media rejects forged types, traversal and symlinks',async t=>{
+ assert.throws(()=>mediaAttachment(Buffer.from('<script>'),'audio/wav'),/格式不符/);
+ assert.throws(()=>mediaIds(['../secret.wav']));assert.throws(()=>mediaIds(Array(9).fill(mediaAttachment(wav,'audio/wav').id)));
+ const root=await mkdtemp(path.join(os.tmpdir(),'mimi-media-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const id=mediaAttachment(wav,'audio/wav').id;await symlink('/etc/hosts',path.join(root,id));await assert.rejects(readMedia(root,id));
+});
+
+test('assistant media requires a reference in this session and a permitted file root',async t=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'mimi-output-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const data=path.join(root,'data'),workspace=path.join(root,'workspace');await mkdir(path.join(data,'sessions'),{recursive:true});await mkdir(workspace);
+ const file=path.join(workspace,'answer.wav');await writeFile(file,wav);
+ const history=path.join(data,'sessions','s.json');await writeFile(history,JSON.stringify({items:[{role:'user',content:file}]}));
+ await assert.rejects(readOutputMedia(data,workspace,'s',file),/未引用/);
+ await writeFile(history,JSON.stringify({items:[{role:'assistant',content:`[录音](${file})`}]}));
+ assert.deepEqual((await readOutputMedia(data,workspace,'s',file)).data,wav);
+ const outside=path.join(root,'secret.wav');await writeFile(outside,wav);const link=path.join(workspace,'link.wav');await symlink(outside,link);
+ await writeFile(history,JSON.stringify({items:[{role:'assistant',content:link}]}));await assert.rejects(readOutputMedia(data,workspace,'s',link),/工作区/);
+ await assert.rejects(readOutputMedia(data,workspace,'../s',file));
+});
+
+test('media drafts retain failed recognition for retry and do not resurrect removed uploads',async()=>{
+ const values=new Map();const storage={getItem:(k:string)=>values.get(k),setItem:(k:string,v:string)=>values.set(k,v)};
+ const ref=mediaAttachment(wav,'audio/wav');let fail=true;
+ const options={storage,upload:async()=>ref,prepare:async()=>{if(fail)throw new Error('offline');return {...ref,transcript:'你好',duration:2};},changed:()=>{}};
+ const drafts=createMediaDrafts(options);await drafts.add('s',new File([wav],'voice.wav',{type:'audio/wav'}));
+ assert.equal(drafts.list('s')[0].error,'offline');assert.equal(drafts.list('s')[0].ready,undefined);
+ const reload=createMediaDrafts(options);assert.equal(reload.list('s')[0].id,ref.id);fail=false;await reload.retry('s',reload.list('s')[0].key);assert.equal(reload.list('s')[0].transcript,'你好');
+ let resolve!:(v:unknown)=>void;const pending=new Promise(r=>resolve=r);const other=createMediaDrafts({...options,upload:()=>pending});
+ const add=other.add('b',new File([wav],'voice.wav',{type:'audio/wav'}));other.remove('b',other.list('b')[0].key);resolve(ref);await add;assert.deepEqual(other.list('b'),[]);
+ assert.ok(!values.get('mimi-media:s').includes('base64'));
+});
+
+test('output blocks recognize media links but never code examples or executable URLs',()=>{
+ const refs=outputMedia('[声音](/tmp/voice.wav)\n![图](https://example.com/a.png)\n[video](https://example.com/v.mp4)\n[x](javascript:alert)\n```sh\n`/tmp/example.mp4`\n```','s');
+ assert.deepEqual(refs.map((r:any)=>r.kind),['audio','image','video']);assert.match(refs[0].src,/session=s/);
+});
+
+test('recorder releases microphone on completion, failed startup and late permission cancellation',async()=>{
+ let stopped=0,complete=0,errors=0,instance:any;
+ const stream={getTracks:()=>[{stop:()=>stopped++}]};
+ class Recorder {static isTypeSupported(){return true;}state='inactive';mimeType='audio/webm';ondataavailable:any;onstop:any;constructor(){instance=this;}start(){this.state='recording';}stop(){this.state='inactive';this.ondataavailable({data:new Blob(['data'])});this.onstop();}}
+ const options={mediaDevices:{getUserMedia:async()=>stream},Recorder,changed:()=>{},complete:()=>complete++,error:()=>errors++};
+ const recording=createRecorder(options);await recording.start('a');assert.equal(recording.active,true);recording.stop();assert.equal(stopped,1);assert.equal(complete,1);assert.equal(recording.active,false);
+ class Broken extends Recorder {start(){throw new Error('device disconnected');}}
+ const broken=createRecorder({...options,Recorder:Broken});await broken.start('a');assert.equal(broken.active,false);assert.equal(errors,1);assert.equal(stopped,2);
+ let grant!:(v:any)=>void;const delayed=createRecorder({...options,mediaDevices:{getUserMedia:()=>new Promise(r=>grant=r)}});const starting=delayed.start('a');delayed.cancel();grant(stream);await starting;assert.equal(stopped,3);assert.equal(complete,1);assert.equal(delayed.active,false);
+});
+
+test('recorder measures the actual input, rejects silence and routes selected devices',{timeout:3000},async t=>{
+ let signal=0,uploads=0,stopped=0;const failures:string[]=[],constraints:any[]=[];
+ let notifySample!:(value:any)=>void;
+ const sample=()=>new Promise<any>(resolve=>{notifySample=resolve;});
+ class AudioContext {
+  state='running';resume(){return Promise.resolve();}close(){return Promise.resolve();}
+  createMediaStreamSource(){return {connect(){},disconnect(){}};}
+  createAnalyser(){return {fftSize:2048,getFloatTimeDomainData:(buffer:Float32Array)=>{buffer.fill(signal);},disconnect(){}};}
+ }
+ class Recorder {static isTypeSupported(){return true;}state='inactive';mimeType='audio/webm';ondataavailable:any;onstop:any;start(){this.state='recording';}stop(){this.state='inactive';this.ondataavailable({data:new Blob(['valid container even when silent'])});this.onstop();}}
+ const recording=createRecorder({Recorder,AudioContext,mediaDevices:{getUserMedia:async (value:any)=>{constraints.push(value);return {getTracks:()=>[{stop:()=>stopped++,getSettings:()=>({deviceId:'builtin'}),label:'Built-in microphone'}]};},enumerateDevices:async()=>[{kind:'audioinput',deviceId:'builtin',label:'Built-in microphone'}]},changed:(state:any)=>{if(state.level>0)notifySample?.(state);},complete:()=>uploads++,error:(e:Error)=>failures.push(e.message)});
+ t.after(()=>recording.cancel());
+ await recording.start('s');
+ // Coordinate on the analyser invocation, instead of waiting an assumed timer duration.
+ const measured=new Promise<void>(resolve=>{AudioContext.prototype.createAnalyser=function(){return {fftSize:2048,getFloatTimeDomainData:(buffer:Float32Array)=>{buffer.fill(signal);resolve();},disconnect(){}};};});
+ await recording.selectDevice('builtin');await measured;recording.stop();
+ assert.equal(uploads,0);assert.match(failures[0]!,/没有录到声音/);
+ signal=.02;const heard=sample();await recording.start('s');const state=await heard;
+ assert.ok(state.level>.01);recording.stop();assert.equal(uploads,1);
+ assert.deepEqual(constraints.at(-1).audio.deviceId,{exact:'builtin'});assert.equal(stopped,3);
+});
+
+
+test('saved speech receipts restore a conversation player and authorize only paired session audio', async t => {
+ const root=await mkdtemp(path.join(os.tmpdir(),'mimi-speech-web-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const workspace=path.join(root,'workspace'),data=path.join(root,'data');
+ await mkdir(workspace);await mkdir(path.join(data,'sessions'),{recursive:true});await mkdir(path.join(data,'media','tts'),{recursive:true});
+ const file=path.join(data,'media','tts','voice (中文).wav');await writeFile(file,wav);
+ const receipt={id:'bb53a754-489c-4285-b7b1-013ddb54437f',file,format:'wav',engine:'chattts',createdAt:'2026-10-14T02:22:45.342Z'};
+ const call={type:'function_call',name:'speech',callId:'c',arguments:JSON.stringify({action:'speak',input:'读给我听'})};
+ const result={type:'function_call_result',name:'speech',callId:'c',status:'completed',output:{type:'text',text:JSON.stringify(receipt)}};
+ const items=[{role:'user',content:'读给我听'},call,result,{role:'assistant',content:'语音准备好了'}];
+ const history=path.join(data,'sessions','s.json');await writeFile(history,JSON.stringify({items}));
+ assert.deepEqual(speechHistoryFiles(items),[file]);
+ assert.deepEqual((await readOutputMedia(data,workspace,'s',file)).data,wav);
+ const projection=await decorateSessionTimeline({dataRoot:data,sessionId:'s',items});
+ assert.match(JSON.stringify(projection.items.at(-1)?.mediaAttachments),/api\/media\/output/);
+ assert.deepEqual(JSON.parse(await readFile(history,'utf8')).items,items,'history must remain unchanged');
+ const linked=withSpeechLinks('准备好了',[file]);
+ const refs=outputMedia(linked,'s');assert.equal(refs.length,1);assert.equal(new URL('http://localhost'+refs[0].src).searchParams.get('path'),file);
+ for(const invalid of [[result], [{...call,name:'read_file'},result], [call,{...result,output:{...receipt,status:'uncertain'}}]]) {
+   assert.deepEqual(speechHistoryFiles(invalid),[]);
+   await writeFile(history,JSON.stringify({items:invalid}));
+   await assert.rejects(readOutputMedia(data,workspace,'s',file),/未引用/);
+ }
+ await writeFile(path.join(data,'sessions','other.json'),JSON.stringify({items:[]}));
+ await assert.rejects(readOutputMedia(data,workspace,'other',file),/未引用/);
+});

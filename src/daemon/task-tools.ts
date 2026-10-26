@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import type {
   WorkUnitArtifact,
   WorkUnitDescriptor,
@@ -26,6 +27,11 @@ import {
 const MAX_BACKGROUND_TASK_CHILDREN = 8;
 type MaybePromise<T> = T | Promise<T>;
 
+const backgroundTaskIdSchema = z.string().trim().refine(
+  (taskId) => /^[0-9a-f]{8}$/i.test(taskId) || z.string().uuid().safeParse(taskId).success,
+  'taskId 必须是完整 UUID 或 8 位十六进制短 ID',
+).describe('完整后台任务 UUID，或其前 8 位短 ID');
+
 const delegationSchema = z.object({
   objective: z.string().trim().min(1).max(8_000)
     .describe('后台任务的完整目标；应独立可执行，不要只写“继续处理”'),
@@ -36,7 +42,7 @@ const delegationSchema = z.object({
   strategy: z.enum(['single', 'team']).default('single')
     .describe('single 由一个 Task Lead 完成；可安全拆分的大型任务才使用 team'),
   executor: z.enum(['mimi', 'codex']).default('mimi')
-    .describe('mimi（默认）由 MimiAgent 执行；codex 由独立 Codex CLI 进程自主执行，MimiAgent 只登记、启动和追踪'),
+    .describe('mimi（默认）由 MimiAgent 执行；codex 由独立 Codex CLI 执行。完成后均由 Mimi 回到原对话核查结果和安排原目标要求的后续步骤'),
   modelTarget: modelTargetSchema.optional()
     .describe('仅当用户明确指定 Mimi 后台任务模型时填写精确 providerId/modelId；省略时按 background.default 场景路由。只适用于 executor=mimi'),
   workspaceAccess: z.enum(['read', 'write']).default('write')
@@ -127,6 +133,17 @@ function delegatedTaskId(idempotencyKey: string): string {
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
   const hex = bytes.toString('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function resolveBackgroundTask(store: MimiStore, taskId: string): TaskRecord {
+  const normalizedTaskId = taskId.toLowerCase();
+  const exact = z.string().uuid().safeParse(normalizedTaskId).success;
+  const matches = exact
+    ? [store.getTask(normalizedTaskId)].filter((task): task is TaskRecord => task?.type === 'background')
+    : store.listTasks(2, { type: 'background', idPrefix: normalizedTaskId });
+  if (matches.length === 0) throw new Error(`后台任务不存在：${taskId}`);
+  if (matches.length > 1) throw new Error(`后台任务短 ID 不唯一，请使用完整 UUID：${taskId}`);
+  return matches[0]!;
 }
 
 export interface BackgroundTaskSummary {
@@ -326,17 +343,15 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
       name: 'list_background_tasks',
       description: '列出最近的 MimiAgent 后台任务及其 queued/running/completed/failed 状态。这只是概览；用户询问某个 Codex 任务的实际进度时，必须继续调用 inspect_background_task 读取其持久输出日志。不要循环轮询，重要终态会主动通知。',
       parameters: z.object({ limit: z.number().int().min(1).max(50).default(20) }).strict(),
-      execute: async ({ limit }) => context.store.listTasks(limit)
-        .filter((task) => task.type === 'background')
+      execute: async ({ limit }) => context.store.listTasks(limit, { type: 'background' })
         .map(backgroundTaskSummary),
     }),
     tool({
       name: 'inspect_background_task',
       description: '读取一个后台任务的目标、状态、结果和错误。Codex 任务还会直接返回持久 JSONL 输出中的最近执行事件、文件修改、命令和 agent 进展，无需再猜测或搜索日志路径。仅在用户询问或需要继续处理阻塞任务时调用。',
-      parameters: z.object({ taskId: z.string().uuid() }).strict(),
+      parameters: z.object({ taskId: backgroundTaskIdSchema }).strict(),
       execute: async ({ taskId }) => {
-        const task = context.store.getTask(taskId);
-        if (!task || task.type !== 'background') throw new Error(`后台任务不存在：${taskId}`);
+        const task = resolveBackgroundTask(context.store, taskId);
         return inspectBackgroundTaskSummary(task);
       },
     }),
@@ -344,61 +359,58 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
       name: 'cancel_background_task',
       description: '取消一个 queued、running、paused 或 blocked 的后台任务。运行中的外部副作用会先等待安全边界，不确定事务不会自动重放。',
       parameters: z.object({
-        taskId: z.string().uuid(),
+        taskId: backgroundTaskIdSchema,
         reason: z.string().trim().min(1).max(1_000).optional(),
       }).strict(),
       execute: async ({ taskId, reason }) => {
-        const task = context.store.getTask(taskId);
-        if (!task || task.type !== 'background') throw new Error(`后台任务不存在：${taskId}`);
-        const result = await context.cancel?.(taskId, reason ?? 'owner 取消了后台任务')
+        const task = resolveBackgroundTask(context.store, taskId);
+        const result = await context.cancel?.(task.id, reason ?? 'owner 取消了后台任务')
           ?? (() => {
-            context.store.cancelTask(taskId, reason ?? 'owner 取消了后台任务');
+            context.store.cancelTask(task.id, reason ?? 'owner 取消了后台任务');
             return { state: 'cancelled' as const };
           })();
-        return { taskId, ...result };
+        return { taskId: task.id, ...result };
       },
     }),
     tool({
       name: 'pause_background_task',
       description: '暂停一个 queued 或 running 的后台任务，保留其任务 Session 和持久进度，之后可继续。运行中的任务会先停在安全边界。',
       parameters: z.object({
-        taskId: z.string().uuid(),
+        taskId: backgroundTaskIdSchema,
         reason: z.string().trim().min(1).max(1_000).optional(),
       }).strict(),
       execute: async ({ taskId, reason }) => {
-        const task = context.store.getTask(taskId);
-        if (!task || task.type !== 'background') throw new Error(`后台任务不存在：${taskId}`);
-        if (task.status === 'paused') return { taskId, state: 'already_paused' as const };
+        const task = resolveBackgroundTask(context.store, taskId);
+        if (task.status === 'paused') return { taskId: task.id, state: 'already_paused' as const };
         if (task.status === 'queued') {
-          context.store.pauseTask(taskId, reason ?? 'owner 暂停了后台任务');
-          return { taskId, state: 'paused' as const };
+          context.store.pauseTask(task.id, reason ?? 'owner 暂停了后台任务');
+          return { taskId: task.id, state: 'paused' as const };
         }
         if (task.status === 'running') {
-          const result = await context.pause?.(taskId, reason ?? 'owner 暂停了后台任务')
+          const result = await context.pause?.(task.id, reason ?? 'owner 暂停了后台任务')
             ?? { state: 'not_pauseable' as const };
-          return { taskId, ...result };
+          return { taskId: task.id, ...result };
         }
         if (['completed', 'failed', 'cancelled', 'dead_letter'].includes(task.status)) {
-          return { taskId, state: 'already_terminal' as const };
+          return { taskId: task.id, state: 'already_terminal' as const };
         }
-        return { taskId, state: 'not_pauseable' as const };
+        return { taskId: task.id, state: 'not_pauseable' as const };
       },
     }),
     tool({
       name: 'resume_background_task',
       description: '继续一个 paused 或 blocked 的后台任务。可附加完成任务所必需的简短新上下文；任务会复用原任务 Session 在后台继续。',
       parameters: z.object({
-        taskId: z.string().uuid(),
+        taskId: backgroundTaskIdSchema,
         context: z.string().trim().min(1).max(4_000).optional(),
       }).strict(),
       execute: async ({ taskId, context: additionalContext }) => {
-        const task = context.store.getTask(taskId);
-        if (!task || task.type !== 'background') throw new Error(`后台任务不存在：${taskId}`);
+        const task = resolveBackgroundTask(context.store, taskId);
         if (task.status !== 'paused' && task.status !== 'blocked') {
-          return { taskId, state: 'not_resumable' as const };
+          return { taskId: task.id, state: 'not_resumable' as const };
         }
-        context.store.resumeTask(taskId, additionalContext);
-        return { taskId, state: 'resumed' as const };
+        context.store.resumeTask(task.id, additionalContext);
+        return { taskId: task.id, state: 'resumed' as const };
       },
     }),
   ];
@@ -406,10 +418,14 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
   return [
     tool({
       name: 'delegate_background_task',
-      description: '把无需在当前对话立即得到结果的长程、大型、多阶段、持续等待或定时型工作持久化为后台任务。executor=mimi 时由 Task Lead 执行；executor=codex 时 MimiAgent 只登记、启动并追踪独立 Codex CLI，不参与其 Plan、工具调用、重试或验收，也不会失败后回退给 Mimi。成功后立即返回 taskId；当前对话不得等待、轮询或重复执行。',
+      description: '把长程或多阶段工作持久化为后台任务。mimi 由 Task Lead 执行；codex 由独立 Codex CLI 执行，不干预执行器内部过程或失败后自动切换执行器。完成后 Mimi 会回到原对话核查结果、处理原目标要求的后续步骤。完整保留用户的观察/跟进要求。成功后立即返回 taskId；当前对话无需等待或轮询。',
       parameters: delegationSchema,
       execute: async (input) => {
         const normalized = delegationSchema.parse(input);
+        const parentObjective = context.task.objective as Record<string, unknown> | null;
+        const continuationDepth = typeof parentObjective?.continuationDepth === 'number'
+          ? parentObjective.continuationDepth : 0;
+        if (continuationDepth >= 3) throw new Error('连续核查已达到三轮，请总结已完成项和剩余卡点，让用户决定后续方向');
         const workspaceAccess = effectiveWorkspaceAccess(normalized);
         const effectiveInput = { ...normalized, workspaceAccess };
         if (normalized.executor === 'codex' && normalized.modelTarget) {
@@ -465,6 +481,8 @@ export function createBackgroundTaskTools(context: BackgroundTaskToolContext): T
             requiredCapabilities: normalized.requiredCapabilities,
             ...(context.workspaceRoot ? { workspaceRoot: context.workspaceRoot } : {}),
             originSessionId: context.sessionId,
+            returnToOwner: true,
+            continuationDepth,
             replyRoute: context.replyRoute ?? context.event.replyRoute ?? { channel: 'system' },
           },
           executor: normalized.executor === 'codex' ? 'codex' : 'isolated_worker',

@@ -59,14 +59,20 @@ export class ToolSetBuilder {
       'invoke_runtime_capability',
     ]);
     const core = new Set([
+      'current_time',
       'read_file',
+      'use_skill',
       'write_file',
       'edit_file',
       'apply_patch',
+      'move_file',
       'list_directory',
       'search_files',
       'inspect_changes',
       'run_shell',
+      'http_get',
+      'web_search',
+      'code_interpreter',
       'browser_open',
       'browser_observe',
       'browser_act',
@@ -78,30 +84,17 @@ export class ToolSetBuilder {
       'inspect_capabilities',
       'invoke_capability',
       'read_context_artifact',
+      'task_history',
+      'speech',
+      'model_control',
       'memory_search',
       'remember',
-      'update_plan',
-      'show_plan',
-      'delegate_background_task',
-      'list_background_tasks',
-      'inspect_background_task',
-      'runtime_status',
-      'list_sessions',
-      'get_session_history',
-      'switch_model',
-      'switch_mode',
-      'switch_session',
-      'new_session',
-      'clear_session',
-      'prepare_task',
-      'finish_task',
-      'finish_mimi_silently',
       ...(policy?.allowedTools ?? []),
       ...additionalNames,
     ]);
     const direct = tools.filter((candidate) => core.has(candidate.name)
       && !alwaysDeferred.has(candidate.name)
-      && !candidate.name.includes('skill')
+      && (!candidate.name.includes('skill') || candidate.name === 'use_skill')
       && !candidate.name.startsWith('mcp_'));
     const directNames = new Set(direct.map((candidate) => candidate.name));
     return {

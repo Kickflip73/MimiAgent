@@ -44,7 +44,7 @@ test('Task worker retains lazy runtime credentials until the worker explicitly r
   });
 });
 
-test('Task worker configuration excludes Computer Use capability', () => {
+test('Task worker configuration excludes host-only Computer and TTS capabilities', () => {
   const config = {
     provider: 'deepseek',
     workspaceRoot: '/workspace',
@@ -68,10 +68,18 @@ test('Task worker configuration excludes Computer Use capability', () => {
       foregroundLeaseSeconds: 30,
       artifactMaxBytes: 1024 * 1024,
     },
+    tts: {
+      enabled: true,
+      command: '/runtime/tts/render',
+      playbackCommand: '/usr/bin/afplay',
+      synthesisTimeoutMs: 180_000,
+      playbackTimeoutMs: 600_000,
+    },
   } satisfies AppConfig;
 
   const workerConfig = taskWorkerConfig(config);
   assert.equal('computer' in workerConfig, false);
+  assert.equal('tts' in workerConfig, false);
   assert.equal(workerConfig.securityProfile, 'full-owner');
   assert.equal(workerConfig.skillsRootConfigured, true);
   assert.doesNotThrow(() => taskWorkerInitSchema.parse({

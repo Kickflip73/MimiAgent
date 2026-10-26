@@ -37,6 +37,7 @@ const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 const eventKindSchema = z.enum(['command', 'alert', 'ambient', 'schedule', 'webhook']);
 const RECENT_OWNER_ROUTE_MS = 7 * 24 * 60 * 60_000;
 const MAX_BRIEFING_PROMPT_CHARS = 48_000;
+const SCHEDULE_MISFIRE_GRACE_MINUTES = 15;
 
 function eventKindForType(type: string): EventKind {
   if (type === 'schedule.due') return 'schedule';
@@ -146,13 +147,13 @@ const attentionConfigBaseSchema = z.object({
     intervalHours: z.number().int().min(1).max(168).default(24),
   }).strict().default({ enabled: true, historyRetentionDays: 90, intervalHours: 24 }),
   briefings: z.object({
-    enabled: z.boolean().default(true),
+    enabled: z.boolean().default(false),
     times: z.array(timeSchema).min(1).max(8).default(['08:30', '18:00']),
     maxItems: z.number().int().min(1).max(500).default(100),
     replyChannel: z.string().trim().min(1).max(100).optional(),
     replyTarget: z.string().trim().min(1).max(500).optional(),
   }).strict(),
-  routines: z.array(mimiRoutineSchema).max(50).default(defaultRoutines()),
+  routines: z.array(mimiRoutineSchema).max(50).default([]),
   people: z.array(mimiPersonSchema).max(100).default([]),
   decisionPolicy: decisionPolicySchema,
   rules: z.array(mimiAttentionRuleSchema).max(200).default([]),
@@ -250,27 +251,12 @@ function defaultConfig(): AttentionConfig {
     thresholds: { alertPriority: 75, webhookPriority: 80 },
     execution: { runIdleTimeoutMs: 20 * 60_000 },
     maintenance: { enabled: true, historyRetentionDays: 90, intervalHours: 24 },
-    briefings: { enabled: true, times: ['08:30', '18:00'], maxItems: 100 },
-    routines: defaultRoutines(),
+    briefings: { enabled: false, times: ['08:30', '18:00'], maxItems: 100 },
+    routines: [],
     people: [],
     decisionPolicy: { standingOrders: [], sourcePolicies: [] },
     rules: [],
   };
-}
-
-function defaultRoutines(): RoutineConfig[] {
-  return [
-    {
-      id: 'morning-plan', enabled: true, time: '08:00',
-      prompt: '主动执行晨间规划：先用 inspect_mimi_activity 检查 MimiAgent 自身积压和失败，再检查今日日历、提醒事项、重要未读消息、天气与当前任务风险；能直接整理、回复、建立提醒或调整计划的就完成。只汇报关键安排、已完成动作和需要 owner 关注的事项；若确认没有新变化、风险、动作或需关注事项，调用 finish_mimi_silently 安静完成。',
-      priority: 70,
-    },
-    {
-      id: 'evening-close', enabled: true, time: '21:00',
-      prompt: '主动执行晚间收尾：先用 inspect_mimi_activity 检查 MimiAgent 自身积压、失败和今日运行状态，再检查今天未完成事项、明日早间安排、待回复消息和生活提醒；完成可直接处理的收尾动作，为未完成事务建立可靠后续。简要汇报关键结果；若确认没有新变化、风险、动作或需关注事项，调用 finish_mimi_silently 安静完成。',
-      priority: 65,
-    },
-  ];
 }
 
 function decisionPolicyChars(policy: AttentionConfig['decisionPolicy']): number {
@@ -303,6 +289,11 @@ function localParts(date: Date, timezone: string): { date: string; time: string;
 function minuteOf(value: string): number {
   const [hour, minute] = value.split(':').map(Number);
   return hour! * 60 + minute!;
+}
+
+function scheduleIsDue(scheduledMinute: number, currentMinute: number): boolean {
+  const lateness = currentMinute - scheduledMinute;
+  return lateness >= 0 && lateness <= SCHEDULE_MISFIRE_GRACE_MINUTES;
 }
 
 function routineRevision(routine: RoutineConfig): string {
@@ -827,7 +818,7 @@ export class AttentionEngine {
     if (!this.config.briefings.enabled || this.snoozeStatus(now).active) return [];
     const local = localParts(now, this.config.timezone);
     const time = [...new Set(this.config.briefings.times)]
-      .filter((candidate) => minuteOf(candidate) <= local.minute)
+      .filter((candidate) => scheduleIsDue(minuteOf(candidate), local.minute))
       .sort().at(-1);
     if (!time) return [];
     const event = this.createBriefing(`briefing:${local.date}:${time}`, `${local.date} ${time}`, now);
@@ -842,7 +833,7 @@ export class AttentionEngine {
     }
     const events: ImmutableEvent[] = [];
     for (const routine of this.config.routines) {
-      if (!routine.enabled || minuteOf(routine.time) > local.minute) continue;
+      if (!routine.enabled || !scheduleIsDue(minuteOf(routine.time), local.minute)) continue;
       if (routine.weekdays && !new Set(routine.weekdays).has(local.weekday)) continue;
       const scheduledLocal = `${local.date} ${routine.time}`;
       const checkpoint = `routine:${routine.id}:${local.date}:${routine.time}`;

@@ -101,7 +101,12 @@ test('keeps compacted history out of user turns and preserves an adjacent offer'
     const serialized = JSON.stringify(modelInput);
     assert.match(instructions, /old question 1/);
     assert.doesNotMatch(serialized, /历史背景数据|较早会话的机械摘要|old question 1/);
-    assert.deepEqual(modelInput.slice(-2), [
+    // The derived Host boundary separates turns without removing the proposal
+    // that gives the owner's short confirmation its meaning.
+    const boundary = modelInput.at(-2) as { role?: string; content?: string };
+    assert.equal(boundary.role, 'system');
+    assert.match(boundary.content ?? '', /^\[Host current-turn boundary\]/);
+    assert.deepEqual([modelInput.at(-3), modelInput.at(-1)], [
       { role: 'assistant', content: '需要我帮你查一下路线或天气吗？' },
       { role: 'user', content: '好' },
     ]);
@@ -150,6 +155,12 @@ test('removes archive messages persisted by affected versions without deleting r
 test('short confirmations resolve against the immediately preceding assistant proposal', () => {
   assert.match(BASE_INSTRUCTIONS, /短回复必须结合紧邻的 assistant 提问或提议解释/);
   assert.match(BASE_INSTRUCTIONS, /明确待执行动作，就视为同意并继续/);
+});
+
+test('explicit owner tool and data-source choices cannot be silently substituted', () => {
+  assert.match(BASE_INSTRUCTIONS, /明确指定工具、命令、数据源或目标系统/);
+  assert.match(BASE_INSTRUCTIONS, /硬边界/);
+  assert.match(BASE_INSTRUCTIONS, /不得静默换路/);
 });
 
 test('memory recall reformulates irrelevant results before guessing', () => {

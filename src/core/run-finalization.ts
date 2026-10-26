@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import type { ExecutionCallRecord } from './execution-ledger.js';
+import { resultArtifactSchema, resultArtifacts, toolResultFailure, toolResultUncertain, toolResultObject } from './tool-result.js';
 
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 export const runOutcomeSchema = z.enum([
@@ -18,6 +20,7 @@ export const toolExecutionManifestEntrySchema = z.object({
   toolName: z.string().min(1),
   callId: z.string().min(1),
   modelCallId: z.string().min(1).optional(),
+  recoveredByCallId: z.string().min(1).optional(),
   status: z.enum(['started', 'succeeded', 'failed', 'uncertain']),
   argumentsDigest: digestSchema,
   outcomeDigest: digestSchema.optional(),
@@ -30,6 +33,10 @@ export const runFinalizationRecordSchema = z.object({
   reason: z.string().trim().min(1).max(2_000).optional(),
   nextAction: z.string().trim().min(1).max(2_000).optional(),
   evidenceRefs: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+  artifacts: z.array(resultArtifactSchema).max(100).optional(),
+  // Preserve durable evidence written by builds with the optional media subsystem.
+  mediaAnchors: z.array(z.unknown()).max(100).optional(),
+  mediaAnchorsTruncated: z.literal(true).optional(),
   completionDecision: z.enum(['pass', 'continue', 'blocked', 'uncertain']).optional(),
   toolManifest: z.array(toolExecutionManifestEntrySchema),
 }).strict();
@@ -106,15 +113,56 @@ function blocksForInput(call: ExecutionCallRecord): boolean {
     && objectValue(call.output)?.accepted === true;
 }
 
-function unresolvedFailures(calls: readonly ExecutionCallRecord[]): ExecutionCallRecord[] {
-  return calls.filter((call, index) => call.status === 'failed' && !calls.slice(index + 1).some((later) => (
-    later.status === 'succeeded'
+function repairsRejectedArguments(failed: ExecutionCallRecord, later: ExecutionCallRecord): boolean {
+  const result = toolResultObject(failed.output);
+  const disposition = objectValue(result?.disposition);
+  if (disposition?.phase !== 'pre_dispatch' || disposition.kind !== 'validation'
+    || disposition.dispatchStarted !== false || disposition.toolName !== failed.toolName) return false;
+  const before = toolResultObject(failed.argumentsJson);
+  const after = toolResultObject(later.argumentsJson);
+  if (!before || !after || !Array.isArray(result?.issues) || !result.issues.length) return false;
+  // A generic dispatcher can serve unrelated capabilities. Never associate their
+  // successes just because the wrapper has the same name.
+  for (const key of ['name', 'toolName', 'capability', 'connector', 'action', 'server', 'method']) {
+    if (!isDeepStrictEqual(before[key], after[key])) return false;
+  }
+  const left = structuredClone(before);
+  const right = structuredClone(after);
+  for (const issue of result.issues) {
+    const value = objectValue(issue)?.path;
+    const keys = typeof value === 'string' ? value.split('.') : Array.isArray(value) ? value.map(String) : [];
+    if (!keys.length || keys.some((key) => !key || ['__proto__', 'prototype', 'constructor'].includes(key))) return false;
+    for (const args of [left, right]) {
+      let parent: Record<string, unknown> | undefined = args;
+      for (const key of keys.slice(0, -1)) {
+        const child: unknown = parent?.[key];
+        parent = child !== null && typeof child === 'object' ? child as Record<string, unknown> : undefined;
+      }
+      if (parent) delete parent[keys.at(-1)!];
+    }
+  }
+  // Only the rejected fields may change. Evidence of another task cannot clear
+  // an earlier failure. Both attempts remain unchanged in the canonical manifest.
+  return isDeepStrictEqual(left, right);
+}
+
+function recoveringCall(calls: readonly ExecutionCallRecord[], index: number): ExecutionCallRecord | undefined {
+  const call = calls[index]!;
+  if (call.status !== 'failed') return undefined;
+  return calls.slice(index + 1).find((later) => later.status === 'succeeded'
     && later.toolName === call.toolName
-    && later.argumentsJson === call.argumentsJson
-  )));
+    && !isInteractionOnly(later.output) && !isAcceptedOnly(later.output)
+    && (later.argumentsJson === call.argumentsJson || repairsRejectedArguments(call, later)));
+}
+
+function unresolvedFailures(calls: readonly ExecutionCallRecord[]): ExecutionCallRecord[] {
+  return calls.filter((call, index) => call.status === 'failed' && !recoveringCall(calls, index));
 }
 
 export function classifyRunOutcome(input: RunOutcomeInput): RunOutcome {
+  input = { ...input, calls: input.calls.map((call) => call.status !== 'succeeded' ? call
+    : toolResultUncertain(call.output) ? { ...call, status: 'uncertain' }
+      : toolResultFailure(call.output) ? { ...call, status: 'failed' } : call) };
   if (input.calls.some((call) => call.status === 'started' || call.status === 'uncertain')) {
     return 'uncertain';
   }
@@ -207,14 +255,19 @@ function outcomeDigest(call: ExecutionCallRecord): string | undefined {
 export function toolExecutionManifest(
   calls: readonly ExecutionCallRecord[],
 ): ToolExecutionManifestEntry[] {
-  return calls.map((call) => ({
+  calls = calls.map((call) => call.status !== 'succeeded' ? call
+    : toolResultUncertain(call.output) ? { ...call, status: 'uncertain' }
+      : toolResultFailure(call.output) ? { ...call, status: 'failed' } : call);
+  return calls.map((call, index) => ({
     runId: call.runId,
     toolName: call.toolName,
     callId: call.callId,
     ...(call.modelCallId ?? call.modelCallIds?.[0]
       ? { modelCallId: call.modelCallId ?? call.modelCallIds?.[0] }
       : {}),
-    status: call.status,
+    status: call.status !== 'succeeded' ? call.status
+      : toolResultUncertain(call.output) ? 'uncertain' : toolResultFailure(call.output) ? 'failed' : 'succeeded',
+    ...(recoveringCall(calls, index) ? { recoveredByCallId: recoveringCall(calls, index)!.callId } : {}),
     argumentsDigest: digest(call.argumentsJson),
     ...(outcomeDigest(call) ? { outcomeDigest: outcomeDigest(call) } : {}),
   }));
@@ -242,7 +295,17 @@ export function createRunFinalization(input: {
     ...(input.reason ? { reason: input.reason } : {}),
     ...(input.nextAction ? { nextAction: input.nextAction } : {}),
     evidenceRefs: input.evidenceRefs ?? runEvidenceRefs(input.calls),
+    artifacts: resultArtifacts(input.calls),
     ...(input.completionDecision ? { completionDecision: input.completionDecision } : {}),
     toolManifest: toolExecutionManifest(input.calls),
   });
+}
+
+/** Tool health alone cannot determine whether the user's deliverable is incomplete.
+ * Keep the conservative scheduler outcome; expose the basis in the conversation. */
+export function conversationOutcome(record: {outcome?:string;completionDecision?:string;toolManifest?:readonly {status:string}[]}): string | undefined {
+  return record.outcome === 'partial' && !record.completionDecision
+    && record.toolManifest?.some(call=>call.status==='failed')
+    && !record.toolManifest.some(call=>call.status==='started'||call.status==='uncertain')
+    ? 'issues' : record.outcome;
 }

@@ -56,6 +56,7 @@ function completeRun(
   const claimed = store.claimTaskById(task.id, owner, 60_000, input.at);
   assert.ok(claimed?.sessionKey);
   const attempt = store.beginTaskAttempt(task.id, owner, claimed.sessionKey, owner, input.at);
+  if (task.type === 'memory_maintenance') store.memoryObservations.completeTaskBatch('owner', task.id, input.at);
   store.completeTask(task.id, owner, input.tokens === undefined ? { answer: 'done' } : {
     usage: { runInputTokens: input.tokens, runOutputTokens: 1 },
   }, attempt.id, input.at);
@@ -75,6 +76,7 @@ test('activity groups every Run and token into the stable M1 source taxonomy', a
       ['routine', 'attention:routine', 'owner', 'scheduled'],
       ['eval', 'eval:m1', 'system', 'background'],
       ['unknown', 'system:mystery', 'system', 'background'],
+      ['follow-up', 'mimi:task', 'system', 'conversation'],
     ];
     fixtures.forEach(([id, source, trust, type], index) => completeRun(store, {
       id, source, trust, type, tokens: index + 1, at: new Date(now.getTime() - 60_000 + index),
@@ -82,7 +84,7 @@ test('activity groups every Run and token into the stable M1 source taxonomy', a
 
     const snapshot = store.activitySnapshot(10, now);
     assert.deepEqual(snapshot.runUsageBySource.map((item) => item.category), [
-      'owner_conversation', 'connector', 'health', 'briefing', 'maintenance', 'routine', 'eval', 'unknown',
+      'owner_conversation', 'connector', 'health', 'briefing', 'maintenance', 'routine', 'task_follow_up', 'eval', 'unknown',
     ]);
     for (const item of snapshot.runUsageBySource) {
       assert.equal(item.runs, 1);
@@ -91,6 +93,7 @@ test('activity groups every Run and token into the stable M1 source taxonomy', a
     assert.equal(snapshot.runUsageBySource.find((item) => item.category === 'owner_conversation')?.totalTokens, 2);
     assert.equal(snapshot.runUsageBySource.find((item) => item.category === 'unknown')?.totalTokens, 9);
     assert.equal(snapshot.unknownRunSources, 1);
+    assert.equal(store.healthSnapshot(now).unknownRunSources, snapshot.unknownRunSources);
     const health = buildDaemonHealth({
       tasks: snapshot.tasks,
       outbox: snapshot.outbox,
@@ -245,6 +248,36 @@ test('unmetered autonomous Runs fail closed without blocking direct owner work',
   }
 });
 
+test('a pre-dispatch autonomous failure is known zero-token usage', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-autonomous-pre-dispatch-budget-'));
+  const store = new MimiStore(path.join(root, 'mimi.db'));
+  const failedAt = new Date('2099-08-02T12:55:00.000Z');
+  const now = new Date('2099-08-02T13:00:00.000Z');
+  try {
+    const ingested = store.ingestEvent(event('pre-dispatch', 'connector:mail', 'external', failedAt), {
+      type: 'conversation', sessionKey: 'mimi-pre-dispatch',
+      executor: 'session_actor', workspaceAccess: 'write',
+    });
+    const task = store.claimTaskById(ingested.task!.id, 'worker', 60_000, failedAt)!;
+    const attempt = store.beginTaskAttempt(task.id, 'worker', task.sessionKey!, 'worker', failedAt);
+    store.failTask(task.id, 'worker', 'credential missing', {
+      code: 'provider.credential_missing',
+      disposition: {
+        phase: 'pre_dispatch', kind: 'validation', retryable: false, dispatchStarted: false,
+      },
+    }, attempt.id, failedAt);
+
+    const usage = store.autonomousBudgetUsageSince(new Date(now.getTime() - 60 * 60_000));
+    assert.equal(usage.runs, 1);
+    assert.equal(usage.unmeteredRuns, 0);
+    assert.equal(usage.totalTokens, 0);
+    const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
+    assert.equal(attention.routeIngress(event('after-pre-dispatch', 'connector:mail', 'external', now), now).decision, 'task_created');
+  } finally {
+    store.close();
+  }
+});
+
 test('scheduled Briefing defers under pressure while an explicit owner Briefing bypasses it', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-autonomous-briefing-budget-'));
   const store = new MimiStore(path.join(root, 'mimi.db'));
@@ -258,7 +291,9 @@ test('scheduled Briefing defers under pressure while an explicit owner Briefing 
     const settings = attention.getSettings();
     await attention.updateSettings({
       ...settings,
+      timezone: 'UTC',
       quietHours: { ...settings.quietHours, enabled: false },
+      briefings: { enabled: true, times: ['13:30'], maxItems: 100 },
       budgets: {
         ...settings.budgets,
         maxRunsPerHour: 1,

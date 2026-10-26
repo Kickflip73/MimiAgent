@@ -16,6 +16,7 @@ Appended automatically by scripts/run_evals.py (and scripts/evolve.py) when a ch
   }
 ]
 ```
+
 ## 2026-07-20T14:42:37Z — staleness_check OVERDUE
 
 - days_since_review: 143 (source: git_commit)
@@ -30,3 +31,4 @@ Appended automatically by scripts/run_evals.py (and scripts/evolve.py) when a ch
   }
 ]
 ```
+

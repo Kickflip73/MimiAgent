@@ -1,6 +1,7 @@
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import {
   TOOL_ACTION_INTENT,
   type ToolActionIntentMetadata,
@@ -345,7 +346,7 @@ export function createConnectorCapabilityRuntimeTool(inspect: InspectCapabilitie
     name: 'inspect_mimi_capabilities',
     description: '读取当前可供模型使用的 Connector 业务能力目录及结构化就绪状态。Host 内部动作不会出现在目录中。',
     parameters: z.object({
-      connector: identifier.optional().describe('可选完整 Connector ID 精确过滤；不要填 qq 等渠道简称'),
+      connector: identifier.optional().describe('可选完整 Connector ID 精确过滤，例如 personal-qq；不要填 qq 等渠道简称'),
       capability: z.string()
         .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)
         .max(120)

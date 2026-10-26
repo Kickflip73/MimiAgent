@@ -1,3 +1,4 @@
+import { savedSessionWorkspace } from './session-workspace.js';
 import type { DatabaseSync } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -94,6 +95,17 @@ function sameTask(stored: TaskRecord, input: TaskInput): boolean {
     && stored.maxAttempts === (input.maxAttempts ?? 5);
 }
 
+export interface TaskListSelector {
+  type?: TaskRecord['type'];
+  idPrefix?: string;
+  profileId?: string;
+  sessionKey?: string;
+  query?: string;
+  scheduleId?: string;
+  excludeId?: string;
+  offset?: number;
+}
+
 export class TaskStore {
   constructor(private readonly database: DatabaseSync) {}
 
@@ -130,6 +142,10 @@ export class TaskStore {
     return { task, inserted: Number(inserted.changes) === 1 };
   }
 
+  workspaceRootForSession(sessionId: string): string | undefined {
+    return savedSessionWorkspace(this.database, sessionId);
+  }
+
   get(id: string): TaskRecord | undefined {
     const row = this.database.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Row | undefined;
     return row ? taskFromRow(row) : undefined;
@@ -140,10 +156,53 @@ export class TaskStore {
     return row ? taskFromRow(row) : undefined;
   }
 
-  list(limit: number): TaskRecord[] {
+  /** Sidebar polling must not load or decode stored answer/receipt bodies. */
+  listSummaries(limit: number) {
     return (this.database.prepare(`
-      SELECT * FROM tasks ORDER BY created_at DESC, rowid DESC LIMIT ?
-    `).all(limit) as Row[]).map(taskFromRow);
+      SELECT id, status, session_key, executor, attempt_count, created_at, updated_at, not_before,
+        CASE WHEN json_type(objective_json, '$.originSessionId') = 'text'
+          THEN json_extract(objective_json, '$.originSessionId') END AS origin_session_id,
+        CASE WHEN json_type(objective_json, '$.objective') = 'text'
+          THEN substr(json_extract(objective_json, '$.objective'), 1, 500) END AS objective,
+        substr(error, 1, 500) AS error
+      FROM tasks ORDER BY created_at DESC, rowid DESC LIMIT ?
+    `).all(limit) as Row[]).map((row) => ({
+      taskId: String(row.id), status: String(row.status) as TaskStatus,
+      sessionId: optional(row.session_key), originSessionId: typeof row.origin_session_id === 'string' ? sanitizeSensitiveText(row.origin_session_id) : undefined,
+      objective: typeof row.objective === 'string' ? sanitizeSensitiveText(row.objective) : undefined, executor: row.executor === 'codex' ? 'codex' : 'mimi',
+      attempts: Number(row.attempt_count), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+      error: optional(row.error), notBefore: String(row.not_before),
+    }));
+  }
+
+  list(limit: number, selector: TaskListSelector = {}): TaskRecord[] {
+    const clauses: string[] = [];
+    const parameters: Array<string | number> = [];
+    if (selector.type) {
+      clauses.push('type = ?');
+      parameters.push(selector.type);
+    }
+    if (selector.idPrefix) {
+      clauses.push('substr(id, 1, length(?)) = ?');
+      parameters.push(selector.idPrefix, selector.idPrefix);
+    }
+    for (const [column, value] of [['profile_id', selector.profileId], ['session_key', selector.sessionKey]] as const) {
+      if (value) { clauses.push(`${column} = ?`); parameters.push(value); }
+    }
+    if (selector.query) {
+      clauses.push('(instr(lower(objective_json), lower(?)) > 0 OR instr(lower(coalesce(result_json, \'\')), lower(?)) > 0)');
+      parameters.push(selector.query, selector.query);
+    }
+    if (selector.excludeId) { clauses.push('id != ?'); parameters.push(selector.excludeId); }
+    if (selector.scheduleId) {
+      clauses.push("json_extract(objective_json, '$.scheduleId') = ?");
+      parameters.push(selector.scheduleId);
+    }
+    parameters.push(limit, selector.offset ?? 0);
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+    return (this.database.prepare(`
+      SELECT * FROM tasks ${where} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?
+    `).all(...parameters) as Row[]).map(taskFromRow);
   }
 
   listReady(selector: TaskSelector, timestamp: string, limit: number): TaskRecord[] {

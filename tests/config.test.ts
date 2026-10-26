@@ -8,6 +8,7 @@ import {
   loadConfig,
   loadEnvironment,
   privateRuntimePaths,
+  restrictSecurityProfile,
   resolveEnvironmentFile,
   type AppConfig,
 } from '../src/config.js';
@@ -20,6 +21,14 @@ import {
 import { migrateLegacyMimiDaemon, mimiPaths } from '../src/daemon/client-runtime.js';
 
 const ISOLATED_HOME = path.join(os.tmpdir(), `mimi-config-tests-${process.pid}`);
+
+test('requested security profiles can only reduce the configured authority', () => {
+  assert.equal(restrictSecurityProfile('full-owner', 'workstation'), 'workstation');
+  assert.equal(restrictSecurityProfile('full-owner', 'safe'), 'safe');
+  assert.equal(restrictSecurityProfile('workstation', 'full-owner'), 'workstation');
+  assert.equal(restrictSecurityProfile('safe', 'full-owner'), 'safe');
+  assert.equal(restrictSecurityProfile('workstation', undefined), 'workstation');
+});
 
 test('loads the unified environment when launched from any workspace', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-config-'));
@@ -203,6 +212,41 @@ test('parses valid runtime limits once at startup', () => {
         config.teamMaxConcurrency, config.permissionMode, config.trustedWorkspaceMcp,
       ],
       [60, 128_000, 16_000, 120, 3, 'trusted', process.cwd()],
+    );
+  } finally {
+    for (const key of keys) {
+      const value = previous[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('loads native TTS commands, switch, and timeouts from the environment', () => {
+  const keys = [
+    'MIMI_TTS_ENABLED', 'MIMI_TTS_COMMAND', 'MIMI_TTS_PLAYBACK_COMMAND',
+    'MIMI_TTS_SYNTHESIS_TIMEOUT_MS', 'MIMI_TTS_PLAYBACK_TIMEOUT_MS',
+  ] as const;
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.MIMI_TTS_ENABLED = 'true';
+    process.env.MIMI_TTS_COMMAND = '/bin/echo';
+    process.env.MIMI_TTS_PLAYBACK_COMMAND = '/bin/echo';
+    process.env.MIMI_TTS_SYNTHESIS_TIMEOUT_MS = '120000';
+    process.env.MIMI_TTS_PLAYBACK_TIMEOUT_MS = '300000';
+    assert.deepEqual(loadConfig(ISOLATED_HOME).tts, {
+      enabled: true,
+      command: '/bin/echo',
+      playbackCommand: '/bin/echo',
+      synthesisTimeoutMs: 120_000,
+      playbackTimeoutMs: 300_000,
+    });
+    process.env.MIMI_TTS_ENABLED = 'yes';
+    assert.throws(() => loadConfig(ISOLATED_HOME), /MIMI_TTS_ENABLED.*true.*false/);
+    for (const key of keys) delete process.env[key];
+    assert.equal(
+      loadConfig(ISOLATED_HOME).tts?.command,
+      path.join(ISOLATED_HOME, '.mimi-agent', 'runtime', 'tts', 'render'),
     );
   } finally {
     for (const key of keys) {

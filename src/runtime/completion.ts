@@ -1,4 +1,5 @@
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
+import { tool } from '../tool-factory.js';
 import {
   completionContractSchema,
   completionReportSchema,

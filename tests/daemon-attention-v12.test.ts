@@ -39,6 +39,34 @@ test('new attention configs default to 1000 autonomous runs per day', async () =
   const { store, attention } = await fixture('mimi-attention-default-budget-v12');
   try {
     assert.equal(attention.getSettings().budgets.maxRunsPerDay, 1_000);
+    assert.equal(attention.getSettings().briefings.enabled, false);
+    assert.deepEqual(attention.listRoutines(), []);
+  } finally {
+    store.close();
+  }
+});
+
+test('does not catch up stale schedules after the Daemon starts late', async () => {
+  const { store, attention } = await fixture('mimi-attention-misfire-grace-v12');
+  try {
+    const settings = attention.getSettings();
+    settings.timezone = 'UTC';
+    settings.quietHours.enabled = false;
+    settings.briefings = { enabled: true, times: ['10:00'], maxItems: 10 };
+    await attention.updateSettings(settings);
+    await attention.upsertRoutine({
+      id: 'opted-in-routine', enabled: true, time: '10:00',
+      prompt: 'run only near the configured time', priority: 70,
+    });
+    store.setIngressRoutePolicy((candidate, at) => attention.routeIngress(candidate, at));
+    const staleTime = new Date('2026-07-24T10:16:00.000Z');
+    store.ingestEvent(incoming({
+      id: 'stale-digest-item', externalId: 'stale-digest-item', kind: 'ambient', priority: 10,
+    }));
+
+    assert.equal(store.pendingDigestCount(), 1);
+    assert.deepEqual(attention.emitDueRoutines(staleTime), []);
+    assert.deepEqual(attention.emitDueBriefings(staleTime), []);
   } finally {
     store.close();
   }

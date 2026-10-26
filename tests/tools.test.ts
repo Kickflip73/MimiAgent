@@ -102,6 +102,20 @@ test('exposes unique tool names for OpenAI and compatible providers', () => {
   }
 });
 
+test('allows Shell deadlines up to two hours', () => {
+  const selected = createTools(process.cwd(), false).find((item) => item.name === 'run_shell');
+  assert.ok(selected && 'parameters' in selected);
+  const parameters = selected.parameters as {
+    properties?: { timeoutSeconds?: { default?: number; maximum?: number } };
+  };
+  assert.deepEqual(parameters.properties?.timeoutSeconds, {
+    default: 60,
+    type: 'integer',
+    minimum: 1,
+    maximum: 7_200,
+  });
+});
+
 test('process inspection is a bounded read-only host capability outside the Shell sandbox', async () => {
   const selected = createTools(process.cwd(), false).find((item) => item.name === 'inspect_processes');
   assert.ok(selected && 'invoke' in selected);
@@ -227,13 +241,61 @@ test('blocks canonical aliases of a symlinked private runtime directory', async 
   assert.doesNotMatch(result, /SECRET_SENTINEL/);
 });
 
+test('re-evaluates protected file access for each tool call', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-protected-file-access-'));
+  const runtime = path.join(root, '.mimi-agent');
+  const privateFile = path.join(runtime, 'private.txt');
+  await mkdir(runtime);
+  await writeFile(privateFile, 'PRIVATE_BEFORE\n');
+  assert.equal((await runShellCommand(root, 'git init -q', 5)).exitCode, 0);
+  assert.equal((await runShellCommand(root, 'git add -f .mimi-agent/private.txt', 5)).exitCode, 0);
+
+  let allowed = false;
+  const tools = createTools(root, false, [runtime], {
+    allowProtectedPathFileAccess: () => allowed,
+    postWriteDiagnostics: false,
+  });
+  const invoke = async (name: string, input: object): Promise<string> => {
+    const selected = tools.find((item) => item.name === name);
+    if (!selected || !('invoke' in selected)) throw new Error(`工具不可调用：${name}`);
+    return JSON.stringify(await selected.invoke(new RunContext({}), JSON.stringify(input)));
+  };
+
+  assert.match(
+    await invoke('read_file', { path: '.mimi-agent/private.txt' }),
+    /MimiAgent 私有运行数据（含旧目录）/,
+  );
+
+  allowed = true;
+  await invoke('write_file', { path: '.mimi-agent/private.txt', content: 'PRIVATE_AFTER\n' });
+  assert.equal(await readFile(privateFile, 'utf8'), 'PRIVATE_AFTER\n');
+  assert.match(
+    await invoke('list_directory', { path: '.', includeHidden: true, depth: 2 }),
+    /\.mimi-agent\/private\.txt/u,
+  );
+  assert.match(
+    await invoke('search_files', { query: 'PRIVATE_AFTER', path: '.mimi-agent' }),
+    /\.mimi-agent\/private\.txt/u,
+  );
+  assert.match(
+    await invoke('inspect_changes', { paths: ['.mimi-agent/private.txt'] }),
+    /PRIVATE_(?:BEFORE|AFTER)/u,
+  );
+
+  allowed = false;
+  assert.match(
+    await invoke('list_directory', { path: '.mimi-agent' }),
+    /MimiAgent 私有运行数据（含旧目录）/,
+  );
+});
+
 test('opens the full shell boundary only after an explicit trusted opt-in', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-trusted-shell-'));
   const runtime = path.join(root, PRE_MIMI_DATA_DIRECTORY);
   await mkdir(runtime);
   await writeFile(path.join(runtime, 'trusted.txt'), 'TRUSTED_OK');
   const tools = createTools(root, false, [runtime], {
-    allowProtectedPathShellAccess: true,
+    allowHostShellAccess: true,
   });
   const shell = tools.find((item) => item.name === 'run_shell');
   assert.ok(shell && 'invoke' in shell);
@@ -317,7 +379,13 @@ test('Darwin Shell sandbox blocks direct and interpreter-mediated system automat
   assert.notEqual(direct.exitCode, 0);
   assert.deepEqual(direct.executionBoundary, {
     kind: 'darwin-sandbox',
+    purpose: 'capability-isolation',
+    performanceThrottled: false,
     unavailableCapabilities: ['gui-automation', 'launch-services', 'apple-events'],
+  });
+  assert.deepEqual(direct.executionEnvironment, {
+    kind: 'local-host',
+    performanceThrottled: false,
   });
 
   const script = [
@@ -332,6 +400,31 @@ test('Darwin Shell sandbox blocks direct and interpreter-mediated system automat
   );
   assert.equal(indirect.exitCode, 73);
   assert.equal(indirect.executionBoundary?.kind, 'darwin-sandbox');
+});
+
+test('explicit owner Host Shell execution bypasses the Darwin capability sandbox', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-host-shell-'));
+  const result = await runShellCommand(
+    root,
+    'printf host-shell',
+    5,
+    undefined,
+    [],
+    process.env,
+    undefined,
+    [],
+    [],
+    [],
+    true,
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stdout, 'host-shell');
+  assert.equal(result.executionBoundary, undefined);
+  assert.deepEqual(result.executionEnvironment, {
+    kind: 'local-host',
+    performanceThrottled: false,
+  });
 });
 
 test('Darwin Shell sandbox rejects GUI application executables before launch', async () => {
@@ -364,6 +457,24 @@ test('Shell propagates a failed pipeline stage instead of reporting empty succes
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-pipefail-'));
   const result = await runShellCommand(root, 'false | true', 5);
   assert.notEqual(result.exitCode, 0);
+});
+
+test('Shell reports its local host environment and attributes tool timeouts explicitly', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-shell-timeout-'));
+  const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify('setInterval(() => {}, 1000)')}`;
+  const result = await runShellCommand(root, command, 1);
+
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(result.executionEnvironment, {
+    kind: 'local-host',
+    performanceThrottled: false,
+  });
+  assert.deepEqual(result.termination, { reason: 'timeout', limitSeconds: 1 });
+  assert.match(result.stderr, /调用超时，不是性能限速/u);
+  if (process.platform === 'darwin') {
+    assert.equal(result.executionBoundary?.purpose, 'capability-isolation');
+    assert.equal(result.executionBoundary?.performanceThrottled, false);
+  }
 });
 
 test('Darwin Shell sandbox blocks the registered Computer backend Unix socket through child interpreters', async () => {
@@ -744,7 +855,11 @@ test('bounds local reads and recursive search work', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-tool-limits-'));
   await writeFile(path.join(root, 'large.txt'), 'x'.repeat(200_001));
   await assert.rejects(readLocalFile(root, 'large.txt'), /200000 字节限制/);
-  await assert.rejects(searchLocalFiles(root, 'x', '.', 10, undefined, { maxScannedEntries: 1 }), /扫描项超过 1/);
+  await writeFile(path.join(root, 'other.txt'), 'x');
+  const report = { truncated: false, limitsReached: [] as string[], scannedEntries: 0 };
+  await searchLocalFiles(root, 'x', '.', 10, undefined, { maxScannedEntries: 1, report });
+  assert.equal(report.truncated, true);
+  assert.ok(report.limitsReached.includes('entries'));
   const controller = new AbortController();
   controller.abort(new Error('search cancelled'));
   await assert.rejects(searchLocalFiles(root, 'x', '.', 10, controller.signal), /search cancelled/);

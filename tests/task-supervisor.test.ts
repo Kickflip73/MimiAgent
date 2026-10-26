@@ -335,3 +335,36 @@ test('supervisor status includes detached Codex runtime evidence and rejects unk
   await supervisor.stop();
   await supervisor.stop();
 });
+
+test('supervisor reclaims a worker that keeps heartbeating after its task ended', () => {
+  const ended = { ...task('ended-worker', 'isolated_worker'), status: 'cancelled' as const };
+  const store = { getTask: () => ended };
+  const supervisor = new TaskProcessSupervisor(
+    store as never,
+    {} as never,
+    { database: '/tmp/mimi.db', assistantConfig: '/tmp/assistant.json', socket: '/tmp/mimi.sock' },
+  );
+  const worker = {
+    taskId: ended.id,
+    taskType: ended.type,
+    workerToken: 'worker-token',
+    child: {},
+    workspaceAccess: 'write',
+    spawnedAt: Date.now(),
+    workerId: 'worker-id',
+    heartbeatAt: new Date().toISOString(),
+    exit: Promise.resolve(),
+  };
+  const internal = supervisor as unknown as {
+    workers: Map<string, typeof worker>;
+    terminateStaleWorkers(now?: number): void;
+    terminateWorker(record: typeof worker, reason: string): void;
+  };
+  internal.workers.set(ended.id, worker);
+  let terminationReason: string | undefined;
+  internal.terminateWorker = (_record, reason) => { terminationReason = reason; };
+
+  internal.terminateStaleWorkers();
+
+  assert.equal(terminationReason, '执行租约已失效');
+});

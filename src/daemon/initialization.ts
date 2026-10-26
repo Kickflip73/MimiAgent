@@ -10,6 +10,7 @@ import {
   defaultConnectorEnabled,
   LEGACY_VISIBLE_MACOS_CONNECTORS,
   legacyVisibleConnectorsToDisable,
+  personalMessageConnectorsToAdd,
 } from './background-defaults.js';
 import { mimiPaths } from './client-runtime.js';
 import {
@@ -174,6 +175,18 @@ async function mergeTemplateActions(
     for (const id of defaults.disabled) connectors[id] = { ...connectors[id]!, enabled: false };
     backgroundDefaultsVersion = defaults.version;
     changed ||= defaults.changed;
+  }
+  if (backgroundDefaultsVersion < BACKGROUND_DEFAULTS_VERSION) {
+    const personal = personalMessageConnectorsToAdd(
+      backgroundDefaultsVersion,
+      new Set(Object.keys(connectors)),
+    );
+    for (const id of personal.added) {
+      const packaged = template.connectors[id];
+      if (packaged) connectors[id] = { ...packaged, enabled: false };
+    }
+    backgroundDefaultsVersion = personal.version;
+    changed ||= personal.changed;
   }
   for (const [id, connector] of Object.entries(connectors)) {
     if (!retiredConnector(id, connector)) continue;

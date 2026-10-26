@@ -12,7 +12,7 @@ import {
 import { NotifierRegistry } from '../src/daemon/notifier.js';
 import { MimiStore } from '../src/daemon/store.js';
 
-test('default connector templates exclude personal and retired message backends', async () => {
+test('supported personal channel templates exclude retired WeChat capability', async () => {
   const template = parseConnectorConfig(JSON.parse(
     await readFile(path.join(process.cwd(), 'mimi.connectors.example.json'), 'utf8'),
   ));

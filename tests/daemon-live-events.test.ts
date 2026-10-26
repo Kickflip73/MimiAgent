@@ -37,16 +37,11 @@ test('live event adapters preserve bounded model, tool, reasoning, and plan sema
   } as never);
   assert.equal(output?.kind, 'status');
   assert.equal(output && 'title' in output ? output.title : undefined, 'Ultra Team');
-  assert.deepEqual(mimiStreamEvent({
+  assert.equal(mimiStreamEvent({
     type: 'run_item_stream_event',
     name: 'reasoning_item_created',
     item: {},
-  } as never), {
-    kind: 'status',
-    tone: 'thinking',
-    title: '推理阶段完成',
-    next: '生成回答',
-  });
+  } as never), undefined);
   assert.equal(mimiStreamEvent({
     type: 'run_item_stream_event',
     name: 'unknown',
@@ -149,4 +144,12 @@ test('stream task state bounds answer, effects and errors without inventing data
   assert.deepEqual(unsafe?.result, {
     effects: { invalid: 'RuntimeEffect payload is not serializable' },
   });
+});
+
+
+test('host startup and preparation are explicitly transient while actual tool events stay detailed',()=>{
+  assert.equal((mimiRuntimeStreamEvent({type:'run_progress',sessionId:'s',phase:'正在准备上下文'}) as any).transient,true);
+  const events=new MimiLiveEvents();
+  events.publish('r',mimiRuntimeStreamEvent({type:'run_progress',sessionId:'s',phase:'正在等待模型响应'})!);
+  assert.equal((events.recent('r')[0] as any).transient,true);
 });

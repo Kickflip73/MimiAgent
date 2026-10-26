@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { RunContext } from '@openai/agents';
 import type OpenAI from 'openai';
+import * as sqliteVec from 'sqlite-vec';
 import { createMemoryHub } from '../src/extensions/memory/hub.js';
 import { privateMemoryLayout } from '../src/extensions/memory/layout.js';
 import { WikiVault } from '../src/extensions/memory/wiki-vault.js';
@@ -252,6 +253,23 @@ test('governance links create resolvable Obsidian relationships', async () => {
     ref: entity.ref,
     title: 'MimiAgent 项目',
   }]);
+
+  const current = await hub.read(decision.ref, ctx);
+  await hub.capture({
+    title: current.metadata.title,
+    content: 'GUI 自动化必须在后台执行。',
+    sourceRefs: current.metadata.sourceRefs,
+    kind: current.metadata.kind,
+    status: current.metadata.status,
+    confidence: current.metadata.confidence,
+    scope: 'private',
+    targetRef: current.ref,
+    links: [],
+    replaceLinks: true,
+    reasonCode: 'remove_stale_relationship',
+  }, ctx);
+
+  assert.deepEqual(await hub.links(decision.ref, ctx), []);
 });
 
 test('automatic semantic recall fails fast instead of retrying a slow embedding request', async () => {
@@ -312,16 +330,24 @@ test('hybrid recall uses chunked fake embeddings, rejects unrelated queries and 
 
   const database = new DatabaseSync(privateMemoryLayout(path.join(root, 'data'), 'owner').databaseFile, {
     readOnly: true,
+    allowExtension: true,
   });
+  sqliteVec.load(database);
+  database.enableLoadExtension(false);
   const chunkCount = Number((database.prepare(
-    'SELECT COUNT(*) AS count FROM document_embedding_chunks',
+    'SELECT COUNT(*) AS count FROM document_vec_chunks',
   ).get() as { count: number }).count);
-  const legacyVectorCount = Number((database.prepare(
-    'SELECT COUNT(*) AS count FROM document_embeddings',
+  const mappedChunkCount = Number((database.prepare(
+    'SELECT COUNT(*) AS count FROM document_vec_chunks_map',
   ).get() as { count: number }).count);
+  const legacyVectorTableCount = Number((database.prepare(`
+    SELECT COUNT(*) AS count FROM sqlite_master
+    WHERE type='table' AND name IN ('document_embeddings', 'document_embedding_chunks')
+  `).get() as { count: number }).count);
   database.close();
   assert.ok(chunkCount > 1);
-  assert.equal(legacyVectorCount, 0);
+  assert.equal(mappedChunkCount, chunkCount);
+  assert.equal(legacyVectorTableCount, 0);
 
   const lexical = await createMemoryHub({
     workspaceRoot: root,
@@ -334,7 +360,122 @@ test('hybrid recall uses chunked fake embeddings, rejects unrelated queries and 
   );
 });
 
-test('automatic recall returns at most one near-duplicate and no more than three cards', async () => {
+test('memory status is an actionable vector doctor across provider setup and reindex', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-vector-doctor-'));
+  const dataRoot = path.join(root, 'data');
+  const ctx = context(root);
+  const lexical = await createMemoryHub({ workspaceRoot: root, dataRoot, profileId: 'owner' });
+  await lexical.remember({
+    title: 'Quarterly planning notes',
+    content: 'The roadmap review happens before the next planning cycle.',
+    kind: 'fact',
+  }, ctx);
+
+  const lexicalStatus = await lexical.status(ctx) as unknown as {
+    providerConfigured: boolean;
+    vectorRows: number;
+    retrievalMode: string;
+    nextAction: string;
+  };
+  assert.equal(lexicalStatus.providerConfigured, false);
+  assert.equal(lexicalStatus.vectorRows, 0);
+  assert.equal(lexicalStatus.retrievalMode, 'lexical-only');
+  assert.equal(lexicalStatus.nextAction, 'configure-embedding-provider');
+
+  const embeddingClient = {
+    embeddings: {
+      create: async (request: { input: string | string[] }) => ({
+        data: (Array.isArray(request.input) ? request.input : [request.input])
+          .map(() => ({ embedding: [0.8, 0.2, 0.1] })),
+      }),
+    },
+  } as unknown as OpenAI;
+  const hybrid = await createMemoryHub({
+    workspaceRoot: root,
+    dataRoot,
+    profileId: 'owner',
+    embeddingClient,
+  });
+  const status = await hybrid.reindex(ctx) as unknown as {
+    providerConfigured: boolean;
+    vectorRows: number;
+    vectorState: string;
+    retrievalMode: string;
+    nextAction: string;
+  };
+  assert.equal(status.providerConfigured, true);
+  assert.ok(status.vectorRows > 0);
+  assert.equal(status.vectorState, 'ready');
+  assert.equal(status.retrievalMode, 'hybrid');
+  assert.equal(status.nextAction, 'none');
+});
+
+test('memory status reports lexical-only when the provider is unavailable despite ready vec rows', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-vector-provider-failure-'));
+  let providerState: 'ready' | 'unavailable' = 'ready';
+  const embeddingProvider = {
+    kind: 'local' as const,
+    model: 'local-fixture@1',
+    embed: async (inputs: string[]) => inputs.map(() => [1, 0, 0]),
+    diagnostics: async () => ({
+      kind: 'local' as const,
+      state: providerState,
+      model: 'local-fixture@1',
+    }),
+  };
+  const hub = await createMemoryHub({
+    workspaceRoot: root,
+    dataRoot: path.join(root, 'data'),
+    profileId: 'owner',
+    embeddingProvider,
+  });
+  const ctx = context(root);
+  await hub.remember({ title: 'Vector state', content: 'A durable vector row.', kind: 'fact' }, ctx);
+  assert.equal((await hub.status(ctx)).retrievalMode, 'hybrid');
+  providerState = 'unavailable';
+  const unavailable = await hub.status(ctx);
+  assert.ok((unavailable.vectorRows ?? 0) > 0);
+  assert.equal(unavailable.vectorState, 'ready');
+  assert.equal(unavailable.embeddingState, 'unavailable');
+  assert.equal(unavailable.retrievalMode, 'lexical-only');
+  assert.equal(unavailable.nextAction, 'use-remote-or-lexical');
+});
+
+test('memory status disables hybrid when any current document embedding is missing', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-partial-vector-'));
+  const dataRoot = path.join(root, 'data');
+  const ctx = context(root);
+  const lexical = await createMemoryHub({
+    workspaceRoot: root, dataRoot, profileId: 'owner', retrievalMode: 'lexical',
+  });
+  await lexical.remember({ title: 'Complete vector', content: 'This page can be embedded.', kind: 'fact' }, ctx);
+  await lexical.remember({ title: 'Missing vector', content: 'This page cannot be embedded.', kind: 'fact' }, ctx);
+  const embeddingProvider = {
+    kind: 'local' as const,
+    model: 'partial-fixture@1',
+    embed: async (inputs: string[], options: { purpose: 'query' | 'document' }) => (
+      options.purpose === 'query'
+        ? inputs.map(() => [1, 0, 0])
+        : inputs[0]?.includes('Missing vector') ? undefined : inputs.map(() => [1, 0, 0])
+    ),
+    diagnostics: async () => ({
+      kind: 'local' as const,
+      state: 'ready' as const,
+      model: 'partial-fixture@1',
+    }),
+  };
+  const hybrid = await createMemoryHub({
+    workspaceRoot: root, dataRoot, profileId: 'owner', embeddingProvider,
+  });
+  const status = await hybrid.status(ctx);
+  assert.equal(status.pages, 2);
+  assert.equal(status.vectorRows, 1);
+  assert.equal(status.vectorState, 'reindex-required');
+  assert.equal(status.retrievalMode, 'lexical-only');
+  assert.equal(status.nextAction, 'run-reindex');
+});
+
+test('automatic recall returns exactly one representative for near-duplicate episodes', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-mmr-'));
   const hub = await createMemoryHub({
     workspaceRoot: root,
@@ -352,7 +493,7 @@ test('automatic recall returns at most one near-duplicate and no more than three
     }, { ...ctx, runId: `run-duplicate-${index}` });
   }
   const hits = await hub.search('Cobalt release process', ctx);
-  assert.ok(hits.length <= 3);
+  assert.equal(hits.length, 1);
   assert.equal(hits.filter((hit) => /same verified release checklist/.test(hit.summary)).length, 1);
 });
 
@@ -436,6 +577,43 @@ test('repeated lint findings enter the bounded Error Book and maintenance log', 
   assert.match(await readFile(path.join(vault, '_log.md'), 'utf8'), /lint -/);
 });
 
+test('lint resolves current pages by title, alias, and stable page id', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-lint-links-'));
+  const dataRoot = path.join(root, 'data');
+  const hub = await createMemoryHub({ workspaceRoot: root, dataRoot, profileId: 'owner' });
+  const ctx = context(root);
+  const target = await hub.remember({
+    title: 'Canonical deployment target',
+    aliases: ['Deploy target'],
+    content: 'The durable target is documented here.',
+    kind: 'fact',
+  }, ctx);
+  await hub.remember({
+    title: 'Deployment procedure',
+    content: 'Follow the linked target before release.',
+    kind: 'lesson',
+    links: ['Deploy target', target.ref.id],
+  }, ctx);
+  const historical = await hub.remember({
+    title: 'Historical deployment note',
+    content: 'This old note referenced a page that no longer exists.',
+    kind: 'fact',
+    links: ['Removed historical target'],
+  }, { ...ctx, runId: 'run-historical-link' });
+  await hub.remember({
+    title: 'Current deployment note',
+    content: 'The current note points at the canonical target.',
+    kind: 'fact',
+    links: [target.metadata.title],
+    supersedes: [historical.ref.id],
+  }, { ...ctx, runId: 'run-current-link' });
+
+  const report = await hub.lint(ctx);
+
+  assert.equal(report.issues.some((issue) => issue.code === 'broken-link'), false);
+  assert.equal(report.issues.some((issue) => issue.code === 'orphan'), false);
+});
+
 test('lint repairs deterministic page envelope and canonical identity through a revision', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-memory-lint-repair-'));
   const dataRoot = path.join(root, 'data');
@@ -499,21 +677,21 @@ test('MemoryHub searches all owner Session rounds by default', async () => {
   assert.equal(hits[0]?.ref.id, ref.id);
   assert.match((await hub.read(ref, ctx)).body, /staged rollout/);
 
-  const chatContext = { ...ctx, runId: 'run-chat' };
-  const chat = await hub.recordEpisode({
-    sessionId: chatContext.sessionId,
-    runId: chatContext.runId,
-    input: '请读取示例消息网页版消息。',
-    answer: '通过 CuaDriver 的 AX 树和 page.get_text 读取示例消息消息。',
+  const qqContext = { ...ctx, runId: 'run-qq' };
+  const qq = await hub.recordEpisode({
+    sessionId: qqContext.sessionId,
+    runId: qqContext.runId,
+    input: '请读取网页版消息。',
+    answer: '通过 CuaDriver 的 AX 树和 page.get_text 读取消息。',
     occurredAt: new Date().toISOString(),
-  }, chatContext);
+  }, qqContext);
   for (const query of [
-    '我之前让你读示例消息消息你是怎么读的？',
-    '示例消息 消息 读取',
+    '我之前让你用 CuaDriver 读消息是怎么读的？',
+    'CuaDriver AX 树 消息 读取',
   ]) {
     assert.equal(
       (await hub.search(query, ctx, { scope: 'private' }))[0]?.ref.id,
-      chat.id,
+      qq.id,
       query,
     );
   }
@@ -585,7 +763,7 @@ test('matching Wiki noise cannot crowd relevant Session episodes out of the boun
     sessionId: ctx.sessionId,
     runId: ctx.runId,
     input: 'Friday 模型平台的个人 APP ID 在哪里？',
-    answer: '入口是 https://example.invalid/ml/modelPlaza/detail/487?tabKey=apiUsage。',
+    answer: '入口是 https://aigc.sankuai.com/ml/modelPlaza/detail/487?tabKey=apiUsage。',
     occurredAt: new Date().toISOString(),
   }, ctx);
   for (let index = 0; index < 6; index += 1) {

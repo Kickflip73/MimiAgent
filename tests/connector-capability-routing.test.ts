@@ -58,7 +58,7 @@ test('model instructions drive verified business outcomes through discoverable c
   assert.doesNotMatch(BASE_INSTRUCTIONS, /inspect_runtime_capabilities|invoke_runtime_capability|inspect_mimi_capabilities/);
   assert.match(BASE_INSTRUCTIONS, /不猜工具名、内部字段、action 或替代路线/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /operationRef/);
-  assert.doesNotMatch(BASE_INSTRUCTIONS, /observationId|routeOwner/);
+  assert.doesNotMatch(BASE_INSTRUCTIONS, /observationId|candidateToken|routeOwner/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /探活|health_check/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /PersonalMessageHub/);
   assert.match(BASE_INSTRUCTIONS, /深度测评.*相关源码、测试、架构文档和当前 Git\/运行状态/);
@@ -66,7 +66,8 @@ test('model instructions drive verified business outcomes through discoverable c
   assert.match(BASE_INSTRUCTIONS, /源码验证、测试结果、已安装版本与真实运行证据/);
   assert.match(BASE_INSTRUCTIONS, /Shell 沙箱边界.*不等于 SIP/);
   assert.match(BASE_INSTRUCTIONS, /只读诊断能力/);
-  assert.match(BASE_INSTRUCTIONS, /后台网页.*直接 browser_open/);
+  assert.match(BASE_INSTRUCTIONS, /Browser 工具本轮直接可见时.*直接 browser_open/);
+  assert.match(BASE_INSTRUCTIONS, /Browser 工具不可见时不得.*猜测其存在/);
   assert.match(BASE_INSTRUCTIONS, /打开给我看.*launch_app \+ urls/);
   assert.match(BASE_INSTRUCTIONS, /不点击地址栏/);
   assert.match(BASE_INSTRUCTIONS, /verified=true 时不要在每一步后重复 snapshot/);
@@ -77,7 +78,7 @@ test('model instructions drive verified business outcomes through discoverable c
   assert.match(BASE_INSTRUCTIONS, /不得用 Shell、nohup 或后台任务启动、重启或连接 cua-driver/);
   assert.match(BASE_INSTRUCTIONS, /结果 uncertain 时先做只读核对/);
   assert.match(BASE_INSTRUCTIONS, /不跨 Connector、Browser、Computer、Shell 或其他路径重复同一业务动作/);
-  assert.doesNotMatch(BASE_INSTRUCTIONS, /示例消息|QQ|微信/);
+  assert.doesNotMatch(BASE_INSTRUCTIONS, /QQ|微信/);
 });
 
 test('effective capability items preserve Connector availability, readiness, freshness and coverage', () => {

@@ -1,4 +1,5 @@
 import process from 'node:process';
+import path from 'node:path';
 import {
   preferredEnvironmentValue,
   resolveEnvironmentFile,
@@ -9,11 +10,15 @@ import { escapeXmlAttribute as xml } from '../core/xml.js';
 import { mimiPaths } from './client-runtime.js';
 
 export const MIMI_LAUNCH_AGENT_LABEL = 'com.mimiagent.daemon';
+export function launchAgentPlistBelongsTo(plist: string, config: AppConfig): boolean {
+  return plist.includes(`<key>MIMI_DAEMON_DATA_DIR</key>\n      <string>${xml(mimiPaths(config).root)}</string>`);
+}
 
 export function daemonLaunchEnvironment(config: AppConfig): Record<string, string> {
   const paths = mimiPaths(config);
   const session = preferredEnvironmentValue('MIMI_SESSION', 'AGENT_SESSION') ?? 'mimi-system';
   const environment: Record<string, string> = {
+    PATH: [...new Set([path.dirname(process.execPath), ...(process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin').split(path.delimiter)].filter(directory => path.isAbsolute(directory)))].join(path.delimiter),
     MIMI_MODEL_PROVIDER: config.provider,
     MIMI_CONFIG_VERSION: '4',
     MIMI_WORKSPACE: config.workspaceRoot,
@@ -81,6 +86,10 @@ export function launchAgentPlist(
   const environment = { ...daemonLaunchEnvironment(config), MIMI_DAEMON_SUPERVISOR: 'launchd' };
   const environmentXml = Object.entries(environment)
     .map(([key, value]) => `      <key>${xml(key)}</key>\n      <string>${xml(value)}</string>`).join('\n');
+  // The daemon serves interactive Web/TUI requests over a Unix socket. macOS
+  // Background throttles its disk I/O, blocking the shared event loop during
+  // SQLite reads. Interactive uses normal app resource limits; Adaptive only
+  // promotes work tracked by XPC transactions, which this transport does not use.
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -107,7 +116,7 @@ ${environmentXml}
   <key>ThrottleInterval</key>
   <integer>10</integer>
   <key>ProcessType</key>
-  <string>Background</string>
+  <string>Interactive</string>
   <key>StandardOutPath</key>
   <string>${xml(paths.stdoutLog)}</string>
   <key>StandardErrorPath</key>

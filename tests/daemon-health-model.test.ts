@@ -206,7 +206,7 @@ test('Computer supervisor outage is unhealthy until Cua Driver recovers', () => 
   }]);
 });
 
-test('Computer transport health does not claim UI readiness before a real observation', () => {
+test('Computer transport readiness stays visible without making optional UI health globally unhealthy', () => {
   const health = buildDaemonHealth({
     tasks: taskCounts(),
     outbox: outboxCounts(),
@@ -223,7 +223,8 @@ test('Computer transport health does not claim UI readiness before a real observ
     },
   });
 
-  assert.equal(health.state, 'unhealthy');
+  assert.equal(health.state, 'degraded');
+  assert.equal(health.risks[0]?.severity, 'warning');
   assert.match(health.risks[0]?.message ?? '', /尚无真实窗口 observation/);
 });
 

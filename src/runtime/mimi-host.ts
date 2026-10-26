@@ -126,6 +126,9 @@ export class MimiHost {
   private readonly slots: Semaphore;
   private readonly pending = new Map<string, PendingExecution>();
   private closing = false;
+  private summariesPending?: Promise<SessionSummary[]>;
+  private summaryGeneration = 0;
+  private summaryCache: { summaries: import('../core/session.js').SessionSummary[]; until: number } | undefined;
 
   constructor(
     private readonly agent: MimiAgent,
@@ -228,6 +231,7 @@ export class MimiHost {
           }
           const result = await actor.runs.execute({
             input: request.input,
+            modelInput: request.modelInput,
             signal,
             options: request.options,
           }, observer);
@@ -239,7 +243,10 @@ export class MimiHost {
       }, request.sessionId).finally(() => {
         actor.activeRuns = Math.max(0, actor.activeRuns - 1);
       });
-    }).finally(() => this.pending.delete(executionId));
+    }).finally(() => {
+        this.invalidateSummaryCache(request.sessionId);
+        this.pending.delete(executionId);
+      });
   }
 
   mutate<T>(
@@ -255,7 +262,16 @@ export class MimiHost {
       await this.selectSession(actor.agent, sessionId);
       signal?.throwIfAborted();
       return operation(actor.agent);
-    }, sessionId));
+    }, sessionId)).finally(() => {
+      this.invalidateSummaryCache(sessionId);
+    });
+  }
+
+  async setSessionPreference(sessionId: string, operation: string, value: unknown) {
+    this.assertOpen();
+    const result = await this.agent.setSessionPreference(sessionId, operation, value);
+    this.invalidateSummaryCache(sessionId);
+    return result;
   }
 
   prepareQqPersonalMessageScope(
@@ -303,25 +319,54 @@ export class MimiHost {
 
   snapshot(sessionId: string): Promise<AgentSessionSnapshot> {
     this.assertOpen();
-    return this.actorFor(sessionId).then((actor) => {
-      if (actor.activeRuns === 0) {
-        return this.enqueue(
-          actor,
-          () => actor.agent.sessionSnapshot(sessionId),
-          sessionId,
-        );
+    // An inspection must not instantiate an execution runtime (and its MCP children).
+    // Also bypass an actor still starting: its committed transcript is already readable.
+    const actor = this.resolvedActors.get(sessionId);
+    if (!actor) return this.agent.sessionSnapshot(sessionId);
+    this.reserveActor(sessionId);
+    return this.inspect(actor, () => actor.agent.sessionSnapshot(sessionId), sessionId);
+  }
+
+  /** Read cached runtime observations without waiting behind an active model/tool call. */
+  inspectStatus(sessionId: string, operation: 'runtime' | 'mcp' | 'models' | 'modes') {
+    this.assertOpen();
+    const actor = this.resolvedActors.get(sessionId);
+    const read = async (): Promise<unknown> => {
+      const agent = actor?.agent ?? this.agent;
+      switch (operation) {
+        case 'runtime': return agent.runtimeInfo();
+        case 'mcp': return agent.mcpStatuses();
+        case 'models': return agent.availableModels();
+        case 'modes': return agent.availableModes();
       }
-      return this.inspect(
-        actor,
-        () => actor.agent.sessionSnapshot(sessionId),
-        sessionId,
-      );
-    });
+    };
+    if (!actor) return Promise.resolve(read());
+    this.reserveActor(sessionId);
+    return this.inspect(actor, read, sessionId);
   }
 
   listSessionSummaries(): Promise<SessionSummary[]> {
     this.assertOpen();
-    return this.agent.listSessionSummaries();
+    const now = Date.now();
+    if (this.summaryCache && this.summaryCache.until > now) {
+      return Promise.resolve(this.summaryCache.summaries);
+    }
+    const generation = this.summaryGeneration;
+    this.summariesPending ??= this.agent.listSessionSummaries().then((summaries) => {
+      if (generation === this.summaryGeneration) this.summaryCache = { summaries, until: Date.now() + 30_000 };
+      return summaries;
+    }).finally(() => { this.summariesPending = undefined; });
+    return this.summariesPending;
+  }
+
+  private invalidateSummaryCache(_sessionId: string): void {
+    this.summaryGeneration += 1;
+    this.summaryCache = undefined;
+  }
+
+  hasSession(id: string): Promise<boolean> {
+    this.assertOpen();
+    return this.agent.hasSession(id);
   }
 
   workspaceRootFor(sessionId: string): string | undefined {

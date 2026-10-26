@@ -122,6 +122,9 @@ export function buildDaemonHealth(input: DaemonHealthInput): DaemonHealthSnapsho
     });
   }
   if (input.computer && !input.computer.ready) {
+    const awaitingFirstObservation = input.computer.state === 'ready'
+      && input.computer.transportReady === true
+      && input.computer.operationalReadiness === 'unknown';
     const message = input.computer.transportReady
       ? input.computer.operationalReadiness === 'degraded'
         ? `Computer UI 路径退化：${input.computer.lastOperationalFailure ?? '最近一次窗口观察不可操作'}`
@@ -129,7 +132,7 @@ export function buildDaemonHealth(input: DaemonHealthInput): DaemonHealthSnapsho
       : `Computer Use ${input.computer.state}：${input.computer.lastFailure ?? 'Cua Driver 尚未就绪'}`;
     risks.push({
       code: 'computer_unavailable',
-      severity: 'error',
+      severity: awaitingFirstObservation ? 'warning' : 'error',
       message,
       nextAction: 'mimi daemon doctor',
     });

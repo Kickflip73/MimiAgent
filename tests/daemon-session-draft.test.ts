@@ -10,6 +10,23 @@ import { MimiIpcServer } from '../src/daemon/ipc.js';
 import { DAEMON_PROTOCOL_VERSION, type DaemonStatus } from '../src/daemon/types.js';
 import type { AppConfig } from '../src/config.js';
 
+test('memory reindex uses the long-running IPC timeout', async () => {
+  const calls: unknown[][] = [];
+  const client = {
+    invoke: (...args: unknown[]) => {
+      calls.push(args);
+      return Promise.resolve({});
+    },
+  } as unknown as MimiChatClient;
+  const target = new RemoteCommandTarget(client, 'mimi-reindex-timeout', true);
+
+  await target.memoryReindex();
+
+  assert.deepEqual(calls, [[
+    'memory.reindex', undefined, 'mimi-reindex-timeout', 20 * 60_000,
+  ]]);
+});
+
 test('CLI adopts a running daemon workspace even when local workspace is explicitly configured', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-workspace-adopt-'));
   const localWorkspace = path.join(root, 'local');
@@ -166,7 +183,44 @@ test('CLI restarts an unavailable daemon and retries a draft bootstrap', async (
   }
 });
 
-test('CLI submits its launch workspace with each owner command', async () => {
+test('CLI retries a busy daemon without restarting it when the initial status probe times out', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-status-timeout-'));
+  const socket = path.join(root, 'mimi.sock');
+  const workspaceRoot = path.join(root, 'workspace');
+  const status = {
+    protocolVersion: DAEMON_PROTOCOL_VERSION,
+    buildVersion: MIMI_BUILD_VERSION,
+    permissionMode: 'trusted',
+    workspaceRoot,
+  } as DaemonStatus;
+  let statusCalls = 0;
+  const server = new MimiIpcServer(socket, async (method) => {
+    if (method !== 'status') throw new Error(`unexpected method: ${method}`);
+    statusCalls += 1;
+    if (statusCalls === 1) await new Promise((resolve) => setTimeout(resolve, 2_100));
+    return status;
+  });
+  await server.start();
+  let starts = 0;
+  const client = new MimiChatClient({
+    dataRoot: root, daemonDataRoot: root, workspaceRoot,
+    provider: 'openai', permissionMode: 'trusted',
+  } as AppConfig, async () => status, {
+    startDaemon: async () => {
+      starts += 1;
+      return status;
+    },
+  });
+  try {
+    assert.equal((await client.connect()).workspaceRoot, workspaceRoot);
+    assert.equal(starts, 0);
+    assert.equal(statusCalls, 2);
+  } finally {
+    await server.close();
+  }
+});
+
+test('CLI submits its launch workspace and selected security with each owner command', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-submit-workspace-'));
   const socket = path.join(root, 'mimi.sock');
   const workspaceRoot = path.join(root, 'project');
@@ -189,10 +243,14 @@ test('CLI submits its launch workspace with each owner command', async () => {
       provider: 'openai',
       permissionMode: 'trusted',
     } as AppConfig);
-    await client.submit('修复当前项目');
+    await client.submit('修复当前项目', 'workspace-session', {
+      requestedSecurityProfile: 'workstation',
+    });
     assert.equal(submitted?.workspaceRoot, workspaceRoot);
     assert.equal(submitted?.source, 'local-cli');
     assert.equal(submitted?.trust, 'owner');
+    assert.equal(submitted?.sessionKey, 'workspace-session');
+    assert.equal(submitted?.requestedSecurityProfile, 'workstation');
   } finally {
     await server.close();
   }

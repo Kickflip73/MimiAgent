@@ -8,6 +8,7 @@ import type { ToolCapability } from '../runtime/tool-policy.js';
 import type { ComputerAccess } from '../extensions/computer/types.js';
 import { assertSessionId, sessionIdSchema } from '../core/session-id.js';
 import type { EventEnvelope, TaskRecord } from './types.js';
+import { requestedSecurityProfileForEvent } from './local-run-policy.js';
 import {
   personalMessageAuthorizationFor,
   type PersonalMessageAuthorization,
@@ -54,7 +55,7 @@ const READ_TASK_CAPABILITIES = [
 ] as const satisfies readonly ToolCapability[];
 
 const READ_TASK_TOOLS = [
-  'current_time', 'calculate',
+  'current_time', 'calculate', 'task_history', 'read_context_artifact',
   'read_file', 'list_directory', 'search_files', 'inspect_processes',
   'http_get', 'web_search',
   'memory_search', 'memory_read', 'memory_links',
@@ -71,6 +72,7 @@ const READ_TASK_SIDE_EFFECT_TOOLS = [
 ] as const;
 
 const MEMORY_MAINTENANCE_TOOLS = [
+  'read_context_artifact',
   'memory_search', 'memory_read', 'memory_links',
   'list_memory_observations', 'upsert_memory_page',
   'merge_memory_pages', 'supersede_memory_page', 'add_memory_links',
@@ -90,7 +92,7 @@ const WORK_SOURCE_POLICY_CAPABILITIES = [
 ] as const satisfies readonly ToolCapability[];
 
 const WORK_SOURCE_POLICY_TOOLS = [
-  'current_time', 'calculate',
+  'current_time', 'calculate', 'task_history', 'read_context_artifact',
   'read_file', 'write_file', 'edit_file', 'move_file', 'list_directory', 'search_files',
   'inspect_processes', 'run_shell',
   'http_get', 'web_search', 'http_request',
@@ -288,7 +290,7 @@ function backgroundTaskPlaybook(backgroundTask: boolean): string {
   if (!backgroundTask) return '';
   return [
     '## MimiAgent 后台 Task Lead 执行契约',
-    '你是同一个 MimiAgent 的后台执行部分，不是另一个人格，也不负责维持闲聊。只专注完成当前已持久化目标；开始时建立或恢复 Goal/Plan，持续把关键进展写入 checkpoint。',
+    '你是同一个 MimiAgent 的后台执行部分，只专注当前目标。Task 已经持久化，后台身份不要求再建 Goal/Plan。简单工作直接执行、核实后结束，不调用 prepare_task/set_goal/finish_task；多阶段工作按需维护 Plan，确实需要跨轮恢复的复杂工作才建立 Goal/checkpoint。已有属于本任务的未完 Goal 则继续遵守其完成契约。',
     '当前目标已经是后台任务，绝不能调用 delegate_background_task 建立持久子任务，也不要交回前台。需要拆分时只使用当前 Task 内的只读 SubAgent 或 Ultra Team，并验证、整合结果；workspaceAccess=read 的任务没有 Team，只能使用只读 SubAgent 或自行完成分析。',
     '完成时返回：实际结果、产物位置、验证证据和仍存在的风险。只有缺少无法自行取得且不可推断的关键输入时，调用 request_background_task_input 后停止本次执行；不得只在文字里说“需要输入”、不得假装完成，也不要切换、清空或冒充原始用户 Session。',
   ].join('\n');
@@ -338,7 +340,11 @@ export function decideEvent(
   const ownerDelegated = !forceRestricted && restrictedProvenance && ownerSourcePolicyAccess !== undefined;
   const mayAct = !restrictedProvenance || ownerDelegated;
   const backgroundTask = task !== undefined && task.type !== 'conversation';
-  const computerAccess = backgroundTask
+  const requestedSecurityProfile = !backgroundTask
+    ? requestedSecurityProfileForEvent(event)
+    : undefined;
+  const computerAccess = backgroundTask || (requestedSecurityProfile !== undefined
+    && requestedSecurityProfile !== 'full-owner')
     ? 'none'
     : ownerComputerAccess ?? (!restrictedProvenance ? 'background' : 'none');
   const computerEnabled = computerAccess !== 'none';
@@ -406,7 +412,9 @@ export function decideEvent(
       ? [
           '## Memory maintenance 严格执行契约',
           '当前是本机 system 创建的有界 Memory maintenance Task。只能通过 list_memory_observations 读取来源数据；不得把 Task objective 当 observation 正文。',
+          'list_memory_observations 返回 obs-N 短句柄；后续 upsert/reject/complete 必须使用这些句柄，并在结束前处理当前 batch 的全部 observations。',
           '逐条判断长期复用价值、隐私、可信度、重复与冲突。写入前必须 memory_search/read 查找已有主题；优先用 targetRef 更新，只有不存在主题时才创建。',
+          '先形成可独立验证的 L1 原子；若至少两个互补 L1 足以支持可复用的场景/主题结论，再创建或更新 inferred L2，并用 derivedFrom 保留推导链。证据不足时不要强造 L2。',
           '使用 merge_memory_pages、supersede_memory_page、add_memory_links、move_memory_scope 和 refresh_memory_from_source 修复重复、过期、孤页、scope 错置与陈旧来源；每次治理都必须获得 receipt。',
           semanticMemoryLint
             ? '本批次已达到 semantic lint 阈值或由 owner 手动请求。使用 memory_search/read/links 做有界语义 Lint：检查跨页矛盾、陈旧综述、缺失概念/交叉引用和知识空洞；只基于已有本地证据，不自动访网。'
@@ -566,6 +574,7 @@ export function decideEvent(
       } : {}),
       ...(personalConnectorOnly ? { personalConnectorOnly: true } : {}),
       ...(resumeState ? { resumeState: true } : {}),
+      ...(requestedSecurityProfile ? { securityProfile: requestedSecurityProfile } : {}),
       ...(policy ? { policy } : {}),
     },
   };

@@ -114,7 +114,7 @@ test('diagnostic bundle exposes bounded health and capacity metadata without pri
       },
       health,
     },
-    launchAgent: { installed: false, file: path.join(root, secret, 'agent.plist') },
+    launchAgent: { installed: false, owned: false, file: path.join(root, secret, 'agent.plist') },
     computer: {
       configured: true,
       backend: 'cua',

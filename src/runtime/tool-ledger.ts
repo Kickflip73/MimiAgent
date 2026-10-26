@@ -18,6 +18,7 @@ import {
   type ToolActionIntentMetadata,
 } from '../core/tool-metadata.js';
 import { isSideEffectTool } from './tool-policy.js';
+import { isCapturedToolError } from '../tool-factory.js';
 
 export { TOOL_LEDGER_ARGUMENTS } from '../core/tool-metadata.js';
 
@@ -55,6 +56,46 @@ type LedgerAwareTool = Tool & {
   [TOOL_LEDGER_ARGUMENTS]?: (rawInput: string) => string;
   [TOOL_ACTION_INTENT]?: (rawInput: string) => ToolActionIntentMetadata;
 };
+
+interface ToolFailureResult {
+  mimiStatus: 'tool_failed';
+  retryable: boolean;
+  code: string;
+  message: string;
+}
+
+class ToolExecutionFailedError extends Error {
+  constructor(readonly result: ToolFailureResult) {
+    super(result.message);
+    this.name = 'ToolExecutionFailedError';
+  }
+}
+
+function toolFailureResult(error: unknown): ToolFailureResult {
+  const value = error && typeof error === 'object' && !Array.isArray(error)
+    ? error as Record<string, unknown>
+    : undefined;
+  const message = error instanceof Error
+    ? error.message
+    : typeof value?.message === 'string'
+      ? value.message
+      : String(error);
+  return {
+    mimiStatus: 'tool_failed',
+    retryable: value?.retryable === true,
+    code: typeof value?.code === 'string' && value.code.trim()
+      ? value.code.slice(0, 200)
+      : 'tool_execution_failed',
+    message: message.slice(0, 2_000),
+  };
+}
+
+function isToolFailureResult(value: unknown): value is ToolFailureResult {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (value as Record<string, unknown>).mimiStatus === 'tool_failed';
+}
 
 function isInvokable(tool: Tool): tool is InvokableTool {
   return 'invoke' in tool && typeof tool.invoke === 'function';
@@ -172,6 +213,7 @@ export function withExecutionLedger(
   currentRun: () => RunIdentity | undefined,
 ): Tool[] {
   const semanticOccurrences = new Map<string, number>();
+  const shellCallOccurrences = new Map<string, number>();
   let previousSemanticKey: string | undefined;
   let uncertainActionFence: UncertainActionFence | undefined;
   return tools.map((tool) => {
@@ -194,6 +236,14 @@ export function withExecutionLedger(
         const invokeSanitized = async () => {
           try {
             const result = await originalInvoke(runContext, input, details);
+            if (isCapturedToolError(result)) {
+              if (result.disposition?.phase === 'pre_dispatch' && result.disposition.kind === 'validation') {
+                const failure = { mimiStatus: result.mimiStatus, retryable: result.retryable, code: result.code,
+                  message: result.message, disposition: result.disposition, issues: result.issues };
+                return run?.sanitizeResult?.(failure) ?? failure;
+              }
+              return toolFailureResult(run?.sanitizeError?.(result.error) ?? result.error);
+            }
             return run?.sanitizeResult?.(result) ?? result;
           } catch (error) {
             throw run?.sanitizeError?.(error) ?? error;
@@ -234,14 +284,21 @@ export function withExecutionLedger(
         const ledgerInput = (tool as LedgerAwareTool)[TOOL_LEDGER_ARGUMENTS]?.(input) ?? input;
         const argumentsJson = run?.semanticCallIds ? semanticArguments(ledgerInput) : ledgerInput;
         const semanticKey = `${tool.name}\0${argumentsJson}`;
-        const consecutiveDuplicate = run?.semanticCallIds && previousSemanticKey === semanticKey;
+        // A shell command is a process invocation, not a business idempotency key.
+        // New model calls may intentionally rerun a completed process (e.g. setup).
+        // SDK re-delivery and durable replay still address the same occurrence.
+        const shellInvocation = tool.name === 'run_shell' && !action;
+        const shellSdkKey = `${run?.sessionId}\0${run?.runId}\0${sdkCallId}\0${semanticKey}`;
+        const knownShellOccurrence = shellInvocation && sdkCallId ? shellCallOccurrences.get(shellSdkKey) : undefined;
+        const consecutiveDuplicate = run?.semanticCallIds && !shellInvocation && previousSemanticKey === semanticKey;
         const occurrence = run?.semanticCallIds
-          ? consecutiveDuplicate
+          ? knownShellOccurrence ?? (consecutiveDuplicate
             ? semanticOccurrences.get(semanticKey) ?? 1
-            : (semanticOccurrences.get(semanticKey) ?? 0) + 1
+            : (semanticOccurrences.get(semanticKey) ?? 0) + 1)
           : undefined;
         if (occurrence !== undefined) {
-          semanticOccurrences.set(semanticKey, occurrence);
+          if (shellInvocation && sdkCallId) shellCallOccurrences.set(shellSdkKey, occurrence);
+          semanticOccurrences.set(semanticKey, Math.max(occurrence, semanticOccurrences.get(semanticKey) ?? 0));
           previousSemanticKey = semanticKey;
         }
         const callId = run?.semanticCallIds
@@ -250,6 +307,11 @@ export function withExecutionLedger(
         const invokeAuthorized = async () => {
           await run?.authorizeSideEffect?.(tool.name, input);
           return invokeSanitized();
+        };
+        const invokeLedgered = async () => {
+          const output = await invokeAuthorized();
+          if (isToolFailureResult(output)) throw new ToolExecutionFailedError(output);
+          return output;
         };
         if (!run || !callId) return invokeAuthorized();
         if (action) {
@@ -276,6 +338,7 @@ export function withExecutionLedger(
             policyRevision,
             status: 'not_started' as const,
           };
+          let rejectedResult: ToolFailureResult | undefined;
           try {
             const receipt = await ledger.executeActionIntent(
               run.sessionId,
@@ -296,14 +359,23 @@ export function withExecutionLedger(
                   },
               undefined,
               async () => {
-                const output = await ledger.executeOnce({
-                  sessionId: run.sessionId,
-                  runId: run.runId,
-                  toolName: tool.name,
-                  callId,
-                  ...(sdkCallId && sdkCallId !== callId ? { modelCallId: sdkCallId } : {}),
-                  argumentsJson,
-                }, invokeAuthorized);
+                let output: unknown;
+                try {
+                  output = await ledger.executeOnce({
+                    sessionId: run.sessionId,
+                    runId: run.runId,
+                    toolName: tool.name,
+                    callId,
+                    ...(sdkCallId && sdkCallId !== callId ? { modelCallId: sdkCallId } : {}),
+                    argumentsJson,
+                  }, invokeLedgered);
+                } catch (error) {
+                  if (error instanceof ToolExecutionFailedError) {
+                    rejectedResult = error.result;
+                    throw new ActionFailedSafeError(error.result.message);
+                  }
+                  throw error;
+                }
                 const outcome = action.outcome?.(output) ?? 'confirmed';
                 if (outcome === 'failed_safe') {
                   throw new ActionFailedSafeError(failedSafeMessage(output));
@@ -312,7 +384,8 @@ export function withExecutionLedger(
                 return output;
               },
             );
-            return withActionIntentEvidence(receipt);
+            return withActionIntentEvidence(receipt.outcome === 'failed_safe' && rejectedResult
+              ? { ...receipt, result: rejectedResult } : receipt);
           } catch (error) {
             if (!(error instanceof ActionIntentUncertainError)) throw error;
             uncertainActionFence = {
@@ -331,7 +404,13 @@ export function withExecutionLedger(
           ...(sdkCallId && sdkCallId !== callId ? { modelCallId: sdkCallId } : {}),
           argumentsJson,
         };
-        const result = await ledger.executeOnce(call, invokeAuthorized);
+        let result: unknown;
+        try {
+          result = await ledger.executeOnce(call, invokeLedgered);
+        } catch (error) {
+          if (error instanceof ToolExecutionFailedError) return error.result;
+          throw error;
+        }
         if (consecutiveDuplicate) return alreadyExecutedResult(result);
         return tool.name === 'connector_action' || tool.name === 'connector_capability'
           ? withExecutionEvidence(result, executionReceiptRef(call))

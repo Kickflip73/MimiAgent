@@ -275,7 +275,7 @@ test('internal Connector actions stay out of the model catalog and owner messagi
       requests.push(request);
       return {
         status: 'observed',
-        messageId: 'chat-message-1',
+        messageId: 'qq-message-1',
         deliveryConfirmed: false,
       };
     },
@@ -301,7 +301,7 @@ test('internal Connector actions stay out of the model catalog and owner messagi
     text: 'owner visible text',
   }) as Record<string, unknown>;
   assert.equal(receipt.outcome, 'confirmed');
-  assert.equal(receipt.operationId, 'chat-message-1');
+  assert.equal(receipt.operationId, 'qq-message-1');
   assert.deepEqual(requests, [{
     connector: 'personal-qq',
     action: 'send_to_owner',

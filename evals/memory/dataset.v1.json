@@ -1,0 +1,270 @@
+{
+  "schemaVersion": 1,
+  "revision": "m2-memory-2026-08-05.3",
+  "fixtures": [
+    {
+      "id": "release-lane",
+      "title": "Release lane",
+      "content": "The verified release lane is Cobalt-Lane.",
+      "kind": "decision",
+      "scenario": "normal",
+      "tags": ["retrieval", "project"],
+      "questions": [
+        "Which verified release lane is named Cobalt-Lane?",
+        "What lane was verified for the release?",
+        "Where should the project release be routed?"
+      ]
+    },
+    {
+      "id": "language",
+      "title": "Response language",
+      "content": "The owner prefers Mandarin-Output for ordinary answers.",
+      "kind": "profile",
+      "scenario": "normal",
+      "tags": ["profile", "people"],
+      "questions": [
+        "Which response language does the owner prefer?",
+        "Should ordinary answers use Mandarin-Output?",
+        "How should responses be worded for the owner?"
+      ]
+    },
+    {
+      "id": "meeting",
+      "title": "Weekly meeting",
+      "content": "The recurring project meeting is Tuesday-Sync.",
+      "kind": "fact",
+      "scenario": "normal",
+      "tags": ["time", "project"],
+      "questions": [
+        "When is the recurring project meeting?",
+        "Which weekly meeting is called Tuesday-Sync?",
+        "What is the schedule for the project sync?"
+      ]
+    },
+    {
+      "id": "database",
+      "title": "Local database",
+      "content": "Durable local metadata uses SQLite-Store.",
+      "kind": "fact",
+      "scenario": "normal",
+      "tags": ["project"],
+      "questions": [
+        "Which store holds durable local metadata?",
+        "Does the local database use SQLite-Store?",
+        "Where is the project's durable metadata stored?"
+      ]
+    },
+    {
+      "id": "backup",
+      "title": "Backup commitment",
+      "content": "The owner committed to Friday-Backup verification.",
+      "kind": "decision",
+      "scenario": "normal",
+      "tags": ["commitment", "time"],
+      "questions": [
+        "What backup verification did the owner commit to?",
+        "When is the Friday-Backup commitment due?",
+        "Which verification commitment concerns the backup?"
+      ]
+    },
+    {
+      "id": "legal",
+      "title": "Waiting on legal",
+      "content": "The rollout is waiting for Legal-Approval.",
+      "kind": "fact",
+      "scenario": "normal",
+      "tags": ["waiting", "people"],
+      "questions": [
+        "What approval is the rollout waiting for?",
+        "Is Legal-Approval still blocking the rollout?",
+        "Who must approve the rollout before it continues?"
+      ]
+    },
+    {
+      "id": "payment",
+      "title": "Payment project risk",
+      "content": "Payment-Migration remains the current project risk.",
+      "kind": "decision",
+      "scenario": "normal",
+      "tags": ["risk", "project"],
+      "questions": [
+        "What is the current payment project risk?",
+        "Does Payment-Migration remain a project risk?",
+        "Which migration is risky for the project?"
+      ]
+    },
+    {
+      "id": "region",
+      "title": "Deployment region",
+      "content": "The selected deployment target is Singapore-Region.",
+      "kind": "decision",
+      "scenario": "normal",
+      "tags": ["entity", "project"],
+      "questions": [
+        "Which region was selected for deployment?",
+        "Is Singapore-Region the deployment target?",
+        "Where is the selected project deployment headed?"
+      ]
+    },
+    {
+      "id": "quiet-hours",
+      "title": "Notification quiet hours",
+      "content": "Notifications enter Quiet-Hours-2200 each evening.",
+      "kind": "profile",
+      "scenario": "normal",
+      "tags": ["time", "profile"],
+      "questions": [
+        "When do notification quiet hours begin?",
+        "What does Quiet-Hours-2200 control each evening?",
+        "Which evening setting silences notifications?"
+      ]
+    },
+    {
+      "id": "retention",
+      "title": "Artifact retention",
+      "content": "Local diagnostic artifacts use Retention-30-Days.",
+      "kind": "fact",
+      "scenario": "normal",
+      "tags": ["policy", "time"],
+      "questions": [
+        "How long are local diagnostic artifacts retained?",
+        "Which retention policy uses Retention-30-Days?",
+        "What is the retention period for diagnostic artifacts?"
+      ]
+    },
+    {
+      "id": "coffee",
+      "title": "Coffee preference",
+      "content": "The owner prefers Light-Roast coffee.",
+      "kind": "profile",
+      "scenario": "normal",
+      "tags": ["profile", "people"],
+      "questions": [
+        "What kind of coffee does the owner prefer?",
+        "Does the owner like Light-Roast coffee?",
+        "Which roast matches the owner's coffee preference?"
+      ]
+    },
+    {
+      "id": "editor",
+      "title": "Editor preference",
+      "content": "The owner uses VSCode-Editor for TypeScript work.",
+      "kind": "profile",
+      "scenario": "normal",
+      "tags": ["profile", "people"],
+      "questions": [
+        "Which editor does the owner use for TypeScript work?",
+        "Is VSCode-Editor the owner's preferred editor?",
+        "What tool does the owner edit TypeScript with?"
+      ]
+    },
+    {
+      "id": "correction-window",
+      "title": "Confirmed deployment window",
+      "content": "The confirmed deployment window is Wednesday-Window.",
+      "kind": "decision",
+      "scenario": "correction",
+      "tags": ["correction", "time", "project"],
+      "questions": [
+        "What is the corrected deployment window?",
+        "Was Wednesday-Window confirmed for deployment?",
+        "Which deployment window replaced the old schedule?"
+      ],
+      "priorTitle": "Old deployment window",
+      "priorContent": "The old deployment window was Tuesday-Window."
+    },
+    {
+      "id": "vendor-conflict",
+      "title": "Vendor selection conflict",
+      "content": "Evidence for Vendor-Sigma remains contradictory.",
+      "kind": "decision",
+      "scenario": "conflict",
+      "tags": ["conflict", "people", "source"],
+      "questions": [
+        "Which vendor selection has contradictory evidence?",
+        "Is the evidence for Vendor-Sigma still conflicted?",
+        "What remains unresolved about the vendor decision?"
+      ]
+    },
+    {
+      "id": "expired-token",
+      "title": "Expired access token",
+      "content": "Token-Zeta was valid only for the completed migration.",
+      "kind": "fact",
+      "scenario": "expiration",
+      "tags": ["expiration", "time"],
+      "questions": [
+        "Zeta credential operability verdict?",
+        "Zeta credential authentication feasibility?",
+        "Zeta credential recall outcome?"
+      ]
+    },
+    {
+      "id": "apollo-entity",
+      "title": "Project Apollo",
+      "content": "Project-Apollo is the canonical owner project entity.",
+      "kind": "entity",
+      "scenario": "entity-merge",
+      "tags": ["entity-merge", "project"],
+      "questions": [
+        "Which entity is canonical for Project-Apollo?",
+        "What project does Apollo Platform refer to?",
+        "How is the owner's Apollo project identified?"
+      ],
+      "secondaryTitle": "Apollo Platform",
+      "secondaryContent": "Apollo Platform is another name for Project-Apollo."
+    },
+    {
+      "id": "deleted-source",
+      "title": "Deleted source policy",
+      "content": "Source-Orchid documents the archived rollout policy.",
+      "kind": "source-summary",
+      "scenario": "source-deletion",
+      "tags": ["source-deletion", "source"],
+      "questions": [
+        "Which source documented the archived rollout policy?",
+        "What policy was recorded by Source-Orchid?",
+        "Where did the archived rollout guidance come from?"
+      ]
+    },
+    {
+      "id": "embedding-delta",
+      "title": "Embedding model note",
+      "content": "Embedding-Delta identifies the current derived index model.",
+      "kind": "fact",
+      "scenario": "normal",
+      "tags": ["embedding-change", "source"],
+      "questions": [
+        "Which embedding identifies the derived index model?",
+        "Does Embedding-Delta describe the current index model?",
+        "What model note applies to the derived index?"
+      ]
+    },
+    {
+      "id": "lexical-fallback",
+      "title": "Lexical fallback",
+      "content": "Fallback-Lexical remains available without vectors.",
+      "kind": "fact",
+      "scenario": "normal",
+      "tags": ["vec-unavailable", "source"],
+      "questions": [
+        "What remains searchable when vectors are unavailable?",
+        "Does Fallback-Lexical work without vector support?",
+        "Which fallback stays available after a Vec failure?"
+      ]
+    },
+    {
+      "id": "reindex-gamma",
+      "title": "Reindex verification",
+      "content": "Reindex-Gamma remains searchable after rebuilding derived indexes.",
+      "kind": "fact",
+      "scenario": "reindex",
+      "tags": ["reindex", "source"],
+      "questions": [
+        "What remains searchable after derived indexes are rebuilt?",
+        "Does Reindex-Gamma survive an index rebuild?",
+        "Which verification confirms that reindexing recovered?"
+      ]
+    }
+  ]
+}

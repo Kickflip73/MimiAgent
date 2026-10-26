@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { realpathSync } from 'node:fs';
-import { Agent, Runner, tool, type Tool } from '@openai/agents';
+import { Agent, Runner, type Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import {
   defaultTeamTaskComplexity,
   type TeamRole,

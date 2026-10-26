@@ -148,6 +148,75 @@ test('daemon read probes must pass runtime policy and cannot invent an unregiste
   }
 });
 
+test('only direct Full Owner conversations can use runtime files and the native Host Shell', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-direct-owner-runtime-files-'));
+  const dataRoot = path.join(root, '.mimi-agent');
+  const agent = await MimiAgent.create({
+    provider: 'openai',
+    workspaceRoot: root,
+    dataRoot,
+    skillsRoot: path.join(root, 'skills'),
+    mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40,
+    maxTurns: 20,
+    permissionMode: 'trusted',
+    securityProfile: 'full-owner',
+  });
+  const runtimeAgent = agent as unknown as {
+    activeRun?: {
+      scope: {
+        cause?: {
+          eventId: string;
+          source: string;
+          trust: 'owner' | 'external';
+        };
+      };
+      options?: { scenario?: string };
+    };
+  };
+  try {
+    await writeFile(path.join(dataRoot, 'owner-visible.txt'), 'OWNER_RUNTIME_SENTINEL');
+    const read = agent.registeredTools().find((tool) => tool.name === 'read_file');
+    const shell = agent.registeredTools().find((tool) => tool.name === 'run_shell');
+    assert.ok(read && 'invoke' in read);
+    assert.ok(shell && 'invoke' in shell);
+    const invoke = async (): Promise<string> => String(await read.invoke(
+      new RunContext({}),
+      JSON.stringify({ path: '.mimi-agent/owner-visible.txt' }),
+    ));
+    const invokeShell = async (): Promise<string> => JSON.stringify(await shell.invoke(
+      new RunContext({}),
+      JSON.stringify({ command: 'printf owner-shell', timeoutSeconds: 5 }),
+    ));
+
+    runtimeAgent.activeRun = {
+      scope: { cause: { eventId: 'owner-cli', source: 'local-cli', trust: 'owner' } },
+      options: { scenario: 'conversation.default' },
+    };
+    assert.match(await invoke(), /OWNER_RUNTIME_SENTINEL/u);
+    const ownerShell = await invokeShell();
+    assert.match(ownerShell, /owner-shell/u);
+    assert.doesNotMatch(ownerShell, /darwin-sandbox/u);
+
+    runtimeAgent.activeRun = {
+      scope: { cause: { eventId: 'owner-background', source: 'local-cli', trust: 'owner' } },
+      options: { scenario: 'background.default' },
+    };
+    assert.match(await invoke(), /MimiAgent 私有运行数据（含旧目录）/);
+    if (process.platform === 'darwin') assert.match(await invokeShell(), /darwin-sandbox/u);
+
+    runtimeAgent.activeRun = {
+      scope: { cause: { eventId: 'external-work', source: 'connector:test', trust: 'external' } },
+      options: { scenario: 'conversation.default' },
+    };
+    assert.match(await invoke(), /MimiAgent 私有运行数据（含旧目录）/);
+    if (process.platform === 'darwin') assert.match(await invokeShell(), /darwin-sandbox/u);
+  } finally {
+    runtimeAgent.activeRun = undefined;
+    await agent.close();
+  }
+});
+
 test('persists sessions and returns the latest items', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'nano-session-'));
   const session = new FileSession(root, 'demo');
@@ -348,6 +417,44 @@ test('releases the active run when asynchronous Runner setup rejects', async () 
   }
 });
 
+test('releases the active run when failure finalization persistence also fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-failure-finalization-release-'));
+  const dataRoot = path.join(root, '.mimi-agent');
+  const agent = await MimiAgent.create({
+    provider: 'openai', workspaceRoot: root, dataRoot,
+    skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'),
+    historyLimit: 40, maxTurns: 20,
+  });
+  const runner = (agent as unknown as {
+    runner: { run: (...args: unknown[]) => Promise<unknown> };
+  }).runner;
+  runner.run = async () => ({
+    rawResponses: [],
+    runContext: { usage: {} },
+    finalOutput: 'answer that cannot be finalized',
+    completed: Promise.resolve(),
+    cancelled: false,
+    interruptions: [],
+    async *[Symbol.asyncIterator]() { /* no streamed events */ },
+  });
+  await writeFile(path.join(dataRoot, 'run-commit-journal.json'), '{broken');
+  const blockedSessionId = agent.currentSessionId;
+
+  try {
+    await assert.rejects(
+      new AgentRunService(agent).execute({ input: 'trigger finalization' }),
+      /旧日志损坏，已保留原文件/,
+    );
+    assert.equal(await readFile(path.join(dataRoot, 'run-commit-journal.json'), 'utf8'), '{broken');
+    await assert.doesNotReject(agent.switchSession('after-finalization-failure'));
+    await assert.doesNotReject(
+      new FileSession(path.join(dataRoot, 'sessions'), blockedSessionId).beginRun('retry', 'retry-run'),
+    );
+  } finally {
+    await agent.close();
+  }
+});
+
 test('returns unknown model tool calls to the model instead of aborting the run', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-unknown-tool-recovery-'));
   const agent = await MimiAgent.create({
@@ -397,7 +504,7 @@ test('returns unknown model tool calls to the model instead of aborting the run'
   }
 });
 
-test('owner natural-language runs retain direct tools and unified deferred Skill discovery', async () => {
+test('owner natural-language runs retain direct Skill activation and deferred catalog discovery', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-focused-context-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const skillsRoot = path.join(root, 'skills');
@@ -452,10 +559,11 @@ test('owner natural-language runs retain direct tools and unified deferred Skill
     assert.ok(captured.tools?.includes('inspect_capabilities'));
     assert.ok(captured.tools?.includes('invoke_capability'));
     assert.equal(captured.tools?.includes('list_skills'), false);
-    assert.ok((captured.tools?.length ?? 0) < 30);
-    assert.ok(estimateTokens(captured.toolSchemas) <= 4_000);
-    assert.match(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
-    assert.match(captured.instructions ?? '', /精确 name="use_skill"/);
+    assert.ok((captured.tools?.length ?? 0) <= 30);
+    assert.ok(estimateTokens(captured.toolSchemas) <= 4_200, `Tool schemas: ${estimateTokens(captured.toolSchemas)} tokens`);
+    assert.doesNotMatch(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
+    assert.ok(captured.tools?.includes('use_skill'));
+    assert.match(captured.instructions ?? '', /"source":"skill"[^\n]*"list_skills"/);
     assert.doesNotMatch(captured.instructions ?? '', /source:|location:|hidden-skill\/SKILL\.md/);
     await agent.completeRun('FOCUSED_OWNER_ANSWER');
     const recalled = await agent.memorySearch('FOCUSED_OWNER_ANSWER', 'private');
@@ -644,11 +752,16 @@ test('isolates transcript and context archives while sharing only usable long-te
       { id: 'review', description: 'SECOND_TEAM_B', role: 'reviewer', dependencies: [], paths: [] },
     ]);
     await agent.switchMode('ultra');
+    (agent as unknown as { lastContextManifest?: unknown }).lastContextManifest = {
+      sessionId: 'second',
+      requestId: 'stale-context-manifest',
+    };
     await agent.clearSession();
     assert.deepEqual(await agent.history(), []);
     assert.deepEqual(await agent.currentPlan(), []);
     assert.equal(await agent.currentGoal(), undefined);
     assert.deepEqual(await agent.currentTeam(), []);
+    assert.equal((agent as unknown as { lastContextManifest?: unknown }).lastContextManifest, undefined);
     assert.equal((await agent.runtimeInfo()).mode.id, 'ultra');
     assert.match(JSON.stringify(await agent.memoryList()), /SHARED_CONFIRMED_MEMORY/);
     await agent.switchSession('first');

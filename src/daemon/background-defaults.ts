@@ -1,4 +1,8 @@
-export const BACKGROUND_DEFAULTS_VERSION = 1;
+export const BACKGROUND_DEFAULTS_VERSION = 3;
+
+export const PERSONAL_MESSAGE_CONNECTOR_IDS = [
+  'personal-qq',
+] as const;
 
 const LEGACY_VISIBLE_DEFAULTS_VERSION = 1;
 
@@ -37,6 +41,20 @@ export function legacyVisibleConnectorsToDisable(
   return {
     version: LEGACY_VISIBLE_DEFAULTS_VERSION,
     disabled,
+    changed: true,
+  };
+}
+
+export function personalMessageConnectorsToAdd(
+  currentVersion: number,
+  present: ReadonlySet<string>,
+): { version: number; added: string[]; changed: boolean } {
+  if (currentVersion >= BACKGROUND_DEFAULTS_VERSION) {
+    return { version: currentVersion, added: [], changed: false };
+  }
+  return {
+    version: BACKGROUND_DEFAULTS_VERSION,
+    added: PERSONAL_MESSAGE_CONNECTOR_IDS.filter((id) => !present.has(id)),
     changed: true,
   };
 }

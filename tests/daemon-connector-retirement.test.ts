@@ -2,22 +2,9 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 import type { AppConfig } from '../src/config.js';
 import { initializeMimi } from '../src/daemon/service.js';
-
-const savedDaemonConfigEnvironment = {
-  assistant: process.env.MIMI_ASSISTANT_CONFIG,
-  connectors: process.env.MIMI_CONNECTORS_CONFIG,
-};
-delete process.env.MIMI_ASSISTANT_CONFIG;
-delete process.env.MIMI_CONNECTORS_CONFIG;
-after(() => {
-  if (savedDaemonConfigEnvironment.assistant === undefined) delete process.env.MIMI_ASSISTANT_CONFIG;
-  else process.env.MIMI_ASSISTANT_CONFIG = savedDaemonConfigEnvironment.assistant;
-  if (savedDaemonConfigEnvironment.connectors === undefined) delete process.env.MIMI_CONNECTORS_CONFIG;
-  else process.env.MIMI_CONNECTORS_CONFIG = savedDaemonConfigEnvironment.connectors;
-});
 
 test('initialization removes every retired WeChat, IM, and HTTP connector', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-retired-connectors-'));
@@ -43,14 +30,14 @@ test('initialization removes every retired WeChat, IM, and HTTP connector', asyn
     await writeFile(path.join(daemonDataRoot, 'connectors.json'), `${JSON.stringify({
       connectors: {
         'openclaw-weixin': retained,
-        'personal-wechat': { ...retained, args: ['/tmp/legacy-message-connector.mjs', '--channel=wechat'] },
+        'personal-wechat': { ...retained, args: ['/tmp/personal-message-connector.mjs', '--channel=wechat'] },
         qq: { ...retained, args: ['/tmp/custom-qq-bridge.mjs'] },
         'legacy-wechat': { ...retained, args: ['/tmp/wechat-applescript-connector.mjs'] },
         'http-action': { ...retained, args: ['/tmp/http-action-connector.mjs'] },
       },
     })}\n`);
 
-    const result = await initializeMimi(config, { runtimeRoot: process.cwd(), platform: 'darwin' });
+    const result = await initializeMimi(config, { runtimeRoot: process.cwd() });
     const persisted = JSON.parse(
       await readFile(path.join(daemonDataRoot, 'connectors.json'), 'utf8'),
     ) as { connectors: Record<string, unknown> };

@@ -3,6 +3,7 @@ import type { RunModelBinding } from '../core/model-routing.js';
 import type { WorkUnitObservation } from '../core/work-unit.js';
 
 export type RuntimeEvent =
+  | { type: 'run_progress'; sessionId: string; phase: string }
   | { type: 'run_start'; sessionId: string; input: string }
   | { type: 'run_end'; sessionId: string; answer: string }
   | { type: 'run_error'; sessionId: string; error: string; interrupted?: boolean }

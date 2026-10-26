@@ -20,6 +20,15 @@ import { extractWikiContent } from './wiki-renderer.js';
 import type { PersistedLintIssue } from './sqlite-catalog.js';
 
 const MAX_PAGE_BYTES = 200_000;
+const PAGE_READ_CONCURRENCY = 8;
+
+async function mapPageFiles<T>(files: string[], read: (file: string) => Promise<T>): Promise<T[]> {
+  const results: T[] = [];
+  for (let start = 0; start < files.length; start += PAGE_READ_CONCURRENCY) {
+    results.push(...await Promise.all(files.slice(start, start + PAGE_READ_CONCURRENCY).map(read)));
+  }
+  return results;
+}
 
 function contained(root: string, target: string): boolean {
   const relative = path.relative(root, target);
@@ -108,19 +117,25 @@ export class WikiVault {
   async inspect(): Promise<{ pages: MemoryDocument[]; issues: WikiLintIssue[] }> {
     const pages: MemoryDocument[] = [];
     const issues: WikiLintIssue[] = [];
-    for (const file of await this.pageFiles()) {
+    // Bound open/read work and retain file order regardless of completion order.
+    const inspected = await mapPageFiles(await this.pageFiles(), async (file): Promise<{
+      page?: MemoryDocument; issue?: WikiLintIssue;
+    }> => {
       const info = await stat(file);
       if (info.size > MAX_PAGE_BYTES) {
-        issues.push({ code: 'page-too-large', severity: 'error', message: `${file} 超过页面上限` });
-        continue;
+        return { issue: { code: 'page-too-large', severity: 'error', message: `${file} 超过页面上限` } };
       }
       try {
         const page = parsePage(await readFile(file, 'utf8'), file);
         this.assertPage(page);
-        pages.push({ ...page, path: file });
+        return { page: { ...page, path: file } };
       } catch (error) {
-        issues.push({ code: 'invalid-page', severity: 'error', message: `${file}: ${error instanceof Error ? error.message : String(error)}` });
+        return { issue: { code: 'invalid-page', severity: 'error', message: `${file}: ${error instanceof Error ? error.message : String(error)}` } };
       }
+    });
+    for (const result of inspected) {
+      if (result.page) pages.push(result.page);
+      if (result.issue) issues.push(result.issue);
     }
     return { pages, issues };
   }
@@ -270,13 +285,16 @@ export class WikiVault {
         const candidate = path.join(directory, entry.name);
         if (entry.isDirectory()) await visit(candidate);
         else if (entry.isFile() && entry.name.endsWith('.md')) {
-          const canonical = await realpath(candidate);
-          if (!contained(canonicalRoot, canonical)) throw new Error('Wiki 页面通过符号链接越界');
-          files.push(canonical);
+          files.push(candidate);
         }
       }
     };
     await visit(this.root);
-    return files.sort();
+    const canonicalFiles = await mapPageFiles(files, async (file) => {
+      const canonical = await realpath(file);
+      if (!contained(canonicalRoot, canonical)) throw new Error('Wiki 页面通过符号链接越界');
+      return canonical;
+    });
+    return canonicalFiles.sort();
   }
 }

@@ -117,7 +117,7 @@ else process.stdout.write(JSON.stringify({ command, subcommand, rest }));
   };
 
   try {
-    const readinessDeadline = Date.now() + 5_000;
+    const readinessDeadline = Date.now() + 2_000;
     while (!messages.some((message) => message.type === 'status')
       && Date.now() < readinessDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));

@@ -123,6 +123,28 @@ test('run scenario follows the durable task kind instead of treating every Daemo
   );
 });
 
+test('authenticated local security metadata becomes an immutable run ceiling', () => {
+  const requested = decideEvent(event({
+    source: 'local-cli',
+    trust: 'owner',
+    sessionKey: 'safe-session',
+    payload: {
+      prompt: '只读检查',
+      requestedSecurityProfile: 'safe',
+    },
+  }));
+  assert.equal(requested.options?.securityProfile, 'safe');
+  assert.equal(requested.options?.computerAccess, undefined);
+
+  const untrusted = decideEvent(event({
+    payload: {
+      text: 'external input',
+      requestedSecurityProfile: 'full-owner',
+    },
+  }));
+  assert.equal(untrusted.options?.securityProfile, undefined);
+});
+
 test('reply and work source policies grant distinct bounded authority', () => {
   const person = { id: 'alice', displayName: 'Alice', context: ['APAC owner contact'] };
   const reply = decideEvent(event({ actor: { id: 'alice' } }), ['answer directly'], person, 'reply');
@@ -138,6 +160,7 @@ test('reply and work source policies grant distinct bounded authority', () => {
   assert.equal(work.options?.policy?.allowSideEffects, true);
   assert.equal(work.options?.policy?.allowMcp, false);
   assert.ok(work.options?.policy?.allowedTools?.includes('connector_capability'));
+  assert.ok(work.options?.policy?.allowedTools?.includes('read_context_artifact'));
   assert.ok(work.options?.policy?.allowedTools?.includes('inspect_processes'));
   assert.ok(work.options?.policy?.allowedTools?.includes('delegate_background_task'));
   assert.match(instructions(work), /授权只来自本机策略/);
@@ -154,6 +177,7 @@ test('background task policies preserve read/write separation and remove recursi
     objective: { prompt: 'analyze only' },
   }));
   assert.ok(readOnly.options?.policy?.allowedTools?.includes('read_file'));
+  assert.ok(readOnly.options?.policy?.allowedTools?.includes('read_context_artifact'));
   assert.ok(readOnly.options?.policy?.allowedTools?.includes('inspect_processes'));
   assert.ok(readOnly.options?.policy?.allowedTools?.includes('delegate_research'));
   assert.ok(readOnly.options?.policy?.allowedSideEffectTools?.includes('update_plan'));
@@ -167,6 +191,9 @@ test('background task policies preserve read/write separation and remove recursi
   assert.ok(writable.options?.policy?.allowedTools?.includes('connector_action'));
   assert.equal(writable.options?.policy?.allowedTools?.includes('delegate_background_task'), false);
   assert.equal(writable.options?.policy?.allowMcp, true);
+  assert.match(instructions(writable), /后台身份不要求再建 Goal\/Plan/);
+  assert.match(instructions(writable), /简单工作直接执行、核实后结束/);
+  assert.doesNotMatch(instructions(writable), /开始时建立或恢复 Goal\/Plan/);
 
   const external = decideEvent(event(), [], undefined, 'work', false, task());
   assert.ok(external.options?.policy?.allowedTools?.includes('run_shell'));
@@ -188,6 +215,7 @@ test('memory maintenance and revoked recurring schedules fail closed to dedicate
     }),
   );
   assert.deepEqual(maintenance.options?.policy?.allowedTools, [
+    'read_context_artifact',
     'memory_search', 'memory_read', 'memory_links',
     'list_memory_observations', 'upsert_memory_page',
     'merge_memory_pages', 'supersede_memory_page', 'add_memory_links',
@@ -236,9 +264,9 @@ test('owner natural language never selects a tool policy from message wording', 
 
 test('owner wording never derives a personal-message routing hint', () => {
   for (const prompt of [
-    '检查待处理的示例消息消息',
-    '修复示例消息消息通道代码',
-    '先检查示例消息消息，然后修改项目并运行测试',
+    '检查待处理的消息',
+    '修复消息通道代码',
+    '先检查消息，然后修改项目并运行测试',
     '打开 QQ 并发送消息',
   ]) {
     const decision = decideEvent(event({

@@ -303,7 +303,7 @@ test('resources require a currently available active binding', async () => {
     JSON.stringify({ name: 'review' }),
   ) as unknown as { status: string; instructions?: string };
   assert.equal(repeated.status, 'already_active');
-  assert.equal(repeated.instructions, undefined);
+  assert.match(repeated.instructions!, /Follow these instructions/);
   const resource = await readResource.invoke(
     new RunContext({}),
     JSON.stringify({ name: 'review', path: 'reference.md' }),
@@ -422,9 +422,13 @@ test('activation survives restart collapse and full compact without fake history
     return {};
   };
   try {
-    await restarted.stream('continue');
+    await restarted.stream('continue', undefined, { resumeState: true });
     assert.match(restoredInstructions, /UNIQUE_PROTECTED_SKILL_BODY/);
     assert.equal((await restarted.activeSkills()).length, 1);
+    await restarted.failRun(new Error('test boundary'), true);
+    await restarted.stream('What is 2 + 2?');
+    assert.doesNotMatch(restoredInstructions, /UNIQUE_PROTECTED_SKILL_BODY/);
+    assert.match(restoredInstructions, /review/);
     await restarted.failRun(new Error('test boundary'), true);
   } finally {
     await restarted.close();

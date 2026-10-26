@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { inputWithMedia } from '../runtime/media-input.js';
+import { mediaSchema } from '../core/media-attachment.js';
 import { randomUUID } from 'node:crypto';
 import type { RunStreamEvent } from '@openai/agents';
 import type { MimiAgent } from '../runtime/mimi-agent.js';
@@ -36,7 +39,11 @@ import type {
   ImmutableEvent,
   TaskRecord,
 } from './types.js';
-import type { PersonalMessageAuthorization } from './personal-message.js';
+import {
+  personalMessageContextSchema,
+  personalMessageResultSchema,
+  type PersonalMessageAuthorization,
+} from './personal-message.js';
 import type { PersonalMessageScope } from '../runtime/personal-message-hub.js';
 import type { ComputerAccess } from '../extensions/computer/types.js';
 
@@ -64,10 +71,13 @@ export interface DispatcherOptions {
   resolveWorkspace?: (
     event: ImmutableEvent,
     sessionId: string,
+    task: TaskRecord,
   ) => MaybePromise<string | undefined>;
 }
 
 export function runStreamMakesObservableProgress(event: RunStreamEvent): boolean {
+  // Liveness must not depend on whether an SDK event deserves UI output.
+  if (event.type === 'run_item_stream_event' && event.name === 'reasoning_item_created') return true;
   const projection = projectRunStreamEvent(event);
   if (!projection) return false;
   return projection.kind === 'status' || projection.text.trim().length > 0;
@@ -97,6 +107,25 @@ export { eventFailureAttemptLimit } from './dispatcher-retry-policy.js';
 const TERMINAL_TASK_STATUSES = new Set<TaskRecord['status']>([
   'completed', 'failed', 'cancelled', 'dead_letter',
 ]);
+// run_shell owns its process group and turns AbortSignal into TERM/KILL cleanup.
+// Keep other tools behind the safe boundary until they provide equivalent guarantees.
+const INTERRUPTIBLE_ACTIVE_TOOLS = new Set(['run_shell']);
+
+function activeToolsAreInterruptible(active: ActiveExecution): boolean {
+  if (active.tools === 0) return true;
+  const pending = [...active.pendingToolCalls.values()];
+  return pending.length === active.tools
+    && pending.every((call) => INTERRUPTIBLE_ACTIVE_TOOLS.has(call.name));
+}
+
+function personalConnectorId(channel: PersonalMessageAuthorization['channel']): string {
+  return `personal-${channel}`;
+}
+
+function personalConversationTarget(_authorization: PersonalMessageAuthorization): string | undefined {
+  // Company-internal channel targets are not part of the public runtime.
+  return undefined;
+}
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -404,7 +433,7 @@ export class MimiDispatcher {
         return;
       }
       const sessionId = decision.sessionId!;
-      const workspaceRoot = await this.options.resolveWorkspace?.(event, sessionId);
+      const workspaceRoot = await this.options.resolveWorkspace?.(event, sessionId, task);
       this.store.bindRunningTaskSession(task.id, this.workerId, sessionId);
       if (this.activeSessions.has(sessionId)) {
         this.store.requeueTask(task.id, this.workerId, `同 Session ${sessionId} 已有活动 Run，保持 FIFO 等待`);
@@ -507,7 +536,13 @@ export class MimiDispatcher {
       preemptTimer = setInterval(checkPreemption, this.options.preemptPollMs ?? 250);
       preemptTimer.unref();
       refreshRunIdleWatchdog();
-      const modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
+      this.options.onRuntimeEvent?.(task.id, {type:'run_progress',sessionId:decision.sessionId!,phase:'正在准备附件与运行环境'});
+      let modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
+      const mediaPayload = event.payload as {mediaAttachments?:unknown[];mediaDisplayText?:string};
+      if(Array.isArray(mediaPayload?.mediaAttachments) && event.source==='local-cli' && event.trust==='owner') {
+        modelInput = await inputWithMedia(modelInput,mediaPayload.mediaDisplayText ?? decision.input!,
+          mediaPayload.mediaAttachments.map(ref=>mediaSchema.parse(ref)),path.join(path.dirname(this.store.file),'web-media'));
+      }
       const secretReferences = ephemeralSecretReferences(task.objective);
       const directOwnerConversation = task.type === 'conversation'
         && event.id === active.authority.id
@@ -724,7 +759,13 @@ export class MimiDispatcher {
       // follow-up runtime actions such as a Provider restart. Publishing first
       // briefly made the just-completed conversation still appear in
       // activeEventIds, so the restart rejected its own completed Run.
-      await this.host.finalizeExecutionLedger(decision.sessionId!, executionKey).catch(() => undefined);
+      if (result.finalization && ['partial', 'blocked', 'interrupted'].includes(result.finalization.outcome)) {
+        // Keep effect receipts, but allow a later owner-authorized continuation
+        // instead of replaying the already-settled incomplete answer forever.
+        await this.host.reopenExecutionLedger(sessionId, executionKey);
+      } else if (!result.finalization || result.finalization.outcome === 'completed') {
+        await this.host.finalizeExecutionLedger(decision.sessionId!, executionKey).catch(() => undefined);
+      }
       this.store.completeTask(task.id, this.workerId, {
         answer: result.answer,
         sessionId: sessionEffect?.type === 'session_changed' ? sessionEffect.sessionId : decision.sessionId,
@@ -880,14 +921,76 @@ export class MimiDispatcher {
     computerApps: readonly string[] | undefined,
     signal: AbortSignal,
   ): Promise<PersonalMessageScope | undefined> {
-    return this.host.prepareQqPersonalMessageScope(
-      sessionId,
-      workspaceRoot,
-      authorization,
-      computerAccess,
-      computerApps,
-      signal,
-    );
+    if (authorization.channel === 'qq') {
+      return this.host.prepareQqPersonalMessageScope(
+        sessionId,
+        workspaceRoot,
+        authorization,
+        computerAccess,
+        computerApps,
+        signal,
+      );
+    }
+    const connectors = this.connectors;
+    const target = personalConversationTarget(authorization);
+    if (!connectors || !target) return undefined;
+    const connectorId = personalConnectorId(authorization.channel);
+    const connector = connectors.listCapabilities().find((candidate) => candidate.id === connectorId);
+    const readiness = connector?.readiness;
+    const fresh = connector?.online === true && readiness?.stale !== true;
+    const capability = {
+      accountVerified: fresh && readiness?.accountVerified === true,
+      inboundCoverage: fresh
+        ? readiness?.coverage ?? 'unavailable'
+        : 'unavailable' as const,
+      contextRead: fresh
+        ? readiness?.contextRead ?? 'unavailable'
+        : 'unavailable' as const,
+      sendRoute: fresh && readiness?.outbound === 'ready'
+        ? 'connector' as const
+        : 'none' as const,
+      deliveryConfirmed: readiness?.deliveryConfirmed === true,
+      backgroundSafe: fresh && readiness?.backgroundSafe === true,
+      changesReadState: readiness?.changesReadState ?? 'unknown' as const,
+      stableConversationId: readiness?.stableConversationId === true,
+      stableMessageId: readiness?.stableMessageId === true,
+      probedAt: readiness?.reportedAt ?? new Date(0).toISOString(),
+    };
+    return {
+      eventId: authorization.eventId,
+      channel: authorization.channel,
+      accountFingerprint: authorization.accountFingerprint,
+      conversationId: authorization.conversationId,
+      actorId: authorization.actorId,
+      messageMode: authorization.mode,
+      approvedText: authorization.approvedText,
+      capability,
+      getContext: async (limit) => personalMessageContextSchema.parse(
+        await connectors.executePersonalMessageAction({
+          connector: connectorId,
+          action: 'get_context',
+          target,
+          payload: {
+            accountFingerprint: authorization.accountFingerprint,
+            conversationId: authorization.conversationId,
+            limit,
+          },
+        }),
+      ),
+      send: async ({ text, latestFingerprint }) => personalMessageResultSchema.parse(
+        await connectors.executePersonalMessageAction({
+          connector: connectorId,
+          action: 'send_message',
+          target,
+          payload: {
+            accountFingerprint: authorization.accountFingerprint,
+            conversationId: authorization.conversationId,
+            latestFingerprint,
+            text,
+          },
+        }),
+      ),
+    };
   }
 
   private abortForStopWhenSafe(active: ActiveExecution): void {
@@ -920,9 +1023,10 @@ export class MimiDispatcher {
 
   private abortForCancellationWhenSafe(active: ActiveExecution): void {
     const cancellation = active.cancelRequested;
-    if (!cancellation || active.tools > 0) return;
-    active.runController?.abort(new TerminalRunInterruptedError(cancellation.reason));
-    this.host.cancel(active.task.id, new TerminalRunInterruptedError(cancellation.reason));
+    if (!cancellation || !activeToolsAreInterruptible(active)) return;
+    const reason = new TerminalRunInterruptedError(cancellation.reason);
+    active.runController?.abort(reason);
+    this.host.cancel(active.task.id, reason);
   }
 
   private abortForPauseWhenSafe(active: ActiveExecution): void {

@@ -106,7 +106,7 @@ test('personal auto runs receive only narrow message tools', () => {
     undefined,
     undefined,
     'background',
-    ['com.example.chat'],
+    ['com.sankuai.xmpp'],
     'auto',
   );
   assert.equal(decision.action, 'run');
@@ -131,7 +131,7 @@ test('OpenAI and DeepSeek fixtures share the same no-fallback personal-message p
       undefined,
       undefined,
       'background',
-      ['com.example.chat'],
+      ['com.sankuai.xmpp'],
       'auto',
     );
     assert.equal(decision.options?.personalConnectorOnly, true, provider);
@@ -177,7 +177,7 @@ test('an exact owner confirmation in the same recent personal session unlocks on
   try {
     const attention = await AttentionEngine.load(path.join(root, 'assistant.json'), store);
     await attention.upsertSourcePolicy({
-      id: 'chat-confirm',
+      id: 'qq-confirm',
       source: 'personal-message:qq',
       actor: 'actor-1',
       conversation: 'qq:aaaaaaaaaaaaaaaa:123',

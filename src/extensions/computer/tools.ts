@@ -1,13 +1,15 @@
 import { createHash } from 'node:crypto';
-import { tool, type Tool, type ToolOutputImage, type ToolOutputText } from '@openai/agents';
+import { setTimeout as delay } from 'node:timers/promises';
+import type { Tool, ToolOutputImage, ToolOutputText } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../../tool-factory.js';
 import { ActionFailedSafeError } from '../../core/action-intent.js';
 import {
   TOOL_ACTION_INTENT,
   TOOL_LEDGER_ARGUMENTS,
 } from '../../core/tool-metadata.js';
 import { ComputerManager, type ComputerRunAuthority } from './manager.js';
-import { computerActionSchema, type ComputerAction } from './types.js';
+import { computerActionSchema, type ComputerAction, type ComputerTargetSummary } from './types.js';
 
 type StructuredOutput = ToolOutputText | ToolOutputImage;
 
@@ -59,6 +61,8 @@ const modelOptional = <T extends z.ZodType>(schema: T) => schema.nullable().opti
 const observeToolParameters = z.object({
   app: modelOptional(z.string().min(1).max(500)),
   screenshot: modelOptional(z.boolean()),
+  frames: modelOptional(z.number().int().min(1).max(3).describe('截图数，默认 1；检查动画/动态界面用 2，Host 固定同一窗口按时间采样并一起分析。')),
+  question: modelOptional(z.string().trim().min(1).max(4000).describe('截图检查的具体问题或验收标准；text-only 主模型由独立视觉模型读取截图。')),
 }).strict();
 
 const modelComputerActionSchema = z.object({
@@ -68,7 +72,7 @@ const modelComputerActionSchema = z.object({
   bundleId: modelOptional(z.string().min(1).max(500).describe(
     'launch_app 必填；只使用 computer_observe 返回的 apps[].bundleId，不猜应用名',
   )),
-  urls: modelOptional(z.array(z.string().max(4_000)).max(20)),
+  urls: modelOptional(z.array(z.string()).max(20)),
   newInstance: modelOptional(z.boolean()),
   elementIndex: modelOptional(z.number().int().nonnegative()),
   x: modelOptional(z.number().finite()),
@@ -173,14 +177,21 @@ export function computerLedgerArguments(rawInput: string): string {
   }
 }
 
+export type ComputerPerception = (images: readonly { data: string; mediaType: string }[], question: string, signal?: AbortSignal) => Promise<unknown>;
+
 export function createComputerTools(
   manager: ComputerManager,
   currentRun: () => ComputerRunAuthority | undefined,
+  perception?: () => ComputerPerception | undefined,
 ): Tool[] {
   const authority = () => {
     const value = currentRun();
     if (!value) throw new Error('当前没有可绑定的 Computer Run');
     return value;
+  };
+  const observationAuthority = () => {
+    const value = authority();
+    return perception?.() ? { ...value, supportsImageInput: true } : value;
   };
   const observe = tool({
     name: 'computer_observe',
@@ -191,7 +202,7 @@ export function createComputerTools(
       const app = typeof raw.app === 'string' ? raw.app.trim() : '';
       if (!app) return { apps: await manager.listApps(authority(), undefined, details?.signal) };
       const result = await manager.observeApp(
-        authority(),
+        observationAuthority(),
         app,
         raw.screenshot === true,
         details?.signal,
@@ -202,9 +213,27 @@ export function createComputerTools(
       const { screenshot, ...metadata } = publicResult as typeof publicResult & {
         screenshot: { data: string; mediaType: string };
       };
+      const images = [screenshot];
+      const capturedAt = [metadata.capturedAt];
+      const bound = (result as { target?: ComputerTargetSummary }).target;
+      for (let frame = 1; frame < Number(raw.frames ?? 1); frame++) {
+        if (!bound) throw new Error('无法绑定同一窗口，不能采集多帧');
+        await delay(250, undefined, { signal: details?.signal });
+        const next = await manager.observeTarget(observationAuthority(), bound, true, details?.signal) as Record<string, unknown>;
+        const shot = next.screenshot as typeof screenshot | undefined;
+        if (!shot) throw new Error('后续帧未取得截图，动态效果尚未验证');
+        images.push(shot);
+        capturedAt.push(next.capturedAt);
+      }
+      const question = (typeof raw.question === 'string' ? raw.question : '检查实际画面及明显缺陷，不根据标题或源码推断。')
+        + (images.length > 1 ? `\n截图按时间顺序采集：${capturedAt.join('、')}。比较实际位置/状态变化，只报告这些帧能证明的结果。` : '');
+      const perceive = perception?.();
+      if (authority().supportsImageInput === false && perceive) {
+        return { ...metadata, frameTimes: capturedAt, visualReview: await perceive(images, question, details?.signal) };
+      }
       return [
-        { type: 'text', text: JSON.stringify(metadata) } satisfies ToolOutputText,
-        { type: 'image', image: { data: screenshot.data, mediaType: screenshot.mediaType }, detail: 'high' } satisfies ToolOutputImage,
+        { type: 'text', text: JSON.stringify({ ...metadata, frameTimes: capturedAt }) } satisfies ToolOutputText,
+        ...images.map(image => ({ type: 'image', image, detail: 'high' }) satisfies ToolOutputImage),
       ] satisfies StructuredOutput[];
     },
   });
@@ -243,6 +272,10 @@ export function createComputerTools(
         const { screenshot, ...metadata } = publicState as typeof publicState & {
           screenshot: { data: string; mediaType: string };
         };
+        const perceive = perception?.();
+        if (runAuthority.supportsImageInput === false && perceive) {
+          return { ok: true, state: { ...metadata, visualReview: await perceive([screenshot], '确认实际窗口内容及可见问题，不从窗口标题推断已经完成用户任务。', details?.signal) } };
+        }
         return [
           { type: 'text', text: JSON.stringify({ ok: true, state: metadata }) } satisfies ToolOutputText,
           { type: 'image', image: { data: screenshot.data, mediaType: screenshot.mediaType }, detail: 'high' } satisfies ToolOutputImage,

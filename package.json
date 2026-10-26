@@ -47,6 +47,7 @@
     "src",
     "dist",
     "skills/agent-skill-creator",
+    "skills/audio-briefing",
     "skills/code-review",
     "skills/docx",
     "skills/research",
@@ -102,7 +103,7 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/write-build-identity.mjs && node -e \"require('node:fs').chmodSync('dist/index.js',0o755)\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/write-build-identity.mjs && node -e \"require('node:fs').chmodSync('dist/index.js',0o755)\" && node scripts/copy-web-assets.mjs",
     "prepare": "npm run build",
     "dev": "tsx src/index.ts",
     "eval": "tsx src/eval.ts",
@@ -124,19 +125,28 @@
     "test:ui:macos": "npm run test:browser:macos && npm run test:computer:macos",
     "test:coverage": "node --experimental-test-coverage --test-coverage-include=\"src/**/*.ts\" --test-coverage-lines=85 --test-coverage-branches=75 --test-coverage-functions=75 --import tsx --import ./tests/test-environment.mjs --test --test-concurrency=1 tests/*.test.ts",
     "test:package": "node tests/package-smoke.mjs",
-    "ci": "npm run check:repo && npm run check && npm run test:coverage && npm run build && npm run test:package"
+    "ci": "npm run check:repo && npm run check && npm run test:coverage && npm run build && npm run test:package",
+    "web": "tsx src/index.ts web",
+    "test:web:browser": "node scripts/test-web-browser.mjs",
+    "eval:memory": "node --import tsx evals/memory/run.ts",
+    "eval:memory:local": "node --import tsx evals/memory/local-vector.ts",
+    "eval:usability": "tsx src/agent-eval.ts evals/usability-cases.json"
   },
   "dependencies": {
+    "@huggingface/tokenizers": "0.1.3",
     "@openai/agents": "0.13.2",
     "dotenv": "^17.0.0",
     "openai": "6.46.0",
-    "undici": "8.10.0",
+    "onnxruntime-node": "1.24.3",
+    "sqlite-vec": "0.1.9",
+    "undici": "^8.7.0",
     "ws": "8.21.0",
     "yaml": "^2.9.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@trycua/cua-driver": "^0.12.3",
+    "@trycua/cua-driver-darwin-arm64": "^0.12.3",
     "@types/node": "^22.0.0",
     "tsx": "^4.0.0",
     "typescript": "5.9.3"
@@ -145,6 +155,6 @@
     "@openai/agents-core": "0.13.2",
     "@openai/agents-openai": "0.13.2",
     "@openai/agents-realtime": "0.13.2",
-    "fast-uri": "3.1.5"
+    "fast-uri": "3.1.4"
   }
 }

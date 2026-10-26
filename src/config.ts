@@ -20,6 +20,14 @@ export type AgentPermissionMode = 'workspace' | 'read-only' | 'trusted';
 export type SecurityProfile = 'safe' | 'workstation' | 'full-owner';
 export type ModelProvider = 'openai' | 'deepseek' | 'openai-compatible';
 
+export interface TtsConfig {
+  enabled: boolean;
+  command: string;
+  playbackCommand: string;
+  synthesisTimeoutMs: number;
+  playbackTimeoutMs: number;
+}
+
 export interface SecurityProfileSummary {
   id: SecurityProfile;
   label: string;
@@ -64,6 +72,22 @@ export const SECURITY_PROFILES: Readonly<Record<SecurityProfile, SecurityProfile
   }),
 });
 
+const SECURITY_PROFILE_RANK: Readonly<Record<SecurityProfile, number>> = Object.freeze({
+  safe: 0,
+  workstation: 1,
+  'full-owner': 2,
+});
+
+export function restrictSecurityProfile(
+  configured: SecurityProfile,
+  requested: SecurityProfile | undefined,
+): SecurityProfile {
+  if (!requested) return configured;
+  return SECURITY_PROFILE_RANK[requested] <= SECURITY_PROFILE_RANK[configured]
+    ? requested
+    : configured;
+}
+
 export interface AppConfig {
   provider: ModelProvider;
   providerBaseUrl?: string;
@@ -86,6 +110,7 @@ export interface AppConfig {
   securityProfile?: SecurityProfile;
   trustedWorkspaceMcp?: string;
   computer?: ComputerConfig;
+  tts?: TtsConfig;
 }
 
 interface EnvironmentEntry {
@@ -381,6 +406,24 @@ function computerConfig(
   };
 }
 
+function ttsConfig(homeDirectory: string): TtsConfig {
+  const configuredCommand = preferredEnvironmentValue('MIMI_TTS_COMMAND');
+  const configuredPlayback = preferredEnvironmentValue('MIMI_TTS_PLAYBACK_COMMAND');
+  const command = configuredCommand
+    ? expandHome(configuredCommand, homeDirectory)
+    : path.join(homeDirectory, '.mimi-agent', 'runtime', 'tts', 'render');
+  const playbackCommand = configuredPlayback
+    ? expandHome(configuredPlayback, homeDirectory)
+    : '/usr/bin/afplay';
+  return {
+    enabled: booleanEnvironment('MIMI_TTS_ENABLED', false),
+    command,
+    playbackCommand,
+    synthesisTimeoutMs: positiveSafeInteger(['MIMI_TTS_SYNTHESIS_TIMEOUT_MS'], 180_000)!,
+    playbackTimeoutMs: positiveSafeInteger(['MIMI_TTS_PLAYBACK_TIMEOUT_MS'], 10 * 60_000)!,
+  };
+}
+
 export function resolveEnvironmentFile(
   environmentFile?: string,
   homeDirectory = os.homedir(),
@@ -467,9 +510,13 @@ export function adoptRuntimeWorkspaceConfig(
   };
 }
 
+export function defaultWorkspaceRoot(homeDirectory = os.homedir()): string {
+  return path.join(homeDirectory, 'Mimi', 'WorkSpace', 'default');
+}
+
 export function loadConfig(homeDirectory = os.homedir()): AppConfig {
   const explicitWorkspace = preferredEnvironmentValue('MIMI_WORKSPACE', 'AGENT_WORKSPACE');
-  const workspaceRoot = explicitWorkspace ? expandHome(explicitWorkspace, homeDirectory) : path.resolve(process.cwd());
+  const workspaceRoot = explicitWorkspace ? expandHome(explicitWorkspace, homeDirectory) : defaultWorkspaceRoot(homeDirectory);
   const explicitDataRoot = preferredEnvironmentValue('MIMI_DATA_DIR', 'AGENT_DATA_DIR');
   const dataRoot = explicitDataRoot
     ? expandHome(explicitDataRoot, homeDirectory)
@@ -554,5 +601,6 @@ export function loadConfig(homeDirectory = os.homedir()): AppConfig {
     securityProfile: selectedSecurityProfile,
     trustedWorkspaceMcp,
     computer,
+    tts: ttsConfig(homeDirectory),
   };
 }

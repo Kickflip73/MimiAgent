@@ -1,12 +1,20 @@
-import { OpenAIChatCompletionsModel } from '@openai/agents';
-import OpenAI from 'openai';
 import type {
   ModelRegistration,
   ProviderDefinition,
   ReasoningIntent,
 } from '../../core/model-routing.js';
 import type { ProviderAdapter } from './types.js';
+import { createOpenAICompatibleModel } from './openai-compatible-model.js';
 import { assertHealthyResponse, requiredBaseUrl } from './shared.js';
+
+function usesReasoningContentDialect(
+  provider: ProviderDefinition,
+  registration: ModelRegistration,
+): boolean {
+  return ['deepseek', 'deepseek-main'].includes(provider.id.toLowerCase())
+    || registration.target.modelId.toLowerCase().startsWith('deepseek-')
+    || provider.baseUrl?.toLowerCase().includes('deepseek.') === true;
+}
 
 export class OpenAICompatibleAdapter implements ProviderAdapter {
   createAgentRuntime(
@@ -16,10 +24,14 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
     reasoning: ReasoningIntent,
   ) {
     return {
-      model: new OpenAIChatCompletionsModel(
-        new OpenAI({ apiKey, baseURL: requiredBaseUrl(provider), fetch: globalThis.fetch }),
+      model: createOpenAICompatibleModel(
+        apiKey,
+        requiredBaseUrl(provider),
         registration.target.modelId,
-        { strictFeatureValidation: true },
+        {
+          reasoningContentDialect: usesReasoningContentDialect(provider, registration),
+          strictFeatureValidation: true,
+        },
       ),
       target: registration.target,
       registration,

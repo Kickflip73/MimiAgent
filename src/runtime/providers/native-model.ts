@@ -30,11 +30,12 @@ function record(value: unknown): Record<string, unknown> {
 
 function contentText(content: unknown): string {
   if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content.map((part) => {
-    const value = record(part);
-    return typeof value.text === 'string' ? value.text : '';
-  }).filter(Boolean).join('\n');
+  if (content === undefined || content === null) return '';
+  if (Array.isArray(content)) return content.map(contentText).filter(Boolean).join('\n');
+  const value = record(content);
+  if (typeof value.text === 'string') return value.text;
+  const serialized = JSON.stringify(content);
+  return serialized ?? String(content);
 }
 
 function dataImage(value: unknown): { mediaType: string; data: string } | undefined {

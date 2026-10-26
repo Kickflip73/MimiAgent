@@ -1,5 +1,6 @@
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import { AttentionEngine, mimiSourcePolicySchema } from './attention.js';
 
 const sourcePolicyIdSchema = z.string().min(1).max(100);

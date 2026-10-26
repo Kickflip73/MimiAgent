@@ -1,5 +1,6 @@
-import { tool, type Tool } from '@openai/agents';
+import type { Tool } from '@openai/agents';
 import { z } from 'zod';
+import { tool } from '../tool-factory.js';
 import type {
   ModelTarget,
   RunModelBinding,
@@ -8,6 +9,7 @@ import { modelTargetSchema } from '../core/model-routing.js';
 import type { ModelGateway } from './model-gateway.js';
 import type { ImageGenerationResult } from './providers/types.js';
 import type { WorkUnitModelResolver } from './work-unit-model-resolver.js';
+export { createSpeechTools } from './speech-tools.js';
 
 export interface MediaWorkUnitInput {
   prompt: string;

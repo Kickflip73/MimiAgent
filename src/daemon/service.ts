@@ -1,3 +1,7 @@
+import { mediaIds, type MediaAttachment } from '../core/media-attachment.js';
+import { mediaRecord, readMedia } from '../runtime/media-input.js';
+import { ModelConfigStore } from '../runtime/model-config.js';
+import { nextCronTime } from './cron.js';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -19,6 +23,7 @@ import { persistEnvironmentValues, providerApiKeyName } from '../provider-config
 import { MimiAgent } from '../agent.js';
 import { sanitizeSensitiveData } from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
+import { withExclusiveFileLock } from '../core/state-file.js';
 import { configureAgentRuntime, requireProviderApiKey } from '../runtime/bootstrap.js';
 import { MimiHost } from '../runtime/mimi-host.js';
 import {
@@ -26,6 +31,7 @@ import {
   providerBackupRouteFromEnvironment,
 } from '../runtime/run-service.js';
 import { resolveTaskWorkspace } from '../runtime/workspace-resolution.js';
+import { imageIds, IMAGE_TOTAL_BYTES } from '../core/image-attachment.js';
 import { stageAttachments, type LocalAttachmentRequest } from '../runtime/attachments.js';
 import { MimiDispatcher } from './dispatcher.js';
 import {
@@ -44,7 +50,7 @@ import {
   workerConnectorActionParamsSchema,
   workerConnectorInspectParamsSchema,
 } from './connector-worker-rpc.js';
-import { mimiRpc, MimiIpcServer, readControlToken } from './ipc.js';
+import { isMimiIpcTimeout, mimiRpc, MimiIpcServer, readControlToken } from './ipc.js';
 import { NotifierRegistry } from './notifier.js';
 import { MimiStore } from './store.js';
 import { MimiWebhookServer } from './webhook.js';
@@ -70,24 +76,16 @@ import {
 } from './lifecycle.js';
 import { classifyReadinessUnknown } from './operational-classification.js';
 import { createMimiCommandHostTools } from './host-tools.js';
-import {
-  MimiLiveEvents,
-  mimiRuntimeStreamEvent,
-  mimiStreamEvent,
-  mimiStreamTaskState,
-} from './live-events.js';
+import { MimiLiveEvents, mimiRuntimeStreamEvent, mimiStreamEvent, mimiStreamTaskState } from './live-events.js';
 import { ownerSessionId } from './policy.js';
-import {
-  createMimiChatSnapshot,
-  createMimiHistoryChunk,
-} from './chat-snapshot.js';
+import { requestedSecurityProfileForLocalSubmit } from './local-run-policy.js';
+import { createMimiChatSnapshot, createMimiHistoryChunk } from './chat-snapshot.js';
 import { pathExists as exists, writeAtomicJson } from './json-file.js';
-import {
-  initializeMimi,
-} from './initialization.js';
+import { initializeMimi } from './initialization.js';
 import {
   daemonLaunchEnvironment,
   launchAgentPlist,
+  launchAgentPlistBelongsTo,
   MIMI_LAUNCH_AGENT_LABEL,
 } from './launch-agent-config.js';
 import {
@@ -175,38 +173,14 @@ function chatSessionId(params: Record<string, unknown>): string {
 
 const DAEMON_WORKSPACE_FILE = 'workspace.json';
 
-export type DaemonStartupMode = 'launchd' | 'detached';
-
-export function daemonStartupMode(
-  platform: NodeJS.Platform,
-  launchAgentInstalled: boolean,
-  persistentProviderConfigured = false,
-): DaemonStartupMode {
-  return platform === 'darwin' && (launchAgentInstalled || persistentProviderConfigured) ? 'launchd' : 'detached';
-}
-
-export function daemonSupervisorAction(
-  status: Pick<DaemonStatus, 'activeEventId' | 'activeHostMutations' | 'activeTaskCount' | 'tasks' | 'outbox'>,
-  startupMode: DaemonStartupMode,
-  launchAgentInstalled: boolean,
-): 'reuse' | 'migrate' {
-  return startupMode === 'launchd' && !launchAgentInstalled && !daemonHasActiveWork(status)
-    ? 'migrate'
-    : 'reuse';
-}
-
-async function daemonSupervisorState(config: AppConfig) {
-  const launchAgentInstalled = await exists(launchAgentFile());
-  const persistentProviderConfigured = process.platform === 'darwin'
-    && await launchAgentProviderConfigured(config);
-  return {
-    launchAgentInstalled,
-    startupMode: daemonStartupMode(
-      process.platform,
-      launchAgentInstalled,
-      persistentProviderConfigured,
-    ),
-  };
+async function launchAgentOwnership(config: AppConfig) {
+  try {
+    const source = await readFile(launchAgentFile(), 'utf8');
+    return { installed: true, owned: launchAgentPlistBelongsTo(source, config) };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { installed: false, owned: false };
+    throw error;
+  }
 }
 
 export async function reconcileMimiDaemon(
@@ -214,10 +188,7 @@ export async function reconcileMimiDaemon(
   status: DaemonStatusWire,
 ): Promise<DaemonStatus> {
   const expectedPermissionMode = config.permissionMode ?? 'trusted';
-  const protocolAction = daemonProtocolAction(status, expectedPermissionMode);
-  const { launchAgentInstalled, startupMode } = await daemonSupervisorState(config);
-  const supervisorAction = daemonSupervisorAction(status, startupMode, launchAgentInstalled);
-  if (protocolAction === 'reuse' && supervisorAction === 'reuse') return status as DaemonStatus;
+  if (daemonProtocolAction(status, expectedPermissionMode) === 'reuse') return status as DaemonStatus;
   return startMimiDaemon(config);
 }
 
@@ -307,6 +278,10 @@ interface SubmitParams extends Partial<Pick<EventEnvelope,
   resumeState?: boolean;
   approvedPersonalMessageText?: string;
   attachments?: LocalAttachmentRequest[];
+  webImages?: string[];
+  webMedia?: string[];
+  webMediaText?: string;
+  requestedSecurityProfile?: unknown;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -414,10 +389,11 @@ export async function doctorMimi(config: AppConfig) {
   if (missingScripts.length) issues.push(`${missingScripts.length} 个 Connector 脚本不存在`);
   const configured = Boolean(process.env[providerApiKeyName(config.provider)]?.trim());
   if (!configured) issues.push(`${config.provider} API Key 未配置`);
+  const launchAgent = await launchAgentOwnership(config);
   const installedLaunchAgentFile = launchAgentFile();
-  const launchAgentInstalled = await exists(installedLaunchAgentFile);
+  const launchAgentInstalled = launchAgent.installed;
   const persistentProviderKey = await launchAgentProviderConfigured(config);
-  if (launchAgentInstalled && !persistentProviderKey) {
+  if (launchAgent.owned && !persistentProviderKey) {
     issues.push(`launchd 持久环境文件缺少 ${providerApiKeyName(config.provider)}`);
   }
   let daemonStatus: DaemonStatus | undefined;
@@ -491,7 +467,7 @@ export async function doctorMimi(config: AppConfig) {
   const nextActions: string[] = [];
   if (!connectorConfig) nextActions.push('运行 mimi 完成自动初始化');
   if (!configured) nextActions.push(`在 ~/.mimi-agent/.env（或旧目录）配置 ${providerApiKeyName(config.provider)}`);
-  if (launchAgentInstalled && !persistentProviderKey && configured) {
+  if (launchAgent.owned && !persistentProviderKey && configured) {
     nextActions.push(`把 ${providerApiKeyName(config.provider)} 写入 ${resolveEnvironmentFile()} 后重新运行 mimi`);
   }
   if (missingScripts.length) nextActions.push('重新运行 npm install 或修复 Connector 脚本路径');
@@ -557,7 +533,11 @@ export async function doctorMimi(config: AppConfig) {
         },
       } : {}),
     },
-    launchAgent: { installed: launchAgentInstalled, file: installedLaunchAgentFile },
+    launchAgent: {
+      installed: launchAgentInstalled,
+      owned: launchAgent.owned,
+      file: installedLaunchAgentFile,
+    },
     computer: {
       configured: Boolean(config.computer),
       ...(config.computer ? { backend: config.computer.backend, ready: computerStatus?.ready === true } : {}),
@@ -571,6 +551,30 @@ export async function doctorMimi(config: AppConfig) {
 
 export type MimiDoctorReport = Awaited<ReturnType<typeof doctorMimi>>;
 
+export async function installLaunchAgentPlistFile(
+  config: AppConfig, file: string, activate: () => Promise<void>,
+  entry = process.argv[1], execArgs = process.execArgv): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
+  await withExclusiveFileLock(file, async () => {
+    let existing: string | undefined;
+    try { existing = await readFile(file, 'utf8'); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (existing !== undefined && !launchAgentPlistBelongsTo(existing, config)) {
+      throw new Error('全局 launchd 服务属于另一个 MimiAgent 数据目录；请先从原实例执行 mimi daemon uninstall');
+    }
+    const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, launchAgentPlist(config, entry, execArgs), { flag: 'wx', mode: 0o600 });
+      await rename(temporary, file);
+      await chmod(file, 0o600);
+      await activate();
+    } finally {
+      await rm(temporary, { force: true });
+    }
+  });
+}
+
 export async function installMimiLaunchAgent(config: AppConfig): Promise<string> {
   if (process.platform !== 'darwin') throw new Error('自动登录启动当前仅支持 macOS launchd');
   config = await resolveDaemonWorkspaceConfig(config);
@@ -580,25 +584,23 @@ export async function installMimiLaunchAgent(config: AppConfig): Promise<string>
   const paths = mimiPaths(config);
   await mkdir(paths.root, { recursive: true, mode: 0o700 });
   await chmod(paths.root, 0o700);
-  const directory = path.join(os.homedir(), 'Library', 'LaunchAgents');
   const file = launchAgentFile();
-  const temporary = `${file}.${process.pid}.tmp`;
-  await mkdir(directory, { recursive: true });
-  await writeFile(temporary, launchAgentPlist(config), { mode: 0o600 });
-  await rename(temporary, file);
-  await chmod(file, 0o600);
   const domain = `gui/${process.getuid?.() ?? 0}`;
-  await launchctl(['bootout', domain, file], true);
-  await rotateDaemonLogs(paths);
-  await launchctl(['bootstrap', domain, file]);
+  await installLaunchAgentPlistFile(config, file, async () => {
+    await launchctl(['bootout', domain, file], true);
+    await rotateDaemonLogs(paths);
+    await launchctl(['bootstrap', domain, file]);
+  });
   return file;
 }
 
 export async function uninstallMimiLaunchAgent(): Promise<string> {
   if (process.platform !== 'darwin') throw new Error('自动登录启动当前仅支持 macOS launchd');
   const file = launchAgentFile();
-  await launchctl(['bootout', `gui/${process.getuid?.() ?? 0}`, file], true);
-  await rm(file, { force: true });
+  await withExclusiveFileLock(file, async () => {
+    await launchctl(['bootout', `gui/${process.getuid?.() ?? 0}`, file], true);
+    await rm(file, { force: true });
+  });
   return file;
 }
 
@@ -688,7 +690,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return { agent: sessionAgent, runs: runService(sessionAgent) };
       },
     });
-    const notifier = new NotifierRegistry();
+    const notifier = new NotifierRegistry({ daemonRoot: paths.root });
     connectors = await ConnectorManager.load(paths.connectorsConfig, store, notifier);
     attention = await AttentionEngine.load(paths.assistantConfig, store);
     store.setIngressRoutePolicy((event, at) => attention!.routeIngress(event, at));
@@ -759,11 +761,12 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       pauseEvent: pauseTask,
       takeEphemeralSecrets: (eventId, sessionId, references) =>
         ephemeralSecrets.take(eventId, sessionId, references),
-      resolveWorkspace: async (event, sessionId) => {
-        const current = host!.workspaceRootFor(sessionId);
-        if (event.trust !== 'owner') return current ?? config.workspaceRoot;
-        const payload = event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload)
-          ? event.payload as Record<string, unknown>
+      resolveWorkspace: async (event, sessionId, task) => {
+        const current = host!.workspaceRootFor(sessionId) ?? store.workspaceRootForSession(sessionId);
+        const authority = store.getImmutableEvent(task.authorityEventId);
+        if (authority?.trust !== 'owner') return current ?? config.workspaceRoot;
+        const payload = task.objective && typeof task.objective === 'object' && !Array.isArray(task.objective)
+          ? task.objective as Record<string, unknown>
           : {};
         const requestedWorkspaceRoot = optionalAbsoluteDirectory(
           payload.workspaceRoot,
@@ -791,7 +794,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         taskWorkerRuntime,
         activeHostMutations: mutationGate.active,
       };
-      const activity = store.activitySnapshot(1);
+      const activity = store.healthSnapshot();
       const effectiveCapability = host?.currentCapabilitySnapshot();
       const providerHealth = host?.providerHealth();
       const providerHealthRoutes = host?.providerHealthRoutes();
@@ -811,6 +814,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       } : undefined;
       return {
         ...status,
+        supportsWebImages: true,
+        supportsWebMedia: true,
+        supportsWebFiles: true,
         lifecycle: lifecycleEpoch,
         ...(providerHealth ? { providerHealth } : {}),
         ...(providerHealthRoutes?.length ? { providerHealthRoutes } : {}),
@@ -918,6 +924,13 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return activeConnectors.executeAction(params.request);
       }
       assertDaemonControlAuth(controlToken, auth);
+      if (method === 'models.credentials.reload') return mutationGate.run(async () => {
+        if(!config.modelsConfig)throw new Error('未配置模型注册表');
+        const models=await new ModelConfigStore(config.modelsConfig).read();
+        const values=parseDotenv(await readFile(resolveEnvironmentFile(),'utf8').catch(error=>{if(error.code==='ENOENT')return '';throw error;}));
+        for(const provider of models.providers)if(values[provider.apiKeyEnv])process.env[provider.apiKeyEnv]=values[provider.apiKeyEnv];
+        return {reloaded:true};
+      });
       if (method === 'ping' || method === 'status') return {
         protocolVersion: DAEMON_PROTOCOL_VERSION,
         buildVersion: MIMI_BUILD_VERSION,
@@ -966,12 +979,12 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       if (method === 'activity.get') {
         return sanitizeSensitiveData(store.activitySnapshot(limit(object(rawParams).limit, 10)));
       }
+      if (method === 'usage.get') return store.usageReport(Number(object(rawParams).days ?? 7));
       if (method === 'chat.bootstrap') {
         const params = object(rawParams);
         const draftSessionId = assertSessionId(requiredString(params.draftSessionId, 'draftSessionId'));
         const requestedWorkspaceRoot = optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot');
-        const draftExists = (await host!.listSessionSummaries())
-          .some((summary) => summary.id === draftSessionId);
+        const draftExists = await host!.hasSession(draftSessionId);
         const snapshot = await createMimiChatSnapshot(
           host!,
           draftExists ? draftSessionId : host!.currentSessionId,
@@ -1007,7 +1020,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return sanitizeSensitiveData(await createMimiChatSnapshot(
           host!,
           sessionId,
-          host!.workspaceRootFor(sessionId) ?? config.workspaceRoot,
+          host!.workspaceRootFor(sessionId) ?? store.workspaceRootForSession(sessionId) ?? config.workspaceRoot,
           limit(params.limit, 30),
         ));
       }
@@ -1023,6 +1036,14 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const operation = requiredString(params.operation, 'operation');
         if (operation === 'sessions') return sanitizeSensitiveData(await host!.listSessionSummaries());
         const sessionId = chatSessionId(params);
+        if (operation === 'runtime' || operation === 'mcp' || operation === 'models' || operation === 'modes') {
+          return sanitizeSensitiveData(await host!.inspectStatus(sessionId, operation));
+        }
+        const action = operation === 'model.control' ? object(params.value).action : undefined;
+        if (['mode.set', 'output.set', 'model.set'].includes(operation)
+          || (operation === 'model.control' && (action === 'use' || action === 'auto'))) {
+          return sanitizeSensitiveData(await host!.setSessionPreference(sessionId, operation, params.value));
+        }
         return sanitizeSensitiveData(await mutationGate.run(() => host!.mutate(sessionId, async (agent) => {
             const operations: Record<string, () => unknown | Promise<unknown>> = {
               runtime: () => agent.runtimeInfo(),
@@ -1111,6 +1132,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const now = new Date().toISOString();
         const source = params.source ?? 'local-cli';
         const trust = eventTrustSchema.parse(params.trust ?? 'owner');
+        const requestedSecurityProfile = requestedSecurityProfileForLocalSubmit(params);
         const requestedWorkspaceRoot = source === 'local-cli' && trust === 'owner'
           ? optionalAbsoluteDirectory(params.workspaceRoot, 'workspaceRoot')
           : undefined;
@@ -1121,8 +1143,24 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
               path.join(mimiPaths(config).root, 'attachments'),
             )
           : [];
+        if (source === 'local-cli' && trust === 'owner' && params.webImages?.length) {
+          const ids = imageIds(params.webImages);
+          const images = await stageAttachments(ids.map(id => ({path:id,kind:'image' as const})),
+            path.join(mimiPaths(config).root,'web-images'),path.join(mimiPaths(config).root,'attachments'));
+          stagedAttachments.push(...images);
+          if(stagedAttachments.length>8 || stagedAttachments.reduce((sum,item)=>sum+item.bytes,0)>IMAGE_TOTAL_BYTES) throw new Error('附件最多 8 个，合计不超过 20MB');
+        }
+        const preparedMedia: MediaAttachment[] = [];
+        if(source === 'local-cli' && trust === 'owner') for(const id of mediaIds(params.webMedia)) {
+          const root=path.join(mimiPaths(config).root,'web-media');
+          await readMedia(root,id);
+          const ref=await mediaRecord(root,id).read();
+          if(!ref||ref.id!==id)throw new Error('媒体尚未处理完成，请等待识别或视频准备完成');
+          preparedMedia.push(ref);
+        }
+        if(preparedMedia.length + stagedAttachments.length > 8)throw new Error('每条消息最多 8 个附件');
         const prompt = params.payload === undefined ? requiredString(params.text, 'text') : undefined;
-        const payload = params.payload ?? {
+        const submittedPayload = params.payload ?? {
           ...(requestedWorkspaceRoot ? { workspaceRoot: requestedWorkspaceRoot } : {}),
           ...(params.resumeState === true ? { resumeState: true } : {}),
           ...(typeof params.approvedPersonalMessageText === 'string'
@@ -1130,7 +1168,14 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             ? { approvedPersonalMessageText: params.approvedPersonalMessageText.trim().slice(0, 4_000) }
             : {}),
           ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
+          ...(preparedMedia.length ? {mediaAttachments:preparedMedia,...(typeof params.webMediaText==='string'&&params.webMediaText.length<=60000?{mediaDisplayText:params.webMediaText}:{})} : {}),
         };
+        const payload = requestedSecurityProfile
+          ? {
+              ...(submittedPayload as Record<string, unknown>),
+              requestedSecurityProfile,
+            }
+          : submittedPayload;
         const event: EventEnvelope = {
           id: params.eventId ? requiredString(params.eventId, 'eventId') : randomUUID(),
           externalId: params.externalId ?? randomUUID(), source,
@@ -1153,7 +1198,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         'event.get': () => store.getImmutableEvent(requestedId()),
         'event.route': () => store.getEventRouteReceipt(requestedId()),
         'events.list': () => store.listEventSummaries(limit(params.limit)),
-        'tasks.list': () => store.listTasks(limit(params.limit)).map(taskSummaryWithRuntime),
+        'tasks.list': () => params.projection === 'list'
+          ? store.listTaskSummaries(limit(params.limit))
+          : store.listTasks(limit(params.limit)).map(taskSummaryWithRuntime),
         'tasks.get': () => taskDetailsWithRuntime(store.getTask(requestedId())),
         'task.retry': () => store.retryDeadLetterTask(requestedId()),
         'run.get': () => store.runs.get(requestedId()),
@@ -1170,6 +1217,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         'attention.reload': () => mutationGate.run(() => activeAttention.reload()),
         'attention.brief': () => activeAttention.forceBriefing(),
         'connectors.list': () => activeConnectors.listCapabilities(),
+        'schedules.capabilities': () => ({ cron: true, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
         'schedule.get': () => store.schedules.get(requestedId()),
         'schedules.list': () => store.schedules.listSummaries(),
         'schedules.remove': () => store.schedules.remove(requestedId()),
@@ -1245,10 +1293,18 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           total,
         } satisfies MimiSchedulePage);
       }
+      if (method === 'schedules.history') return store.schedules.history(requiredString(params.id, 'id'), Number(params.offset ?? 0), limit(params.limit, 50));
+      if (method === 'schedules.update') {
+        const patch=object(params.patch);
+        for(const key of Object.keys(patch))if(!['name','prompt','type','value','enabled'].includes(key))throw new Error('不支持的计划字段');
+        for(const key of ['name','prompt','type','value'])if(patch[key]!==undefined && typeof patch[key]!=='string')throw new Error('计划字段必须为文本');
+        if(patch.enabled!==undefined && typeof patch.enabled!=='boolean')throw new Error('enabled 必须为 boolean');
+        return store.schedules.update(requiredString(params.id,'id'),patch,requiredString(params.updatedAt,'updatedAt'));
+      }
       if (method === 'schedules.add') {
         const type = requiredString(params.type, 'type');
-        if (type !== 'at' && type !== 'interval') throw new Error('type 必须是 at 或 interval');
-        const nextRunAt = requiredString(params.nextRunAt, 'nextRunAt');
+        if (type !== 'at' && type !== 'interval' && type !== 'cron') throw new Error('type 必须是 at、interval 或 cron');
+        const nextRunAt = type === 'cron' ? nextCronTime(requiredString(params.value, 'value')).toISOString() : requiredString(params.nextRunAt, 'nextRunAt');
         if (!Number.isFinite(Date.parse(nextRunAt))) throw new Error('nextRunAt 不是有效时间');
         return sanitizeSensitiveData(store.schedules.add({
           name: requiredString(params.name, 'name'), type, value: requiredString(params.value, 'value'),
@@ -1289,6 +1345,22 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return { accepted: true, forced: force };
       }
       throw new Error(`未知 MimiAgent RPC 方法：${method}`);
+    }, {
+      onRequestTiming: (timing) => {
+        // Only known read paths: never log caller input, credentials, results or
+        // arbitrary method strings. Full timings distinguish sync work from waits.
+        if (timing.totalMs >= 1_000 && [
+          'ping', 'status', 'tasks.list', 'chat.sessions', 'chat.snapshot',
+          'event.stream', 'runs.list', 'activity.get', 'usage.get',
+        ].includes(timing.method)) {
+          process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), type: 'ipc_slow_request', ...timing })}\n`);
+        }
+      },
+      onEventLoopDelay: (delayMs) => {
+        if (delayMs >= 1_000) process.stderr.write(`${JSON.stringify({
+          timestamp: new Date().toISOString(), type: 'daemon_event_loop_delay', delayMs,
+        })}\n`);
+      },
     });
     process.once('SIGINT', onSignal);
     process.once('SIGTERM', onSignal);
@@ -1379,7 +1451,7 @@ async function waitForDaemonOffline(
       if (daemonProtocolAction(status, expectedPermissionMode) === 'reuse') return status as DaemonStatus;
       // launchd may immediately restart the new binary with a stale plist. A
       // current, idle worker with the wrong permission can be replaced by the
-      // install step below without treating it as an unknown legacy race.
+      // owned supervisor start below without treating it as an unknown legacy race.
       if (allowManagedReplacement && daemonProtocolState(status) === 'current') return undefined;
       throw new Error('旧版 MimiAgent 退出期间被另一个旧版后台重新启动；当前后台未被强制终止，请重试升级。');
     }
@@ -1396,19 +1468,19 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
   requireProviderApiKey(config);
   let paths = mimiPaths(config);
   const expectedPermissionMode = config.permissionMode ?? 'trusted';
-  const { launchAgentInstalled, startupMode } = await daemonSupervisorState(config);
+  const launchAgentOwned = (await launchAgentOwnership(config)).owned;
+  const useLaunchAgent = process.platform === 'darwin' && launchAgentOwned;
   let existing: DaemonStatusWire | undefined;
   let stoppedExisting = false;
   try {
-    existing = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 500);
-  } catch {
-    // No live daemon; continue with the selected supervisor.
+    existing = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 5_000);
+  } catch (error) {
+    if (isMimiIpcTimeout(error)) throw error;
   }
   if (existing) {
     assertDaemonWorkspace(existing.workspaceRoot, config.workspaceRoot);
     const protocolAction = daemonProtocolAction(existing, expectedPermissionMode);
-    const supervisorAction = daemonSupervisorAction(existing, startupMode, launchAgentInstalled);
-    if (protocolAction === 'reuse' && supervisorAction === 'reuse') return existing as DaemonStatus;
+    if (protocolAction === 'reuse') return existing as DaemonStatus;
     await mimiRpc(paths.socket, 'shutdown', undefined, 2_000);
     const replacement = await waitForDaemonOffline(
       paths.socket,
@@ -1416,7 +1488,7 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
       existing.pid,
       config.workspaceRoot,
       expectedPermissionMode,
-      startupMode === 'launchd',
+      useLaunchAgent,
     );
     if (replacement) return replacement;
     stoppedExisting = true;
@@ -1425,8 +1497,10 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
     config = migrateLegacyMimiDaemon(config);
     paths = mimiPaths(config);
   }
-  if (startupMode === 'launchd') {
-    await installMimiLaunchAgent(config);
+  if (useLaunchAgent) {
+    const domain = `gui/${process.getuid?.() ?? 0}`;
+    await launchctl(['bootstrap', domain, launchAgentFile()], true);
+    await launchctl(['kickstart', '-k', `${domain}/${MIMI_LAUNCH_AGENT_LABEL}`]);
   } else {
     const entry = process.argv[1];
     if (!entry) throw new Error('无法确定 MimiAgent 启动入口');
@@ -1457,7 +1531,7 @@ export async function startMimiDaemon(config: AppConfig): Promise<DaemonStatus> 
   while (Date.now() < deadline) {
     let status: DaemonStatusWire;
     try {
-      status = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 500);
+      status = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 2_000);
     } catch (error) {
       lastError = error;
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1496,7 +1570,7 @@ export async function stopMimiDaemon(
   const paths = mimiPaths(config);
   let existing: DaemonStatusWire;
   try {
-    existing = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 500);
+    existing = await mimiRpc<DaemonStatusWire>(paths.socket, 'status', undefined, 5_000);
   } catch {
     return false;
   }

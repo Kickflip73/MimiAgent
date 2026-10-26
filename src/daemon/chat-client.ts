@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentInputItem } from '@openai/agents';
-import { adoptWorkspaceConfig, type AppConfig } from '../config.js';
+import {
+  adoptWorkspaceConfig,
+  type AppConfig,
+  type SecurityProfile,
+} from '../config.js';
 import {
   type BackgroundTaskCancelResult,
   type BackgroundTaskPauseResult,
@@ -9,7 +13,7 @@ import {
   type CommandTarget,
 } from '../commands.js';
 import { runtimeEffectSchema, type RuntimeEffect } from '../runtime/control.js';
-import { mimiRpc } from './ipc.js';
+import { isMimiIpcTimeout, mimiRpc } from './ipc.js';
 import {
   assertDaemonWorkspace,
   daemonProtocolAction,
@@ -160,9 +164,17 @@ export class MimiChatClient {
     try {
       status = await mimiRpc<DaemonStatus>(this.socket, 'status', undefined, 2_000);
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ECONNREFUSED') throw error;
-      status = await (this.options.startDaemon ?? defaultStartDaemon)(this.config);
+      if (isMimiIpcTimeout(error)) {
+        try {
+          status = await mimiRpc<DaemonStatus>(this.socket, 'status', undefined, 10_000);
+        } catch (retryError) {
+          if (isMimiIpcTimeout(retryError) || !isTransientIpcDisconnect(retryError)) throw retryError;
+          status = await (this.options.startDaemon ?? defaultStartDaemon)(this.config);
+        }
+      } else {
+        if (!isTransientIpcDisconnect(error)) throw error;
+        status = await (this.options.startDaemon ?? defaultStartDaemon)(this.config);
+      }
     }
     return this.ensureCurrentDaemon(status);
   }
@@ -233,24 +245,38 @@ export class MimiChatClient {
     input: string,
     sessionKey?: string,
     options?: {
+      /** Stable across browser retries, so a lost HTTP response cannot duplicate the task. */
+      requestId?: string;
+      webImages?: string[];
+      webMedia?: string[];
+      workspaceRoot?: string | null;
       resumeState?: boolean;
       approvedPersonalMessageText?: string;
+      requestedSecurityProfile?: SecurityProfile;
     },
   ): Promise<AcceptedMimiEvent> {
-    const eventId = randomUUID();
+    if (options?.requestId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(options.requestId)) {
+      throw new Error('无效的请求 ID');
+    }
+    const eventId = options?.requestId ?? randomUUID();
     const parsed = parseAttachmentInput(input);
-    if (!parsed.text && !parsed.attachments.length) throw new Error('命令不能为空');
+    if (!parsed.text && !parsed.attachments.length && !options?.webImages?.length && !options?.webMedia?.length) throw new Error('命令不能为空');
     const params = {
-      text: parsed.text || '请检查随附文件。',
+      text: parsed.text || (options?.webImages?.length ? '请查看随附图片。' : '请检查随附文件。'),
+      ...(options?.webImages?.length ? {webImages:options.webImages} : {}),
+      ...(options?.webMedia?.length ? {webMedia:options.webMedia,webMediaText:parsed.text} : {}),
       ...(parsed.attachments.length ? { attachments: parsed.attachments } : {}),
       source: 'local-cli',
       trust: 'owner',
       profileId: 'owner',
       sessionKey,
-      workspaceRoot: this.config.workspaceRoot,
+      ...(options?.workspaceRoot === null ? {} : {workspaceRoot: options?.workspaceRoot ?? this.config.workspaceRoot}),
       ...(options?.resumeState ? { resumeState: true } : {}),
       ...(options?.approvedPersonalMessageText
         ? { approvedPersonalMessageText: options.approvedPersonalMessageText }
+        : {}),
+      ...(options?.requestedSecurityProfile
+        ? { requestedSecurityProfile: options.requestedSecurityProfile }
         : {}),
       eventId,
       externalId: `local-cli:${eventId}`,
@@ -591,7 +617,7 @@ export class RemoteCommandTarget implements CommandTarget {
   }
 
   memoryReindex(): Promise<CommandMethodResult<'memoryReindex'>> {
-    return this.client.invoke('memory.reindex', undefined, this.sessionId);
+    return this.client.invoke('memory.reindex', undefined, this.sessionId, 20 * 60_000);
   }
 
   memoryStatus(): Promise<CommandMethodResult<'memoryStatus'>> {
