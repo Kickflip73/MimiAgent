@@ -69,6 +69,12 @@ export interface MemoryHubOptions {
   userSoulFile?: string;
   packagedSoulFile?: string;
   privateLayout?: PrivateMemoryLayout;
+  onTiming?: (context: RunMemoryContext, operation: 'initialize' | 'search' | 'recordEpisode', phases: Record<string, number | boolean>) => void | Promise<void>;
+}
+
+function reportTiming(options: MemoryHubOptions, context: RunMemoryContext | undefined, operation: 'initialize' | 'search' | 'recordEpisode', phases: Record<string, number | boolean>): void {
+  if (!context || !options.onTiming) return;
+  try { void Promise.resolve(options.onTiming(context, operation, { ...phases })).catch(() => undefined); } catch { /* telemetry never blocks memory */ }
 }
 
 function sourceFor(input: RememberInput, context: RunMemoryContext): SourceRef {
@@ -292,14 +298,18 @@ class DefaultMemoryHub implements MemoryHub {
     this.embeddingModel = this.embeddingProvider?.model ?? configuredModel;
   }
 
-  async initialize(): Promise<void> {
+  async initialize(timings: Record<string, number | boolean> = {}): Promise<void> {
+    let started = performance.now();
     await Promise.all([
       this.privateVault.initialize(),
       this.workspaceVault.initialize(),
       this.rawEvidence.initialize(),
     ]);
+    timings.vaultInitializeMs = performance.now() - started;
+    started = performance.now();
     await this.compiler.recover();
-    await this.syncIndexes();
+    timings.recoverMs = performance.now() - started;
+    await this.syncIndexes(timings);
   }
 
   async hotProfile(context: RunMemoryContext): Promise<MemoryCard[]> {
@@ -312,16 +322,22 @@ class DefaultMemoryHub implements MemoryHub {
 
   async search(query: string, context: RunMemoryContext, options: MemorySearchOptions = {}): Promise<MemoryHit[]> {
     this.validate(context);
+    const started = performance.now();
+    const timings: Record<string, number | boolean> = { embeddingConfigured: Boolean(this.embeddingProvider) };
     const normalized = query.trim();
     if (!normalized) throw new Error('Memory query 不能为空');
     const limit = Math.min(20, Math.max(1, options.limit ?? 20));
     const automatic = Object.keys(options).length === 0;
-    const finish = (hits: MemoryHit[]) => automatic
-      ? boundCards(diversify(hits, normalized, limit), 2_400, limit)
-      : hits;
+    const finish = (hits: MemoryHit[]) => {
+      const result = automatic ? boundCards(diversify(hits, normalized, limit), 2_400, limit) : hits;
+      reportTiming(this.options, context, 'search', { ...timings, totalMs: performance.now() - started, resultCount: result.length });
+      return result;
+    };
     const queryVector = automatic && this.embeddingProvider?.kind === 'local'
       ? undefined
       : await this.embed(normalized);
+    timings.embeddingMs = performance.now() - started;
+    const catalogStarted = performance.now();
     const queryEmbedding = queryVector ? {
       model: this.embeddingModel,
       vector: queryVector,
@@ -357,15 +373,18 @@ class DefaultMemoryHub implements MemoryHub {
       wikiHits.map((item) => ({ item, key: `${item.ref.scope}:${item.ref.id}` })),
       episodeHits.map((item) => ({ item, key: `episode:${item.ref.id}` })),
     ].filter((channel) => channel.length), limit);
+    timings.catalogSearchMs = performance.now() - catalogStarted;
     const needsEvidence = options.includeEvidence
       || memoryHits.length < limit
       || memoryHits.some((hit) => hit.stale || hit.status === 'conflicted');
     if (!needsEvidence) return finish(memoryHits);
     const missing = limit - memoryHits.length;
     const evidenceLimit = missing > 0 ? missing : Math.max(1, Math.floor(limit / 3));
+    const evidenceStarted = performance.now();
     const sourceEvidence = (!options.scope || options.scope === 'all' || options.scope === 'workspace')
       ? await this.documents.search(normalized, evidenceLimit)
       : [];
+    timings.evidenceSearchMs = performance.now() - evidenceStarted;
     const sourceHits = sourceEvidence.map((document, index): MemoryHit => {
       const id = `source_${createHash('sha256').update(document.path).digest('hex').slice(0, 24)}`;
       this.evidence.set(id, document);
@@ -968,6 +987,8 @@ class DefaultMemoryHub implements MemoryHub {
   }
 
   async recordEpisode(input: EpisodeInput, context: RunMemoryContext): Promise<MemoryRef> {
+    const started = performance.now();
+    const timings: Record<string, number | boolean> = {};
     this.validate(context);
     if (input.sessionId !== context.sessionId || input.runId !== context.runId) {
       throw new Error('Episode 必须属于当前 immutable Session/Run');
@@ -994,10 +1015,17 @@ class DefaultMemoryHub implements MemoryHub {
       body: content,
       digest,
     };
+    const commitStarted = performance.now();
     await this.rawEvidence.commit(sourceRef, content, () => {
+      const indexStarted = performance.now();
       this.privateCatalog.index(document, undefined, 'episode');
+      timings.catalogIndexMs = performance.now() - indexStarted;
     });
+    timings.rawEvidenceCommitMs = performance.now() - commitStarted;
+    const pruneStarted = performance.now();
     this.privateCatalog.pruneEpisodes();
+    timings.pruneEpisodesMs = performance.now() - pruneStarted;
+    reportTiming(this.options, context, 'recordEpisode', { ...timings, totalMs: performance.now() - started });
     return ref;
   }
 
@@ -1129,11 +1157,20 @@ class DefaultMemoryHub implements MemoryHub {
     await this.ensureEmbeddings(privatePages, workspacePages, true);
   }
 
-  private async syncIndexes(): Promise<void> {
+  private async syncIndexes(timings: Record<string, number | boolean> = {}): Promise<void> {
+    let started = performance.now();
     const [privatePages, workspacePages] = await this.loadPages();
+    timings.loadPagesMs = performance.now() - started;
+    timings.privatePages = privatePages.length;
+    timings.workspacePages = workspacePages.length;
+    started = performance.now();
     this.privateCatalog.sync(privatePages);
     this.workspaceCatalog.sync(workspacePages);
+    timings.catalogSyncMs = performance.now() - started;
+    started = performance.now();
     await this.ensureEmbeddings(privatePages, workspacePages, false);
+    timings.documentEmbeddingsMs = performance.now() - started;
+    timings.embeddingConfigured = Boolean(this.embeddingProvider);
   }
 
   private async loadPages(): Promise<[MemoryDocument[], MemoryDocument[]]> {
@@ -1250,11 +1287,16 @@ class DefaultMemoryHub implements MemoryHub {
   }
 }
 
-export async function createMemoryHub(options: MemoryHubOptions): Promise<MemoryHub> {
+export async function createMemoryHub(options: MemoryHubOptions, context?: RunMemoryContext): Promise<MemoryHub> {
+  const started = performance.now();
   const privateLayout = options.privateLayout
     ?? await preparePrivateMemoryLayout(options.dataRoot, options.profileId);
+  const timings: Record<string, number | boolean> = { layoutMs: performance.now() - started };
+  const catalogStarted = performance.now();
   const hub = new DefaultMemoryHub({ ...options, privateLayout });
-  await hub.initialize();
+  timings.catalogOpenMs = performance.now() - catalogStarted;
+  await hub.initialize(timings);
+  const cutoverStarted = performance.now();
   if (options.cutover !== false) {
     await cutoverLegacyMemory(hub, options.workspaceRoot, options.dataRoot, {
       profileId: options.profileId,
@@ -1264,6 +1306,8 @@ export async function createMemoryHub(options: MemoryHubOptions): Promise<Memory
       cause: { trust: 'owner', source: 'local-cutover' },
     }, { userSoulFile: options.userSoulFile, packagedSoulFile: options.packagedSoulFile });
   }
+  timings.legacyCutoverMs = performance.now() - cutoverStarted;
+  reportTiming(options, context, 'initialize', { ...timings, totalMs: performance.now() - started });
   return hub;
 }
 
@@ -1311,7 +1355,7 @@ class RoutedMemoryHub implements MemoryHub {
   private forContext(context: RunMemoryContext): Promise<MemoryHub> {
     let hub = this.hubs.get(context.profileId);
     if (!hub) {
-      hub = createMemoryHub({ ...this.options, profileId: context.profileId, cutover: context.profileId === 'owner' });
+      hub = createMemoryHub({ ...this.options, profileId: context.profileId, cutover: context.profileId === 'owner' }, context);
       this.hubs.set(context.profileId, hub);
     }
     return hub;

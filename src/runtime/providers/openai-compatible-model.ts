@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   OpenAIChatCompletionsModel,
   type AgentInputItem,
@@ -13,6 +14,7 @@ const REASONING_CONTENT_MARKER = '__mimi_reasoning_content';
 
 interface ReasoningProtocolState {
   reasoningContent: boolean;
+  deepseekThinking: boolean;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -277,6 +279,15 @@ function normalizeReasoningContentRequest(
   if (!Array.isArray(payload.messages)) return body;
   const fragments = normalizeAssistantFragments(payload.messages);
   let changed = fragments.changed;
+  if (protocol.deepseekThinking) {
+    // Chat Completions uses a native thinking switch; reasoning_effort=none
+    // alone does not disable DeepSeek thinking. Auto must not inherit high.
+    const effort = payload.reasoning_effort;
+    payload.thinking = { type: effort === 'none' ? 'disabled' : 'enabled' };
+    if (effort === 'none') delete payload.reasoning_effort;
+    else payload.reasoning_effort = effort ?? 'low';
+    changed = true;
+  }
   const messages = fragments.messages.map((message) => {
     const normalized = normalizeAssistantMessage(
       message,
@@ -318,7 +329,12 @@ export function normalizeChatCompletionsInput(items: AgentInputItem[]): AgentInp
       // Truly standalone reasoning has no legal Chat Completions message form.
       pendingReasoning = [];
     }
-    portable.push(item);
+    if (value.type === 'function_call' && (typeof value.namespace === 'string' && value.namespace.trim() || typeof value.name === 'string' && !/^[a-zA-Z0-9_-]{1,64}$/.test(value.name))) {
+      // Historical identifiers are display/protocol metadata, not a new tool dispatch.
+      // Hash the qualified identity to avoid collisions while preserving call/result IDs.
+      const { namespace, name, ...rest } = value;
+      portable.push({ ...rest, name: `history_${createHash('sha256').update(JSON.stringify([namespace ?? '', name])).digest('hex').slice(0,48)}` } as unknown as AgentInputItem);
+    } else portable.push(item);
   }
   const unchanged = portable.length === items.length
     && portable.every((item, index) => item === items[index]);
@@ -428,6 +444,7 @@ export function createOpenAICompatibleModel(
     || baseUrl?.toLowerCase().includes('deepseek.') === true;
   const protocol = {
     reasoningContent: options.reasoningContentDialect ?? inferredReasoningContentDialect,
+    deepseekThinking: /^deepseek-(?:v4(?:[.-]|$)|flash(?:-|$))/i.test(modelId),
   };
   const client = new OpenAI({
     apiKey,

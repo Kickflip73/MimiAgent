@@ -1,60 +1,33 @@
 {
   "schemaVersion": 1,
   "skills": [
-    {
-      "name": "agent-reach",
-      "status": "experimental",
-      "published": false
-    },
-    {
-      "name": "agent-skill-creator",
-      "status": "product",
-      "published": true
-    },
-    {
-      "name": "code-review",
-      "status": "product",
-      "published": true
-    },
-    {
-      "name": "computer-use",
-      "status": "product",
-      "published": true
-    },
-    {
-      "name": "docx",
-      "status": "product",
-      "published": true
-    },
-    {
-      "name": "guizang-social-card-skill",
-      "status": "experimental",
-      "published": false
-    },
-    {
-      "name": "pdf",
-      "status": "product",
-      "published": true
-    },
-    {
-      "name": "pptx",
-      "status": "product",
-      "published": true
-    },
-    {
-      "name": "research",
-      "status": "product",
-      "published": true
-    },
-    {
-      "name": "web-research",
-      "status": "product",
-      "published": true
-    },
-    {
-      "name": "xlsx",
-      "status": "product",
-      "published": true
-    }
+    { "name": "add-effects", "status": "product", "published": true },
+    { "name": "agent-reach", "status": "experimental", "published": false },
+    { "name": "agent-skill-creator", "status": "product", "published": true },
+    { "name": "apply-conventions", "status": "product", "published": true },
+    { "name": "assemble-scene", "status": "product", "published": true },
+    { "name": "bake-lighting", "status": "product", "published": true },
+    { "name": "build-app", "status": "product", "published": true },
+    { "name": "build-hud", "status": "product", "published": true },
+    { "name": "calibrate-model", "status": "product", "published": true },
+    { "name": "code-review", "status": "product", "published": true },
+    { "name": "computer-use", "status": "product", "published": true },
+    { "name": "configure-animation", "status": "product", "published": true },
+    { "name": "daxiang-schedule", "status": "experimental", "published": false },
+    { "name": "docx", "status": "product", "published": true },
+    { "name": "find-examples", "status": "product", "published": true },
+    { "name": "guizang-social-card-skill", "status": "experimental", "published": false },
+    { "name": "inspect-glb", "status": "product", "published": true },
+    { "name": "light-scene", "status": "product", "published": true },
+    { "name": "manage-game-state", "status": "product", "published": true },
+    { "name": "override-shader-chunks", "status": "product", "published": true },
+    { "name": "pdf", "status": "product", "published": true },
+    { "name": "pptx", "status": "product", "published": true },
+    { "name": "reduce-draw-calls", "status": "product", "published": true },
+    { "name": "research", "status": "product", "published": true },
+    { "name": "reuse-scripts", "status": "product", "published": true },
+    { "name": "verify-pixels", "status": "product", "published": true },
+    { "name": "web-research", "status": "product", "published": true },
+    { "name": "xlsx", "status": "product", "published": true }
   ]
 }

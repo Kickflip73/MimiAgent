@@ -213,6 +213,7 @@ export function withExecutionLedger(
   currentRun: () => RunIdentity | undefined,
 ): Tool[] {
   const semanticOccurrences = new Map<string, number>();
+  const shellCallOccurrences = new Map<string, number>();
   let previousSemanticKey: string | undefined;
   let uncertainActionFence: UncertainActionFence | undefined;
   return tools.map((tool) => {
@@ -236,6 +237,11 @@ export function withExecutionLedger(
           try {
             const result = await originalInvoke(runContext, input, details);
             if (isCapturedToolError(result)) {
+              if (result.disposition?.phase === 'pre_dispatch' && result.disposition.kind === 'validation') {
+                const failure = { mimiStatus: result.mimiStatus, retryable: result.retryable, code: result.code,
+                  message: result.message, disposition: result.disposition, issues: result.issues };
+                return run?.sanitizeResult?.(failure) ?? failure;
+              }
               return toolFailureResult(run?.sanitizeError?.(result.error) ?? result.error);
             }
             return run?.sanitizeResult?.(result) ?? result;
@@ -278,14 +284,21 @@ export function withExecutionLedger(
         const ledgerInput = (tool as LedgerAwareTool)[TOOL_LEDGER_ARGUMENTS]?.(input) ?? input;
         const argumentsJson = run?.semanticCallIds ? semanticArguments(ledgerInput) : ledgerInput;
         const semanticKey = `${tool.name}\0${argumentsJson}`;
-        const consecutiveDuplicate = run?.semanticCallIds && previousSemanticKey === semanticKey;
+        // A shell command is a process invocation, not a business idempotency key.
+        // New model calls may intentionally rerun a completed process (e.g. setup).
+        // SDK re-delivery and durable replay still address the same occurrence.
+        const shellInvocation = tool.name === 'run_shell' && !action;
+        const shellSdkKey = `${run?.sessionId}\0${run?.runId}\0${sdkCallId}\0${semanticKey}`;
+        const knownShellOccurrence = shellInvocation && sdkCallId ? shellCallOccurrences.get(shellSdkKey) : undefined;
+        const consecutiveDuplicate = run?.semanticCallIds && !shellInvocation && previousSemanticKey === semanticKey;
         const occurrence = run?.semanticCallIds
-          ? consecutiveDuplicate
+          ? knownShellOccurrence ?? (consecutiveDuplicate
             ? semanticOccurrences.get(semanticKey) ?? 1
-            : (semanticOccurrences.get(semanticKey) ?? 0) + 1
+            : (semanticOccurrences.get(semanticKey) ?? 0) + 1)
           : undefined;
         if (occurrence !== undefined) {
-          semanticOccurrences.set(semanticKey, occurrence);
+          if (shellInvocation && sdkCallId) shellCallOccurrences.set(shellSdkKey, occurrence);
+          semanticOccurrences.set(semanticKey, Math.max(occurrence, semanticOccurrences.get(semanticKey) ?? 0));
           previousSemanticKey = semanticKey;
         }
         const callId = run?.semanticCallIds
@@ -325,6 +338,7 @@ export function withExecutionLedger(
             policyRevision,
             status: 'not_started' as const,
           };
+          let rejectedResult: ToolFailureResult | undefined;
           try {
             const receipt = await ledger.executeActionIntent(
               run.sessionId,
@@ -357,6 +371,7 @@ export function withExecutionLedger(
                   }, invokeLedgered);
                 } catch (error) {
                   if (error instanceof ToolExecutionFailedError) {
+                    rejectedResult = error.result;
                     throw new ActionFailedSafeError(error.result.message);
                   }
                   throw error;
@@ -369,7 +384,8 @@ export function withExecutionLedger(
                 return output;
               },
             );
-            return withActionIntentEvidence(receipt);
+            return withActionIntentEvidence(receipt.outcome === 'failed_safe' && rejectedResult
+              ? { ...receipt, result: rejectedResult } : receipt);
           } catch (error) {
             if (!(error instanceof ActionIntentUncertainError)) throw error;
             uncertainActionFence = {

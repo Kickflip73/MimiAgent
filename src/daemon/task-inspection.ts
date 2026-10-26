@@ -1,4 +1,5 @@
 import process from 'node:process';
+import { sanitizeSensitiveText } from '../core/data-sanitizer.js';
 import type { MimiHost } from '../runtime/mimi-host.js';
 import type { MimiLiveEvents } from './live-events.js';
 import type { MimiStore } from './store.js';
@@ -47,4 +48,19 @@ export function createTaskRuntimeInspection(context: {
     };
   };
   return { summary, details };
+}
+
+/** List projection intentionally never reads result bodies, ledgers or artifact contents. */
+export function taskListItem(task: NonNullable<StoredTask>) {
+  const payload = task.objective && typeof task.objective === 'object'
+    ? task.objective as Record<string, unknown> : {};
+  return {
+    taskId: task.id, status: task.status, sessionId: task.sessionKey,
+    originSessionId: typeof payload.originSessionId === 'string' ? payload.originSessionId : undefined,
+    objective: typeof payload.objective === 'string' ? sanitizeSensitiveText(payload.objective.slice(0, 500)) : undefined,
+    executor: task.executor === 'codex' ? 'codex' : 'mimi',
+    attempts: task.attemptCount, createdAt: task.createdAt, updatedAt: task.updatedAt,
+    error: task.error ? sanitizeSensitiveText(task.error.slice(0, 500)) : undefined,
+    notBefore: task.notBefore,
+  };
 }

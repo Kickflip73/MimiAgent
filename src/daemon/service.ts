@@ -1,3 +1,7 @@
+import { mediaIds, type MediaAttachment } from '../core/media-attachment.js';
+import { mediaRecord, readMedia } from '../runtime/media-input.js';
+import { ModelConfigStore } from '../runtime/model-config.js';
+import { nextCronTime } from './cron.js';
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
 import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -27,6 +31,7 @@ import {
   providerBackupRouteFromEnvironment,
 } from '../runtime/run-service.js';
 import { resolveTaskWorkspace } from '../runtime/workspace-resolution.js';
+import { imageIds, IMAGE_TOTAL_BYTES } from '../core/image-attachment.js';
 import { stageAttachments, type LocalAttachmentRequest } from '../runtime/attachments.js';
 import { MimiDispatcher } from './dispatcher.js';
 import {
@@ -273,6 +278,9 @@ interface SubmitParams extends Partial<Pick<EventEnvelope,
   resumeState?: boolean;
   approvedPersonalMessageText?: string;
   attachments?: LocalAttachmentRequest[];
+  webImages?: string[];
+  webMedia?: string[];
+  webMediaText?: string;
   requestedSecurityProfile?: unknown;
 }
 
@@ -682,7 +690,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return { agent: sessionAgent, runs: runService(sessionAgent) };
       },
     });
-    const notifier = new NotifierRegistry();
+    const notifier = new NotifierRegistry({ daemonRoot: paths.root });
     connectors = await ConnectorManager.load(paths.connectorsConfig, store, notifier);
     attention = await AttentionEngine.load(paths.assistantConfig, store);
     store.setIngressRoutePolicy((event, at) => attention!.routeIngress(event, at));
@@ -754,7 +762,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       takeEphemeralSecrets: (eventId, sessionId, references) =>
         ephemeralSecrets.take(eventId, sessionId, references),
       resolveWorkspace: async (event, sessionId, task) => {
-        const current = host!.workspaceRootFor(sessionId);
+        const current = host!.workspaceRootFor(sessionId) ?? store.workspaceRootForSession(sessionId);
         const authority = store.getImmutableEvent(task.authorityEventId);
         if (authority?.trust !== 'owner') return current ?? config.workspaceRoot;
         const payload = task.objective && typeof task.objective === 'object' && !Array.isArray(task.objective)
@@ -806,6 +814,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
       } : undefined;
       return {
         ...status,
+        supportsWebImages: true,
+        supportsWebMedia: true,
+        supportsWebFiles: true,
         lifecycle: lifecycleEpoch,
         ...(providerHealth ? { providerHealth } : {}),
         ...(providerHealthRoutes?.length ? { providerHealthRoutes } : {}),
@@ -913,6 +924,13 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return activeConnectors.executeAction(params.request);
       }
       assertDaemonControlAuth(controlToken, auth);
+      if (method === 'models.credentials.reload') return mutationGate.run(async () => {
+        if(!config.modelsConfig)throw new Error('未配置模型注册表');
+        const models=await new ModelConfigStore(config.modelsConfig).read();
+        const values=parseDotenv(await readFile(resolveEnvironmentFile(),'utf8').catch(error=>{if(error.code==='ENOENT')return '';throw error;}));
+        for(const provider of models.providers)if(values[provider.apiKeyEnv])process.env[provider.apiKeyEnv]=values[provider.apiKeyEnv];
+        return {reloaded:true};
+      });
       if (method === 'ping' || method === 'status') return {
         protocolVersion: DAEMON_PROTOCOL_VERSION,
         buildVersion: MIMI_BUILD_VERSION,
@@ -1002,7 +1020,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return sanitizeSensitiveData(await createMimiChatSnapshot(
           host!,
           sessionId,
-          host!.workspaceRootFor(sessionId) ?? config.workspaceRoot,
+          host!.workspaceRootFor(sessionId) ?? store.workspaceRootForSession(sessionId) ?? config.workspaceRoot,
           limit(params.limit, 30),
         ));
       }
@@ -1018,6 +1036,14 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         const operation = requiredString(params.operation, 'operation');
         if (operation === 'sessions') return sanitizeSensitiveData(await host!.listSessionSummaries());
         const sessionId = chatSessionId(params);
+        if (operation === 'runtime' || operation === 'mcp' || operation === 'models' || operation === 'modes') {
+          return sanitizeSensitiveData(await host!.inspectStatus(sessionId, operation));
+        }
+        const action = operation === 'model.control' ? object(params.value).action : undefined;
+        if (['mode.set', 'output.set', 'model.set'].includes(operation)
+          || (operation === 'model.control' && (action === 'use' || action === 'auto'))) {
+          return sanitizeSensitiveData(await host!.setSessionPreference(sessionId, operation, params.value));
+        }
         return sanitizeSensitiveData(await mutationGate.run(() => host!.mutate(sessionId, async (agent) => {
             const operations: Record<string, () => unknown | Promise<unknown>> = {
               runtime: () => agent.runtimeInfo(),
@@ -1117,6 +1143,22 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
               path.join(mimiPaths(config).root, 'attachments'),
             )
           : [];
+        if (source === 'local-cli' && trust === 'owner' && params.webImages?.length) {
+          const ids = imageIds(params.webImages);
+          const images = await stageAttachments(ids.map(id => ({path:id,kind:'image' as const})),
+            path.join(mimiPaths(config).root,'web-images'),path.join(mimiPaths(config).root,'attachments'));
+          stagedAttachments.push(...images);
+          if(stagedAttachments.length>8 || stagedAttachments.reduce((sum,item)=>sum+item.bytes,0)>IMAGE_TOTAL_BYTES) throw new Error('附件最多 8 个，合计不超过 20MB');
+        }
+        const preparedMedia: MediaAttachment[] = [];
+        if(source === 'local-cli' && trust === 'owner') for(const id of mediaIds(params.webMedia)) {
+          const root=path.join(mimiPaths(config).root,'web-media');
+          await readMedia(root,id);
+          const ref=await mediaRecord(root,id).read();
+          if(!ref||ref.id!==id)throw new Error('媒体尚未处理完成，请等待识别或视频准备完成');
+          preparedMedia.push(ref);
+        }
+        if(preparedMedia.length + stagedAttachments.length > 8)throw new Error('每条消息最多 8 个附件');
         const prompt = params.payload === undefined ? requiredString(params.text, 'text') : undefined;
         const submittedPayload = params.payload ?? {
           ...(requestedWorkspaceRoot ? { workspaceRoot: requestedWorkspaceRoot } : {}),
@@ -1126,6 +1168,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
             ? { approvedPersonalMessageText: params.approvedPersonalMessageText.trim().slice(0, 4_000) }
             : {}),
           ...(stagedAttachments.length ? { attachments: stagedAttachments } : {}),
+          ...(preparedMedia.length ? {mediaAttachments:preparedMedia,...(typeof params.webMediaText==='string'&&params.webMediaText.length<=60000?{mediaDisplayText:params.webMediaText}:{})} : {}),
         };
         const payload = requestedSecurityProfile
           ? {
@@ -1155,7 +1198,9 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         'event.get': () => store.getImmutableEvent(requestedId()),
         'event.route': () => store.getEventRouteReceipt(requestedId()),
         'events.list': () => store.listEventSummaries(limit(params.limit)),
-        'tasks.list': () => store.listTasks(limit(params.limit)).map(taskSummaryWithRuntime),
+        'tasks.list': () => params.projection === 'list'
+          ? store.listTaskSummaries(limit(params.limit))
+          : store.listTasks(limit(params.limit)).map(taskSummaryWithRuntime),
         'tasks.get': () => taskDetailsWithRuntime(store.getTask(requestedId())),
         'task.retry': () => store.retryDeadLetterTask(requestedId()),
         'run.get': () => store.runs.get(requestedId()),
@@ -1172,6 +1217,7 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         'attention.reload': () => mutationGate.run(() => activeAttention.reload()),
         'attention.brief': () => activeAttention.forceBriefing(),
         'connectors.list': () => activeConnectors.listCapabilities(),
+        'schedules.capabilities': () => ({ cron: true, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
         'schedule.get': () => store.schedules.get(requestedId()),
         'schedules.list': () => store.schedules.listSummaries(),
         'schedules.remove': () => store.schedules.remove(requestedId()),
@@ -1247,10 +1293,18 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
           total,
         } satisfies MimiSchedulePage);
       }
+      if (method === 'schedules.history') return store.schedules.history(requiredString(params.id, 'id'), Number(params.offset ?? 0), limit(params.limit, 50));
+      if (method === 'schedules.update') {
+        const patch=object(params.patch);
+        for(const key of Object.keys(patch))if(!['name','prompt','type','value','enabled'].includes(key))throw new Error('不支持的计划字段');
+        for(const key of ['name','prompt','type','value'])if(patch[key]!==undefined && typeof patch[key]!=='string')throw new Error('计划字段必须为文本');
+        if(patch.enabled!==undefined && typeof patch.enabled!=='boolean')throw new Error('enabled 必须为 boolean');
+        return store.schedules.update(requiredString(params.id,'id'),patch,requiredString(params.updatedAt,'updatedAt'));
+      }
       if (method === 'schedules.add') {
         const type = requiredString(params.type, 'type');
-        if (type !== 'at' && type !== 'interval') throw new Error('type 必须是 at 或 interval');
-        const nextRunAt = requiredString(params.nextRunAt, 'nextRunAt');
+        if (type !== 'at' && type !== 'interval' && type !== 'cron') throw new Error('type 必须是 at、interval 或 cron');
+        const nextRunAt = type === 'cron' ? nextCronTime(requiredString(params.value, 'value')).toISOString() : requiredString(params.nextRunAt, 'nextRunAt');
         if (!Number.isFinite(Date.parse(nextRunAt))) throw new Error('nextRunAt 不是有效时间');
         return sanitizeSensitiveData(store.schedules.add({
           name: requiredString(params.name, 'name'), type, value: requiredString(params.value, 'value'),
@@ -1291,6 +1345,22 @@ export async function runMimiDaemon(config: AppConfig): Promise<void> {
         return { accepted: true, forced: force };
       }
       throw new Error(`未知 MimiAgent RPC 方法：${method}`);
+    }, {
+      onRequestTiming: (timing) => {
+        // Only known read paths: never log caller input, credentials, results or
+        // arbitrary method strings. Full timings distinguish sync work from waits.
+        if (timing.totalMs >= 1_000 && [
+          'ping', 'status', 'tasks.list', 'chat.sessions', 'chat.snapshot',
+          'event.stream', 'runs.list', 'activity.get', 'usage.get',
+        ].includes(timing.method)) {
+          process.stderr.write(`${JSON.stringify({ timestamp: new Date().toISOString(), type: 'ipc_slow_request', ...timing })}\n`);
+        }
+      },
+      onEventLoopDelay: (delayMs) => {
+        if (delayMs >= 1_000) process.stderr.write(`${JSON.stringify({
+          timestamp: new Date().toISOString(), type: 'daemon_event_loop_delay', delayMs,
+        })}\n`);
+      },
     });
     process.once('SIGINT', onSignal);
     process.once('SIGTERM', onSignal);

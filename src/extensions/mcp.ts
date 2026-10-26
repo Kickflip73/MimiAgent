@@ -34,7 +34,7 @@ export type MCPServerConfig = z.infer<typeof serverSchema>;
 export interface MCPServerStatus {
   name: string;
   transport: 'stdio' | 'streamable-http';
-  state: 'connected' | 'failed';
+  state: 'configured' | 'disabled' | 'connected' | 'failed';
   tools: number;
   error?: string;
 }
@@ -205,6 +205,7 @@ export class MCPManager {
   readonly servers: MCPServer[] = [];
   private statusList: MCPServerStatus[] = [];
   private lifecycle: Promise<void> = Promise.resolve();
+  private closed = false;
 
   constructor(
     private readonly configFile: string,
@@ -215,6 +216,7 @@ export class MCPManager {
       allowStdio?: boolean;
       resolveEnvironment?: McpEnvironmentResolver;
       redactError?: (message: string) => string;
+      disposeEnvironment?: () => void;
     } = {},
   ) {
     if (options.enabled === false) {
@@ -228,6 +230,30 @@ export class MCPManager {
     }
   }
 
+  /** Read configuration without starting processes or making network connections. */
+  async prepare(): Promise<void> {
+    if (this.options.enabled === false) return;
+    let catalog;
+    try { catalog = await this.load(); } catch (error) {
+      this.statusList = [{ name: 'workspace-mcp', transport: 'stdio', state: 'failed', tools: 0, error: this.errorMessage(error) }];
+      return;
+    }
+    const { definitions, invalid } = catalog;
+    this.statusList = [...invalid, ...Object.entries(definitions).map(([name, config]) => ({
+      name, transport: 'url' in config ? 'streamable-http' as const : 'stdio' as const,
+      state: config.enabled === false ? 'disabled' as const : 'configured' as const, tools: 0,
+    }))];
+  }
+
+  async ensureConnected(serverNames?: readonly string[]): Promise<string[]> {
+    return this.serialized(async () => {
+      if (this.closed) throw new Error('MCP Manager 已关闭');
+      const selected = serverNames ? new Set(serverNames) : undefined;
+      if (this.statusList.length && this.statusList.filter(status => !selected || selected.has(status.name)).every(status => ['connected', 'disabled'].includes(status.state))) return this.servers.map(server => server.name);
+      return this.replaceConnections(true, true, selected);
+    });
+  }
+
   async connect(): Promise<string[]> {
     return this.serialized(() => this.replaceConnections(false));
   }
@@ -239,15 +265,21 @@ export class MCPManager {
     });
   }
 
-  private async replaceConnections(preserveFailed: boolean): Promise<string[]> {
+  private async replaceConnections(preserveFailed: boolean, reuseConnected = false, selected?: ReadonlySet<string>): Promise<string[]> {
+    if (this.closed) throw new Error('MCP Manager 已关闭');
     if (this.options.enabled === false) return [];
     const { definitions, invalid } = await this.load();
     const oldServers = [...this.servers];
     const oldByName = new Map(oldServers.map((server) => [server.name, server]));
     const oldStatus = new Map(this.statusList.map((status) => [status.name, status]));
     const results = await Promise.all(Object.entries(definitions).map(async ([name, config]) => {
-      if (config.enabled === false) return undefined;
+      if (config.enabled === false) return { status: { name, transport: 'url' in config ? 'streamable-http' as const : 'stdio' as const, state: 'disabled' as const, tools: 0 } };
+      const existing = oldByName.get(name), existingStatus = oldStatus.get(name);
+      if (reuseConnected && existing && existingStatus?.state === 'connected') return { server: existing, retained: true, status: existingStatus };
       const transport = 'url' in config ? 'streamable-http' : 'stdio';
+      if (selected && !selected.has(name)) return {
+        status: existingStatus ?? { name, transport, state: 'configured', tools: 0 } satisfies MCPServerStatus,
+      };
       if (transport === 'stdio' && this.options.allowStdio === false) {
         return { status: {
           name,
@@ -326,9 +358,11 @@ export class MCPManager {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     await this.serialized(async () => {
       await Promise.allSettled(this.servers.map((server) => server.close()));
       this.servers.length = 0;
+      this.options.disposeEnvironment?.();
     });
   }
 

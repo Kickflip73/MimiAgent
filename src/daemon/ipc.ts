@@ -32,6 +32,19 @@ export interface MimiRpcOptions {
   controlAuth?: boolean;
 }
 
+export interface MimiIpcTiming {
+  method: string;
+  synchronousMs: number;
+  totalMs: number;
+  success: boolean;
+}
+
+export interface MimiIpcDiagnostics {
+  onRequestTiming?: (timing: MimiIpcTiming) => void;
+  /** Timer drift also includes OS scheduling/sleep, not only JavaScript work. */
+  onEventLoopDelay?: (delayMs: number) => void;
+}
+
 interface FileIdentity {
   dev: bigint;
   ino: bigint;
@@ -178,13 +191,18 @@ function parseLine<T>(buffer: string, maximumBytes: number, label: string): T {
 
 export class MimiIpcServer {
   private server?: Server;
+  private delayMonitor?: ReturnType<typeof setInterval>;
   private readonly sockets = new Set<Socket>();
   private socketIdentity?: FileIdentity;
   private lock?: OwnedLock;
   private readonly lockPath: string;
   private readonly recoveryLockPath: string;
 
-  constructor(readonly socketPath: string, private readonly handler: RpcHandler) {
+  constructor(
+    readonly socketPath: string,
+    private readonly handler: RpcHandler,
+    private readonly diagnostics: MimiIpcDiagnostics = {},
+  ) {
     this.lockPath = `${socketPath}.lock`;
     this.recoveryLockPath = `${this.lockPath}.recovery`;
   }
@@ -208,6 +226,16 @@ export class MimiIpcServer {
       const identity = await this.fileIdentity(this.socketPath);
       if (!identity) throw new Error(`MimiAgent IPC Socket 未创建：${this.socketPath}`);
       this.socketIdentity = identity;
+      if (this.diagnostics.onEventLoopDelay) {
+        let previous = performance.now();
+        this.delayMonitor = setInterval(() => {
+          const now = performance.now();
+          const delayMs = Math.max(0, now - previous - 1_000);
+          previous = now;
+          try { this.diagnostics.onEventLoopDelay?.(delayMs); } catch { /* Observers cannot affect IPC. */ }
+        }, 1_000);
+        this.delayMonitor.unref();
+      }
     } catch (error) {
       await this.close().catch(() => undefined);
       throw error;
@@ -215,6 +243,8 @@ export class MimiIpcServer {
   }
 
   async close(): Promise<void> {
+    clearInterval(this.delayMonitor);
+    this.delayMonitor = undefined;
     const server = this.server;
     this.server = undefined;
     try {
@@ -257,20 +287,40 @@ export class MimiIpcServer {
       socket.setTimeout(0);
       void (async () => {
         let request: RpcRequest | undefined;
+        const started = performance.now();
+        let synchronousMs = 0;
+        let success = false;
         try {
           request = parseLine<RpcRequest>(input.split('\n', 1)[0]!, MAX_IPC_REQUEST_BYTES, 'IPC 请求');
           if (!request.id || !request.method) throw new Error('IPC 请求缺少 id 或 method');
           const auth = typeof request.auth === 'string' && request.auth.length <= 128
             ? request.auth
             : undefined;
-          const result = await this.handler(request.method, request.params, controller.signal, auth);
+          let pending: unknown;
+          const handlerStarted = performance.now();
+          try {
+            pending = this.handler(request.method, request.params, controller.signal, auth);
+          } finally {
+            synchronousMs = performance.now() - handlerStarted;
+          }
+          const result = await pending;
           write(socket, { id: request.id, ok: true, result });
+          success = true;
         } catch (error) {
           write(socket, {
             id: request?.id ?? 'invalid',
             ok: false,
             error: error instanceof Error ? error.message : String(error),
           });
+        } finally {
+          if (typeof request?.method === 'string') {
+            try {
+              this.diagnostics.onRequestTiming?.({
+                method: request.method, synchronousMs,
+                totalMs: performance.now() - started, success,
+              });
+            } catch { /* Diagnostics must not change execution or reply semantics. */ }
+          }
         }
       })();
     });

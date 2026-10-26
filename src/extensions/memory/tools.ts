@@ -91,7 +91,7 @@ export function createMemoryTools(
     }),
     tool({
       name: 'remember',
-      description: '保存稳定偏好、事实、决策或经验。L2 必须引用 derivedFrom 且保持 inferred；不要保存瞬时、未验证或秘密信息。',
+      description: '仅保存已验证的长期信息，禁止秘密。workspace 必填已有文本文件 sourcePaths；L2 必填 derivedFrom 且 inferred。',
       parameters: z.object({
         title: z.string().trim().min(1).max(200),
         content: z.string().trim().min(1).max(120_000),
@@ -105,7 +105,7 @@ export function createMemoryTools(
         facets: memoryFacetsSchema.optional(),
         derivedFrom: z.array(refSchema).max(50).optional(),
         provenance: z.enum(['owner-explicit', 'autonomous']).default('autonomous')
-          .describe('owner 本轮明确保存或纠正时用 owner-explicit；否则 autonomous'),
+          .describe('明确保存或纠正用 owner-explicit，否则 autonomous'),
       }),
       execute: async (input) => {
         const { provenance, ...memory } = input;

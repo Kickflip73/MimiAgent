@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { assertSessionId } from './session-id.js';
 import { AtomicJsonStore } from './state-file.js';
@@ -156,6 +157,17 @@ export class PlanStore {
   async get(): Promise<PlanStep[]> {
     const sessionId = this.sessionId;
     return (await this.state.read())[sessionId]?.steps ?? [];
+  }
+
+  /** Read the committed projection without recovery or filesystem mutations. */
+  async readSnapshot(): Promise<PlanStep[]> {
+    const sessionId = this.sessionId;
+    try {
+      return decodePlans(JSON.parse(await readFile(this.state.file, 'utf8')) as unknown)[sessionId]?.steps ?? [];
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
   }
 
   async update(steps: PlanStep[]): Promise<PlanStep[]> {

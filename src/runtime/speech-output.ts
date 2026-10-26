@@ -8,6 +8,8 @@ import { runManagedCommand } from '../core/managed-process.js';
 import { PRE_MIMI_DATA_DIRECTORY } from '../core/mimi-legacy.js';
 import type { TtsConfig } from '../config.js';
 
+export const CHATTTS_MAX_CHARS = 300;
+
 export type SpeechEngine = 'auto' | 'chattts' | 'kokoro';
 export type SpeechLanguage = 'auto' | 'zh' | 'en' | 'ja';
 
@@ -194,8 +196,11 @@ export class SpeechOutput {
     if (!text.trim()) throw new Error('TTS 文本不能为空');
     if (text.length > 20_000) throw new Error('单次 TTS 文本不能超过 20000 个字符');
     signal?.throwIfAborted();
-    await this.assertCommandsAvailable(false);
     const selected = resolveOptions(text, validateOptions(options));
+    if (selected.engine === 'chattts' && text.length > CHATTTS_MAX_CHARS) {
+      throw new Error(`ChatTTS 仅支持最多 ${CHATTTS_MAX_CHARS} 字符的短语音；本次 ${text.length} 字符，未启动合成。长文请使用 audio-briefing 的系统语音方案；不要截断文本或拆分为多个 ChatTTS 请求绕过限制。`);
+    }
+    await this.assertCommandsAvailable(false);
     await mkdir(this.outputDirectory, { recursive: true, mode: 0o700 });
     const fingerprint = createHash('sha256').update(JSON.stringify({ text, selected, renderer: this.config.command })).digest('hex');
     const id = randomUUID();
@@ -300,6 +305,12 @@ export class SpeechOutput {
       next: entry.status === 'ready' ? 'play existing audioId or file; do not synthesize again'
         : 'This is the local receipt, not a live backend job query. Report the original audioId and unconfirmed status; do not loop over unchanged receipts or regenerate. File existence alone does not confirm completion.',
     })));
+  }
+
+  /** Validate and return an audio receipt for an interactive conversation player. */
+  async preparePlayback(audio: SpeechAudio | string): Promise<SpeechAudio> {
+    this.assertEnabled();
+    return this.resolveAudio(audio);
   }
 
   private async resolveAudio(audio: SpeechAudio | string): Promise<SpeechAudio> {

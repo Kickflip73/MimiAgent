@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns';
 import { lookup } from 'node:dns/promises';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { isIP, type LookupFunction } from 'node:net';
 import path from 'node:path';
 import { codeInterpreterTool, webSearchTool } from '@openai/agents';
@@ -14,6 +14,7 @@ import { PRE_MIMI_DATA_DIRECTORY } from './core/mimi-legacy.js';
 import { withExclusiveFileLock } from './core/state-file.js';
 import { diagnoseWrittenFiles } from './runtime/file-diagnostics.js';
 import { tool } from './tool-factory.js';
+import { hasUnmanagedShellProcess } from './shell-process-policy.js';
 import type { FileMutationObserver } from './core/file-change-journal.js';
 
 const MAX_TEXT_BYTES = 200_000;
@@ -88,6 +89,7 @@ export interface ToolAccessPolicy {
   shellEnvironment?: NodeJS.ProcessEnv | (() => NodeJS.ProcessEnv);
   shellSensitiveValues?: () => readonly string[];
   shellDetachedProcessGroup?: boolean;
+  shellReadOnlySkillRoots?: () => Promise<readonly string[]>;
   blockedUnixSocketPaths?: string[];
   blockedLocalTcpPorts?: number[];
   postWriteDiagnostics?: boolean;
@@ -151,6 +153,7 @@ function sandboxProfile(
   blockedUnixSocketPaths: string[],
   blockedLocalTcpPorts: number[],
   homeDirectory: string | undefined,
+  readOnlySkillRoots: readonly string[] = [],
 ): string {
   const quote = (value: string) => `"${path.resolve(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   const applicationRoots = [
@@ -189,7 +192,7 @@ function sandboxProfile(
       'com.apple.windowserver.active',
     ].map((service) => `(deny mach-lookup (global-name "${service}"))`),
     ...protectedPaths.flatMap((protectedPath) => [
-      `(deny file-read* (subpath ${quote(protectedPath)}))`,
+      `(deny file-read* (require-all (subpath ${quote(protectedPath)}) ${readOnlySkillRoots.map(root => `(require-not (subpath ${quote(root)}))`).join(' ')}))`,
       `(deny file-write* (subpath ${quote(protectedPath)}))`,
     ]),
   ].join(' ');
@@ -737,7 +740,15 @@ export interface FileSearchMatch {
   match: 'path' | 'content';
 }
 
+export interface FileSearchReport {
+  truncated: boolean;
+  limitsReached: string[];
+  scannedEntries: number;
+}
+
 export interface FileSearchLimits {
+  timeoutMs?: number;
+  report?: FileSearchReport;
   maxScannedEntries?: number;
   maxDepth?: number;
   maxReadBytes?: number;
@@ -755,13 +766,13 @@ function globPattern(pattern: string): RegExp {
   for (let index = 0; index < pattern.length; index += 1) {
     const character = pattern[index]!;
     if (character === '*' && pattern[index + 1] === '*') {
-      source += '.*';
-      index += 1;
+      source += pattern[index + 2] === '/' ? '(?:.*/)?' : '.*';
+      index += pattern[index + 2] === '/' ? 2 : 1;
     } else if (character === '*') source += '[^/]*';
     else if (character === '?') source += '[^/]';
     else source += character.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
   }
-  return new RegExp(`^${source}$`);
+  return new RegExp(`${pattern.includes('/') ? '^' : '(?:^|/)'}${source}$`);
 }
 
 export async function searchLocalFiles(
@@ -781,77 +792,95 @@ export async function searchLocalFiles(
   const contextLines = limits.contextLines ?? 0;
   const excludedRoots = (limits.excludedPaths ?? []).map((value) => resolvePath(workspaceRoot, value));
   const results: FileSearchMatch[] = [];
-  const maxScannedEntries = limits.maxScannedEntries ?? 10_000;
+  const maxScannedEntries = limits.maxScannedEntries ?? (limits.pathsOnly ? 50_000 : 10_000);
   const maxDepth = limits.maxDepth ?? 64;
   const maxReadBytes = limits.maxReadBytes ?? 20_000_000;
   let scannedEntries = 0;
   let readBytes = 0;
 
-  const visit = async (target: string, depth: number): Promise<void> => {
+  const report = limits.report ?? { truncated: false, limitsReached: [], scannedEntries: 0 };
+  const deadline = Date.now() + (limits.timeoutMs ?? 3_000);
+  const limited = (reason: string): void => {
+    report.truncated = true;
+    if (!report.limitsReached.includes(reason)) report.limitsReached.push(reason);
+  };
+  const stopped = (): boolean => {
     signal?.throwIfAborted();
-    if (results.length >= maxResults) return;
-    if (excludedRoots.some((excluded) => containsPath(excluded, target))) return;
-    if (depth > maxDepth) throw new Error(`文件搜索目录深度超过 ${maxDepth} 层`);
-    scannedEntries += 1;
-    if (scannedEntries > maxScannedEntries) throw new Error(`文件搜索扫描项超过 ${maxScannedEntries} 个`);
-    let info;
-    try {
-      info = await lstat(target);
-    } catch {
-      return;
-    }
-    if (info.isSymbolicLink()) return;
-    if (info.isDirectory()) {
-      if (target !== root && shouldSkipDirectory(
-        path.basename(target),
-        limits.includePrivateRuntimePaths,
-      )) return;
-      for (const entry of await readdir(target)) {
-        await visit(path.join(target, entry), depth + 1);
-        if (results.length >= maxResults) break;
-      }
-      return;
-    }
-    if (!info.isFile()) return;
+    if (Date.now() >= deadline) limited('time');
+    return report.limitsReached.some(reason => ['time', 'entries', 'results', 'bytes'].includes(reason));
+  };
+  const matchFile = async (target: string): Promise<void> => {
     const relativePath = path.relative(workspaceRoot, target).split(path.sep).join('/');
-    if (globs.length && !globs.some((glob) => glob.test(relativePath))) return;
-    if (matcher.test(relativePath)) {
-      results.push({ path: relativePath, match: 'path' });
-      if (results.length >= maxResults) return;
-    }
-    if (limits.pathsOnly || info.size > MAX_TEXT_BYTES) return;
+    if (globs.length && !globs.some(glob => glob.test(relativePath))) return;
+    if (matcher.test(relativePath)) results.push({ path: relativePath, match: 'path' });
+    if (results.length >= maxResults) { limited('results'); return; }
+    if (limits.pathsOnly) return;
+    const info = await stat(target);
+    if (info.size > MAX_TEXT_BYTES) return;
+    if (readBytes + info.size > maxReadBytes) { limited('bytes'); return; }
     readBytes += info.size;
-    if (readBytes > maxReadBytes) throw new Error(`文件搜索读取总量超过 ${maxReadBytes} 字节`);
-    let content: string;
-    try {
-      content = await readFile(target, 'utf8');
-    } catch {
-      return;
-    }
-    if (content.includes('\0')) return;
+    const content = await readFile(target, 'utf8');
+    if (content.includes('\0') || stopped()) return;
     const lines = content.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       if (!matcher.test(lines[index]!)) continue;
       const contextStart = Math.max(0, index - contextLines);
-      const contextEnd = Math.min(lines.length, index + contextLines + 1);
-      results.push({
-        path: relativePath,
-        line: index + 1,
-        text: truncate(lines[index]!.trim(), 240),
-        ...(contextLines ? {
-          context: lines.slice(contextStart, contextEnd).map((line, contextIndex) => ({
-            line: contextStart + contextIndex + 1,
-            text: truncate(line, 240),
-          })),
-        } : {}),
-        match: 'content',
+      results.push({ path: relativePath, line: index + 1, text: truncate(lines[index]!.trim(), 240), match: 'content',
+        ...(contextLines ? { context: lines.slice(contextStart, index + contextLines + 1)
+          .map((line, offset) => ({ line: contextStart + offset + 1, text: truncate(line, 240) })) } : {}),
       });
-      if (results.length >= maxResults) break;
+      if (results.length >= maxResults) { limited('results'); return; }
     }
   };
-
-  await visit(root, 0);
-  return results;
+  // Breadth first: a large first subdirectory must not starve nearby files.
+  const pending = [{ target: root, depth: 0 }];
+  const walk = async (): Promise<void> => {
+    for (let cursor = 0; cursor < pending.length && !stopped(); cursor += 1) {
+      const { target, depth } = pending[cursor]!;
+      if (excludedRoots.some(excluded => containsPath(excluded, target))) continue;
+      try {
+        const info = await lstat(target);
+        if (info.isSymbolicLink()) continue;
+        if (info.isFile()) { await matchFile(target); continue; }
+        if (!info.isDirectory()) continue;
+        const directory = await opendir(target);
+        for await (const entry of directory) {
+          if (stopped()) break;
+          if (scannedEntries >= maxScannedEntries) { limited('entries'); break; }
+          report.scannedEntries = ++scannedEntries;
+          const file = path.join(target, entry.name);
+          if (excludedRoots.some(excluded => containsPath(excluded, file)) || entry.isSymbolicLink()) continue;
+          if (entry.isDirectory()) {
+            if (shouldSkipDirectory(entry.name, limits.includePrivateRuntimePaths)) continue;
+            if (depth >= maxDepth) limited('depth');
+            else pending.push({ target: file, depth: depth + 1 });
+          } else if (entry.isFile()) {
+            try { await matchFile(file); } catch (error) {
+              if (!['ENOENT', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+            }
+          }
+        }
+      } catch (error) {
+        if (!['ENOENT', 'EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        limited('unreadable');
+      }
+    }
+  };
+  // A slow filesystem must not hold the caller indefinitely. The walker checks
+  // the deadline after each pending I/O; return a snapshot, never its live array.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal?.reason ?? new Error('搜索已取消'));
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    await Promise.race([walk(), aborted, new Promise<void>(resolve => {
+      timer = setTimeout(() => { limited('time'); resolve(); }, Math.max(0, deadline - Date.now()));
+    })]);
+    signal?.throwIfAborted();
+    return results.slice();
+  } finally { clearTimeout(timer); if (onAbort) signal?.removeEventListener('abort', onAbort); }
 }
 
 interface DirectCommandResult {
@@ -859,6 +888,7 @@ interface DirectCommandResult {
   stdout: string;
   stderr: string;
   missing?: boolean;
+  truncated?: boolean;
 }
 
 async function runDirectCommand(
@@ -914,6 +944,7 @@ async function runDirectCommand(
     child.once('close', (code) => finish({
       exitCode: code ?? 1,
       stdout: Buffer.concat(stdout).toString('utf8'),
+      truncated: stdoutBytes > maxBytes || stderrBytes > maxBytes,
       stderr: [Buffer.concat(stderr).toString('utf8'), stdoutBytes > maxBytes || stderrBytes > maxBytes
         ? `输出超过 ${maxBytes} 字节限制`
         : ''].filter(Boolean).join('\n'),
@@ -955,6 +986,13 @@ export async function searchWorkspaceFiles(
   signal?: AbortSignal,
   options: FileSearchLimits = {},
 ): Promise<FileSearchMatch[]> {
+  if (options.pathsOnly) return searchLocalFiles(workspaceRoot, query, requestedPath, maxResults, signal, options);
+  signal?.throwIfAborted();
+  const startedAt = Date.now();
+  const timeoutMs = options.timeoutMs ?? 3_000;
+  const deadlineSignal = AbortSignal.timeout(timeoutMs);
+  const searchSignal = signal ? AbortSignal.any([signal, deadlineSignal]) : deadlineSignal;
+  const report = options.report;
   const target = resolvePath(workspaceRoot, requestedPath);
   const expressionFlags = options.caseSensitive ? 'u' : 'iu';
   const expression = options.regex
@@ -962,7 +1000,7 @@ export async function searchWorkspaceFiles(
     : new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), expressionFlags);
   const baseArgs = ripgrepBaseArgs(workspaceRoot, options);
   const [fileResult, contentResult] = await Promise.all([
-    runDirectCommand('rg', [...baseArgs, '--files', target], workspaceRoot, signal),
+    runDirectCommand('rg', [...baseArgs, '--files', target], workspaceRoot, searchSignal),
     options.pathsOnly ? Promise.resolve<DirectCommandResult>({ exitCode: 1, stdout: '', stderr: '' }) : runDirectCommand('rg', [
       ...baseArgs,
       '--json', '--line-number',
@@ -970,12 +1008,17 @@ export async function searchWorkspaceFiles(
       ...(options.regex ? [] : ['--fixed-strings']),
       ...(options.contextLines ? ['--context', String(options.contextLines)] : []),
       '--', query, target,
-    ], workspaceRoot, signal, 20_000_000),
+    ], workspaceRoot, searchSignal, 20_000_000),
   ]);
-  if (fileResult.missing || contentResult.missing) {
-    return searchLocalFiles(workspaceRoot, query, requestedPath, maxResults, signal, options);
+  signal?.throwIfAborted();
+  if (deadlineSignal.aborted || fileResult.truncated || contentResult.truncated) {
+    if (report) { report.truncated = true; report.limitsReached.push(deadlineSignal.aborted ? 'time' : 'output'); }
   }
-  if (![0, 1].includes(fileResult.exitCode) || ![0, 1].includes(contentResult.exitCode)) {
+  if (fileResult.missing || contentResult.missing) {
+    return searchLocalFiles(workspaceRoot, query, requestedPath, maxResults, signal, { ...options, timeoutMs: Math.max(0, timeoutMs - (Date.now() - startedAt)) });
+  }
+  if (!deadlineSignal.aborted && !fileResult.truncated && !contentResult.truncated
+    && (![0, 1].includes(fileResult.exitCode) || ![0, 1].includes(contentResult.exitCode))) {
     throw new Error(`ripgrep 搜索失败：${contentResult.stderr || fileResult.stderr}`);
   }
   const results: FileSearchMatch[] = [];
@@ -1125,7 +1168,7 @@ export async function requestUrl(
   let requestBody = body;
   let requestHeaders = { ...headers };
   const dispatcher = allowPrivateNetwork ? undefined : new HttpAgent({
-    connect: { lookup: guardedPublicLookup },
+    connect: { lookup: createPublicHttpLookup() },
   });
   try {
     for (let redirects = 0; redirects <= MAX_HTTP_REDIRECTS; redirects += 1) {
@@ -1178,21 +1221,25 @@ export async function requestUrl(
   }
 }
 
-const guardedPublicLookup: LookupFunction = (hostname, options, callback) => {
-  dnsLookup(hostname, { ...options, all: true, verbatim: true }, (error, addresses) => {
-    if (error) {
-      callback(error, '', 0);
-      return;
-    }
-    const selected = addresses.find(({ address }) => isPublicAddress(address));
-    if (!selected || addresses.some(({ address }) => !isPublicAddress(address))) {
-      const denied = Object.assign(new Error('DNS 解析包含非公网地址，HTTP 请求已拒绝'), { code: 'EACCES' });
-      callback(denied, '', 0);
-      return;
-    }
-    callback(null, selected.address, selected.family);
-  });
-};
+export function createPublicHttpLookup(resolve: typeof dnsLookup = dnsLookup): LookupFunction {
+  return (hostname, options, callback) => {
+    resolve(hostname, { ...options, all: true, verbatim: true }, (error, addresses) => {
+      if (error) {
+        callback(error, '', 0);
+        return;
+      }
+      const selected = addresses.find(({ address }) => isPublicAddress(address));
+      if (!selected || addresses.some(({ address }) => !isPublicAddress(address))) {
+        const denied = Object.assign(new Error('DNS 解析包含非公网地址，HTTP 请求已拒绝'), { code: 'EACCES' });
+        callback(denied, '', 0);
+        return;
+      }
+      // Node's automatic family selection requests all addresses, not one address/family pair.
+      if (options.all) callback(null, addresses);
+      else callback(null, selected.address, selected.family);
+    });
+  };
+}
 
 async function assertPublicHttpTarget(target: URL, allowPrivateNetwork: boolean): Promise<void> {
   if (!['http:', 'https:'].includes(target.protocol)) throw new Error('只支持 HTTP 和 HTTPS URL');
@@ -1268,6 +1315,7 @@ export async function runShellCommand(
   blockedLocalTcpPorts: number[] = [],
   sensitiveValues: readonly string[] = [],
   allowHostExecution = false,
+  readOnlySkillRoots: readonly string[] = [],
 ): Promise<ShellCommandResult> {
   const usesDarwinSandbox = process.platform === 'darwin' && !allowHostExecution;
   const executionBoundary = usesDarwinSandbox
@@ -1290,9 +1338,7 @@ export async function runShellCommand(
     },
     ...(executionBoundary ? { executionBoundary } : {}),
   });
-  if (/(?:^|[;&|()\s])(?:nohup|disown|setsid)(?:$|[;&|()\s])/u.test(command)
-    || /(^|[^&])&(?!&)(?:\s*(?:#.*)?)$/u.test(command)
-    || /(^|[^&])&(?!&)[\s;]+disown(?:\s|;|$)/u.test(command)) {
+  if (hasUnmanagedShellProcess(command)) {
     return result({
       exitCode: 1,
       stdout: '',
@@ -1309,6 +1355,12 @@ export async function runShellCommand(
       return path.resolve(protectedPath);
     }
   }));
+  const canonicalSkillRoots = await Promise.all(readOnlySkillRoots.map(root => realpath(root)));
+  for (const root of canonicalSkillRoots) {
+    if (canonicalProtectedPaths.some(protectedRoot => containsPath(root, protectedRoot))) {
+      throw new Error('Skill 只读执行根不能包含 MimiAgent 私有根');
+    }
+  }
   const canonicalBlockedUnixSocketPaths = await Promise.all(
     blockedUnixSocketPaths.map(canonicalPotentialPath),
   );
@@ -1330,6 +1382,7 @@ export async function runShellCommand(
           canonicalBlockedUnixSocketPaths,
           validatedBlockedLocalTcpPorts,
           environment.HOME,
+          canonicalSkillRoots,
         ),
         '/bin/zsh',
         '-o',
@@ -1663,7 +1716,7 @@ export function createTools(
 
   const searchFiles = tool({
     name: 'search_files',
-    description: '使用 ripgrep（不可用时自动回退）搜索文件名和文本；pathsOnly 可只列匹配路径且不读取文件内容。',
+    description: '搜索文件名/正文，3秒内返回 matches、scope、truncated。找文件用 pathsOnly；*.md 匹配子目录。未搜完应缩小范围。',
     parameters: z.object({
       query: z.string().default(''),
       path: z.string().default('.'),
@@ -1682,7 +1735,9 @@ export function createTools(
         assertPathAllowed(target, pathAccess.protectedPaths),
         assertReadablePath(workspaceRoot, target, access.readablePaths),
       ]);
-      return searchWorkspaceFiles(workspaceRoot, query, requestedPath, maxResults, details?.signal, {
+      const report: FileSearchReport = { truncated: false, limitsReached: [], scannedEntries: 0 };
+      const matches = await searchWorkspaceFiles(workspaceRoot, query, requestedPath, maxResults, details?.signal, {
+        report,
         regex,
         caseSensitive,
         globs,
@@ -1691,6 +1746,9 @@ export function createTools(
         excludedPaths: pathAccess.protectedPaths,
         includePrivateRuntimePaths: pathAccess.allowed,
       });
+      if (matches.length >= maxResults && !report.truncated) { report.truncated = true; report.limitsReached.push('results'); }
+      return { matches, scope: target, ...report, ...(report.truncated
+        ? { next: '保留已有匹配；缩小目录或更精确地查询。不要把部分结果当作全盘未找到。' } : {}) };
     },
   });
 
@@ -1759,6 +1817,7 @@ export function createTools(
         access.blockedLocalTcpPorts,
         access.shellSensitiveValues?.(),
         accessEnabled(access.allowHostShellAccess),
+        await access.shellReadOnlySkillRoots?.(),
       ),
   });
 

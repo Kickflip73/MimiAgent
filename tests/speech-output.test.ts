@@ -1,3 +1,5 @@
+import { classifyRunOutcome } from '../src/core/run-finalization.js';
+import { decideRunCommit } from '../src/runtime/pipeline/run-commit-coordinator.js';
 import assert from 'node:assert/strict';
 import { RunContext } from '@openai/agents';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
@@ -207,4 +209,59 @@ test('honors the global switch and exposes only atomic speech tools', async () =
     voice.id === 'chattts:mature-steady' && voice.gender === 'female'
   )));
   assert.ok(speech.listVoices().some((voice) => voice.id === 'zm_yunyang'));
+});
+
+
+test('rejects long ChatTTS before dispatch or render receipts, including auto and voice selection', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-speech-limit-'));
+  t.after(async () => { const { rm } = await import('node:fs/promises'); await rm(root, { recursive: true, force: true }); });
+  let calls = 0;
+  const speech = new SpeechOutput(config, root, async (_command, args) => {
+    calls++; await writeFile(args[2]!, 'wav-fixture'); return { stdout: 'engine=chattts', stderr: '' };
+  });
+  for (const options of [{}, { engine: 'chattts' as const }, { voice: 'chattts:male-1' }]) {
+    await assert.rejects(speech.synthesize('中'.repeat(301), options), /300.*未启动合成/);
+  }
+  assert.equal(calls, 0);
+  assert.deepEqual(await speech.inspect(), []);
+  await speech.synthesize('中'.repeat(300), { engine: 'chattts' });
+  assert.equal(calls, 1);
+  await speech.synthesize('中'.repeat(301), { engine: 'kokoro' });
+  assert.equal(calls, 2);
+});
+
+
+test('speech tool delivers speak and play as persisted conversation audio without OS playback', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-speech-player-'));
+  t.after(async () => { const { rm } = await import('node:fs/promises'); await rm(root, { recursive: true, force: true }); });
+  const commands: string[] = [];
+  const speech = new SpeechOutput(config, root, async (command, args) => {
+    commands.push(command); assert.equal(args.length, 3, 'must not invoke system playback');
+    await writeFile(args[2]!, 'wav-fixture'); return { stdout: 'engine=chattts', stderr: '' };
+  });
+  const speechTool = createSpeechTools(speech)[0]!;
+  if (!('invoke' in speechTool)) throw new Error('missing tool');
+  const args = { action: 'speak', input: '原文不应被缩写', engine: 'chattts', voice: 'chattts:female-1' };
+  const rejected = await speechTool.invoke(new RunContext({}), JSON.stringify(args)) as any;
+  assert.equal(rejected.disposition?.dispatchStarted, false);
+  assert.deepEqual(rejected.issues.map((issue: any) => issue.path), ['voice']);
+  assert.equal(commands.length, 0);
+  const corrected = { ...args, voice: 'chattts:young-lively' };
+  const audio = await speechTool.invoke(new RunContext({}), JSON.stringify(corrected)) as any;
+  assert.equal(audio.playback, 'conversation');
+  const reopened = new SpeechOutput(config, root, async () => { throw new Error('must not launch a renderer or player'); });
+  const playTool = createSpeechTools(reopened)[0]!;
+  if (!('invoke' in playTool)) throw new Error('missing tool');
+  const playback = await playTool.invoke(new RunContext({}), JSON.stringify({ action: 'play', input: audio.id })) as any;
+  assert.equal(playback.file, audio.file);
+  assert.equal(playback.playback, 'conversation');
+  assert.equal(commands.length, 1);
+  const calls = [
+    {sessionId:'s',runId:'r',toolName:'speech',callId:'bad',argumentsJson:JSON.stringify(args),status:'failed' as const,output:rejected},
+    {sessionId:'s',runId:'r',toolName:'speech',callId:'good',argumentsJson:JSON.stringify(corrected),status:'succeeded' as const,output:audio},
+  ];
+  assert.equal(classifyRunOutcome({sdk:'completed',calls}), 'completed');
+  assert.match(decideRunCommit({draft:'语音已准备好。',calls}).answer, /\[语音\]\(/);
+  assert.equal(classifyRunOutcome({sdk:'completed',calls:[calls[0]!]}), 'failed');
+  assert.equal(classifyRunOutcome({sdk:'completed',calls:[calls[0]!,{...calls[1]!,argumentsJson:JSON.stringify({...corrected,input:'different task'})}]}), 'partial');
 });

@@ -1,7 +1,7 @@
 import type { Tool } from '@openai/agents';
 import { z } from 'zod';
 import { tool } from '../tool-factory.js';
-import { SpeechRenderUncertainError, type SpeechOutput } from './speech-output.js';
+import { SPEECH_VOICES, SpeechRenderUncertainError, type SpeechOutput } from './speech-output.js';
 
 export const SPEECH_TOOL_NAMES = new Set(['speech']);
 
@@ -14,7 +14,7 @@ const speechParameters = z.object({
   input: z.string().max(20_000).optional()
     .describe('synthesize/speak: exact text; play: persisted audioId or absolute path of existing audio; inspect: optional audioId'),
   engine: z.enum(['auto', 'chattts', 'kokoro']).optional(),
-  voice: z.string().trim().min(1).max(80).optional()
+  voice: z.enum(SPEECH_VOICES.map(voice => voice.id) as [string, ...string[]]).optional()
     .describe('voice id returned by the voices action; may change on every call'),
   speed: z.number().min(0.5).max(2).optional(),
 }).strict();
@@ -23,7 +23,7 @@ export function createSpeechTools(speech: SpeechOutput): Tool[] {
   return [
     tool({
       name: 'speech',
-      description: 'Local speech output. To play existing audio use play with its persisted audioId or absolute file path, never synthesize again. inspect retrieves persisted render status across restarts; an uncertain render must not be duplicated. voices lists voices; synthesize generates exact text; speak synthesizes then plays. Never use Shell or Skills for TTS.',
+      description: 'Conversation audio: synthesize/speak return a playable file; play reuses audioId/path without synthesis or OS playback. User controls playback; do not claim it is audible. voices lists voices; inspect reads receipts. Never duplicate uncertain renders. Read verbatim. ChatTTS max 300 chars (including auto Chinese); use audio-briefing system speech for long text, never truncate or split to bypass limits. No Shell bypass.',
       parameters: speechParameters,
       execute: async ({ action, input, ...options }, _context, details) => {
         try {
@@ -34,12 +34,10 @@ export function createSpeechTools(speech: SpeechOutput): Tool[] {
           }
           if (action === 'play') {
             if (!input) throw new Error('speech play 需要 audioId 或音频绝对路径 input');
-            return await speech.play(input, details?.signal);
+            return { ...await speech.preparePlayback(input), playback: 'conversation' };
           }
           if (input === undefined) throw new Error(`speech ${action} 需要 text input`);
-          return await (action === 'synthesize'
-            ? speech.synthesize(input, options, details?.signal)
-            : speech.speak(input, options, details?.signal));
+          return { ...await speech.synthesize(input, options, details?.signal), playback: 'conversation' };
         } catch (error) {
           if (!(error instanceof SpeechRenderUncertainError)) throw error;
           return { mimiStatus: 'action_uncertain', status: 'uncertain', audioId: error.audio.id,

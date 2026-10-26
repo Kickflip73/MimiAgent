@@ -1,4 +1,4 @@
-import { access, readdir } from 'node:fs/promises';
+import { access, readdir, readFile, lstat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { AgentInputItem, Session } from '@openai/agents';
@@ -9,13 +9,16 @@ import {
   type CompletionContract,
   type CompletionReport,
 } from './completion.js';
+import { inlineImageAttachment } from './image-attachment.js';
 import { assertSessionId } from './session-id.js';
+import { contextArtifactPage } from './context-artifact.js';
 import { AtomicJsonStore, StateFileCorruptError } from './state-file.js';
 import { modelTargetSchema, type ModelTarget } from './model-routing.js';
 import { resultArtifactSchema, resultArtifacts, toolProgress, toolProgressSchema, type ResultArtifact, type ToolProgress } from './tool-result.js';
 import type { ExecutionCallRecord } from './execution-ledger.js';
 import {
   runFinalizationRecordSchema,
+  toolExecutionManifestEntrySchema,
   type RunFinalizationRecord,
   type RunOutcome,
 } from './run-finalization.js';
@@ -41,11 +44,14 @@ function redactAttachmentData(item: AgentInputItem): AgentInputItem {
   const value = item as unknown as Record<string, unknown>;
   if (value.role !== 'user' || !Array.isArray(value.content)) return item;
   let changed = false;
+  const images = Array.isArray(value.imageAttachments) ? [...value.imageAttachments] : [];
   const content = value.content.map((part: unknown) => {
     if (!part || typeof part !== 'object' || Array.isArray(part)) return part;
     const record = part as Record<string, unknown>;
     if (record.type === 'input_image' && typeof record.image === 'string' && record.image.startsWith('data:')) {
       changed = true;
+      const image = inlineImageAttachment(record.image);
+      if (image && !(Array.isArray(value.mediaAttachments) && value.mediaAttachments.some((ref:any)=>ref.frames?.includes(image.id)))) if (!images.some(ref => (ref as {id?:string}).id === image.id)) images.push(image);
       return { type: 'input_text', text: '[图片附件：本轮已读取，二进制未写入 Session 历史]' };
     }
     if (record.type === 'input_file' && typeof record.file === 'string' && record.file.startsWith('data:')) {
@@ -55,7 +61,7 @@ function redactAttachmentData(item: AgentInputItem): AgentInputItem {
     }
     return part;
   });
-  return changed ? { ...value, content } as unknown as AgentInputItem : item;
+  return changed ? { ...value, content, ...(images.length ? {imageAttachments:images} : {}) } as unknown as AgentInputItem : item;
 }
 
 export interface RunCheckpoint {
@@ -85,6 +91,16 @@ export interface RunCheckpoint {
   startedAt: string;
   updatedAt: string;
 }
+
+const stoppedRunSchema = z.object({
+  runId: z.string(),
+  historyEnd: z.number().int().nonnegative(),
+  outcome: z.enum(['completed', 'partial', 'blocked', 'interrupted', 'failed', 'uncertain']),
+  toolProgress: z.array(toolProgressSchema).max(4),
+  toolManifest: z.array(toolExecutionManifestEntrySchema).max(32),
+  omittedTools: z.number().int().nonnegative(),
+}).strict();
+export type StoppedRunContext = z.infer<typeof stoppedRunSchema>;
 
 export interface ContextArchive {
   coveredItems: number;
@@ -137,6 +153,11 @@ export interface ContextToolArtifactReadSuccess {
   callId: string;
   toolName: string;
   output: unknown;
+  offset: number;
+  totalChars: number;
+  nextOffset?: number;
+  truncated: boolean;
+  format: string;
   mimiStatus?: never;
   code?: never;
   retryable?: never;
@@ -181,6 +202,7 @@ interface SessionFile {
   updatedAt: string;
   items: AgentInputItem[];
   checkpoint?: RunCheckpoint;
+  lastStoppedRun?: StoppedRunContext;
   contextArchive?: ContextArchive;
   contextWorkSnapshot?: ContextWorkSnapshot;
   contextToolArtifacts?: ContextToolArtifact[];
@@ -269,6 +291,7 @@ const sessionFileSchema = z.object({
     startedAt: z.string(),
     updatedAt: z.string(),
   }).strict().optional(),
+  lastStoppedRun: stoppedRunSchema.optional(),
   contextArchive: z.object({
     coveredItems: z.number().int().nonnegative(),
     summary: z.string(),
@@ -392,6 +415,26 @@ function summarizeSession(session: SessionFile): SessionSummary {
   };
 }
 
+interface SessionSummaryIndex {
+  entries: Map<string, { fingerprint: string; summary?: SessionSummary }>;
+  pending?: Promise<SessionSummary[]>;
+}
+
+// Derived, process-local metadata only. Canonical transcripts remain authoritative.
+const summaryIndexes = new Map<string, SessionSummaryIndex>();
+
+async function mapSessions<T>(ids: string[], read: (id: string) => Promise<T>): Promise<T[]> {
+  const results = new Array<T>(ids.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(8, ids.length) }, async () => {
+    while (next < ids.length) {
+      const index = next++;
+      results[index] = await read(ids[index]!);
+    }
+  }));
+  return results;
+}
+
 const activeRunOwners = new Set<string>();
 
 export function registerSessionRunOwner(ownerId: string): () => void {
@@ -460,6 +503,13 @@ export class FileSession implements Session {
   async getCheckpoint(): Promise<RunCheckpoint | undefined> {
     const checkpoint = (await this.load()).checkpoint;
     return checkpoint ? { ...checkpoint } : undefined;
+  }
+
+  /** Only the immediately preceding stopped turn contributes this derived context. */
+  async getLastStoppedRun(): Promise<StoppedRunContext | undefined> {
+    const session = await this.load();
+    return session.lastStoppedRun?.historyEnd === session.items.length
+      ? structuredClone(session.lastStoppedRun) : undefined;
   }
 
   async beginRun(
@@ -638,11 +688,20 @@ export class FileSession implements Session {
     }, expectedRunId);
   }
 
-  async clearRunCheckpoint(expectedRunId: string): Promise<boolean> {
+  async clearRunCheckpoint(expectedRunId: string, finalization?: RunFinalizationRecord): Promise<boolean> {
     return this.mutateWhen((session) => {
       if (!session.checkpoint || session.checkpoint.runId !== expectedRunId) {
         return { result: false, changed: false };
       }
+      const manifest = finalization?.runId === expectedRunId ? finalization.toolManifest : [];
+      session.lastStoppedRun = {
+        runId: expectedRunId,
+        historyEnd: session.items.length,
+        outcome: finalization?.runId === expectedRunId ? finalization.outcome : 'interrupted',
+        toolProgress: (session.checkpoint.toolProgress ?? []).slice(-4),
+        toolManifest: manifest.slice(-32),
+        omittedTools: Math.max(0, manifest.length - 32),
+      };
       session.checkpoint = undefined;
       session.updatedAt = new Date().toISOString();
       return { result: true, changed: true };
@@ -765,7 +824,10 @@ export class FileSession implements Session {
         const artifact: ContextToolArtifact = {
           ref: `context-artifact:${randomUUID()}`,
           callId,
-          toolName: String(value.name ?? 'unknown'),
+          toolName: String(value.name ?? (items.find((candidate) => {
+            const call = candidate as unknown as Record<string, unknown>;
+            return call.type === 'function_call' && String(call.callId ?? call.call_id ?? '') === callId;
+          }) as unknown as Record<string, unknown> | undefined)?.name ?? 'unknown'),
           outputDigest,
           runId: expectedRunId,
           originRunId: origin?.originRunId ?? origin?.runId ?? expectedRunId,
@@ -809,6 +871,7 @@ export class FileSession implements Session {
     ref: string,
     expectedRunId: string,
     pendingItems: readonly AgentInputItem[] = [],
+    page: { offset?: number; limit?: number } = {},
   ): Promise<ContextToolArtifactReadResult> {
     const session = await this.load();
     const artifact = session.contextToolArtifacts?.find((candidate) =>
@@ -853,7 +916,7 @@ export class FileSession implements Session {
       ref: artifact.ref,
       callId: artifact.callId,
       toolName: artifact.toolName,
-      output: structuredClone(item.output),
+      ...contextArtifactPage(item.output, page.offset, page.limit),
     };
   }
 
@@ -937,12 +1000,35 @@ export class FileSession implements Session {
       await relatedCleanup?.();
       session.items = [];
       session.checkpoint = undefined;
+      session.lastStoppedRun = undefined;
       session.contextArchive = undefined;
       session.contextWorkSnapshot = undefined;
       session.contextToolArtifacts = [];
       session.activeSkills = [];
       session.updatedAt = new Date().toISOString();
     });
+  }
+
+  /** Inspect one atomic transcript without initialization, repair, locks, or permission writes. */
+  async readSnapshot(): Promise<(SessionFile & { summary: SessionSummary }) | undefined> {
+    try {
+      await lstat(`${this.file}.corrupt-state`);
+      throw new StateFileCorruptError(this.file, `${this.file}.corrupt-state`, {
+        cause: new Error('Session 已标记损坏，需要显式恢复'),
+      });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    let source: string;
+    try {
+      source = await readFile(this.file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      throw error;
+    }
+    const session = decodeSessionFile(JSON.parse(source) as unknown);
+    if (session.id !== this.id) throw new SyntaxError(`Session 文件身份不匹配：${this.id}`);
+    return { ...session, summary: summarizeSession(session) };
   }
 
   async summary(): Promise<SessionSummary> {
@@ -1005,19 +1091,50 @@ export class FileSession implements Session {
   }
 
   static async listSummaries(directory: string): Promise<SessionSummary[]> {
-    const ids = await FileSession.list(directory);
-    const summaries = (await Promise.all(ids.map(async (id) => {
-      try {
-        return await new FileSession(directory, id).summary();
-      } catch (error) {
-        if (error instanceof StateFileCorruptError) return undefined;
-        throw error;
-      }
-    }))).filter((summary): summary is SessionSummary => summary !== undefined);
-    return summaries.sort((left, right) => {
-      const active = right.updatedAt.localeCompare(left.updatedAt);
-      return active || left.id.localeCompare(right.id);
-    });
+    const root = path.resolve(directory);
+    let index = summaryIndexes.get(root);
+    if (!index) {
+      index = { entries: new Map() };
+      summaryIndexes.set(root, index);
+      // Bound independent workspace indexes without evicting canonical data.
+      if (summaryIndexes.size > 32) summaryIndexes.delete(summaryIndexes.keys().next().value!);
+    }
+    const current = index;
+    current.pending ??= (async () => {
+      const listed = await FileSession.list(root);
+      const blocked = listed.length ? new Set((await readdir(root)).filter((name) => name.endsWith('.json.corrupt-state'))) : new Set<string>();
+      const ids = listed.filter((id) => !blocked.has(`${id}.json.corrupt-state`));
+      const present = new Set(ids);
+      for (const id of current.entries.keys()) if (!present.has(id)) current.entries.delete(id);
+      const summaries = await mapSessions(ids, async (id) => {
+        try {
+          const info = await lstat(path.join(root, `${id}.json`), { bigint: true });
+          if (!info.isFile()) return undefined;
+          const fingerprint = `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+          const cached = current.entries.get(id);
+          if (cached?.fingerprint === fingerprint) return cached.summary;
+          let snapshot;
+          try {
+            snapshot = await new FileSession(root, id).readSnapshot();
+          } catch (error) {
+            // Browsing must never quarantine or repair a damaged transcript.
+            if (!(error instanceof StateFileCorruptError || error instanceof SyntaxError || error instanceof z.ZodError)) throw error;
+          }
+          const summary = snapshot?.summary;
+          current.entries.set(id, { fingerprint, summary });
+          return summary;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            current.entries.delete(id);
+            return undefined;
+          }
+          throw error;
+        }
+      });
+      return summaries.filter((summary): summary is SessionSummary => summary !== undefined)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
+    })().finally(() => { current.pending = undefined; });
+    return (await current.pending).map((summary) => ({ ...summary }));
   }
 
   /** Fast O(1) existence check that avoids loading every session file. */

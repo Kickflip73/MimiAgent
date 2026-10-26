@@ -151,6 +151,7 @@ const TOOL_DESCRIPTOR_DEFINITIONS = {
   request_background_task_input: { capabilities: ['state-write'], sideEffect: true },
   runtime_status: { capabilities: ['control'], modes: ALL_MODES },
   model_control: { capabilities: ['control'], modes: ALL_MODES, sideEffect: true },
+  understand_media: { capabilities: ['network-read'], modes: ALL_MODES },
   generate_image: {
     capabilities: ['network-write'],
     modes: GENERAL_AND_ULTRA,

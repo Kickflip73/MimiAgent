@@ -607,6 +607,23 @@ export class ExecutionLedger {
         }
         throw new Error(`工具调用 ${call.callId} 之前处于 ${existing.status} 状态，为避免重复副作用不会自动重试`);
       }
+      // Shell exitCode is a process result, not a business receipt. A distinct
+      // completed invocation may be intentional, but failed/unfinished commands
+      // must stay fenced, even across changed timeouts and intervening commands.
+      // Check and claim in the same atomic mutation to cover concurrent callers.
+      if (call.toolName === 'run_shell') {
+        const commandOf = (json: string): unknown => {
+          try { return (JSON.parse(json) as { command?: unknown }).command ?? json; } catch { return json; }
+        };
+        const previous = Object.values(ledger.entries).find(entry => {
+          if (entry.sessionId !== call.sessionId || entry.runId !== call.runId || entry.toolName !== 'run_shell'
+            || commandOf(entry.argumentsJson) !== commandOf(call.argumentsJson)) return false;
+          if (entry.status !== 'succeeded' || entry.outputJson === undefined) return true;
+          const output = deserializeOutput<unknown>(entry.outputJson);
+          return !!output && typeof output === 'object' && 'exitCode' in output && output.exitCode !== 0;
+        });
+        if (previous) throw new Error(`同一 Shell 命令此前处于 ${previous.status} 或非零退出状态；先核实原操作结果，不得自动重试`);
+      }
       this.prune(ledger, Date.now());
       if (Object.keys(ledger.entries).length >= this.maxEntries) {
         throw new Error(`执行账本已达到 ${this.maxEntries} 条上限；请完成或清理旧 Session 后再执行副作用`);

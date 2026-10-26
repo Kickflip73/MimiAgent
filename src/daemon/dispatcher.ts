@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { inputWithMedia } from '../runtime/media-input.js';
+import { mediaSchema } from '../core/media-attachment.js';
 import { randomUUID } from 'node:crypto';
 import type { RunStreamEvent } from '@openai/agents';
 import type { MimiAgent } from '../runtime/mimi-agent.js';
@@ -534,7 +537,13 @@ export class MimiDispatcher {
       preemptTimer = setInterval(checkPreemption, this.options.preemptPollMs ?? 250);
       preemptTimer.unref();
       refreshRunIdleWatchdog();
-      const modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
+      this.options.onRuntimeEvent?.(task.id, {type:'run_progress',sessionId:decision.sessionId!,phase:'正在准备附件与运行环境'});
+      let modelInput = await inputWithAttachments(decision.input!, attachmentPayload(event.payload));
+      const mediaPayload = event.payload as {mediaAttachments?:unknown[];mediaDisplayText?:string};
+      if(Array.isArray(mediaPayload?.mediaAttachments) && event.source==='local-cli' && event.trust==='owner') {
+        modelInput = await inputWithMedia(modelInput,mediaPayload.mediaDisplayText ?? decision.input!,
+          mediaPayload.mediaAttachments.map(ref=>mediaSchema.parse(ref)),path.join(path.dirname(this.store.file),'web-media'));
+      }
       const secretReferences = ephemeralSecretReferences(task.objective);
       const directOwnerConversation = task.type === 'conversation'
         && event.id === active.authority.id
@@ -751,7 +760,13 @@ export class MimiDispatcher {
       // follow-up runtime actions such as a Provider restart. Publishing first
       // briefly made the just-completed conversation still appear in
       // activeEventIds, so the restart rejected its own completed Run.
-      await this.host.finalizeExecutionLedger(decision.sessionId!, executionKey).catch(() => undefined);
+      if (result.finalization && ['partial', 'blocked', 'interrupted'].includes(result.finalization.outcome)) {
+        // Keep effect receipts, but allow a later owner-authorized continuation
+        // instead of replaying the already-settled incomplete answer forever.
+        await this.host.reopenExecutionLedger(sessionId, executionKey);
+      } else if (!result.finalization || result.finalization.outcome === 'completed') {
+        await this.host.finalizeExecutionLedger(decision.sessionId!, executionKey).catch(() => undefined);
+      }
       this.store.completeTask(task.id, this.workerId, {
         answer: result.answer,
         sessionId: sessionEffect?.type === 'session_changed' ? sessionEffect.sessionId : decision.sessionId,

@@ -8,12 +8,12 @@ import {
 } from '../core/data-sanitizer.js';
 import { assertSessionId } from '../core/session-id.js';
 import { runFailureRecord, type RunFailureRecord } from '../core/run-failure.js';
-import type { RunFinalizationRecord } from '../core/run-finalization.js';
+import { runFinalizationRecordSchema, type RunFinalizationRecord } from '../core/run-finalization.js';
 import { EventStore, listEventSummaries } from './event-store.js';
 import { EventRouter } from './event-router.js';
 import { taskCompletionRoute } from './task-continuation.js';
 import { sanitizedMemoryEvidenceSnapshot } from './memory-evidence.js';
-import { createFreshV16Schema } from './persistence/schema/current.js';
+import { createFreshV16Schema, ensureReadQueryIndexes } from './persistence/schema/current.js';
 import { upgradeScheduleContextV17 } from './persistence/schema/migrations/v17-schedule-context.js';
 import {
   ensureMemoryLintSchemaV13,
@@ -187,6 +187,7 @@ export class MimiStore extends ActivityStore {
     this.runs = new RunStore(this.database, this.taskStore);
     this.backupBeforeMigrations();
     this.migrate();
+    ensureReadQueryIndexes(this.database);
     this.eventRouter = new EventRouter(this, 'ingress-v1');
     this.schedules = new ScheduleStore(this.database, this.eventStore, this.taskStore, {
       ensureConversationAuthority: (event) => this.ensureConversationAuthority(event),
@@ -289,8 +290,16 @@ export class MimiStore extends ActivityStore {
     return this.taskStore.get(id);
   }
 
+  workspaceRootForSession(sessionId: string): string | undefined {
+    return this.taskStore.workspaceRootForSession(sessionId);
+  }
+
   listTasks(limit = 50, selector: TaskListSelector = {}): TaskRecord[] {
     return this.taskStore.list(managementLimit(limit), selector);
+  }
+
+  listTaskSummaries(limit = 50) {
+    return this.taskStore.listSummaries(managementLimit(limit));
   }
 
   runningTasks(selector: TaskSelector = {}, limit = 50): TaskRecord[] {
@@ -490,6 +499,31 @@ export class MimiStore extends ActivityStore {
     return this.transaction(() => {
       const timestamp = at.toISOString();
       const current = this.leasedTask(taskId, owner, timestamp);
+      const rawFinalization = record(result)?.finalization;
+      const finalization = rawFinalization === undefined ? undefined : runFinalizationRecordSchema.parse(rawFinalization);
+      if (finalization && finalization.outcome !== 'completed') {
+        const labels = { partial: '部分完成', blocked: '需要输入', interrupted: '已中断', failed: '执行失败', uncertain: '结果待核实' };
+        const outcome = finalization.outcome;
+        const reason = finalization.reason ?? `Host 验收：${labels[outcome]}`;
+        const answer = record(result)?.answer;
+        const outcomeDelivery = delivery ? { route: delivery.route, payload: {
+          ...record(delivery.payload), type: `background_task_${outcome}`, taskId,
+          finalization, text: `MimiAgent 任务${labels[outcome]}（${taskId}）：${typeof answer === 'string' ? answer : reason}`.slice(0, 4_000),
+        } } : undefined;
+        if (outcome === 'partial' || outcome === 'blocked' || outcome === 'interrupted') {
+          return this.blockTask(taskId, owner, result, reason, attemptId, at, outcomeDelivery);
+        }
+        const status = outcome === 'uncertain' ? 'dead_letter' : 'failed';
+        if (!this.taskStore.updateTerminal(taskId, owner, status, result, reason, timestamp)) {
+          throw new Error(`Task ${taskId} 租约已失效`);
+        }
+        this.finishTaskAttempt(current, attemptId, 'failed', result, reason, timestamp);
+        const failed = this.taskStore.get(taskId)!;
+        this.schedules.recordOutcome(failed, result, timestamp);
+        this.appendTaskLifecycleEvent(failed, status === 'dead_letter' ? 'task.dead_letter' : 'task.failed', timestamp, { outcome, reason });
+        if (outcomeDelivery) this.insertOutbox(taskId, outcomeDelivery.route, outcomeDelivery.payload, timestamp);
+        return failed;
+      }
       const requiresSemanticLintReceipt = current.type === 'memory_maintenance'
         && record(current.objective)?.semanticLint === true;
       const requiresMaintenanceReceipt = current.type === 'memory_maintenance';
@@ -559,6 +593,7 @@ export class MimiStore extends ActivityStore {
       if (Number(updated.changes) !== 1) throw new Error(`Task ${taskId} 租约已失效`);
       this.finishTaskAttempt(task, attemptId, 'interrupted', result, reason, timestamp);
       const blocked = this.taskStore.get(taskId)!;
+      this.schedules.recordOutcome(blocked, result, timestamp);
       this.appendTaskLifecycleEvent(blocked, 'task.blocked', timestamp, { reason });
       if (delivery) this.insertOutbox(taskId, delivery.route, delivery.payload, timestamp);
       return blocked;
@@ -623,8 +658,13 @@ export class MimiStore extends ActivityStore {
     finalization?: RunFinalizationRecord,
   ): TaskRecord {
     return this.transaction(() => {
-      const structuredFailure = runFailureRecord(failure);
+      let structuredFailure = runFailureRecord(failure);
       if (!structuredFailure) throw new Error('Task failure 缺少有效的结构化 disposition');
+      if (finalization?.outcome === 'uncertain' || finalization?.toolManifest.some((call) => call.status === 'started' || call.status === 'uncertain')) {
+        structuredFailure = { code: 'execution.uncertain', disposition: {
+          phase: 'dispatch', kind: 'uncertain', retryable: false, dispatchStarted: true,
+        } };
+      }
       const timestamp = at.toISOString();
       const task = this.leasedTask(taskId, owner, timestamp);
       const summary = errorSummary(error, 4_000);
@@ -655,7 +695,7 @@ export class MimiStore extends ActivityStore {
           owner,
           summary,
           structuredFailure,
-          new Date(at.getTime() + delay).toISOString(),
+          new Date(Math.max(at.getTime() + delay, structuredFailure.retryAt ? Date.parse(structuredFailure.retryAt) : 0)).toISOString(),
           timestamp,
         )) throw new Error(`Task ${taskId} 租约已失效`);
       }

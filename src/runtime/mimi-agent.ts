@@ -16,6 +16,7 @@ import {
   type ContextSemanticSummarizer,
   type MimiContextStatus,
 } from '../core/context.js';
+import { ContextManifestStore } from '../core/context-manifest-store.js';
 import type { ExecutionCallRecord } from '../core/execution-ledger.js';
 import {
   type CompletionContract,
@@ -37,6 +38,7 @@ import {
 } from '../core/team.js';
 import {
   modelTargetKey,
+  modelControlRequestSchema,
   runModelBindingSchema,
   type ModelTarget,
   type RunModelBinding,
@@ -48,7 +50,7 @@ import {
   type SessionPreferences,
 } from '../core/session.js';
 import { createMemoryTools } from '../extensions/memory/tools.js';
-import { createComputerTools } from '../extensions/computer/tools.js';
+import { createComputerTools, type ComputerPerception } from '../extensions/computer/tools.js';
 import { QqPersonalMessageComputerAdapter } from '../extensions/computer/qq-personal-message.js';
 import type { ComputerAccess } from '../extensions/computer/types.js';
 import { configuredProviders } from '../provider-config.js';
@@ -93,7 +95,6 @@ import type { CapabilityCatalogAccess } from './pipeline/capability-registry.js'
 import { ToolSetBuilder } from './pipeline/tool-set-builder.js';
 import { AgentRequestFactory } from './pipeline/request-factory.js';
 import {
-  containsImageInput,
   executeRunPipeline,
 } from './pipeline/run-pipeline.js';
 import {
@@ -140,6 +141,7 @@ export interface ActiveRun {
   capabilitySnapshot?: Readonly<EffectiveCapabilitySnapshot>;
   canReadLocal?: boolean;
   computerAccess: ComputerAccess;
+  computerPerception?: ComputerPerception;
   pendingContextResults: Map<string, AgentInputItem>;
   facts: RunFactCollector;
   ephemeralSensitiveAccess?: ActiveEphemeralOwnerInput;
@@ -324,7 +326,10 @@ export class MimiAgent {
         : event.type === 'run_end'
           ? 'turn_end'
           : event.type === 'run_error' ? (event.interrupted ? 'turn_interrupted' : 'error') : event.type;
-      await components.state.traces.record(event.sessionId, traceType, event);
+      await components.state.traces.record(event.sessionId, traceType, {
+        ...event,
+        ...(this.activeRun ? { runId: this.activeRun.runId } : {}),
+      });
     });
     const createToolsForAccess = (
       access: Parameters<typeof createTools>[3],
@@ -333,7 +338,17 @@ export class MimiAgent {
       config.workspaceRoot,
       includeOpenAIHostedTools,
       privateRuntimePaths(config),
-      access,
+      {
+        ...access,
+        shellReadOnlySkillRoots: async () => {
+          const active = this.activeRun;
+          if (!active?.canReadLocal || !active.availableToolNames?.includes('run_shell')) return [];
+          return components.skills.executionRoots(await active.session.getActiveSkills(), {
+            canReadLocal: active.canReadLocal === true,
+            availableTools: active.availableToolNames,
+          });
+        },
+      },
     );
     const baseShellEnvironment = createOptions.shellEnvironment ?? restrictedShellEnvironment(process.env);
     const localToolAccess = (profile: SecurityProfile): Parameters<typeof createTools>[3] => profile === 'safe'
@@ -393,7 +408,7 @@ export class MimiAgent {
           ? this.components.modelGateway.inspect(active.scope.modelBinding.target).capabilities.imageInput
           : this.components.modelRuntime.profile.supportsImageInput,
       };
-    }) : [];
+    }, () => this.activeRun?.computerPerception) : [];
     this.mcpTools = components.mcp.createTools();
     this.extensionTools = [
       ...computerTools,
@@ -527,6 +542,43 @@ export class MimiAgent {
     }
   }
 
+  /** Persist next-turn preferences without entering an execution actor's lane. */
+  async setSessionPreference(sessionId: string, operation: string, value: unknown) {
+    const update: Partial<SessionPreferences> = {};
+    if (operation === 'mode.set') {
+      const mode = AGENT_MODES.find((item) => item.id === value);
+      if (!mode) throw new Error(`未知模式：${String(value)}`);
+      update.mode = mode.id;
+    } else if (operation === 'output.set') {
+      if (!RUNTIME_OUTPUT_LEVELS.includes(value as RuntimeOutputLevel)) throw new Error('未知输出等级');
+      update.outputLevel = value as RuntimeOutputLevel;
+    } else {
+      // Refresh only the model catalog, never initialize a target Session/MCP.
+      const gateway = this.config.modelsConfig
+        ? new ModelGateway({ providers: (await new ModelConfigStore(this.config.modelsConfig).read()).providers })
+        : this.components.modelGateway;
+      const request = operation === 'model.set'
+        ? { action: 'use' as const, target: gateway.resolveAgentTarget(String(value)) }
+        : modelControlRequestSchema.parse(value);
+      if (request.action !== 'use' && request.action !== 'auto') throw new Error('不是会话模型偏好');
+      if (request.action === 'use') {
+        const model = gateway.inspect(request.target);
+        if (model.kind !== 'agent' || !model.capabilities.toolCalling) throw new Error('Session 只能固定支持工具的 Agent 模型');
+        update.modelTarget = { ...request.target };
+      } else update.modelTarget = undefined;
+      update.provider = undefined;
+      update.model = undefined;
+    }
+    await this.components.state.sessions.open(sessionId).setPreferences(update);
+    return { ...update, effective: 'next_run' as const, daemonRestarted: false };
+  }
+
+  applySessionPreferences(preferences: SessionPreferences): void {
+    const runtime = this.sessionRuntime(preferences);
+    this.mode = runtime.mode.id;
+    this.outputLevel = runtime.outputLevel;
+  }
+
   bindingForSubAgent(
     role: 'researcher' | 'reviewer' | 'architect',
     profile: WorkUnitModelProfile,
@@ -603,7 +655,6 @@ export class MimiAgent {
         ...options?.modelProfile,
         requirements: {
           ...options?.modelProfile?.requirements,
-          ...(containsImageInput(input) ? { imageInput: true } : {}),
           toolCalling: options?.modelProfile?.requirements?.imageOutput ? false : true,
         },
       },
@@ -652,19 +703,20 @@ export class MimiAgent {
   history = (): Promise<AgentInputItem[]> => this.session.getItems();
 
   async sessionSnapshot(sessionId = this.sessionId) {
-    if (!this.activeRun) await this.refreshModelConfiguration();
-    const session = this.components.state.sessions.open(sessionId);
-    await session.ensure();
-    const [items, checkpoint, preferences, summary, plan] = await Promise.all([
-      session.getItems(),
-      session.getCheckpoint(),
-      session.getPreferences(),
-      session.summary(),
-      this.components.state.goalsAndPlans.open(sessionId).get(),
+    const [snapshot, plan] = await Promise.all([
+      this.components.state.sessions.open(sessionId).readSnapshot(),
+      this.components.state.goalsAndPlans.open(sessionId).readSnapshot(),
     ]);
-    const runtime = this.sessionRuntime(preferences);
+    if (!snapshot) throw new Error(`Session ${sessionId} 不存在`);
+    const { items, checkpoint, summary } = snapshot;
+    const savedManifest = items.length ? await this.contextManifestStore().read(sessionId) : undefined;
+    const candidateManifest = this.lastContextManifest?.sessionId === sessionId
+      ? this.lastContextManifest : savedManifest;
+    const runtime = this.sessionRuntime(snapshot.preferences ?? {});
+    const manifest = items.length && candidateManifest?.runId === checkpoint?.runId
+      && candidateManifest?.provider === runtime.target.providerId && candidateManifest?.model === runtime.target.modelId
+      ? candidateManifest : undefined;
     const permissionMode = this.runtimeSecurity.permissionMode;
-    if (!summary) throw new Error(`Session ${sessionId} 不存在`);
 
     return {
       sessionId,
@@ -682,8 +734,9 @@ export class MimiAgent {
         permissionMode,
       },
       context: {
+        manifest: manifest ? structuredClone(manifest) : undefined,
         contextWindow: runtime.model.profile.contextWindow,
-        status: this.contextStatusFor(sessionId, items, runtime.model.profile.contextWindow),
+        status: this.contextStatusFor(items, runtime.model.profile.contextWindow, manifest),
       },
     };
   }
@@ -964,14 +1017,16 @@ export class MimiAgent {
   mcpStatuses = () => this.components.mcp.statuses();
   reloadMcp = () => this.components.mcp.reload();
 
-  async recordEvent(type: string, data?: unknown): Promise<void> {
+  async recordEvent(type: string, data?: unknown, expectedRunId?: string): Promise<void> {
     const run = this.activeRun;
+    if (expectedRunId && run?.runId !== expectedRunId) return;
     const sessionId = run?.sessionId ?? this.sessionId;
     const session = run?.session ?? this.session;
     const safeData = redactActiveEphemeralData(data, run?.ephemeralSensitiveAccess);
     if (type === 'status' && safeData && typeof safeData === 'object') {
       const value = safeData as Record<string, unknown>;
       await this.components.state.traces.record(sessionId, type, {
+        runId: run?.runId, callId: value.callId,
         kind: value.kind,
         tone: value.tone,
         title: value.title,
@@ -989,10 +1044,17 @@ export class MimiAgent {
   }
 
   onRuntimeEvent = (hook: RuntimeHook): (() => void) => this.hooks.on(hook);
-  completeRun = (answer: string, usage?: ContextUsageSnapshot) =>
-    this.runCommitCoordinator.complete({ answer, usage });
+  completeRun = async (answer: string, usage?: ContextUsageSnapshot) => {
+    this.applyManifestActual(usage);
+    if (this.lastContextManifest) await this.persistContextManifest(this.lastContextManifest);
+    return this.runCommitCoordinator.complete({ answer, usage });
+  };
   get completionGateRequired(): boolean {
     return this.activeRun?.completionRequired === true;
+  }
+
+  get activeRunId(): string | undefined {
+    return this.activeRun?.runId;
   }
 
   get activeRunHasEphemeralSensitiveAccess(): boolean {
@@ -1017,6 +1079,8 @@ export class MimiAgent {
     usage?: ContextUsageSnapshot,
     interruptedAnswer?: string,
   ): Promise<RunFinalizationRecord | undefined> {
+    this.applyManifestActual(usage);
+    if (this.lastContextManifest) await this.persistContextManifest(this.lastContextManifest);
     return this.runCommitCoordinator.fail({
       error,
       interrupted,
@@ -1115,6 +1179,20 @@ export class MimiAgent {
     } : usage;
   }
 
+  private contextManifestStore() {
+    return new ContextManifestStore(path.join(this.config.dataRoot, 'context-manifests'));
+  }
+
+  async persistContextManifest(manifest: ContextManifest): Promise<void> {
+    if (this.activeRun?.runId !== manifest.runId || this.activeRun.sessionId !== manifest.sessionId) return;
+    // Diagnostics cannot block a valid answer; authoritative Session commits remain strict.
+    await this.contextManifestStore().save(manifest).catch(() => undefined);
+  }
+
+  async recordRunTiming(sessionId: string, runId: string, phases: Record<string, number>): Promise<void> {
+    await this.components.state.traces.record(sessionId, 'run_timing', { runId, ...phases });
+  }
+
   applyManifestActual(usage?: ContextUsageSnapshot): void {
     if (!this.lastContextManifest || !usage?.lastRequestInputTokens) return;
     const inputTokens = usage.lastRequestInputTokens;
@@ -1131,13 +1209,10 @@ export class MimiAgent {
   }
 
   private contextStatusFor(
-    sessionId: string,
     items: AgentInputItem[],
     contextWindow: number,
+    manifest: ContextManifest | undefined,
   ): MimiContextStatus {
-    const manifest = this.lastContextManifest?.sessionId === sessionId
-      ? this.lastContextManifest
-      : undefined;
     if (!manifest) return { value: estimateTokens(items), source: 'raw-history', contextWindow };
     return {
       value: manifest.actual?.inputTokens ?? manifest.estimatedInputTokens,
@@ -1162,6 +1237,7 @@ export class MimiAgent {
     await session.clearSession(async () => Promise.all([
       this.components.state.goalsAndPlans.store.clear(sessionId),
       this.components.state.team.store.clear(sessionId),
+      this.contextManifestStore().clear(sessionId).catch(() => undefined),
       retainedExecutionKey
         ? this.components.state.executionLedger.store.clearSessionExcept(sessionId, retainedExecutionKey)
         : this.components.state.executionLedger.store.clearSession(sessionId),
