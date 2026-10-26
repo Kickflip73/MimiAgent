@@ -145,3 +145,11 @@ test('stream task state bounds answer, effects and errors without inventing data
     effects: { invalid: 'RuntimeEffect payload is not serializable' },
   });
 });
+
+
+test('host startup and preparation are explicitly transient while actual tool events stay detailed',()=>{
+  assert.equal((mimiRuntimeStreamEvent({type:'run_progress',sessionId:'s',phase:'正在准备上下文'}) as any).transient,true);
+  const events=new MimiLiveEvents();
+  events.publish('r',mimiRuntimeStreamEvent({type:'run_progress',sessionId:'s',phase:'正在等待模型响应'})!);
+  assert.equal((events.recent('r')[0] as any).transient,true);
+});

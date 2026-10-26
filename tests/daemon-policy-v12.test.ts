@@ -160,6 +160,7 @@ test('reply and work source policies grant distinct bounded authority', () => {
   assert.equal(work.options?.policy?.allowSideEffects, true);
   assert.equal(work.options?.policy?.allowMcp, false);
   assert.ok(work.options?.policy?.allowedTools?.includes('connector_capability'));
+  assert.ok(work.options?.policy?.allowedTools?.includes('read_context_artifact'));
   assert.ok(work.options?.policy?.allowedTools?.includes('inspect_processes'));
   assert.ok(work.options?.policy?.allowedTools?.includes('delegate_background_task'));
   assert.match(instructions(work), /授权只来自本机策略/);
@@ -176,6 +177,7 @@ test('background task policies preserve read/write separation and remove recursi
     objective: { prompt: 'analyze only' },
   }));
   assert.ok(readOnly.options?.policy?.allowedTools?.includes('read_file'));
+  assert.ok(readOnly.options?.policy?.allowedTools?.includes('read_context_artifact'));
   assert.ok(readOnly.options?.policy?.allowedTools?.includes('inspect_processes'));
   assert.ok(readOnly.options?.policy?.allowedTools?.includes('delegate_research'));
   assert.ok(readOnly.options?.policy?.allowedSideEffectTools?.includes('update_plan'));
@@ -213,6 +215,7 @@ test('memory maintenance and revoked recurring schedules fail closed to dedicate
     }),
   );
   assert.deepEqual(maintenance.options?.policy?.allowedTools, [
+    'read_context_artifact',
     'memory_search', 'memory_read', 'memory_links',
     'list_memory_observations', 'upsert_memory_page',
     'merge_memory_pages', 'supersede_memory_page', 'add_memory_links',

@@ -10,6 +10,7 @@ import {
   mimiRpc,
   MimiIpcServer,
   readControlToken,
+  type MimiIpcTiming,
 } from '../src/daemon/ipc.js';
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -46,6 +47,52 @@ test('unix socket RPC supports requests and reports handler failures', async () 
   } finally {
     await server.close();
   }
+});
+
+test('IPC timing distinguishes synchronous work and async waits without recording payloads', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ipc-timing-'));
+  const socket = path.join(root, 'mimi.sock');
+  const timings: MimiIpcTiming[] = [];
+  const server = new MimiIpcServer(socket, (method, params) => {
+    if (method === 'sync') {
+      const until = performance.now() + 25;
+      while (performance.now() < until) { /* Deliberately model synchronous SQLite work. */ }
+      return params;
+    }
+    if (method === 'async') return new Promise((resolve) => setTimeout(() => resolve(params), 30));
+    throw new Error('private failure details');
+  }, { onRequestTiming: (timing) => { timings.push(timing); throw new Error('observer failure'); } });
+  await server.start();
+  try {
+    assert.deepEqual(await mimiRpc(socket, 'sync', { secret: 'do not log this' }), { secret: 'do not log this' });
+    assert.deepEqual(await mimiRpc(socket, 'async', { answer: 'private result' }), { answer: 'private result' });
+    await assert.rejects(mimiRpc(socket, 'failure'), /private failure details/);
+    assert.equal(timings.length, 3);
+    assert.ok(timings[0]!.synchronousMs >= 25);
+    assert.ok(timings[1]!.totalMs - timings[1]!.synchronousMs >= 20);
+    assert.deepEqual(timings.map((timing) => timing.success), [true, true, false]);
+    assert.doesNotMatch(JSON.stringify(timings), /private|secret|do not log/);
+    for (const timing of timings) assert.deepEqual(Object.keys(timing).sort(), ['method', 'success', 'synchronousMs', 'totalMs']);
+  } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('IPC loop delay observer detects scheduling stalls and is removed on close', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-ipc-delay-'));
+  const delays: number[] = [];
+  const server = new MimiIpcServer(path.join(root, 'mimi.sock'), () => null, {
+    onEventLoopDelay: (delay) => { delays.push(delay); throw new Error('observer failure'); },
+  });
+  await server.start();
+  try {
+    const until = performance.now() + 1_050;
+    while (performance.now() < until) { /* A stalled loop cannot accept a new RPC yet. */ }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.ok(delays.some((delay) => delay >= 40));
+    await server.close();
+    const count = delays.length;
+    await new Promise((resolve) => setTimeout(resolve, 1_020));
+    assert.equal(delays.length, count);
+  } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('control token creation is atomic, stable, owner-only, and optional for legacy daemons', async () => {

@@ -23,9 +23,11 @@ test('post-write diagnostics validate JSON, syntax-only files, missing compiler,
   assert.match(invalid.output ?? '', /invalid\.json/);
   assert.equal((await diagnoseWrittenFiles(root, [validJson, validJson])).status, 'clean');
   assert.deepEqual(await diagnoseWrittenFiles(root, [textFile]), {
-    status: 'clean',
-    command: 'syntax-only',
+    status: 'unavailable',
     files: [textFile],
+    uncheckedFiles: [textFile],
+    nextChecks: ['按用户要求核对内容或运行相关行为测试；语法检查不代表业务验收。'],
+    output: '这些格式未检查，不得声称语法或效果校验通过。',
   });
   const missing = await diagnoseWrittenFiles(root, [codeFile]);
   assert.equal(missing.status, 'unavailable');

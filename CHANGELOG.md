@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — Bounded execution and tool recovery
+
+- Bound filename/content search by time and scan budgets, retain partial matches, and align nested filename globs across engines. Filename lookup no longer depends on ripgrep availability.
+- Separate explicit Shell invocations from SDK/durable replays; do not cache a completed process as business success. Atomically fence unfinished, failed, or nonzero-exit commands across intervening calls.
+- Expose authorized Skill activation directly and use references on demand; prioritize current capability evidence and bounded file discovery over repeated planning and full-home scans.
+
+## Unreleased — Web conversation reliability
+
+- Upload ordinary files alongside image/audio/video messages; retain downloadable file cards across reloads and queued sends. Text previews are bounded and never base64-expanded into context.
+- Fit image previews to the viewport with wheel zoom, pan, and reset; preserve thumbnail aspect ratios. Move copy feedback to a top-center toast and recognize plain URLs safely.
+- Avoid duplicate active-run history during stream replay. Persist message write times and stream reply start timestamps; distinguish tool-process failures from explicit incomplete delivery in conversation labels while retaining scheduler evidence.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
@@ -8,6 +20,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## Unreleased
+
+- add a persistent Web notification inbox with unread receipts, full message details,
+  foreground alerts and conversation links; macOS notifications open the same message
+  through terminal-notifier instead of opening Script Editor
+
+- keep host preparation notices in the transient execution preview only; exclude them
+  from expanded details and step counts, including legacy cached conversations
+
+- show live microphone input levels and a device picker; reject silent recordings before
+  local transcription, including legacy cached silence, instead of accepting hallucinated text
+
+- decouple image/video perception from the conversation model with a bounded, cached
+  vision runtime and session-scoped `understand_media` tool; retain the chosen main model
+- persist multimedia owner input before slow preparation and guard SDK projections
+  against duplicate transcript writes; recover unambiguous legacy attachment references
+  from accepted submissions and preserve media hashes through display sanitization
+- bypass execution/mutation queues for cached MCP/runtime/model status reads
+- show immediate, changing execution summaries with reduced-motion-aware shimmer,
+  and use white surfaces with emerald outgoing bubbles
+
+- restore verified recent image attachments for follow-up questions and route automatic
+  visual requests to configured vision models; current inputs override stale capability memories
+- show the assistant avatar from the first execution step and reveal elapsed reply time on hover/focus
+
+- budget native image blocks as visual input instead of tokenizing Base64 transport;
+  keep full images for vision calls and omit binary encodings from text-only semantic summaries
+
+- add bidirectional audio/video blocks, code-block controls and click-to-record voice
+  drafts with local Whisper transcription, bounded media preparation and replay
+- carry typed media references through daemon submission, queues and canonical history;
+  sample video frames through the existing vision input path
+- render assistant media links with scoped local-file access and range playback
+
+- place each execution phase above its following reply in live and restored chats;
+  keep trailing work separate when no answer has arrived
+- unify compact rounded message bubbles, reveal copy controls on hover/focus,
+  and add bounded entrance/re-entry motion with reduced-motion support
+- separate message bodies into text/image blocks for future typed media renderers
+
+- preserve native multimodal input through Session host execution, fixing lost
+  image/file attachments in daemon-backed conversations
+- paste or select images in Web chat, preview/remove thumbnails, send image-only
+  messages, and retain image references in queued messages and saved history
+- deliver Web images through the existing native vision input path; select an
+  available vision model for automatic routing and explain incompatible selections
+
+- record slow read-only IPC requests and event-loop stalls without logging
+  request parameters, credentials or conversation content
+- interleave execution details with each assistant reply in Web conversations,
+  retaining boundaries during streaming, reconnection and saved-history replay
+- give both chat roles matching bubbles with distinct neutral colors; render
+  collapsed process details only when opened to avoid repeated hidden DOM work
+
+- run the macOS Web/TUI daemon with normal app scheduling instead of launchd
+  Background I/O throttling, which can stall the shared SQLite event loop
+
+- invoke known authorized tools across turns without mandatory rediscovery; connect
+  only the named MCP service and include bounded schemas for small search results
+- clarify the existing source-file requirement for workspace memory writes
+- bound semantic extraction to 20 seconds with auxiliary reasoning disabled;
+  avoid repeated preparation on small context growth, stop retrying after a failure
+  within a run, preserve canonical evidence, and
+  count failed auxiliary requests against operator model-call limits
+
+- soften streamed text with short per-fragment fades and bounded adaptive pacing;
+  keep existing text stable and respect reduced-motion preferences
+- display answer prose without internal Host finalization envelopes, including
+  saved conversations and copied answers; retain execution outcomes and evidence
+
+- default new workspaces to `~/Mimi/WorkSpace/default`, retaining explicit and
+  historical workspace selections across runtime eviction and restart
+- read chat snapshots and memory details without starting MCP or joining a running
+  conversation's mutation queue; incrementally cache archive summaries
+- restore message times and execution details from durable history, and persist
+  bounded reasoning for new runs without writing every streamed token
+- separate queued-message acceptance from stream recovery, retain idempotency
+  through lost acknowledgements, and use a compact inline queue editor
 
 - query retained conversation, background and scheduled results through one
   owner-scoped `task_history` tool, including observed file references and explicit

@@ -70,12 +70,10 @@ const modelComputerActionSchema = z.object({
     'launch_app', 'click', 'double_click', 'type_text', 'set_value', 'keypress', 'scroll', 'drag', 'wait',
   ]),
   bundleId: modelOptional(z.string().min(1).max(500).describe(
-    '已知精确 bundleId 时填写；否则传 name，由 Host 查询真实应用，不猜 bundleId',
+    'launch_app 必填；只使用 computer_observe 返回的 apps[].bundleId，不猜应用名',
   )),
-  name: modelOptional(z.string().trim().min(1).max(500).describe('launch_app 的应用名，如 Chrome。Host 解析唯一的已安装应用，无需先 observe。')),
   urls: modelOptional(z.array(z.string()).max(20)),
   newInstance: modelOptional(z.boolean()),
-  show: modelOptional(z.boolean().describe('用户要求打开给他看且已授权 foreground 时为 true；只有 background 权限或后台自检时为 false。')),
   elementIndex: modelOptional(z.number().int().nonnegative()),
   x: modelOptional(z.number().finite()),
   y: modelOptional(z.number().finite()),
@@ -117,7 +115,7 @@ function parseModelAction(value: unknown):
   const modelAction = cleaned && typeof cleaned === 'object' && !Array.isArray(cleaned)
     ? cleaned as Record<string, unknown>
     : {};
-  if (modelAction.type === 'launch_app' && typeof modelAction.bundleId !== 'string' && typeof modelAction.name !== 'string') {
+  if (modelAction.type === 'launch_app' && typeof modelAction.bundleId !== 'string') {
     return {
       success: false,
       result: {
@@ -125,7 +123,7 @@ function parseModelAction(value: unknown):
         reason: 'missing_launch_target',
         retryable: true,
         next: 'computer_observe',
-        message: 'launch_app 需要应用 name 或已发现的 bundleId；不明确时 computer_observe 列出应用',
+        message: 'launch_app 需要 computer_observe 返回的 apps[].bundleId；apps 为空时省略 app 重新列出应用',
       },
     };
   }
@@ -197,7 +195,7 @@ export function createComputerTools(
   };
   const observe = tool({
     name: 'computer_observe',
-    description: '读取一个 app 的当前界面。传 app 名称或 bundleId；省略 app 时列出可用应用。默认返回紧凑 AX 状态。检验页面、图形、动画等视觉产物时必须 screenshot=true 并提供 question；动画/动态界面使用 frames=2 对比实际变化，单张截图和 AX 文字不能证明运动或画面正确。不会启动未运行的 app。',
+    description: '读取一个 app 的当前界面。传 app 名称或 bundleId；省略 app 时列出可用应用。默认返回紧凑 AX 状态，只有 AX 不足时再请求 screenshot。不会启动未运行的 app。',
     parameters: observeToolParameters,
     execute: async (input, _context, details): Promise<unknown> => {
       const raw = input as Record<string, unknown>;
@@ -241,7 +239,7 @@ export function createComputerTools(
   });
   const act = tool({
     name: 'computer_act',
-    description: '执行一个原子电脑动作。Host 自动绑定最新窗口；打开 URL/文件直接使用 launch_app + urls，不要点击地址栏或拆成按键输入。已知应用名直接 launch_app(name, urls)，Host 自动解析，无需先 observe；已有精确 bundleId 也可使用。用户要求看到页面且当前已授权 foreground 时 show=true；只有 background 权限时保持后台打开并说明未置前。后台验收用 show=false。动作后直接返回 fresh state，使用 state 继续；只有返回 next=computer_observe 时才再观察。',
+    description: '执行一个原子电脑动作。Host 自动绑定最新窗口；打开 URL/文件直接使用 launch_app + urls，不要点击地址栏或拆成按键输入。launch_app 必须传 computer_observe 返回的精确 apps[].bundleId。动作后直接返回 fresh state，使用 state 继续；只有返回 next=computer_observe 时才再观察。',
     parameters: actToolParameters,
     errorFunction: (_context, error) => computerActionErrorResult(error),
     execute: async (input, _context, details) => {
@@ -258,13 +256,11 @@ export function createComputerTools(
         return { ok: false, reason: 'background_unsupported' };
       }
       if (!result.target) {
-        return action.type === 'launch_app' && action.urls?.length
-          ? { ok: true, mimiStatus: 'action_uncertain', retryable: false, sideEffectsFrozen: true, targetVerified: false, stateUnavailable: '打开动作已投递，但未找到对应窗口。不能声称页面已验证，不得重放打开动作或观察任意窗口。' }
-          : { ok: true, next: 'computer_observe' };
+        return { ok: true, next: 'computer_observe' };
       }
       try {
-        const state = ('state' in result ? result.state : undefined) ?? await manager.observeTarget(
-          observationAuthority(),
+        const state = await manager.observeTarget(
+          runAuthority,
           result.target,
           false,
           details?.signal,
@@ -337,7 +333,7 @@ export function createComputerTools(
     const urls = Array.isArray(action.urls) ? action.urls : [];
     const target = action.target && typeof action.target === 'object'
       ? JSON.stringify(action.target)
-      : observationId ?? (bundleId ? `bundle:${bundleId}` : typeof action.name === 'string' ? `app:${action.name}` : actionType);
+      : observationId ?? (bundleId ? `bundle:${bundleId}` : actionType);
     const boundedBackground = 'observationId' in parsed
       && (!('dispatch' in parsed.action) || parsed.action.dispatch === 'background');
     return {

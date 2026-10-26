@@ -29,9 +29,13 @@ const arc303ProductionFiles = [
   'src/daemon/run-store.ts',
   'src/daemon/schedule-store.ts',
   'src/daemon/task-continuation.ts',
+  'src/daemon/session-workspace.ts',
   'src/daemon/persistence/schema/migrations/v17-schedule-context.ts',
   'src/daemon/sqlite-domain.ts',
   'src/core/xml.ts',
+  'src/core/context-artifact.ts',
+  'src/core/context-manifest-store.ts',
+  'src/daemon/task-inspection.ts',
 ] as const;
 
 function sourceLines(source: string): number {
@@ -53,8 +57,13 @@ test('ARC-303 surface plus phase-two continuity stays within its explicit increm
   })));
   const total = counts.reduce((sum, entry) => sum + entry.lines, 0);
   // Keep the refactored baseline, with 250 lines for result review, durable
-  // schedule context and usage reporting. Include new modules in the count.
-  const maximum = 8_505 + 250;
+  // schedule context and usage reporting. Add 100 for the existing cron/IPC
+  // integration plus bounded reasoning persistence and durable workspace reads.
+  // Keep the new workspace helper in the count.
+  // Execution reliability adds bounded evidence pages, persistent diagnostics,
+  // next-turn controls and truthful finalization/retry handling. Include their
+  // helpers explicitly; keep individual composition-root limits unchanged.
+  const maximum = 8_505 + 250 + 100 + 600;
   assert.ok(total <= maximum, `${total} > ${maximum}\n${counts
     .sort((left, right) => right.lines - left.lines)
     .map((entry) => `${entry.file}: ${entry.lines}`)

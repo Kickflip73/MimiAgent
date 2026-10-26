@@ -119,7 +119,6 @@ const controlActionSchema = z.discriminatedUnion('type', [
 const launchActionSchema = z.object({
   type: z.literal('launch_app'), bundleId: z.string().min(1).max(500).optional(), name: z.string().min(1).max(500).optional(),
   urls: z.array(z.string().max(4_000)).max(20).optional(), newInstance: z.boolean().default(false),
-  show: z.boolean().optional(),
 }).refine((value) => value.bundleId !== undefined || value.name !== undefined, { message: 'launch_app 需要 bundleId 或 name' });
 
 export const computerActionSchema = z.union([launchActionSchema, uiActionSchema, controlActionSchema]);

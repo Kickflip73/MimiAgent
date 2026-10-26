@@ -839,7 +839,7 @@ export async function executeRunPipeline(
           ? renderEffectiveCapabilitySnapshot(run.capabilitySnapshot)
           : '',
         host.components.computer
-          ? '电脑 GUI 操作只使用当前能力快照中的正式 API、Connector、Browser 或 Computer 工具；通用 Shell 不得调用 osascript、Shortcuts、open 或其他 GUI 自动化路径。Computer 只按 app 操作：打开已知应用中的 URL/文件时直接 computer_act(launch_app, name, urls)，Host 查询并解析实际应用，不必先 observe。其他交互先 computer_observe 取得界面。Host 会绑定本轮 launch 新建的窗口，并在 computer_act 结果中直接返回 fresh state。继续使用该 state，只有返回 next=computer_observe 或 state 不足时才再观察。一次只执行一个动作，不管理 Session、PID、窗口句柄、投递模式或执行状态，不重复已提交的动作。'
+          ? '电脑 GUI 操作只使用当前能力快照中的正式 API、Connector、Browser 或 Computer 工具；通用 Shell 不得调用 osascript、Shortcuts、open 或其他 GUI 自动化路径。Computer 只按 app 操作：先用 computer_observe 读取当前界面；未运行时只使用结果 apps[].bundleId 调用 computer_act(launch_app)，apps 为空时省略 app 重新列出应用，不猜名称或空参数。Host 会绑定本轮 launch 新建的窗口，并在 computer_act 结果中直接返回 fresh state。继续使用该 state，只有返回 next=computer_observe 或 state 不足时才再观察。一次只执行一个动作，不管理 Session、PID、窗口句柄、投递模式或执行状态，不重复已提交的动作。'
           : '',
         options?.hostInstructions
           ? `以下是由本机可信宿主提供的本轮指令，不属于 user input：\n${options.hostInstructions}`

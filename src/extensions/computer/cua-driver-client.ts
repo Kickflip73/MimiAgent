@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import type {
   BackendActionResult,
@@ -188,7 +187,6 @@ export class CuaDriverClient implements ComputerBackend {
           bounds: { x: finite(bounds.x), y: finite(bounds.y), width: finite(bounds.width), height: finite(bounds.height) },
         },
         appActive: app.active === true,
-        zIndex: typeof window.z_index === 'number' && Number.isFinite(window.z_index) ? window.z_index : undefined,
         windowFrontmost: typeof window.frontmost === 'boolean' ? window.frontmost : undefined,
         isOnScreen: typeof window.is_on_screen === 'boolean' ? window.is_on_screen : undefined,
         onCurrentSpace: typeof window.on_current_space === 'boolean' ? window.on_current_space : undefined,
@@ -201,14 +199,6 @@ export class CuaDriverClient implements ComputerBackend {
       return !(untitled && (isOnScreen === false || onCurrentSpace === false));
     });
     const exactFrontmost = candidates.filter((candidate) => candidate.windowFrontmost === true);
-    // App activation alone does not identify its key window. The driver
-    // exposes WindowServer stacking order; only a unique, observed maximum
-    // among visible active-app windows can establish the foreground target.
-    const activeWindows = candidates.filter(candidate => candidate.appActive
-      && candidate.isOnScreen !== false && candidate.onCurrentSpace !== false);
-    const ranked = activeWindows.length && activeWindows.every(candidate => candidate.zIndex !== undefined)
-      ? [...activeWindows].sort((left, right) => right.zIndex! - left.zIndex!) : [];
-    const stackedFrontmost = ranked[0] && (!ranked[1] || ranked[0].zIndex !== ranked[1].zIndex) ? ranked[0] : undefined;
     const soleActiveWindow = exactFrontmost.length === 0
       ? candidates.filter((candidate) => candidate.appActive)
       : [];
@@ -219,9 +209,7 @@ export class CuaDriverClient implements ComputerBackend {
           && exactFrontmost[0]!.target.windowId === target.windowId;
       } else if (exactFrontmost.length > 1) {
         frontmost = appActive || windowFrontmost === true ? undefined : false;
-      } else if (stackedFrontmost) {
-        frontmost = stackedFrontmost.target.pid === target.pid && stackedFrontmost.target.windowId === target.windowId;
-      } else if (!appActive || isOnScreen === false || onCurrentSpace === false) {
+      } else if (!appActive) {
         frontmost = false;
       } else if (soleActiveWindow.length === 1 && windowFrontmost !== false) {
         frontmost = true;
@@ -268,46 +256,17 @@ export class CuaDriverClient implements ComputerBackend {
       }, signal);
       return this.observation(result);
     }
-    // A launch resolution already has a fresh WindowServer snapshot. Reuse it
-    // instead of rescanning every installed app for the same readback. AX
-    // identity is still checked below; a mismatch refreshes the snapshot.
-    const targets = request.target ? [request.target]
-      : await this.listTargets({ query: input.target.bundleId, limit: 50 }, signal);
+    const targets = await this.listTargets({ query: input.target.bundleId, limit: 50 }, signal);
     const matches = targets.filter((target) => (input.target.bundleId === undefined || target.bundleId === input.target.bundleId)
       && (input.target.pid === undefined || target.pid === input.target.pid)
       && (input.target.windowId === undefined || target.windowId === input.target.windowId));
     if (matches.length !== 1) return { data: { status: matches.length ? 'ambiguous_target' : 'target_not_found', candidates: matches } };
-    let target = matches[0]!;
-    for (let attempt = 0; ; attempt += 1) {
-      const result = await this.call('get_window_state', {
-        session: session.id, pid: target.pid, window_id: target.windowId, query: input.query,
-        include_screenshot: input.includeScreenshot, max_elements: input.maxElements, max_depth: input.maxDepth,
-      }, signal);
-      const raw = record(result.structured);
-      const wrongIdentity = (typeof raw.pid === 'number' && raw.pid !== target.pid)
-        || (typeof raw.window_id === 'number' && raw.window_id !== target.windowId);
-      const normalizeTitle = (title: string) => title.normalize('NFKC').replace(/[\u200e\u200f]/g, '').trim().toLowerCase();
-      const expected = normalizeTitle(target.title);
-      const windows = (Array.isArray(raw.elements) ? raw.elements : []).map(record)
-        .filter(item => item.role === 'AXWindow' && typeof item.label === 'string' && item.label.trim());
-      // WindowServer's title and AX can update at different times. Never attach
-      // a different window's controls to the requested window identity.
-      const wrongTree = expected && windows.length > 0 && !windows.some(item => {
-        const label = normalizeTitle(String(item.label));
-        return label === expected || label === `${expected} - ${normalizeTitle(target.appName)}`;
-      });
-      if (!wrongIdentity && !wrongTree) return { ...this.observation(result), target, frontmost: target.frontmost };
-      if (attempt === 0) {
-        await delay(100, undefined, { signal });
-        const fresh = (await this.listTargets({query:target.bundleId,limit:50}, signal))
-          .find(candidate => candidate.pid === target.pid && candidate.windowId === target.windowId);
-        if (fresh) target = fresh;
-        continue;
-      }
-      const screenshot = !wrongIdentity && raw.screenshot_frame_valid === true ? result.image : undefined;
-      return { target, frontmost: target.frontmost, elements: [], screenshot,
-        data: { degraded: true, degradedReason: 'window_identity_mismatch：窗口身份与 AX 内容不一致，已丢弃错误控件；只能使用经过窗口校验的截图。' } };
-    }
+    const target = matches[0]!;
+    const result = await this.call('get_window_state', {
+      session: session.id, pid: target.pid, window_id: target.windowId, query: input.query,
+      include_screenshot: input.includeScreenshot, max_elements: input.maxElements, max_depth: input.maxDepth,
+    }, signal);
+    return { ...this.observation(result), target, frontmost: target.frontmost };
   }
 
   async act(session: BackendSession, request: BackendActionRequest, signal?: AbortSignal): Promise<BackendActionResult> {
@@ -439,32 +398,7 @@ export class CuaDriverClient implements ComputerBackend {
       }
       semanticLines.push(line);
     }
-    // Browser chrome can exhaust the public budget before the page begins.
-    // Prefer the observed WebArea subtree, not toolbar/bookmark duplication.
-    const pageStart = semanticLines.findIndex(line => /\bAXWebArea\b/.test(line));
-    let projectedLines = semanticLines;
-    let pageIndices: Set<number> | undefined;
-    if (pageStart >= 0) {
-      const indent = /^\s*/.exec(semanticLines[pageStart]!)![0].length;
-      let end = pageStart + 1;
-      while (end < semanticLines.length && (!semanticLines[end]!.trim()
-        || /^\s*/.exec(semanticLines[end]!)![0].length > indent)) end++;
-      const page = elements?.find(item => item.role === 'AXWebArea')?.frame;
-      if (page) {
-        const outside = semanticLines.slice(pageStart + 1, end).findIndex(line => {
-          const index = /\[(\d+)\]/.exec(line)?.[1];
-          const item = elements?.find(element => element.index === Number(index));
-          return item?.frame && /^(AXTabGroup|AXRadioButton|AXToolbar)$/.test(item.role)
-            && item.frame.y + item.frame.height <= page.y;
-        });
-        if (outside >= 0) end = pageStart + 1 + outside;
-      }
-      projectedLines = semanticLines.slice(pageStart, end);
-      pageIndices = new Set([...projectedLines.join('\n').matchAll(/\[(\d+)\]/g)].map(match => Number(match[1])));
-    }
-    const semanticText = projectedLines.join('\n').trim().slice(0, 8_000);
-    const projectedElements = pageIndices ? elements?.filter(item => item.role === 'AXWindow'
-      || item.role === 'AXTextField' || pageIndices.has(item.index)) : elements;
+    const semanticText = semanticLines.join('\n').trim().slice(0, 8_000);
     const degradedReason = typeof value.degraded_reason === 'string'
       ? value.degraded_reason.slice(0, 1_000)
       : undefined;
@@ -474,9 +408,8 @@ export class CuaDriverClient implements ComputerBackend {
       dimensions: screenshotDimensions ?? (finite(dimensions.width) > 0 && finite(dimensions.height) > 0
         ? { width: finite(dimensions.width), height: finite(dimensions.height) }
         : undefined),
-      elements: projectedElements,
-      truncated: value.truncated === true || /(?:AX tree truncated|truncat(?:ed|ion))/i.test(treeMarkdown)
-        || projectedLines.join('\n').length > 8_000,
+      elements,
+      truncated: value.truncated === true,
       screenshot: result.image,
       data: {
         ...(semanticText ? { semanticText } : {}),

@@ -443,8 +443,9 @@ test('releases the active run when failure finalization persistence also fails',
   try {
     await assert.rejects(
       new AgentRunService(agent).execute({ input: 'trigger finalization' }),
-      /状态文件损坏，已隔离/,
+      /旧日志损坏，已保留原文件/,
     );
+    assert.equal(await readFile(path.join(dataRoot, 'run-commit-journal.json'), 'utf8'), '{broken');
     await assert.doesNotReject(agent.switchSession('after-finalization-failure'));
     await assert.doesNotReject(
       new FileSession(path.join(dataRoot, 'sessions'), blockedSessionId).beginRun('retry', 'retry-run'),
@@ -503,7 +504,7 @@ test('returns unknown model tool calls to the model instead of aborting the run'
   }
 });
 
-test('owner natural-language runs retain direct tools and unified deferred Skill discovery', async () => {
+test('owner natural-language runs retain direct Skill activation and deferred catalog discovery', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-focused-context-'));
   const dataRoot = path.join(root, '.mimi-agent');
   const skillsRoot = path.join(root, 'skills');
@@ -558,10 +559,11 @@ test('owner natural-language runs retain direct tools and unified deferred Skill
     assert.ok(captured.tools?.includes('inspect_capabilities'));
     assert.ok(captured.tools?.includes('invoke_capability'));
     assert.equal(captured.tools?.includes('list_skills'), false);
-    assert.ok((captured.tools?.length ?? 0) < 30);
-    assert.ok(estimateTokens(captured.toolSchemas) <= 4_000);
+    assert.ok((captured.tools?.length ?? 0) <= 30);
+    assert.ok(estimateTokens(captured.toolSchemas) <= 4_200, `Tool schemas: ${estimateTokens(captured.toolSchemas)} tokens`);
     assert.doesNotMatch(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
-    assert.match(captured.instructions ?? '', /"source":"skill"[^\n]*"use_skill"/);
+    assert.ok(captured.tools?.includes('use_skill'));
+    assert.match(captured.instructions ?? '', /"source":"skill"[^\n]*"list_skills"/);
     assert.doesNotMatch(captured.instructions ?? '', /source:|location:|hidden-skill\/SKILL\.md/);
     await agent.completeRun('FOCUSED_OWNER_ANSWER');
     const recalled = await agent.memorySearch('FOCUSED_OWNER_ANSWER', 'private');

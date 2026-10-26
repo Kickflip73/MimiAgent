@@ -1463,34 +1463,26 @@ printf '{"effect":"unverifiable","verified":false,"path":"key_events"}\\n'
   assert.deepEqual(result.data, { effect: 'unverifiable', verified: false, path: 'key_events' });
 });
 
-test('Cua lifecycle starts a missing daemon and restores it after a crash', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-lifecycle-'));
-  const state = path.join(root, 'daemon-ready');
-  const command = path.join(root, 'cua-driver.mjs');
-  await writeFile(command, `#!/usr/bin/env node
-import { existsSync } from 'node:fs';
-if (process.argv[2] === '--version') {
-  process.stdout.write('cua-driver 0.12.3\\n');
-  process.exit(0);
-}
-if (!existsSync(${JSON.stringify(state)})) {
-  process.stderr.write('Cua Driver daemon is not running on cua-driver.sock\\n');
-  process.exit(1);
-}
-process.stdout.write('{"content":[],"structuredContent":{"overall":"ok"}}\\n');
-`, { mode: 0o700 });
-  const lifecycle = new CuaDriverLifecycle(command, 500, {
+test('Cua lifecycle starts a missing daemon and restores it after a crash', async (t) => {
+  // Test recovery state deterministically; CuaDriverClient tests cover real CLI
+  // subprocesses. Starting a fresh Node process within 500 ms is OS-load dependent.
+  let daemonReady = false;
+  const lifecycle = new CuaDriverLifecycle('fixture-driver', 500, {
     monitorIntervalMs: 20,
     startupTimeoutMs: 500,
     probeIntervalMs: 10,
-    launcher: () => writeFile(state, 'ready'),
+    launcher: async () => { daemonReady = true; },
+    probe: async () => {
+      if (!daemonReady) throw new Error('Cua Driver daemon is not running on cua-driver.sock');
+    },
   });
+  t.after(() => lifecycle.stop());
 
   assert.equal((await lifecycle.start()).ready, true);
   assert.equal(lifecycle.status().launchAttempts, 1);
   assert.equal(lifecycle.status().recoveries, 1);
 
-  await rm(state);
+  daemonReady = false;
   await waitUntil(() => lifecycle.status().recoveries === 2);
   assert.equal(lifecycle.status().ready, true);
   assert.equal(lifecycle.status().launchAttempts, 2);

@@ -101,7 +101,12 @@ test('keeps compacted history out of user turns and preserves an adjacent offer'
     const serialized = JSON.stringify(modelInput);
     assert.match(instructions, /old question 1/);
     assert.doesNotMatch(serialized, /历史背景数据|较早会话的机械摘要|old question 1/);
-    assert.deepEqual(modelInput.slice(-2), [
+    // The derived Host boundary separates turns without removing the proposal
+    // that gives the owner's short confirmation its meaning.
+    const boundary = modelInput.at(-2) as { role?: string; content?: string };
+    assert.equal(boundary.role, 'system');
+    assert.match(boundary.content ?? '', /^\[Host current-turn boundary\]/);
+    assert.deepEqual([modelInput.at(-3), modelInput.at(-1)], [
       { role: 'assistant', content: '需要我帮你查一下路线或天气吗？' },
       { role: 'user', content: '好' },
     ]);
