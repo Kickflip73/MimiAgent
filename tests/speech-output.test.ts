@@ -185,7 +185,7 @@ test('honors the global switch and exposes only atomic speech tools', async () =
   assert.deepEqual(createSpeechTools(speech).map((candidate) => candidate.name), [
     'speech',
   ]);
-  assert.equal(speech.status().voices, 10);
+  assert.equal(speech.status().voices, 15);
   assert.deepEqual(speech.listVoices().map((voice) => voice.id), [
     'chattts:male-1',
     'chattts:male-3',
@@ -197,8 +197,14 @@ test('honors the global switch and exposes only atomic speech tools', async () =
     'zm_yunjian',
     'zm_yunyang',
     'am_echo',
+    'breeze:zh-narrator',
+    'breeze:zh-lively',
+    'breeze:zh-male',
+    'breeze:en-narrator',
+    'breeze:en-warm',
   ]);
   assert.equal(speech.listVoices().filter((voice) => voice.engine === 'chattts').length, 5);
+  assert.equal(speech.listVoices().filter((voice) => voice.engine === 'breeze').length, 5);
   assert.ok(speech.listVoices().some((voice) => (
     voice.id === 'chattts:male-1' && voice.gender === 'male'
   )));
