@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BASE_INSTRUCTIONS } from '../src/runtime/instructions.js';
+import { AGENT_MODES, BASE_INSTRUCTIONS } from '../src/runtime/instructions.js';
 
 // Regression for the "DeepSeek search 你能用吗" badcase: the model asserted a
 // capability did not exist from the directly visible tool list alone, without
@@ -20,4 +20,11 @@ test('capability-existence questions require directory and memory verification',
   // The verification rule must not soften the owner-specified hard boundary:
   // an explicitly named capability that is unavailable still stops execution.
   assert.match(BASE_INSTRUCTIONS, /指定能力不可用、调用失败或与 Host 权限冲突时停止执行并如实报告/);
+});
+
+test('general mode repeats the catalog-first rule next to its execution guidance', () => {
+  const general = AGENT_MODES.find((mode) => mode.id === 'general');
+  assert.ok(general);
+  assert.match(general.instruction, /有没有\/能不能用某能力.*inspect_capabilities/);
+  assert.match(general.instruction, /直接可见的工具清单只是本轮快照，不是能力全集/);
 });

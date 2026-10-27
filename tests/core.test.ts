@@ -565,6 +565,10 @@ test('owner natural-language runs retain direct Skill activation and deferred ca
     assert.ok(captured.tools?.includes('use_skill'));
     assert.match(captured.instructions ?? '', /"source":"skill"[^\n]*"list_skills"/);
     assert.doesNotMatch(captured.instructions ?? '', /source:|location:|hidden-skill\/SKILL\.md/);
+    // The installed-skill name index makes capability questions answerable from
+    // visible context without leaking SKILL.md bodies or descriptions.
+    assert.match(captured.instructions ?? '', /可用 Agent Skills[\s\S]*hidden-skill/);
+    assert.match(captured.instructions ?? '', /先按此清单核查/);
     await agent.completeRun('FOCUSED_OWNER_ANSWER');
     const recalled = await agent.memorySearch('FOCUSED_OWNER_ANSWER', 'private');
     assert.equal(recalled[0]?.documentType, 'episode');

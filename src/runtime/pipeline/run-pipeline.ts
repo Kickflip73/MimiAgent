@@ -89,6 +89,13 @@ function renderActiveSkills(skills: readonly Skill[]): string {
   ].join('\n');
 }
 
+// Names-only index of installed Skills. Exposing the names lets the model
+// answer capability questions ("有没有 X 能力") from visible context instead
+// of asserting absence from the tool list; SKILL.md bodies stay out of context.
+function renderSkillIndex(skills: readonly { name: string; available: boolean }[]): string {
+  return skills.map((skill) => `${skill.name}${skill.available ? '' : '（本轮不可用）'}`).join('、');
+}
+
 export async function executeRunPipeline(
   host: MimiAgent,
   input: string | AgentInputItem[],
@@ -816,6 +823,17 @@ export async function executeRunPipeline(
     const activeSkills = renderActiveSkills(activeSkillDefinitions.filter((skill) =>
       invocation.names.includes(skill.name) || resumesCheckpoint || options?.resumeState === true));
     const priorSkills = activeSkillDefinitions.filter((skill) => !invocation.names.includes(skill.name));
+    const installedSkillIndex = canReadLocal
+      ? (() => {
+          const catalog = host.components.skills.inspectCatalog(
+            { limit: 100 },
+            { canReadLocal, availableTools: run.availableToolNames },
+          );
+          return catalog.skills.length
+            ? `${renderSkillIndex(catalog.skills)}${catalog.nextOffset !== undefined ? '，另有更多可用 list_skills 分页查看' : ''}`
+            : '';
+        })()
+      : '';
     const builtInstructions = context.buildInstructionsResult({
       identity: soul.instructions,
       baseInstructions: BASE_INSTRUCTIONS,
@@ -857,7 +875,7 @@ export async function executeRunPipeline(
       }) : '',
       projectGuidance: canReadLocal ? projectGuidance.instructions : '',
       historySummary: '',
-      skillCatalog: '',
+      skillCatalog: installedSkillIndex,
       activeSkills,
       memories,
       plan: activePlan,
