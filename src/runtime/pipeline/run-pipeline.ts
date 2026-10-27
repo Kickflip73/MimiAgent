@@ -92,7 +92,7 @@ function renderActiveSkills(skills: readonly Skill[]): string {
 // Names-only index of installed Skills. Exposing the names lets the model
 // answer capability questions ("有没有 X 能力") from visible context instead
 // of asserting absence from the tool list; SKILL.md bodies stay out of context.
-function renderSkillIndex(skills: readonly { name: string; available: boolean }[]): string {
+export function renderSkillIndex(skills: readonly { name: string; available: boolean }[]): string {
   return skills.map((skill) => `${skill.name}${skill.available ? '' : '（本轮不可用）'}`).join('、');
 }
 
@@ -824,15 +824,19 @@ export async function executeRunPipeline(
       invocation.names.includes(skill.name) || resumesCheckpoint || options?.resumeState === true));
     const priorSkills = activeSkillDefinitions.filter((skill) => !invocation.names.includes(skill.name));
     const installedSkillIndex = canReadLocal
-      ? (() => {
-          const catalog = host.components.skills.inspectCatalog(
-            { limit: 100 },
-            { canReadLocal, availableTools: run.availableToolNames },
-          );
-          return catalog.skills.length
-            ? `${renderSkillIndex(catalog.skills)}${catalog.nextOffset !== undefined ? '，另有更多可用 list_skills 分页查看' : ''}`
-            : '';
-        })()
+      ? renderSkillIndex(host.components.skills.list().map((candidate) => {
+          // list() covers every loaded Skill; inspectCatalog pages at 25 and
+          // would silently drop names beyond the first page (the original
+          // "DeepSeek search 你能用吗" miss: deepseek-search sorts past page 1).
+          const skill = host.components.skills.get(candidate.name);
+          return {
+            name: candidate.name,
+            available: skill !== undefined && host.components.skills.evaluateAvailability(
+              skill,
+              { canReadLocal, availableTools: run.availableToolNames },
+            ).available,
+          };
+        }))
       : '';
     const builtInstructions = context.buildInstructionsResult({
       identity: soul.instructions,

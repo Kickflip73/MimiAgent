@@ -12,7 +12,7 @@
 - Separate explicit Shell invocations from SDK/durable replays; do not cache a completed process as business success. Atomically fence unfinished, failed, or nonzero-exit commands across intervening calls.
 - Expose authorized Skill activation directly and use references on demand; prioritize current capability evidence and bounded file discovery over repeated planning and full-home scans.
 - Verify capability-existence questions against the unified capability directory and memory before answering; the directly visible tool list is a per-run snapshot, not proof that a Skill, MCP tool, or Connector action does not exist.
-- Expose an installed-Skill name index in run context so capability questions can be answered from visible context without a discovery call; SKILL.md bodies and descriptions stay out of instructions, and the general mode repeats the catalog-first rule.
+- Expose an installed-Skill name index in run context so capability questions can be answered from visible context without a discovery call; the index lists every loaded Skill (not just the first catalog page), SKILL.md bodies and descriptions stay out of instructions, and the general mode repeats the catalog-first rule.
 
 ## Unreleased — Web conversation reliability
 

@@ -577,6 +577,41 @@ test('owner natural-language runs retain direct Skill activation and deferred ca
   }
 });
 
+test('installed-skill index covers every loaded name beyond the 25-per-page catalog cap', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-skill-index-'));
+  const dataRoot = path.join(root, '.mimi-agent');
+  const skillsRoot = path.join(root, 'skills');
+  const names = Array.from({ length: 30 }, (_, index) => `z-skill-${String(index + 1).padStart(2, '0')}`);
+  for (const name of names) {
+    await mkdir(path.join(skillsRoot, name), { recursive: true });
+    await writeFile(path.join(skillsRoot, name, 'SKILL.md'), `---\nname: ${name}\ndescription: index coverage\n---\nBody.`);
+  }
+  const agent = await MimiAgent.create({
+    provider: 'openai', workspaceRoot: root, dataRoot, skillsRoot,
+    mcpConfig: path.join(root, 'mcp.json'), historyLimit: 40, contextWindow: 128_000, maxTurns: 20,
+  });
+  let instructions = '';
+  const runner = (agent as unknown as { runner: { run: (runtimeAgent: unknown) => Promise<unknown> } }).runner;
+  runner.run = async (runtimeAgent) => {
+    instructions = (runtimeAgent as { instructions: string }).instructions;
+    return {};
+  };
+  const now = new Date().toISOString();
+  const decision = decideEvent({
+    id: 'skill-index-event', externalId: 'skill-index-event', source: 'local-cli', kind: 'command', trust: 'owner',
+    payload: '你好', profileId: 'owner', occurredAt: now, receivedAt: now, priority: 100,
+  });
+  try {
+    await agent.stream('你好', undefined, decision.options);
+    // z-skill-30 sorts far beyond inspectCatalog's first page of 25; the model
+    // context index must still list it (loader.list() has no page cap).
+    assert.match(instructions, /可用 Agent Skills[\s\S]*z-skill-30/);
+    await agent.completeRun('SKILL_INDEX_DONE');
+  } finally {
+    await agent.close();
+  }
+});
+
 test('failed durable attempts retain owner input after legacy history cleanup changes item offsets', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cleanup-rollback-'));
   const dataRoot = path.join(root, '.mimi-agent');
