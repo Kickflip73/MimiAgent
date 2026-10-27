@@ -26,6 +26,10 @@ export interface TtsConfig {
   playbackCommand: string;
   synthesisTimeoutMs: number;
   playbackTimeoutMs: number;
+  /** Local Breeze TTS 2 server base URL; enables the `breeze` speech engine. */
+  breezeUrl?: string;
+  /** Voice-design instruction used when a breeze call carries no preset voice. */
+  breezeDefaultInstruction?: string;
 }
 
 export interface SecurityProfileSummary {
@@ -409,6 +413,8 @@ function computerConfig(
 function ttsConfig(homeDirectory: string): TtsConfig {
   const configuredCommand = preferredEnvironmentValue('MIMI_TTS_COMMAND');
   const configuredPlayback = preferredEnvironmentValue('MIMI_TTS_PLAYBACK_COMMAND');
+  const configuredBreezeUrl = preferredEnvironmentValue('MIMI_TTS_BREEZE_URL')?.trim();
+  const configuredBreezeInstruction = preferredEnvironmentValue('MIMI_TTS_BREEZE_INSTRUCTION')?.trim();
   const command = configuredCommand
     ? expandHome(configuredCommand, homeDirectory)
     : path.join(homeDirectory, '.mimi-agent', 'runtime', 'tts', 'render');
@@ -421,6 +427,8 @@ function ttsConfig(homeDirectory: string): TtsConfig {
     playbackCommand,
     synthesisTimeoutMs: positiveSafeInteger(['MIMI_TTS_SYNTHESIS_TIMEOUT_MS'], 180_000)!,
     playbackTimeoutMs: positiveSafeInteger(['MIMI_TTS_PLAYBACK_TIMEOUT_MS'], 10 * 60_000)!,
+    ...(configuredBreezeUrl ? { breezeUrl: configuredBreezeUrl } : {}),
+    ...(configuredBreezeInstruction ? { breezeDefaultInstruction: configuredBreezeInstruction } : {}),
   };
 }
 

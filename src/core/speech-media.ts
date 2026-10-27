@@ -5,7 +5,7 @@ import { toolResultObject, toolResultFailure } from './tool-result.js';
 const audio = z.object({
   id: z.string().uuid(), file: z.string().max(4096),
   format: z.enum(['wav', 'mp3', 'm4a', 'ogg', 'flac']),
-  engine: z.enum(['chattts', 'kokoro', 'unknown']), createdAt: z.string(),
+  engine: z.enum(['chattts', 'kokoro', 'breeze', 'unknown']), createdAt: z.string(),
 });
 
 /** Accept a speech receipt, never an arbitrary file mentioned in tool text. */

@@ -15,6 +15,7 @@ This index separates user guides, operational references, architecture material,
 | Find a terminal, slash, or daemon command | [CLI and Daemon Reference](./CLI.md) |
 | Understand the runtime and state model | [Architecture Overview](./ARCHITECTURE.en.md) |
 | Add a connector or inspect its protocol | [Connector Protocol](./CONNECTORS.md) |
+| Render speech locally with Breeze TTS 2 | [Breeze TTS](./BREEZE_TTS.md) |
 | Contribute code or documentation | [Contributing Guide](../CONTRIBUTING.md) |
 | Report a vulnerability or review the threat model | [Security Policy](../SECURITY.md) |
 

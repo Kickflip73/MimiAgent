@@ -13,7 +13,7 @@ const speechParameters = z.object({
   action: z.enum(['voices', 'inspect', 'synthesize', 'play', 'speak']),
   input: z.string().max(20_000).optional()
     .describe('synthesize/speak: exact text; play: persisted audioId or absolute path of existing audio; inspect: optional audioId'),
-  engine: z.enum(['auto', 'chattts', 'kokoro']).optional(),
+  engine: z.enum(['auto', 'chattts', 'kokoro', 'breeze']).optional(),
   voice: z.enum(SPEECH_VOICES.map(voice => voice.id) as [string, ...string[]]).optional()
     .describe('voice id returned by the voices action; may change on every call'),
   speed: z.number().min(0.5).max(2).optional(),
@@ -23,7 +23,7 @@ export function createSpeechTools(speech: SpeechOutput): Tool[] {
   return [
     tool({
       name: 'speech',
-      description: 'Conversation audio: synthesize/speak return a playable file; play reuses audioId/path without synthesis or OS playback. User controls playback; do not claim it is audible. voices lists voices; inspect reads receipts. Never duplicate uncertain renders. Read verbatim. ChatTTS max 300 chars (including auto Chinese); use audio-briefing system speech for long text, never truncate or split to bypass limits. No Shell bypass.',
+      description: 'Conversation audio: synthesize/speak return a playable file; play reuses audioId/path without synthesis or OS playback. User controls playback; do not claim it is audible. voices lists voices; inspect reads receipts. Never duplicate uncertain renders. Read verbatim. ChatTTS max 300 chars (including auto Chinese); use audio-briefing system speech for long text, never truncate or split to bypass limits. Breeze voices (breeze:*) run on a local server and handle long text. No Shell bypass.',
       parameters: speechParameters,
       execute: async ({ action, input, ...options }, _context, details) => {
         try {

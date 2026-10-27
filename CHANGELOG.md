@@ -4,6 +4,10 @@ All notable changes to MimiAgent are documented here.
 
 ## Unreleased
 
+### Added
+
+- Local Breeze TTS 2 speech engine: `MIMI_TTS_BREEZE_URL` points the `speech` tool at a loopback `breeze-server`, which renders text to WAV through its OpenAI-compatible `/v1/audio/speech` endpoint. Five design-based voices (`breeze:zh-narrator`, `breeze:zh-lively`, `breeze:zh-male`, `breeze:en-narrator`, `breeze:en-warm`) route by language; the ChatTTS 300-character cap does not apply.
+
 ### Fixed
 
 - `npm ci` no longer fails with `EBADPLATFORM` on Linux, Windows, and Intel macOS. The macOS ARM CUA driver binary is provided by `@trycua/cua-driver`'s own optional dependencies instead of being a root dev dependency; the explicit entry aborted installs everywhere except Apple Silicon.

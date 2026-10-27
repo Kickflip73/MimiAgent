@@ -6,11 +6,12 @@ import { z } from 'zod';
 import { AtomicJsonStore } from '../core/state-file.js';
 import { runManagedCommand } from '../core/managed-process.js';
 import { PRE_MIMI_DATA_DIRECTORY } from '../core/mimi-legacy.js';
+import { BREEZE_DEFAULT_BASE_URL, BreezeTtsClient } from './breeze-tts.js';
 import type { TtsConfig } from '../config.js';
 
 export const CHATTTS_MAX_CHARS = 300;
 
-export type SpeechEngine = 'auto' | 'chattts' | 'kokoro';
+export type SpeechEngine = 'auto' | 'chattts' | 'kokoro' | 'breeze';
 export type SpeechLanguage = 'auto' | 'zh' | 'en' | 'ja';
 
 export interface SpeechVoice {
@@ -19,6 +20,8 @@ export interface SpeechVoice {
   language: Exclude<SpeechLanguage, 'auto'>;
   label: string;
   gender?: 'female' | 'male';
+  /** Breeze only: voice-design instruction sent to the local server. */
+  instructions?: string;
 }
 
 export interface SpeechSynthesisOptions {
@@ -40,7 +43,7 @@ export interface SpeechAudio {
 
 const audioSchema = z.object({
   id: z.string().uuid(), file: z.string(), format: z.literal('wav'),
-  engine: z.enum(['chattts', 'kokoro']), voice: z.string().optional(),
+  engine: z.enum(['chattts', 'kokoro', 'breeze']), voice: z.string().optional(),
   language: z.enum(['auto', 'zh', 'en', 'ja']), createdAt: z.string(),
 }).strict();
 const renderSchema = z.object({
@@ -84,6 +87,26 @@ export const SPEECH_VOICES: readonly SpeechVoice[] = Object.freeze(([
   { id: 'zm_yunjian', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunjian', gender: 'male' },
   { id: 'zm_yunyang', engine: 'kokoro', language: 'zh', label: 'Kokoro Yunyang', gender: 'male' },
   { id: 'am_echo', engine: 'kokoro', language: 'en', label: 'Kokoro Echo', gender: 'male' },
+  {
+    id: 'breeze:zh-narrator', engine: 'breeze', language: 'zh', label: 'Breeze 中文旁白', gender: 'female',
+    instructions: '一位沉稳温暖的中文女声，吐字清晰，语速适中，语气自然，适合长篇旁白。',
+  },
+  {
+    id: 'breeze:zh-lively', engine: 'breeze', language: 'zh', label: 'Breeze 中文活泼女声', gender: 'female',
+    instructions: '一位轻快、亲切的中文年轻女声，语调有起伏，表达富有感染力。',
+  },
+  {
+    id: 'breeze:zh-male', engine: 'breeze', language: 'zh', label: 'Breeze 中文男声', gender: 'male',
+    instructions: '一位低沉、克制的中文男声，语速偏慢，句中停顿干净，适合解说。',
+  },
+  {
+    id: 'breeze:en-narrator', engine: 'breeze', language: 'en', label: 'Breeze English Narrator', gender: 'female',
+    instructions: 'A warm, thoughtful young woman with a clear, calm delivery. Natural pacing, no theatrics.',
+  },
+  {
+    id: 'breeze:en-warm', engine: 'breeze', language: 'en', label: 'Breeze English Conversational', gender: 'male',
+    instructions: 'A relaxed, friendly male voice speaking conversationally, lightly animated and close-miked.',
+  },
 ] satisfies SpeechVoice[]).map((voice) => Object.freeze(voice)));
 
 interface CommandResult {
@@ -101,7 +124,7 @@ function validateOptions(options: SpeechSynthesisOptions): ValidatedSpeechOption
   let engine = options.engine ?? 'auto';
   let language = options.language ?? 'auto';
   const speed = options.speed ?? 1;
-  if (!['auto', 'chattts', 'kokoro'].includes(engine)) throw new Error(`未知 TTS 引擎：${engine}`);
+  if (!['auto', 'chattts', 'kokoro', 'breeze'].includes(engine)) throw new Error(`未知 TTS 引擎：${engine}`);
   if (!['auto', 'zh', 'en', 'ja'].includes(language)) throw new Error(`未知 TTS 语言：${language}`);
   if (!Number.isFinite(speed) || speed < 0.5 || speed > 2) {
     throw new Error('TTS 语速必须在 0.5 到 2 之间');
@@ -126,18 +149,27 @@ function detectedLanguage(text: string): Exclude<SpeechLanguage, 'auto'> {
   return 'en';
 }
 
-function resolveOptions(text: string, options: ValidatedSpeechOptions): ResolvedSpeechOptions {
+function resolveOptions(
+  text: string,
+  options: ValidatedSpeechOptions,
+  breezeConfigured: boolean,
+): ResolvedSpeechOptions {
   const language = options.language === 'auto' ? detectedLanguage(text) : options.language;
   const engine = options.engine === 'auto'
-    ? language === 'zh' ? 'chattts' : 'kokoro'
+    ? breezeConfigured ? 'breeze' : language === 'zh' ? 'chattts' : 'kokoro'
     : options.engine;
   return { ...options, engine, language };
 }
 
+function voiceInstructions(voice?: string): string | undefined {
+  if (!voice) return undefined;
+  return SPEECH_VOICES.find((candidate) => candidate.id === voice)?.instructions;
+}
+
 function actualEngine(stdout: string, requested: SpeechEngine): Exclude<SpeechEngine, 'auto'> {
-  const matches = [...stdout.matchAll(/\bengine=(chattts|kokoro)\b/g)];
+  const matches = [...stdout.matchAll(/\bengine=(chattts|kokoro|breeze)\b/g)];
   const detected = matches.at(-1)?.[1];
-  if (detected === 'chattts' || detected === 'kokoro') return detected;
+  if (detected === 'chattts' || detected === 'kokoro' || detected === 'breeze') return detected;
   return requested === 'kokoro' ? 'kokoro' : 'chattts';
 }
 
@@ -157,6 +189,9 @@ export class SpeechOutput {
     private readonly config: TtsConfig,
     private readonly outputDirectory: string,
     private readonly commandRunner: SpeechCommandRunner = runManagedCommand,
+    private readonly breeze: BreezeTtsClient = new BreezeTtsClient(
+      config.breezeUrl ?? BREEZE_DEFAULT_BASE_URL,
+    ),
   ) {
     this.enabled = config.enabled;
     this.renders = new AtomicJsonStore(path.join(outputDirectory, 'renders.json'), {
@@ -172,7 +207,7 @@ export class SpeechOutput {
   status(): SpeechOutputStatus {
     return {
       enabled: this.enabled,
-      renderer: this.config.command,
+      renderer: this.config.breezeUrl ? `breeze ${this.config.breezeUrl}` : this.config.command,
       playback: this.config.playbackCommand,
       voices: SPEECH_VOICES.length,
       queuedPlayback: this.queuedPlayback,
@@ -181,10 +216,18 @@ export class SpeechOutput {
   }
 
   async setEnabled(enabled: boolean): Promise<SpeechOutputStatus> {
-    if (enabled) await this.assertCommandsAvailable();
+    if (enabled) {
+      if (this.config.breezeUrl) await this.assertBreezeAvailable();
+      else await this.assertCommandsAvailable();
+    }
     this.enabled = enabled;
     if (enabled) this.lastError = undefined;
     return this.status();
+  }
+
+  private async assertBreezeAvailable(): Promise<void> {
+    const health = await this.breeze.health();
+    if (!health.ok) throw new Error(`Breeze TTS 服务未就绪：${this.breeze.baseUrl}`);
   }
 
   async synthesize(
@@ -196,13 +239,14 @@ export class SpeechOutput {
     if (!text.trim()) throw new Error('TTS 文本不能为空');
     if (text.length > 20_000) throw new Error('单次 TTS 文本不能超过 20000 个字符');
     signal?.throwIfAborted();
-    const selected = resolveOptions(text, validateOptions(options));
+    const selected = resolveOptions(text, validateOptions(options), Boolean(this.config.breezeUrl));
     if (selected.engine === 'chattts' && text.length > CHATTTS_MAX_CHARS) {
       throw new Error(`ChatTTS 仅支持最多 ${CHATTTS_MAX_CHARS} 字符的短语音；本次 ${text.length} 字符，未启动合成。长文请使用 audio-briefing 的系统语音方案；不要截断文本或拆分为多个 ChatTTS 请求绕过限制。`);
     }
-    await this.assertCommandsAvailable(false);
+    if (selected.engine !== 'breeze') await this.assertCommandsAvailable(false);
     await mkdir(this.outputDirectory, { recursive: true, mode: 0o700 });
-    const fingerprint = createHash('sha256').update(JSON.stringify({ text, selected, renderer: this.config.command })).digest('hex');
+    const renderer = this.config.breezeUrl ? `breeze ${this.config.breezeUrl}` : this.config.command;
+    const fingerprint = createHash('sha256').update(JSON.stringify({ text, selected, renderer })).digest('hex');
     const id = randomUUID();
     const input = path.join(this.outputDirectory, `.${id}.txt`);
     const output = path.join(this.outputDirectory, `${id}.wav`);
@@ -225,31 +269,45 @@ export class SpeechOutput {
         '同一内容和音色已有未确认的生成操作；先 inspect 该 audioId，不要重复合成或更换引擎启动副本。');
     }
     try {
-      await writeFile(input, text, { encoding: 'utf8', mode: 0o600 });
-      const result = await this.commandRunner(
-        this.config.command,
-        [input, '--no-play', output],
-        {
+      let renderedEngine: Exclude<SpeechEngine, 'auto'>;
+      let renderedVoice = selected.voice;
+      if (selected.engine === 'breeze') {
+        const instructions = voiceInstructions(selected.voice) ?? this.config.breezeDefaultInstruction;
+        await this.breeze.synthesizeToFile({
+          text,
+          ...(instructions ? { instructions } : {}),
           timeoutMs: this.config.synthesisTimeoutMs,
-          signal,
-          environment: {
-            ...process.env,
-            MIMI_TTS_ENGINE: selected.engine,
-            MIMI_TTS_LANGUAGE: selected.language,
-            MIMI_TTS_SPEED: String(selected.speed),
-            ...(selected.voice ? { MIMI_TTS_VOICE: selected.voice } : {}),
+          ...(signal ? { signal } : {}),
+        }, output);
+        renderedEngine = 'breeze';
+      } else {
+        await writeFile(input, text, { encoding: 'utf8', mode: 0o600 });
+        const result = await this.commandRunner(
+          this.config.command,
+          [input, '--no-play', output],
+          {
+            timeoutMs: this.config.synthesisTimeoutMs,
+            signal,
+            environment: {
+              ...process.env,
+              MIMI_TTS_ENGINE: selected.engine,
+              MIMI_TTS_LANGUAGE: selected.language,
+              MIMI_TTS_SPEED: String(selected.speed),
+              ...(selected.voice ? { MIMI_TTS_VOICE: selected.voice } : {}),
+            },
           },
-        },
-      );
+        );
+        renderedEngine = actualEngine(result.stdout, selected.engine);
+        renderedVoice = actualVoice(result.stdout, selected.voice);
+      }
       const info = await stat(output);
       if (!info.isFile() || info.size === 0) throw new Error('TTS 渲染器未生成有效 WAV 文件');
       await chmod(output, 0o600);
-      const renderedVoice = actualVoice(result.stdout, selected.voice);
       const audio: SpeechAudio = {
         id,
         file: output,
         format: 'wav',
-        engine: actualEngine(result.stdout, selected.engine),
+        engine: renderedEngine,
         ...(renderedVoice ? { voice: renderedVoice } : {}),
         language: selected.language,
         createdAt: new Date().toISOString(),
