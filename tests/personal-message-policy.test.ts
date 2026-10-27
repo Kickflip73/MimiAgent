@@ -106,7 +106,7 @@ test('personal auto runs receive only narrow message tools', () => {
     undefined,
     undefined,
     'background',
-    ['com.sankuai.xmpp'],
+    ['com.example.chat'],
     'auto',
   );
   assert.equal(decision.action, 'run');
@@ -131,7 +131,7 @@ test('OpenAI and DeepSeek fixtures share the same no-fallback personal-message p
       undefined,
       undefined,
       'background',
-      ['com.sankuai.xmpp'],
+      ['com.example.chat'],
       'auto',
     );
     assert.equal(decision.options?.personalConnectorOnly, true, provider);

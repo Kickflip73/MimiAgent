@@ -763,7 +763,7 @@ test('matching Wiki noise cannot crowd relevant Session episodes out of the boun
     sessionId: ctx.sessionId,
     runId: ctx.runId,
     input: 'Friday 模型平台的个人 APP ID 在哪里？',
-    answer: '入口是 https://aigc.sankuai.com/ml/modelPlaza/detail/487?tabKey=apiUsage。',
+    answer: '入口是 https://example.com/model-plaza/487。',
     occurredAt: new Date().toISOString(),
   }, ctx);
   for (let index = 0; index < 6; index += 1) {

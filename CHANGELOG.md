@@ -4,6 +4,11 @@ All notable changes to MimiAgent are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- `npm ci` no longer fails with `EBADPLATFORM` on Linux, Windows, and Intel macOS. The macOS ARM CUA driver binary is provided by `@trycua/cua-driver`'s own optional dependencies instead of being a root dev dependency; the explicit entry aborted installs everywhere except Apple Silicon.
+- Removed a committed `.hallmark` runtime log, a non-fixture macOS home path in a planning document, and two private organization markers in tests; workspace memory written by the agent at runtime is now ignored so a local run cannot dirty `npm run ci`.
+
 ### Changed
 
 - Reorganized public documentation into a concise bilingual project overview, focused getting-started/configuration/CLI guides, an English architecture overview, and categorized documentation indexes.

@@ -30,3 +30,7 @@ recordings/
 computer-artifacts/
 *.local-identity
 skills/wechat-messenger-skill/build/
+
+# Workspace memory the agent writes at runtime; knowledge/mimi-agent.md stays tracked
+knowledge/WIKI.md
+knowledge/wiki/
