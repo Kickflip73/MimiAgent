@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { lookup as dnsLookup } from 'node:dns';
 import { lookup } from 'node:dns/promises';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, open, opendir, readFile, readdir, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { isIP, type LookupFunction } from 'node:net';
 import path from 'node:path';
 import { codeInterpreterTool, webSearchTool } from '@openai/agents';
@@ -1370,10 +1370,16 @@ export async function runShellCommand(
     }
     return port;
   });
+  // POSIX shells only propagate a pipeline failure with pipefail; /bin/sh may be dash.
+  const linuxPipefailShell = process.platform === 'linux'
+    && await access('/bin/bash', constants.X_OK).then(() => true, () => false)
+    ? '/bin/bash'
+    : undefined;
   const localShell = process.platform === 'win32'
     ? (process.env.ComSpec ?? 'cmd.exe')
-    : process.platform === 'darwin' ? '/bin/zsh' : '/bin/sh';
+    : process.platform === 'darwin' ? '/bin/zsh' : (linuxPipefailShell ?? '/bin/sh');
   const executable = usesDarwinSandbox ? '/usr/bin/sandbox-exec' : localShell;
+  const pipefailShell = process.platform === 'darwin' || linuxPipefailShell !== undefined;
   const args = usesDarwinSandbox
     ? [
         '-p',
@@ -1390,7 +1396,8 @@ export async function runShellCommand(
         '-lc',
         command,
       ]
-    : process.platform === 'win32' ? ['/d', '/s', '/c', command] : ['-lc', command];
+    : process.platform === 'win32' ? ['/d', '/s', '/c', command]
+      : pipefailShell ? ['-o', 'pipefail', '-lc', command] : ['-lc', command];
 
   if (signal?.aborted) {
     const message = signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? '命令已取消');

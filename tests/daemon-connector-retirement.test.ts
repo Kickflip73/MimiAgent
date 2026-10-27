@@ -43,10 +43,15 @@ test('initialization removes every retired WeChat, IM, and HTTP connector', asyn
     ) as { connectors: Record<string, unknown> };
 
     assert.equal(result.connectors.removedRetired, 5);
-    assert.deepEqual(Object.keys(persisted.connectors).sort(), [
-      'macos-desktop',
-      'macos-system',
-    ]);
+    const remaining = Object.keys(persisted.connectors).sort();
+    for (const retired of ['openclaw-weixin', 'personal-wechat', 'qq', 'legacy-wechat', 'http-action']) {
+      assert.equal(remaining.includes(retired), false, `${retired} must be retired`);
+    }
+    // Default connectors are seeded per platform; only macOS registers these two.
+    assert.deepEqual(
+      remaining,
+      process.platform === 'darwin' ? ['macos-desktop', 'macos-system'] : [],
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

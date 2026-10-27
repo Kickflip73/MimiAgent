@@ -318,6 +318,8 @@ test('owner private eval failures never print private input paths', () => {
     '--questions', privatePath,
   ], { encoding: 'utf8' });
   assert.notEqual(result.status, 0);
-  assert.equal(result.stderr.trim(), 'owner private eval failed');
+  // Runtime warnings (for example node:sqlite on older Node releases) may precede the
+  // terminal message; the failure summary itself must stay exact and path-free.
+  assert.equal(result.stderr.trim().split('\n').at(-1), 'owner private eval failed');
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /OWNER_PRIVATE_PATH_MUST_NOT_LEAK/);
 });
