@@ -193,6 +193,58 @@ svg {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
+.nav-groups-toggle {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 11px 13px;
+  border-radius: 9px;
+  color: #68686d;
+  font-size: 13px;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.nav-groups-toggle::-webkit-details-marker {
+  display: none;
+}
+.nav-groups-toggle:hover {
+  background: #eaeaec;
+}
+.nav-groups-toggle > svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.nav-groups-current {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #9b9ba0;
+}
+.nav-groups-current:not([hidden]) + .nav-groups-chevron {
+  margin-left: 4px;
+}
+.nav-groups-chevron {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: #9b9ba0;
+  transition: transform 0.15s ease;
+}
+.nav-groups-chevron svg {
+  width: 15px;
+  height: 15px;
+}
+.nav-groups[open] .nav-groups-chevron {
+  transform: rotate(90deg);
+}
+.nav-groups-body {
+  padding-top: 2px;
+}
 .session-heading {
   display: flex;
   align-items: center;
@@ -461,11 +513,6 @@ h1 {
 }
 .suggestion > span:not(.suggestion-icon) {
   display: none;
-}
-.welcome-footnote {
-  font-size: 11px;
-  color: #9a9aa0;
-  margin-top: 22px;
 }
 .composer-dock {
   width: 100%;
@@ -1208,9 +1255,6 @@ dialog h2 {
     width: 15px;
     height: 15px;
   }
-  .welcome-footnote {
-    font-size: 10px;
-  }
   .composer-dock {
     padding: 12px 16px max(16px, env(safe-area-inset-bottom));
   }
@@ -1333,7 +1377,6 @@ dialog h2 {
 .execution-empty { padding: 10px 0; }
 .welcome h1 { margin-top: 24px; }
 .welcome-description { margin-bottom: 16px; }
-.welcome-footnote { margin-top: 28px; color: #a4a4a9; }
 .composer-options { min-width: 0; gap: 4px; overflow: visible; }
 .picker { position: relative; min-width: 0; }
 .picker-trigger { display: flex; gap: 6px; align-items: center; max-width: 225px; height: 30px; padding: 0 9px; color: #646469; background: transparent; border: 0; border-radius: 8px; font: inherit; font-size: 11px; cursor: pointer; }
@@ -1636,10 +1679,13 @@ dialog h2 {
 .session-search-control input { min-width:0; width:100%; background:transparent; border:0; padding:6px 8px; outline:none; }
 .session-heading.searching .session-search-control { background:#fff; border:1px solid #e5e5e5; border-radius:11px; }
 @keyframes search-expand { from {width:0;opacity:0;} to {width:172px;opacity:1;} }
-.chat-workspace { padding:8px 28px; color:#89898c; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex-shrink:0; }
-.workspace-choose { margin-top:22px; display:inline-flex; align-items:center; gap:8px; max-width:90%; }
-.workspace-choose svg { width:16px; height:16px; fill:none;stroke:currentColor;stroke-width:1.5; }
-.workspace-choose span:last-child { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.workspace-line { display: flex; align-items: center; gap: 10px; min-width: 0; margin: 0 4px 8px; }
+.workspace-current { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; padding: 4px 7px; border: 0; border-radius: 7px; background: none; color: #89898c; font-size: 11px; cursor: pointer; }
+.workspace-current:hover { background: #f0f0f2; color: #4c4c52; }
+.workspace-current:disabled { opacity: .6; cursor: default; }
+.workspace-current svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; flex-shrink: 0; }
+.workspace-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.workspace-switch { flex-shrink: 0; opacity: .7; }
 @media(prefers-reduced-motion:reduce) { .session-search-control .session-search-wrap {animation:none;} }
 .event-time { margin-left:auto; font-size:10px; font-weight:400; color:#999; }
 .skill-browser + .settings-note { font-size:11px; }

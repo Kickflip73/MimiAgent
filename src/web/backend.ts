@@ -32,7 +32,7 @@ export interface WebBackend {
   manageRead?(area: string, session: string): Promise<unknown>;
   manageWrite?(action: string, session: string, value: unknown): Promise<unknown>;
   status(): Promise<unknown>;
-  sessions(): Promise<unknown>;
+  sessions(refresh?: boolean): Promise<unknown>;
   session(id: string, draft: boolean): Promise<unknown>;
   history(id: string): Promise<unknown>;
   context(id: string): Promise<unknown>;
@@ -126,8 +126,10 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
       return status;
     },
     // A large personal archive can exceed the CLI's default five-second timeout.
-    sessions: () => {
-      if (Date.now() - sessionsCachedAt < 10_000) return Promise.resolve(sessionsCache);
+    sessions: (refresh = false) => {
+      // Forced refreshes must observe just-created sessions; the quiet TTL
+      // cache still absorbs periodic archive scans from multiple tabs.
+      if (!refresh && Date.now() - sessionsCachedAt < 10_000) return Promise.resolve(sessionsCache);
       sessionsPending ??= mimiRpc(socket, 'chat.sessions', undefined, 30_000).then((value) => {
         sessionsCache = value; sessionsCachedAt = Date.now(); return value;
       }).finally(() => { sessionsPending = undefined; });

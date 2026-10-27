@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Web session flow and navigation
+
+- Focus the message input as soon as a new conversation opens, and surface a just-created conversation in the sidebar immediately, reconciling it with the archive through forced refreshes instead of waiting for a manual reload.
+- Collapse the 工作/扩展/系统 navigation groups behind a persistent collapsible header so recent conversations keep their room; the active view stays visible on the collapsed summary.
+- Remove the welcome footnote and the top workspace readout; show the active workspace as a quiet clickable label above the composer that opens the system folder picker, with a reset affordance after switching.
+
 ## Unreleased — Bounded execution and tool recovery
 
 - Bound filename/content search by time and scan budgets, retain partial matches, and align nested filename globs across engines. Filename lookup no longer depends on ripgrep availability.

@@ -28,7 +28,8 @@ function localHeaders(server: MimiWebServer): Record<string, string> {
 }
 
 test('Local Web opens directly without credentials, cookies or a connect handshake', async (t) => {
-  const server = new MimiWebServer(backend(), 0); await server.start(); t.after(() => server.close());
+  let sessionsRefresh: boolean | undefined;
+  const server = new MimiWebServer(backend({ sessions: async (refresh) => { sessionsRefresh = refresh; return []; } }), 0); await server.start(); t.after(() => server.close());
   const page = await fetch(server.address); const html = await page.text();
   assert.match(html, /Mimi/);
   assert.equal(new URL(server.launchUrl).hash, '');
@@ -38,7 +39,10 @@ test('Local Web opens directly without credentials, cookies or a connect handsha
   for (const headers of browserHeaders) {
     assert.equal((await fetch(`${server.address}/api/status`, { headers })).status, 200);
     assert.equal((await fetch(`${server.address}/api/sessions`, { headers })).status, 200);
+    assert.equal(sessionsRefresh, false);
   }
+  assert.equal((await fetch(`${server.address}/api/sessions?refresh=1`, { headers: {} })).status, 200);
+  assert.equal(sessionsRefresh, true, '?refresh=1 bypasses the archive TTL cache');
   assert.equal((await fetch(`${server.address}/api/mode`, { method: 'POST', headers: localHeaders(server), body: JSON.stringify({sessionId:'s', mode:'general'}) })).status, 200);
   assert.equal((await fetch(`${server.address}/api/connect`, { method: 'POST', headers: localHeaders(server), body: '{}' })).status, 404);
   assert.equal((await fetch(`${server.address}/package.json`)).status, 404);
@@ -125,6 +129,8 @@ test('Web backend routes through real IPC and preserves submit identity across H
   await Promise.all([client.sessions(), client.sessions()]);
   await client.sessions();
   assert.equal(archiveReads, 1, 'multiple browser tabs share one archive scan');
+  await client.sessions(true);
+  assert.equal(archiveReads, 2, 'a forced list refresh bypasses the archive TTL cache');
   const requestId = randomUUID();
   const first = await client.submit('session-1', 'hello', requestId);
   const second = await client.submit('session-1', 'hello', requestId);
