@@ -196,6 +196,7 @@ svg {
 .nav-groups-toggle {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 11px;
   width: 100%;
   padding: 11px 13px;
@@ -217,20 +218,7 @@ svg {
   height: 18px;
   flex-shrink: 0;
 }
-.nav-groups-current {
-  margin-left: auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  color: #9b9ba0;
-}
-.nav-groups-current:not([hidden]) + .nav-groups-chevron {
-  margin-left: 4px;
-}
 .nav-groups-chevron {
-  margin-left: auto;
   flex-shrink: 0;
   color: #9b9ba0;
   transition: transform 0.15s ease;

@@ -774,9 +774,6 @@ function setView(view) {
     ...viewTitles,
   }[view];
   $('#view-title').textContent = title;
-  const current = $('#nav-groups-current');
-  current.hidden = view === 'chat';
-  current.textContent = view === 'chat' ? '' : `· ${title}`;
   closeMenu();
   if (view === 'chat') { void state.recoverRun?.(); resizeInput(); renderQueue(); }
   if (view === 'tasks') renderTasks();
