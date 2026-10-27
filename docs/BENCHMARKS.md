@@ -1,5 +1,25 @@
 # MimiAgent 本地容量基准
 
+## 阶段一日常任务验收
+
+`npm run eval:usability` 使用当前配置的真实 Provider，顺序执行
+`evals/usability-cases.json` 中 20 个固定日常任务。覆盖普通问答、文件读取与修改、Shell、Web、
+按需能力发现、Session、模式切换、Skill、Memory、Plan 只读边界和失败如实呈现。
+
+每个用例都在独立的系统临时工作区和数据目录运行，Computer 与 MCP 默认关闭；用例只能修改自己
+的临时文件，结束后自动清理。验收同时检查实际工具轨迹、禁止工具、输出关键内容、文件结果和
+单用例耗时上限。该命令会产生真实模型调用并需要 Provider 凭证，因此属于显式 canary，不进入
+无凭证单元测试：
+
+```bash
+npm run eval:usability
+```
+
+日常开发先运行 `npm test`。准备合并阶段一改动时，在同一模型、网络和机器条件下连续运行
+`eval:usability`，记录通过数与耗时；20 项未全部稳定通过时，不视为阶段一退出。
+
+## 本地容量
+
 `npm run bench:capacity` 在系统临时目录创建隔离状态，使用真实
 `MimiStore`、`FileSession` 和 `SqliteMemoryCatalog` 测量：
 

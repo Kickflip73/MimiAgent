@@ -1,7 +1,3 @@
-<p align="center">
-  <a href="./ARCHITECTURE.en.md">English</a> | <strong>简体中文</strong>
-</p>
-
 # MimiAgent Architecture
 
 MimiAgent 是 7×24 小时在线、本地优先的全能个人 Agent，同时提供有边界的轻量多 Agent 编排能力：面向真实文件、命令、检索、知识与外部系统事务，同时保持运行内核小而可直接阅读。
@@ -62,7 +58,7 @@ src/daemon/
 Connector、不保存正文；Connector cursor 仍由隔离进程维护，Event、Task 和副作用
 回执继续由现有 Store 与 ExecutionLedger 持有。
 
-可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 app-centric 的 `computer_observe` 与 `computer_act`。Host 按 Run 自动管理精确窗口、最新 Observation、动作/截图预算和 Driver Session；模型不接触 PID、window id、Observation id、投递模式或 Driver 状态。AX 优先，新窗口经有界 settle 仍无语义状态时才回退窗口截图；普通 UI 动作在同一 Tool 结果中直接返回 fresh state。GUI 写动作继续经过统一 Security、ExecutionLedger 与跨进程动作锁。Darwin 的通用 `run_shell` 无条件进入进程沙箱，拒绝 Apple Events、LaunchServices、Accessibility 和正式控制端口；Workstation 也使用这条沙箱 Shell。Terminal 可作为只读 Computer 观察目标但禁止动作和输入注入；Codex、IDE 等控制面应用不能成为 Computer 目标；`full-owner` 可自动发现已安装的 Cua Driver，Safe/Workstation 不会因此扩大权限。
+可选 `extensions/computer` 以 Cua Driver 为隐藏 Backend，只向主 Agent 暴露 app-centric 的 `computer_observe` 与 `computer_act`。Host 按 Run 自动管理精确窗口、最新 Observation、动作/截图预算和 Driver Session；模型不接触 PID、window id、Observation id、投递模式或 Driver 状态。AX 优先，新窗口经有界 settle 仍无语义状态时才回退窗口截图；普通 UI 动作在同一 Tool 结果中直接返回 fresh state。GUI 写动作继续经过统一 Security、ExecutionLedger 与跨进程动作锁。Darwin 的 Workstation、后台 Task 和非 Owner 来源 `run_shell` 进入进程沙箱，拒绝 Apple Events、LaunchServices、Accessibility 和正式控制端口；认证本机 Full Owner 的直接 Conversation Run 使用当前 OS 用户的原生 Host Shell，因此可以管理 `launchd` 等宿主服务。Terminal 可作为只读 Computer 观察目标但禁止动作和输入注入；Codex、IDE 等控制面应用不能成为 Computer 目标；`full-owner` 可自动发现已安装的 Cua Driver，Safe/Workstation 不会因此扩大权限。
 
 `src/agent.ts` 导出 `MimiAgent`；实现位于 `runtime/mimi-agent.ts`。
 
@@ -124,11 +120,17 @@ CLI / IM / Voice / Schedule / Connector events
 user → function_call → function_call_result → assistant
 ```
 
-完整 transcript 是 canonical Session；模型输入只是每次调用前由 SDK `callModelInputFilter` 重新计算的派生 Context View，过滤结果绝不写回 Session。输入占可用预算达到 70% 时，Host 通过同一 Provider 的无工具 summarizer seam 准备结构化工作快照，固定包含目标、进度、已完成、决策、约束、未决问题、证据、关键事实和稳定 Artifact 引用，并以独立 Session 状态持久化而不伪装成对话；该准备阶段非阻断，不再按句子长度或事实条数中断普通日志/代码历史。快照记录已覆盖 item 数与 canonical 前缀摘要，达到 80% 时才替换该已验证前缀；生成失败时复用仍能通过前缀摘要校验的旧快照，或在请求仍可装入时安全保留未压缩视图，最近三个用户回合始终逐字保留。只有最终视图确实无法装入时才失败关闭，禁止用字符头尾裁剪或关键词句子抽取冒充语义摘要。工具结果使用独立于 80% 的消费状态：首次能放下时提供完整结果，后续调用替换为有界语义事实与 `context-artifact:*` 引用；单项首次即过大时也可有界化。模型只能通过 `read_context_artifact` 在同一 Session 和活动 Run 内只读回取经摘要哈希校验的 canonical 结果；旧 Run 的引用归属不可改写，新 Run 只能获得记录原始 runId 的显式 alias，跨 Session/Run 或摘要伪造失败。call/result 骨架始终配对；连协议骨架也超预算时明确终止，不退化为孤立输入，也不根据摘要重放 uncertain 副作用。
+完整 transcript 是 canonical Session；模型输入是每次调用前由 SDK `callModelInputFilter` 重新计算的派生 Context View，过滤结果绝不写回 Session。硬容量按模型窗口、输出预留、工具和协议开销计算；语义压缩另使用最多 64k tokens 的软工作集预算，不因软预算本身终止任务。有效视图达到软预算 70% 时，同 Provider 的无工具 summarizer 准备结构化工作快照（目标、进度、已完成、决策、约束、未决问题、证据、关键事实、稳定引用），达到 80% 时使用已验证的摘要前缀。快照最多 6k tokens，通过 canonical 前缀哈希验证；后续压缩只处理新增前缀并合并之前快照，不重复提交全部已压缩历史。快照准备成功后，只有有效视图再次达到 80% 且新增可压缩前缀达到 4k tokens（小窗口按软预算 10%）才更新；首次前缀也须达到这一有用体量，硬容量溢出时允许跳过体量门槛尝试恢复。摘要请求显式关闭辅助推理，输出上限 3k tokens，并由 Host 强制执行主 Run 取消信号及 20 秒截止时间。一次失败后本 Run 停止尝试摘要，下个 Run 可重试；失败的辅助请求也计入操作员模型调用上限。失败时保留 canonical 和现有有界工具视图，超过模型硬容量仍安全暂停，不通过删对话或工具协议来继续；没有可压缩前缀时不调用摘要模型。
+
+普通聊天保留最近三个用户回合；单个用户任务内也可以在完整工具批次边界压缩，保留最近三个已闭合批次、所有未闭合调用和当前用户原文约束。快照可跨后续回合复用，但必须同时满足前缀哈希和 call/result 边界验证。摘要不生成可重放调用，不能把 uncertain 副作用判为完成。只有最终视图无法装入硬预算才失败关闭。
+
+工具结果默认在单项不超过 16k 估算 tokens 且请求可装入时完整保留，包括此前已消费的互补证据。超大单项或硬预算不足时，仅有有效 `context-artifact:*` 引用的结果才能替换为**明确标注的不完整原文页**，不再用启发式句子抽取冒充语义摘要。无可靠回读引用时保留原文或明确报预算错误。`read_context_artifact(ref, offset?, limit?)` 按 UTF-16 字符偏移回读，默认 12000、最多 24000 字符，返回 `totalChars`、`nextOffset`、`truncated`、`format`；小结果保留原类型，分页对象使用精确 JSON 字符串。新回读页首次进入模型时不再被同一裁剪机制替换。读取继续校验 Session、Run 和原结果哈希；旧引用仅可通过当前 Run 的显式 alias 恢复，不修改原归属、不跨 Session，不重放原工具副作用。
+
+Skill 激活记录仍持久化用于发现和资源授权，但以前任务的 Skill 全文不会自动常驻新任务。当前显式 `$skill` 调用或明确恢复任务可加载完整指令；其他场景先用 `use_skill` 获取本轮指令，大内容使用同一 Context Artifact 分页机制。
 
 Context Window 由当前模型 Profile 提供，而不是按 Provider 使用同一个常量。Profile 同时定义输出预留；模型切换和 Session 恢复会原子更新 Model 与 ContextManager。每轮先分别扣除输出预留、已知 Function Tool Schema 和协议/MCP 安全余量，再在剩余输入预算内组装 Instructions、历史与当前输入；超长当前输入也不能绕过总预算。每次模型请求产生只供 Host、Trace 和 TUI 使用的 Context Manifest，按稳定 section ID 保存本地估算、压缩动作、request/run 标识和 estimator ID，不复制 prompt 正文，也不进入模型输入。协议 reserve 只显示预留，绝不计入已用输入；`/context` 分别展示 Raw Session、模型视图及占比、Last Request Actual、Run cumulative、静态工具/能力开销和压缩次数。Provider 未返回 usage 时明确显示 `est`，不会把本地估算冒充实际值。Conversation 不按累计输入量或固定模型调用次数中断；每次请求仍必须独立装入当前模型的 Context Window。只有操作员显式配置 `MIMI_MAX_TURNS` 时才按该轮数暂停，并保留完整协议单元和执行账本，不删除或重放动作。
 
-能力披露与授权是两层独立边界。每个 Run 先把经过 Mode、Task、readiness、route owner、Policy 和 ExecutionLedger 包装的 builtin、Browser、Computer、Memory、Goal、Skill、MCP 与 Connector Tool 放入唯一 `HostCapabilityRegistry`。初始模型工具面只保留文件/Shell、Browser、Computer、PersonalMessage、Memory、Goal/Plan、Background Task、runtime/session summary 等高频 direct tools，以及唯一的 `inspect_capabilities`/`invoke_capability` deferred gateway；旧 `inspect_runtime_capabilities`、`invoke_runtime_capability` 和 `inspect_mimi_capabilities` 只允许用于历史 transcript 或内部兼容诊断，不进入新 Run 工具面。隐藏 schema 不会增加或撤销权限。每轮 Effective Capability Snapshot 从同一 Registry 生成，`tools` 严格等于 SDK `getAllTools()` 的实际首轮名称，并按 builtin、MCP、Browser、Computer、Memory、Goal、Skill、Connector 记录隐藏索引；每组只披露总数及至多 12 个稳定名称，不复制 description 或 schema，超出时显式 `truncated`。模型按 source/name/query 查询后才取得 deferred schema 并调用；完全相同的发现按 Run 和 Connector semantic revision 缓存，readiness 或目录变化立即使 Connector 发现失效。Connector 查询直接调用 Manager 的有界结构化 catalog API，不经过 Tool 调 Tool。`name` 保持精确匹配；`query` 对规范化后的名称与描述做有界多关键词匹配，零结果只代表当前查询未命中，并返回有重叠的名称建议而不自动授权。统一入口只代理 Registry 中的精确原始 Tool；未知、未授权、未发现或 revision 后未重新发现的 action 失败关闭。Skill availability、运行 instructions 与 status 都读取同一 Snapshot/Registry 投影。Connector 首轮只提供 id、availability、能力组和可用 action 数量，禁用 action 不暴露描述；目录缺少某 action 不能推导其他 Host 能力不存在。整个选择过程使用结构化事实和显式查询，不读取 owner 文本做关键词工具路由，也不保存第二份 capability 状态。
+能力披露与授权是两层独立边界。每个 Run 先把经过 Mode、Task、readiness、route owner、Policy 和 ExecutionLedger 包装的 builtin、Browser、Computer、Memory、Goal、Skill、MCP 与 Connector Tool 放入唯一 `HostCapabilityRegistry`。初始模型工具面只保留日常高频的时间、文件/Shell、Web、Browser、Computer、上下文 Artifact、基础 Memory、task_history、speech、model_control 和 use_skill 工具，以及唯一的 `inspect_capabilities`/`invoke_capability` deferred gateway；Session、Goal/Plan、后台任务控制、低频 Memory、Skill、MCP 和 Connector 动作按需发现后调用。这里没有关键词快捷路由：每条自然语言请求仍先进入同一个主模型，由模型决定直接回答、调用高频工具或发现延迟能力。旧 `inspect_runtime_capabilities`、`invoke_runtime_capability` 和 `inspect_mimi_capabilities` 只允许用于历史 transcript 或内部兼容诊断，不进入新 Run 工具面。隐藏 schema 不会增加或撤销权限。每轮 Effective Capability Snapshot 从同一 Registry 生成，`tools` 严格等于 SDK `getAllTools()` 的实际首轮名称，并按 builtin、MCP、Browser、Computer、Memory、Goal、Skill、Connector 记录隐藏索引；每组只披露总数及至多 12 个稳定名称，不复制 description 或 schema，超出时显式 `truncated`。模型已知精确工具名和 schema 时可直接调用，Host 始终按本轮 registry、schema、Policy 和 ExecutionLedger 校验；未知时按 source/name/query 查询，至多三个匹配且 description/schema 合计不超过 12k 字符时一次返回 schema，减少额外模型往返。Connector action 仍要求精确发现；完全相同的发现按 Run 和 Connector semantic revision 缓存，readiness 或目录变化立即使 Connector 发现失效。Connector 查询直接调用 Manager 的有界结构化 catalog API，不经过 Tool 调 Tool。`name` 保持精确匹配；`query` 对规范化后的名称与描述做有界多关键词匹配，零结果只代表当前查询未命中，并返回有重叠的名称建议而不自动授权。统一入口只代理 Registry 中的精确原始 Tool；未知或未授权 Tool，以及未发现或 revision 后未重新发现的 Connector action，均失败关闭。Skill availability、运行 instructions 与 status 都读取同一 Snapshot/Registry 投影。Connector 首轮只提供 id、availability、能力组和可用 action 数量，禁用 action 不暴露描述；目录缺少某 action 不能推导其他 Host 能力不存在。整个选择过程使用结构化事实和显式查询，不读取 owner 文本做关键词工具路由，也不保存第二份 capability 状态。
 
 `inspect_capabilities.name` 只精确匹配 deferred Tool，Connector action 使用
 `inspect_capabilities.capability` 精确匹配稳定 ID；历史
@@ -186,7 +188,7 @@ Conversation 降成 background。OpenAI-compatible Doctor 使用认证 `/models`
 
 ## Session 恢复与存档
 
-Session JSON 同时保存三类互不替代的数据：完整 SDK transcript、最近 `RunCheckpoint`、`ContextArchive`。原始 transcript 是审计存档；ContextArchive 只是模型有效视图；RunCheckpoint 只保存恢复所需的输入、阶段、最后工具事件和结果/错误摘要。
+Session JSON 同时保存三类互不替代的数据：完整 SDK transcript、最近 `RunCheckpoint`、`ContextArchive`。原始 transcript 是审计存档；ContextArchive 只是模型有效视图；RunCheckpoint 保存恢复所需的输入、阶段、最后工具事件、最近 12 次工具的脱敏有界摘录和最多 100 个工具报告的产物路径。工具结果通过既有原子存储逐步写入并校验 Session/runId；续跑继承进度，普通新任务不把旧进度当作自己完成的操作。普通后续输入也会获得上一轮未完成事实，由模型判断关联，不自动激活旧 Goal/Plan。
 
 ```text
 running
@@ -196,9 +198,15 @@ running
 └── 进程退出  → 下次打开时转换为 interrupted
 ```
 
-Session 是完整运行状态边界。启动指定 Session、从历史列表切换和新建对话都经过同一条激活路径，同步恢复 transcript、mode、model、输出等级、Plan、Goal、Team、ContextArchive 与 checkpoint。CLI 的 `/retry` 最近输入缓存仅属于当前终端进程，不伪装成持久 Session 状态。每轮执行捕获不可变作用域并生成 runId/owner；checkpoint、Trace、事件和延迟动作始终写回启动该轮的 Session，所有进展与终态更新都以 runId 做 CAS。其他 Session 的消息和局部运行状态不会进入当前模型上下文；唯一允许跨 Session 注入的对话信息是带新 `recordedAt` 或兼容旧 `confirmedAt` 标记的长期记忆。`/resume` 将未完成 checkpoint 与 Goal/Plan/Team 合并为新一轮输入，并要求先核对当前工作区；这是 best-effort 任务续跑，不是任意 SDK 指令点的精确恢复。没有未完成状态时拒绝空恢复。
+Session 是完整运行状态边界。启动指定 Session、从历史列表切换和新建对话都经过同一条激活路径，同步恢复 transcript、mode、model、输出等级、Plan、Goal、Team、ContextArchive 与 checkpoint。CLI 的 `/retry` 最近输入缓存仅属于当前终端进程，不伪装成持久 Session 状态。每轮执行捕获不可变作用域并生成 runId/owner；checkpoint、Trace、事件和延迟动作始终写回启动该轮的 Session，所有进展与终态更新都以 runId 做 CAS。其他 Session 的消息和局部运行状态不会自动进入当前模型上下文；跨 Session 自动注入的对话信息仅限带新 `recordedAt` 或兼容旧 `confirmedAt` 标记的长期记忆。`/resume` 将未完成 checkpoint 与 Goal/Plan/Team 合并为新一轮输入，并要求先核对当前工作区；这是 best-effort 任务续跑，不是任意 SDK 指令点的精确恢复。没有未完成状态时拒绝空恢复。
 
 Esc 中断会原子保留 checkpoint 中的 owner 输入，并把已经流向 owner 的回答文本保存为明确标注“任务未完成”的 assistant 快照；SDK 尚未落盘输入时也由 checkpoint 补齐。因此切换 Session 后再返回仍能看到中断前的对话上下文。Function Call、Function Result 与未展示的 completion-gate 候选仍从本轮 transcript 回滚，避免保留不完整协议单元、泄露临时敏感值或暗示不确定副作用可以重放。
+
+跨会话成果通过 owner 主动调用 `task_history` 查询现有 Task 表，不自动拼接其他 Session 的 transcript。统一列表包含 conversation/background/scheduled 等类型，按 profile 隔离并支持分页；详情返回业务 outcome、实际结果和 Finalization 的可选结构化产物引用。查询空结果必须带查询范围，任务 completed 不等于交付物验收通过，历史路径需要现场核对。非 owner 来源不开放这个入口；既有会话上下文隔离不因查询入口而取消。
+
+工具成功与失败以结构化结果判定：非零进程退出、显式失败和 uncertain 不能因为 Promise resolved 而算作成功。Run 终态、Checkpoint 进度和 Finalization manifest 使用同一语义；执行账本仍负责至多一次保护，不因失败分类改变而重放已派发动作。
+
+Speech 在已有输出目录以原子 JSON 持久化音频 ID 和生成状态；相同文本/选项/渲染器只认领一次，ready 可跨运行复用，超时保留原 ID/路径和 uncertain。播放已有音频接受已登记 ID 或受现有路径边界约束的音频文件，不隐式合成。受管命令清理自身进程组；独立后台服务不被假定为已停止，文件存在也不自动证明完整合成。生成记录损坏或格式不兼容时不丢弃记录重新提交。
 
 `AtomicJsonStore` 是 Plan、Team、ExecutionLedger 和 Session 的统一 JSON 状态层：按绝对路径共享进程内队列，使用跨进程锁在锁内重读，写入 PID+UUID 临时文件后原子 rename，并通过 Zod 校验和损坏文件隔离处理异常。MemoryHub 的语义正文使用原子 Markdown 页面，派生索引与控制账本使用 SQLite WAL；控制表损坏时写入失败关闭，不能从空状态继续。
 
@@ -242,7 +250,7 @@ Connector / CLI / Schedule
   → Kernel Notifier deliver；失败独立退避重试
 ```
 
-`MimiHost` 是 Session actor registry，而不是全局单工 lane。每个 actor 是其可变 Agent 的唯一所有者，Session 选择、模型/模式变更、清理和 Run 在该 Session 的 FIFO lane 内执行；Host 的 semaphore 只限制同时活跃的不同 Session 数。只读 `sessionSnapshot(id)` 直接读取指定 FileSession，不切换当前 Session。Dispatcher 可同时持有多个不同 Session 的 Task lease，但不会并发写同一个 transcript；isolated worker 只领取 supervisor 指定的 Task。`codex` Task 不创建 Mimi Run/Plan：Supervisor 只启动 detached runner，runner 启动 Codex CLI 后与 Kernel 生命周期解耦，自行续租，并把 runner PID、Codex PID、thread、JSONL 输出和 summary 文件写入 Task；Codex 退出后直接提交 Task 终态与 Outbox。Mimi 不验收、不接管、不回退执行，Codex 启动或运行失败也作为该 Task 的真实终态失败；为避免不确定副作用被重放，Codex Task 默认只允许一次 Attempt。Agent Run 期间查询 ready Task：达到 Attention `urgentPriority` 的高优先级候选可在没有 Tool 在途时 abort 当前模型思考；Tool 在途时等待结果落账。Task 的过期租约会回到待处理状态并依靠执行账本恢复；Outbox 的过期 `sending` 租约代表远端结果不确定，会直接进入 dead letter。明确可重试的普通失败才指数退避并在达到上限后 dead-letter。
+`MimiHost` 是 Session actor registry，而不是全局单工 lane。每个 actor 是其可变 Agent 的唯一所有者，Session 选择、模型/模式变更、清理和 Run 在该 Session 的 FIFO lane 内执行；Host 的 semaphore 只限制同时活跃的不同 Session 数。只读 `sessionSnapshot(id)` 直接读取指定 FileSession，不切换当前 Session。Dispatcher 可同时持有多个不同 Session 的 Task lease，但不会并发写同一个 transcript；isolated worker 只领取 supervisor 指定的 Task。`codex` Task 不创建 Mimi Run/Plan：Supervisor 只启动 detached runner，runner 启动 Codex CLI 后与 Kernel 生命周期解耦，自行续租，并把 runner PID、Codex PID、thread、JSONL 输出和 summary 文件写入 Task；Codex 退出后提交 Task 终态；新委派任务在同一事务中路由 `task.completed`，唤醒原 Conversation 的 Mimi 核查结果，再由核查任务的 Outbox 汇报。旧任务或明确静默完成保留直接结算。Mimi 不干预 Codex 内部执行、不自动切换执行器，Codex 启动或运行失败也作为该 Task 的真实终态失败；为避免不确定副作用被重放，Codex Task 默认只允许一次 Attempt。Agent Run 期间查询 ready Task：达到 Attention `urgentPriority` 的高优先级候选可在没有 Tool 在途时 abort 当前模型思考；Tool 在途时等待结果落账。Task 的过期租约会回到待处理状态并依靠执行账本恢复；Outbox 的过期 `sending` 租约代表远端结果不确定，会直接进入 dead letter。明确可重试的普通失败才指数退避并在达到上限后 dead-letter。
 
 Supervisor 在 fork 和 claim 之前从实际 worker entry 检查必需运行依赖。依赖缺失时 Task 保持
 queued 且不消耗 attempt，诊断日志按分钟限频；不能把安装或工作树损坏变成数秒内耗尽
@@ -258,7 +266,7 @@ CLI 启动快照只携带有界的最近对话和当前 Plan，避免 7×24 Sess
 
 Dead letter 不是静默终态。Event 达到最大尝试次数时，状态更新、Host Run 失败、audit 和一个绑定原 Event 的 system Outbox 在同一事务提交；它绕过模型直接使用本机 Notifier。非 system Outbox 的普通可重试失败按退避耗尽后进入 dead letter；超时、进程中断、ACK 丢失或 Connector 显式 `uncertain:true` 则首个 attempt 直接 dead-letter，避免结果不确定的消息自动重放。sending 租约默认 180 秒，覆盖内置 Connector 最大 120 秒投递超时；崩溃恢复遇到真正过期的 sending 也原子 dead-letter，而不是重置 pending。投递最多使用四个有界 lane，lane key 是精确 `(channel,target)`：同一会话保持 FIFO，一个失联 QQ 群不会阻塞其他 QQ 私聊或其他渠道会话。两种 dead letter 都在状态事务内插入 system fallback；若 fallback 本身也失败，只记录 system dead letter，不再生成下一层通知。载荷只含有界 ID/source/channel/attempts/error 摘要，不复制 Event payload、消息正文、投递内容或 target。owner 可通过窄 RPC/CLI 把 dead letter 原 ID 重排队或标记为 archived，四种变化都以状态 CAS 和 audit 原子提交；后台从不自动重放。owner 显式 Outbox 重投保持 at-least-once 语义，控制面明确提示远端确认丢失时可能重复。这里没有告警服务、失败 Agent、审批流或第二张升级表。
 
-Schema v7 在 v6 历史保留索引之上增加旧 Event 执行字段；v8 增加运行控制；v9 增加 Schedule authority。Schema v12 一次性完成 Event / Task 分层：旧库在单个 `BEGIN IMMEDIATE` transaction 内转换为不可变 `events`、`event_route_receipts`、唯一 `tasks` 队列、仅引用 `task_id` 的 `runs` 与 `outbox`，校验失败即整体回滚；不存在 `events_v2`、`task_attempts`、双写或 legacy adapter。Schema v16 让 `Task.executor` 成为唯一领取键：Conversation 归 `session_actor`，Briefing 固定为 `isolated_worker + read`，后台任务由 `isolated_worker|codex` 领取；type 只表达业务类别。入队统一校验 type/executor/workspace 组合，旧 queued Briefing 原地迁移，无法解释的历史组合只写 audit。迁移同时结束重复 Connector-health Digest 投影但保留原 Event，并在事务内校验 integrity/FK；打开 v15 前会复制 SQLite/WAL/SHM，fresh DB 直接创建最终 v16。运行中 Task 的 cancel/pause 先持久化控制意图，再尽力通过 IPC 提醒 worker；worker 在 Tool 安全边界和续租时消费它。若 Kernel 或 worker 先崩溃，claim/lease recovery 会把 cancel 收敛为 `cancelled`、把 pause 收敛为 `paused`，且 cancel 始终覆盖 pause。Dispatcher 低频调用 `pruneHistory(cutoff)`；Store 先清理已解决 Outbox/Digest，再按 Task→Run 和 Event 引用关系执行保留清理，所有活跃 Task、dead letter、未解决 Outbox/Digest、Schedule authority 与当前 Connector health state 均受显式保护。事务后只做轻量 optimize/passive checkpoint，不自动 VACUUM。
+Schema v7 在 v6 历史保留索引之上增加旧 Event 执行字段；v8 增加运行控制；v9 增加 Schedule authority。Schema v12 一次性完成 Event / Task 分层：旧库在单个 `BEGIN IMMEDIATE` transaction 内转换为不可变 `events`、`event_route_receipts`、唯一 `tasks` 队列、仅引用 `task_id` 的 `runs` 与 `outbox`，校验失败即整体回滚；不存在 `events_v2`、`task_attempts`、双写或 legacy adapter。Schema v16 让 `Task.executor` 成为唯一领取键：Conversation 归 `session_actor`，Briefing 固定为 `isolated_worker + read`，后台任务由 `isolated_worker|codex` 领取；type 只表达业务类别。入队统一校验 type/executor/workspace 组合，旧 queued Briefing 原地迁移，无法解释的历史组合只写 audit。迁移同时结束重复 Connector-health Digest 投影但保留原 Event，并在事务内校验 integrity/FK；打开 v15 前会复制 SQLite/WAL/SHM，v17 进一步增加 Schedule 的有界 context 与 Run 时间索引，升级前备份，fresh DB 创建到 v17；旧版不能直接打开升级后的库。运行中 Task 的 cancel/pause 先持久化控制意图，再尽力通过 IPC 提醒 worker；worker 在 Tool 安全边界和续租时消费它。若 Kernel 或 worker 先崩溃，claim/lease recovery 会把 cancel 收敛为 `cancelled`、把 pause 收敛为 `paused`，且 cancel 始终覆盖 pause。Dispatcher 低频调用 `pruneHistory(cutoff)`；Store 先清理已解决 Outbox/Digest，再按 Task→Run 和 Event 引用关系执行保留清理，所有活跃 Task、dead letter、未解决 Outbox/Digest、Schedule authority 与当前 Connector health state 均受显式保护。事务后只做轻量 optimize/passive checkpoint，不自动 VACUUM。
 
 MimiAgent Event 获得一个只读运行自省 Host Tool 与四个 Schedule Host Tool。`inspect_mimi_activity` 直接从 Store 生成有界快照，包括 counts、积压、dead letter、Digest/Schedule 数量及近期 Event/Run/Outbox/Audit 元数据，不返回其他事务正文、答案、投递内容或 target。Schedule Tools 用于创建一次性 follow-up、周期 routine、查询和取消计划；新计划保留发起事件的 origin Session、profile、trust provenance、reply route 和不可变 Conversation authority root。到期 occurrence 总是进入独立 `mimi-task-*` Session 与 Task lane，由 OS worker 执行，不占用来源 Conversation actor；Task 每次从 durable root 与当前 source policy 重新计算权限。owner/system 的本机 CLI 计划使用可审计的合成 root；外部来源缺根、根被删除或 provenance 不匹配时失败关闭且不发出新 Task。撤销外部 work policy 后，一次性 follow-up 只能受限收尾，interval/watch 只获得绑定当前 authentic occurrence 的 `complete_current_mimi_schedule` 以停止轮询，伪造 occurrence 不获得该工具。非 command Event 额外获得 `finish_mimi_silently`：它只修改当前 attempt 的内存 DeliveryControl，成功提交时把 suppression reason 放入 Event result 并省略 Outbox；直接 command 没有该工具，失败/重试也不继承状态。所有能力继续位于同一个事务语境，不引入 RPC 回环或工作流引擎；创建/取消工具进入事件级语义账本，重试不会重复建立计划，静默控制不是外部副作用且不进入 ledger。
 
@@ -274,7 +282,7 @@ Attention Engine 是同步、确定性的 Host 层分类器，不是第二个模
 
 `assistant.json people` 在 Attention Host 内做 owner-managed canonical identity resolution。每个 person 只包含稳定 ID、显示名、有界 `source + actor` glob aliases 和可信 context；按配置顺序采用首个匹配项，不做模型推断、联系人同步或身份图。Host Tools 可列举、完整 upsert 和删除人物，并复用 Routine/Standing Order 的原子配置变更。显式 Event sessionKey 优先且必须通过核心 Session schema；否则匹配人物从 ID 派生稳定安全的 `mimi-person-*`，不兼容字符或超长 ID 使用稳定摘要。默认受限事件仍可使用该路由键，但看不到既有 Session；owner/system 或命中 source policy 的替身 Run 才携带 canonical person、注入人物 context，只有 `work` 档位开放有界 MemoryHub 读取。status 只暴露 person/alias 数量。
 
-同一配置中的 Daily Routines 负责本地时区日常节奏。AttentionEngine 只检查 `time + optional weekdays`，为每个 occurrence 写入终态 owner Conversation authority root，再生成绑定该 root 的 `attention:routine` Task Event；`source + routine:<id>:<local-date>:<time>` 复用 Event 唯一键实现每日幂等和晚启动补发，进程内按日期 checkpoint 避免高频重复写库。每个 occurrence 使用独立 Task Session/OS worker，原 Routine Session 只作为 `originSessionKey`，因此固定巡检不会阻塞同源对话；配置删除、禁用或 revision 变化仍会在执行前使旧 occurrence 失效。Daemon Host Tools 可列举、upsert 和删除 Routine；写入串行读取最新文件、复用完整 schema 校验并以 `0600` 临时文件 atomic rename，随后更新同一内存 Engine。默认晨间和晚间例程先调用运行自省工具核对积压与失败，再检查外部工作生活来源；有关键结果就汇报，确实无变化时显式静默完成。它不新增 cron parser、调度表或执行路径，prompt 最终仍由同一个 Dispatcher 和 MimiAgent 处理。
+同一配置中的 Daily Routines 负责本地时区日常节奏。新配置默认为空，只有 owner 显式创建后才运行。AttentionEngine 只检查 `time + optional weekdays`，为每个 occurrence 写入终态 owner Conversation authority root，再生成绑定该 root 的 `attention:routine` Task Event；`source + routine:<id>:<local-date>:<time>` 复用 Event 唯一键实现每日幂等，进程内按日期 checkpoint 避免高频重复写库。例程和启用后的定时 Briefing 都只有计划时刻后的 15 分钟补发窗口，过期 occurrence 不追赶。每个 occurrence 使用独立 Task Session/OS worker，原 Routine Session 只作为 `originSessionKey`，因此固定巡检不会阻塞同源对话；配置删除、禁用或 revision 变化仍会在执行前使旧 occurrence 失效。Daemon Host Tools 可列举、upsert 和删除 Routine；写入串行读取最新文件、复用完整 schema 校验并以 `0600` 临时文件 atomic rename，随后更新同一内存 Engine。owner 可让自定义例程先调用运行自省工具核对积压与失败，再检查外部工作生活来源；有关键结果就汇报，确实无变化时显式静默完成。它不新增 cron parser、调度表或执行路径，prompt 最终仍由同一个 Dispatcher 和 MimiAgent 处理。
 
 来源 `trust` 只作为 provenance 标签，授权由本机 event policy 决定；它绝不因消息自称 owner/trusted 而扩大部署权限。owner/system 在部署权限内工作；其他 provenance 默认受限，只有 Host 用 source/kind/actor/conversation 命中本机 owner source policy 时才获得固定 `reply | work` 档位。后台 Task 不把 provenance 改写成 owner，而是从被保留且确认为 conversation root 的来源 Event 与当前 source policy 重新计算授权；policy 被删除、root/parent 缺失或引用 Task 而非 conversation root 时失败关闭，即使 Task 自带 owner provenance 也不能绕过。外部正文始终只作为数据并记录 provenance。
 
@@ -307,9 +315,9 @@ ComputerManager 的新鲜 Observation、应用 allowlist、前台保护和全局
 
 Daemon 的本地副作用账本使用稳定的 `eventId` 作为 execution scope，并以工具名和规范参数生成语义 call ID。模型重试时即使 SDK call ID 改变，相同动作也只重放已保存结果。账本只在 Event 成功提交后清理；retry、抢占和 dead letter 都保留它，因此 dead letter 原 ID 显式恢复时仍不会再次执行已经成功落账的相同动作。若进程在外部动作后、事件提交前崩溃，租约恢复后的重试也不会重复该动作。
 
-Unix Socket 位于 `MIMI_DAEMON_DATA_DIR`（可回退旧目录）且权限为 `0600`，提供 status、chat snapshot/history/invoke、activity、submit、events、tasks、runs、outbox、dead-letter retry/archive、attention、connectors、schedules 和 shutdown。仅靠同用户可连接的 Socket 不作为 owner 认证：bootstrap 在同目录原子创建并校验一个 `0600` 随机 control bearer，普通 `mimiRpc`/CLI 自动读取并随请求发送，Kernel 对除两条专用 worker broker 方法外的全部 RPC（包括 ping/status/submit/shutdown）做固定长度摘要的 constant-time 比较。token 不进入 SQLite、环境、status、Doctor、日志或错误文本；运行中新 daemon 的 token 文件缺失、权限错误、内容错误或值不匹配都 fail closed。Task worker broker 只验证 Supervisor 分配的独立 `workerToken`，其客户端显式不读取 control bearer。旧 daemon 会忽略新请求附带的 `auth` 字段；尚未初始化 token 的只读探测也仍可使用旧协议，因此新 CLI 能读取 status 并完成安全升级。协议版本提升确保已运行旧实例不会被误当成当前控制面；同协议 status 还必须携带由包版本、完整 commit、dirty 标志和运行文件内容摘要导出的 build identity，缺失或不一致都按待升级处理。status 同时携带活跃 Session Event、task worker PID/heartbeat、在途 Tool 及 Host/管理 mutation 数；Chat 修改、Attention reload 和 Connector 热重载共用一个关闭门，普通 shutdown 只有在 Event、task worker、Outbox 和管理事务都空闲时才原子停止接收新事务。显式 `daemon restart --force` 也不能越过在途 Tool、独立 worker、Host mutation 或 Outbox sending；它只 abort 尚无 Tool 的模型 Run，由既有 claim/requeue 语义安全重排，未知旧版状态失败关闭，且不重放 uncertain 副作用。持久化的 queued/blocked/dead-letter/Digest backlog 不属于活动关闭边界。CLI 从任意目录采用现有后台的绑定工作区，并按该工作区重新解析默认数据、Skill 与 MCP 路径；本地显式 workspace 只决定没有后台时新 Host 的启动位置。长期开启的 CLI 在 Host 被替换后重新采用新实例报告的工作区；普通 RPC 在连接尚未建立而收到 `ENOENT/ECONNREFUSED` 时恢复后台并安全重试一次。空闲旧版会先经 shutdown 安全退出再由当前入口重启，活动 Event、task、Outbox 或 mutation 和未来版本都不会被强制终止。已安装 launchd 的后台升级后仍由重写为当前入口的同一 KeepAlive job 托管，不退化为 detached 进程。交互式与单次 CLI 都走该入口；命令通过共享 `CommandHandler` 和远程 adapter 作用于同一个 Host。FileSession 是唯一 transcript 真相；`chat.snapshot` 只返回指定 Session 的有界展示项、偏好、Plan 与恢复点，`chat.history` 按修订号分块传送完整权威 items，两者都不切换当前 Session。SQLite Event/Run 只做可靠控制面和 Activity，不再拼装第二份聊天记录。Doctor 额外聚合 SQLite/WAL/SHM、Memory 和 Daemon 日志的容量阈值；安全重启在旧进程退出后轮转超限日志并保留固定五代。`daemon diagnostics` 使用显式白名单生成 `0600` JSON：Connector 只保留 readiness 计数，health 只保留风险代码和 backlog，文件只保留大小与时间，绝不序列化 Event/Outbox/Session/Run/Memory 正文、target、凭证、Connector 参数或本机路径。
+Unix Socket 位于 `MIMI_DAEMON_DATA_DIR`（可回退旧目录）且权限为 `0600`，提供 status、chat snapshot/history/invoke、activity、submit、events、tasks、runs、outbox、dead-letter retry/archive、attention、connectors、schedules 和 shutdown。仅靠同用户可连接的 Socket 不作为 owner 认证：bootstrap 在同目录原子创建并校验一个 `0600` 随机 control bearer，普通 `mimiRpc`/CLI 自动读取并随请求发送，Kernel 对除两条专用 worker broker 方法外的全部 RPC（包括 ping/status/submit/shutdown）做固定长度摘要的 constant-time 比较。token 不进入 SQLite、环境、status、Doctor、日志或错误文本；运行中新 daemon 的 token 文件缺失、权限错误、内容错误或值不匹配都 fail closed。Task worker broker 只验证 Supervisor 分配的独立 `workerToken`，其客户端显式不读取 control bearer。旧 daemon 会忽略新请求附带的 `auth` 字段；尚未初始化 token 的只读探测也仍可使用旧协议，因此新 CLI 能读取 status 并完成安全升级。协议版本提升确保已运行旧实例不会被误当成当前控制面；同协议 status 还必须携带由包版本、完整 commit、dirty 标志和运行文件内容摘要导出的 build identity，缺失或不一致都按待升级处理。status 同时携带活跃 Session Event、task worker PID/heartbeat、在途 Tool 及 Host/管理 mutation 数；Chat 修改、Attention reload 和 Connector 热重载共用一个关闭门，普通 shutdown 只有在 Event、task worker、Outbox 和管理事务都空闲时才原子停止接收新事务。显式 `daemon restart --force` 也不能越过在途 Tool、独立 worker、Host mutation 或 Outbox sending；它只 abort 尚无 Tool 的模型 Run，由既有 claim/requeue 语义安全重排，未知旧版状态失败关闭，且不重放 uncertain 副作用。持久化的 queued/blocked/dead-letter/Digest backlog 不属于活动关闭边界。CLI 从任意目录采用现有后台的绑定工作区，并按该工作区重新解析默认数据、Skill 与 MCP 路径；本地显式 workspace 只决定没有后台时新 Host 的启动位置。长期开启的 CLI 在 Host 被替换后重新采用新实例报告的工作区；普通 RPC 在连接尚未建立而收到 `ENOENT/ECONNREFUSED` 时恢复后台并安全重试一次。空闲旧版会先经 shutdown 安全退出再由当前入口重启，活动 Event、task、Outbox 或 mutation 和未来版本都不会被强制终止。当前实例已经拥有 launchd job 时继续由同一 KeepAlive job 托管；入口或配置需要升级时由 owner 显式运行 `mimi daemon install` 原子更新。交互式与单次 CLI 都走该入口；命令通过共享 `CommandHandler` 和远程 adapter 作用于同一个 Host。FileSession 是唯一 transcript 真相；`chat.snapshot` 只返回指定 Session 的有界展示项、偏好、Plan 与恢复点，`chat.history` 按修订号分块传送完整权威 items，两者都不切换当前 Session。SQLite Event/Run 只做可靠控制面和 Activity，不再拼装第二份聊天记录。Doctor 额外聚合 SQLite/WAL/SHM、Memory 和 Daemon 日志的容量阈值；安全重启在旧进程退出后轮转超限日志并保留固定五代。`daemon diagnostics` 使用显式白名单生成 `0600` JSON：Connector 只保留 readiness 计数，health 只保留风险代码和 backlog，文件只保留大小与时间，绝不序列化 Event/Outbox/Session/Run/Memory 正文、target、凭证、Connector 参数或本机路径。
 
-Daemon 启动前经过一个幂等 bootstrap，而不是额外安装服务：首次运行从发布包 Connector catalog 物化绝对 Node/脚本路径，创建 `0700` 数据目录、原子且稳定的 `0600` control bearer、`0600` 配置和 SQLite 数据库。Darwin 本机 Connector 默认启用，凭证型外部来源保持待配置；QQ UI 自动化不属于默认集合。升级现有配置时只补缺失的默认 enabled 本机 Connector；个人消息后端不会被自动加入默认配置。其他模板中默认关闭的外部通道仍不补入。对同 ID、canonical packaged script 路径/文件身份一致，或脚本同名且 2MB 内内容摘要一致，并且未关闭 `syncTemplateActions` 的现有 Connector 合并缺失 action；内容副本仍保留 owner 配置的执行路径。`macos-system` 也只有满足该身份校验时才迁移精确旧 provenance。其他 owner 的 enabled、执行路径、环境、来源、超时和已有描述均保持不变，且无变更时不写文件。Detached 与 launchd 启动复用同一个非敏感环境构造器，保持 workspace、状态目录、Skills、MCP、permission 和运行限制一致；Daemon status 返回实际 permission，CLI 会和本地解析值一起核对。正常 `mimi` 连接也会轻量核对 supervisor：持久 Key 就绪且后台空闲时把 detached worker 安全迁移到 launchd，忙碌时继续复用并延后。协议过期或 permission 不一致的同工作区后台只有在 Event、Outbox 和 Host mutation 全部空闲时才会被替换；launchd 立即拉起的旧 plist 实例也会在重装 supervisor 前再次核对。首次解析的 env 文件路径会固化为绝对路径，API Key 等秘密仍只来自进程环境或该受保护 env 文件。安装 launchd 前必须确认所选 Provider Key 确实存在于该持久 env 文件，避免当前 Shell 可用而登录重启后循环失败。Doctor 复用同一 schema 做只读静态检查和短时认证 Unix Socket status，不拉起 Connector、不探测私人数据库、不会输出 control bearer，也不触发系统权限。
+Daemon 启动前经过一个幂等 bootstrap，而不是额外安装服务：首次运行从发布包 Connector catalog 物化绝对 Node/脚本路径，创建 `0700` 数据目录、原子且稳定的 `0600` control bearer、`0600` 配置和 SQLite 数据库。Darwin 本机 Connector 默认启用，凭证型外部来源保持待配置；QQ UI 自动化不属于默认集合。升级现有配置时补缺失的默认 enabled 本机 Connector，并通过单独版本门只补一次 QQ disabled 个人消息槽位；微信相关 Connector 和桥会作为 retired 项原子删除，迁移完成后也不会被后续启动恢复。其他模板中默认关闭的外部通道仍不补入。对同 ID、canonical packaged script 路径/文件身份一致，或脚本同名且 2MB 内内容摘要一致，并且未关闭 `syncTemplateActions` 的现有 Connector 合并缺失 action；内容副本仍保留 owner 配置的执行路径。`macos-system` 也只有满足该身份校验时才迁移精确旧 provenance。其他 owner 的 enabled、执行路径、环境、来源、超时和已有描述均保持不变，且无变更时不写文件。Detached 与 launchd 启动复用同一个非敏感环境构造器，保持 workspace、状态目录、Skills、MCP、permission 和运行限制一致；Daemon status 返回实际 permission，CLI 会和本地解析值一起核对。LaunchAgent plist 以其 Daemon data root 标记所有权：普通 `mimi`/`daemon start` 只复用属于当前数据根的 plist，否则启动 detached，不自动安装、迁移或重写全局 job。`mimi daemon install` 是唯一安装/升级入口；它要求持久 Provider Key，通过跨进程锁和原子替换更新 plist，并在发现另一 data root 的实例时明确拒绝覆盖。协议过期或 permission 不一致的同工作区后台只有在 Event、Outbox 和 Host mutation 全部空闲时才会被替换。首次解析的 env 文件路径会固化为绝对路径，API Key 等秘密仍只来自进程环境或该受保护 env 文件。Doctor 只对当前实例拥有的 plist 检查持久 Key 和 launchd 状态，并复用同一 schema 做只读静态检查和短时认证 Unix Socket status；它不拉起 Connector、不探测私人数据库、不会输出 control bearer，也不触发系统权限。
 
 恢复备份是独立于数据库迁移备份的用户运维边界。在线备份使用 SQLite Backup API，不直接复制活动 WAL；其余原子 JSON、Session、Memory Wiki、Trace 与配置按显式 allowlist 复制，control bearer、Socket、日志和临时 Computer 产物排除。完成标记 `manifest.json` 最后写入，逐文件记录大小和 SHA-256，并要求备份数据库通过 `integrity_check`。校验拒绝缺失、多余、篡改或符号链接文件。恢复仅对离线且不存在的数据根开放，先在同一父目录 staging、复验数据库，再以目录 rename 提交；不覆盖已有状态、不带回旧 IPC 身份，适用于空白环境恢复演练。
 
@@ -380,13 +388,25 @@ macOS Voice 适配是 action + event 双向 Connector。Swift helper 只负责 S
 
 `SoulLoader` 在 direct-owner Run 由可信 Host 每轮读取用户级 `~/.mimi-agent/MIMI.md`（缺失时使用包内模板），承载身份、人格、价值观和表达风格；该读取不依赖普通本地文件工具授权，且只返回这一份受控文件。`PreferenceStore` 同样热读取 `~/.mimi-agent/PREFERENCES.md`，承载 owner 明确要求 Mimi 跨直接对话默认遵循的稳定行为；当前 owner 指令优先，external/system Run 与 SubAgent/Team 不注入这份私有规则。`list_mimi_preferences`、`add_mimi_preference`、`remove_mimi_preference` 只在 direct-owner 工具面出现，写入有跨进程锁、单条/总量上限、`0600` 权限和同目录原子替换。Host 不扫描 owner 自由文本决定写入；模型依据语义显式调用工具。
 
-ContextManager 把 `soul → base-instructions → behavior-preferences → runtime-context → active-skills` 作为不可静默截断的 required sections：先让模型进入 Mimi 身份，再解释核心运行准则、owner 行为默认值、本轮动态边界和任务流程；之后才按预算装配 Session state、Project Guidance、Goal/Plan/Team、recovery、archive、Memory Cards 和 Skill catalog。存在 Soul 或 Preferences 时 direct-owner instruction budget 从 35% 提升到 40%，并额外预留两份用户级指令的实际 token，防止固定身份、行为规则与管理工具 schema 挤掉原本可用的 active Skill；总量仍不超过 input budget。Soul 与 Preferences 单文件最多读取 20000 字符；required sections 合计仍超限时请求明确失败并要求精简，而不是静默丢掉身份或稳定行为规则。只要本轮结构化能力允许读取本地工作区，`ProjectGuidanceLoader` 就从 workspace root 到当前目录层级读取已有的 `AGENTS.md` 与 `CLAUDE.md`；同目录以后加载的 `AGENTS.md` 为准。Prompt 文本位置不构成授权：ToolPolicy、Security profile、provenance、workspace scope 和副作用账本仍由 Host 强制，所有 Guidance 都不能扩大 Runtime 权限。
+ContextManager 把 `soul → base-instructions → behavior-preferences → runtime-context → active-skills` 作为不可静默截断的 required sections：先让模型进入 Mimi 身份，再解释核心运行准则、owner 行为默认值、本轮动态边界和任务流程；之后才按预算装配 Session state、Project Guidance、Goal/Plan/Team、recovery、archive 和 Memory Cards。完整 Skill catalog 不再每轮注入；active Skill 正文仍完整加载，其余 Skill 通过能力索引按需发现。普通新请求只加载相关 Memory 和保障运行归属所需的轻状态，不预载 Plan、Team 与整套 Personal Context；主动任务和续跑/恢复才装配对应宽上下文。存在 Soul 或 Preferences 时 direct-owner instruction budget 从 35% 提升到 40%，并额外预留两份用户级指令的实际 token，防止固定身份、行为规则与管理工具 schema 挤掉原本可用的 active Skill；总量仍不超过 input budget。Soul 与 Preferences 单文件最多读取 20000 字符；required sections 合计仍超限时请求明确失败并要求精简，而不是静默丢掉身份或稳定行为规则。只要本轮结构化能力允许读取本地工作区，`ProjectGuidanceLoader` 就从 workspace root 到当前目录层级读取已有的 `AGENTS.md` 与 `CLAUDE.md`；同目录以后加载的 `AGENTS.md` 为准。Prompt 文本位置不构成授权：ToolPolicy、Security profile、provenance、workspace scope 和副作用账本仍由 Host 强制，所有 Guidance 都不能扩大 Runtime 权限。
 
-MemoryHub 是 Runtime 的唯一记忆门面。Session/Event/Document 保持原始证据，private/workspace LLMWiki Markdown 保存 semantic memory。owner 私有三层 Vault 位于 `<dataRoot>/memory/vaults/owner/`：`raw/` 是内容寻址、正常维护不可改写的证据快照，`wiki/` 是 LLM 编译的当前知识，根目录 `WIKI.md` 是可执行维护 Schema；其他 profile 使用独立 Vault。内部 SQLite catalog 位于 `<dataRoot>/memory/state/profiles/<hash>/memory.db`，旧 `profiles/<hash>` 首次打开时先备份再一次性迁移。workspace Wiki 位于 `knowledge/wiki/`，Schema 位于 `knowledge/WIKI.md`。自动召回 query 通常只含当前用户意图；只有“继续”等短续接才补 active Goal 和最近两轮 user/assistant 对话，工具协议不参与，恒定 source/actor/conversation 字段也不参与检索，hot profile 不再每轮注入。SQLite FTS5/BM25 始终作为基线；Embedding 使用独立的 OpenAI-compatible 凭证与可选端点，文档按约 400-token chunk/80 overlap 保存独立 chunk 向量，按实际 cosine 阈值筛选后聚合回页面，不再平均成单文档向量。两路结果融合后用 query relevance 与候选间相似度共同计算的 MMR 选择多样结果，时间衰减只作用于 episode；无高相关结果时注入 0 条，自动注入最多 3 条且合计 900 tokens。即使数据库有旧向量，只要当前 Runtime 没有 embedding client，状态仍明确为 `lexical-only`，不能静默声称 semantic。`source_receipts`、`suppressions` 和 `decision_events` 是不可随 reindex 删除的控制真相；页面、FTS、vector 和 links 是可重建派生数据。`knowledge/sources/` 对 MemoryHub 只读。
+MemoryHub 是 Runtime 的唯一记忆门面。Session/Event/Document 是 L0 Evidence 真相；schema v2 L1 Memory Atom 与 L2 Scene/Topic 继续使用 private/workspace LLMWiki Markdown 和同一套 Compilation/Revision，旧 schema v1 页面兼容读取。L2 的 `derivedFrom` 保留到 L1/L0 的下钻链；正文承载自然语言，typed facets 只承载 kind、实体、关系、时间和来源。L3 Personal Context 由只读 Assembler 从检索卡片按 token 预算派生，不拥有事实，也不反向写 Memory、Goal 或 Schedule。
+
+owner 私有三层 Vault 位于 `<dataRoot>/memory/vaults/owner/`：`raw/` 是内容寻址、正常维护不可改写的证据快照，`wiki/` 是 LLM 编译的当前知识，根目录 `WIKI.md` 是可执行维护 Schema；其他 profile 使用独立 Vault。内部 SQLite catalog 位于 `<dataRoot>/memory/state/profiles/<hash>/memory.db`，旧 `profiles/<hash>` 首次打开时先备份再一次性迁移。workspace Wiki 位于 `knowledge/wiki/`，Schema 位于 `knowledge/WIKI.md`。自动召回 query 通常只含当前用户意图；只有“继续”等短续接才补 active Goal 和最近两轮 user/assistant 对话，工具协议不参与，恒定 source/actor/conversation 字段也不参与检索，hot profile 不再每轮注入。
+
+SQLite FTS5/BM25 始终作为词法基线；精确锁定的 `sqlite-vec@0.1.9` 只在同一 `memory.db` 存储 chunk vector 并执行 vec0 KNN，不生成 embedding，也不拥有事实。启动必须通过 `vec_version()` 与最小 KNN 自检，结构化、BM25、vector top-k 用 RRF 融合，最终查询不把全量向量读入 JavaScript。Vec、Embedding、超时、模型/维度变化、reindex 或查询异常均回退 lexical-only；FTS5/BM25 建表或查询失败再回退 `documents` 上的有界 `LIKE` 并标记 degraded。错模型/维度在显式 reindex 前不参与混搜。旧 BLOB 向量仅在迁移校验时读取，vec0 校验成功后删除。
+
+本机 owner 历史评测使用 Catalog 的严格只读模式复用同一检索实现：只打开 owner profile 与显式当前 workspace，不创建目录、不 chmod、不切 WAL、不备份、不迁移 schema/旧向量，也不写 vector metadata；vec0 自检只建立 TEMP 表。为避免 SQLite 只读连接仍创建或修改 WAL/SHM，评测以 realpath、主库 identity 和 WAL 状态包围每个 immutable snapshot 查询窗口；活动或变化中的 Catalog 返回 incomplete，不 checkpoint、复制或借其他 profile 掩盖。Session 只从 owner-trusted Memory provenance 定界并直接有界解析，不调用会修权限或隔离损坏文件的状态恢复 API。真实问题只驻内存，远程 embedding 禁用，输出仅含受控证据类型和聚合数字；无标签结果不参与正确率门禁。
+
+`auto` retrieval 在没有专用 Embedding 配置时不创建 Provider，直接保持 lexical-only。只有显式 `MIMI_EMBEDDING_API_KEY` 才启用远程 OpenAI-compatible Provider，不复用对话 Provider Key。同步本地推理不得进入 CLI/Daemon 的自动 Context 召回热路径；即使调用方显式注入库级 Local Provider，无参数的自动搜索也必须跳过它并立即使用词法通道。这样 Memory 召回方式不会绕开主模型，也不会阻塞 IPC、取消和生命周期控制。
+
+仓库仍保留 direct BGE q8 的显式库级实现及固定 revision/asset manifest，用于隔离实验，不是产品默认 Provider。2026-08-05 的离线 warm-query 微基准不能代表常驻 Daemon 的冷启动和资源争用；真实安装验收已证明同步 ONNX 可能长时间占用主循环。Local Provider 若未来重新进入产品运行时，必须先迁移到可终止的隔离执行边界并通过冷启动、并发、取消和 IPC 延迟验收。
+
+自动检索最多处理 20 张候选/2400 tokens。普通新请求仍按当前意图检索相关 Memory，但不装配完整 L3；主动任务或长事务续跑/恢复时，L3 Assembler 才按默认 900-token 预算组成四类宽上下文，不再按固定卡片数截断。`source_receipts`、`suppressions` 和 `decision_events` 是不可随 reindex 删除的控制真相；页面、FTS、vec0 和 links 是可重建派生数据。`knowledge/sources/` 对 MemoryHub 只读。
 
 Runtime 只暴露 `memory_search`、`memory_read`、`memory_links`、`remember`、`forget` 和 `memory_ingest`。Plan 模式及 SubAgent/Team 只有 workspace 读工具；private Wiki 与 episode 不下放。完整 round 作为 private episode 证据索引，只有 owner 明确历史访问时可检索；相关性查询要求非空 query，宽泛的最近历史请求使用 `memory_search(order=recent)`，只按时间返回有界 private episode，不把空相关性结果解释为 Memory 或 Session 不存在。`remember` 用结构化 `provenance=owner-explicit|autonomous` 决定来源与置信度，不扫描本轮 owner 文本。首次切换在修改旧状态前备份 Mimi SQLite/WAL/SHM、`memories.json`、`rag-index.json` 与旧 guidance；只有结构化 legacy Memory 记录会转换为 private Wiki，旧 `MIMI.md` 原文只备份而不按关键词挖取所谓“用户事实”，随后由纯 Soul 模板替换；转换、Lint 和控制账本验证完成后才写 cutover marker。新 Runtime 不再读取旧文件。
 
-普通 Task 在终态事务中登记有 provenance 的 Memory observation，并保存 ≤8KB 的不可变 objective/result/error evidence snapshot；maintenance 后续不再联表读取可变 Task 正文。达到 10 条或最老等待 10 分钟后，统一 Task Scheduler 才发布 `priority: 0` 的 `memory_maintenance` Task。页面变化通过 compilation receipt 幂等计数，累计 50 页或有变化且 7 天未 lint 时，把 semantic lint 合并到下一 Task；成功终态才清零，dead-letter 保留计数。维护 Run 使用固定 profile Session，每批最多 20 条、8KB 证据和 5 页 upsert，只可使用 Wiki 读工具及三项内部 receipt 工具，不可使用 Shell、文件、网络、MCP、Connector、Schedule 或委派。单条 external/public observation 的 active 晋级由 Host 硬拒绝；Task dead-letter 时 observation 保持 pending，owner 可用 `/memory maintain` 重试或执行有界 semantic lint。
+普通 Task 在终态事务中登记有 provenance 的 Memory observation，并保存 ≤8KB 的不可变 objective/result/error evidence snapshot；maintenance 后续不再联表读取可变 Task 正文。达到 10 条或最老等待 10 分钟后，统一 Task Scheduler 才发布 `priority: 0` 的 `memory_maintenance` Task。页面变化通过 compilation receipt 幂等计数，累计 50 页或有变化且 7 天未 lint 时，把 semantic lint 合并到下一 Task；成功终态才清零，dead-letter 保留计数。维护 Run 使用固定 profile Session，每批最多 20 条 observation，并把它们冻结为稳定的 `obs-N` 句柄；模型可见证据总量限制在 4KB，避免工具结果被上下文压缩后丢失写入句柄。每批最多 5 页 upsert，只可使用 Wiki 读工具及内部 receipt 工具，不可使用 Shell、文件、网络、MCP、Connector、Schedule 或委派。所有 observation 获得 applied/rejected receipt 后，Task 才能取得 batch completion receipt 并进入 completed；空跑会失败并保留 pending 数据。维护先形成 L1，只有互补 L1 足以支持可复用结论时才创建带 `derivedFrom` 的 inferred L2。单条 external/public observation 的 active 晋级由 Host 硬拒绝；Task dead-letter 时 observation 保持 pending，owner 可用 `/memory maintain` 重试或执行有界 semantic lint。
 
 声明 `eventAcknowledgement:true` 的 stdio Connector 在 Host 持久化每条 Event 后接收 `event_ack`；cursor 轮询只有在整批 ACK 成功后才推进，失败或断线保留旧 cursor 并依靠 `source + externalId` 去重。未声明能力的旧 Connector 不会收到新协议消息。
 
@@ -417,7 +437,7 @@ Completion Gate 只约束已经存在或本轮显式创建的持久 Goal。Goal 
 
 同一 Run 中连续出现完全相同的副作用工具与参数时，ExecutionLedger 复用第一次成功结果并向模型返回 `already_executed`，避免截断、重复思考或模型重试造成重复发送/启动。只有在其间发生了另一个副作用、客观状态可能已改变时，相同调用才获得新的逻辑执行序号。
 
-Agent、SubAgent 与 Team worker 默认不设置固定 turn 或工具调用次数上限。Run 由任务真实终态、显式取消/暂停、Daemon 空闲超时、租约失效、上下文预算或用户显式配置的 `MIMI_MAX_TURNS` 结束；重复外部动作由 ExecutionLedger 的 at-most-once 语义处理，不能用“重复若干次后中止”替代根因治理。
+Agent、SubAgent 与 Team worker 默认不设置固定 turn 或工具调用次数上限。Run 由任务真实终态、显式取消/暂停、Daemon 空闲超时、租约失效、上下文预算或用户显式配置的 `MIMI_MAX_TURNS` 结束；重复外部动作由 ExecutionLedger 的 at-most-once 语义处理，不能用“重复若干次后中止”替代上下文、工具或模型适配问题的根因治理。
 
 Completion Contract、报告和最近门控结果随 Run checkpoint 持久化，长任务 Contract 还随 Goal 持久化。Goal 只能由通过的 Completion Gate 标记完成，模型不能直接写入 completed；同一 Session 存在未完成 Goal 时，无关 Run 的 Plan/Goal/Team 修改会在工具授权层被拒绝，而不只依赖提示词隐藏。
 
@@ -491,7 +511,7 @@ MCPManager 复用 Agents SDK 的 `MCPServerStdio` 与 `MCPServerStreamableHttp`�
 - MCP Resources 的列出和读取
 - MCP Prompts 的列出和带显式参数获取；Prompt 返回值作为不可信上下文并限制为 256KB
 
-只有成功连接的 Server 才会进入候选工具集。Host 先列出 MCP Tools，保留 server-prefixed 精确名称和参数 schema，在当前 Run 的 Security/Policy 与 ExecutionLedger 包装完成后把它们纳入统一 capability catalog；首轮 Agent 只看到发现/调用 gateway，不再携带原生 `mcpServers` 让 SDK 隐式展开全部 schema。精确发现后由 gateway 调用已包装工具，因此隐藏只影响披露，不能撤销授权或绕过 at-most-once。工作区 `mcp.json` 需要 `MIMI_TRUST_WORKSPACE_MCP` 与工作区真实路径匹配；完成这一次配置授权后，owner 可在 `workspace/read-only` 使用其 Server Tools，不再叠加 `trusted`。只读 SubAgent 不继承 MCP，Plan 仅保留受控 Resource wrappers，external/public 事件禁用 MCP。Daemon executionKey 会在 MCP transport 调用边界复用 ExecutionLedger，因此成功结果可重放、失败或结果不确定的外部事务不会自动再次执行。远程认证保持在环境变量中，不应写入 `mcp.json`。
+只有成功连接的 Server 才会进入候选工具集。Host 先列出 MCP Tools，保留 server-prefixed 精确名称和参数 schema，在当前 Run 的 Security/Policy 与 ExecutionLedger 包装完成后把它们纳入统一 capability catalog；首轮 Agent 只看到发现/调用 gateway，不再携带原生 `mcpServers` 让 SDK 隐式展开全部 schema。已知精确名直接由 gateway 调用已包装工具，未知时先发现；精确 MCP 名称或包含配置服务名的查询仅按需连接匹配服务，不重启其他已连接服务，泛化查询仍需读取全部目录。因此隐藏只影响披露，不能撤销授权或绕过 at-most-once。工作区 `mcp.json` 需要 `MIMI_TRUST_WORKSPACE_MCP` 与工作区真实路径匹配；完成这一次配置授权后，owner 可在 `workspace/read-only` 使用其 Server Tools，不再叠加 `trusted`。只读 SubAgent 不继承 MCP，Plan 仅保留受控 Resource wrappers，external/public 事件禁用 MCP。Daemon executionKey 会在 MCP transport 调用边界复用 ExecutionLedger，因此成功结果可重放、失败或结果不确定的外部事务不会自动再次执行。远程认证保持在环境变量中，不应写入 `mcp.json`。
 
 ## 文件输入、诊断与撤销
 
@@ -547,7 +567,8 @@ Codex 单 Attempt 边界。
 auto、routes、route 与 doctor。写动作在工具内部要求 direct Owner；整个工具受
 ExecutionLedger 保护，Session 选择从下一 Run 生效且不持久化全局活动 Provider、
 不重启 Daemon。CLI 的 `/models` 与 `/model current/inspect/use/auto/routes/route/doctor`
-通过认证本地 Socket 把同一结构化请求送入对应 Session actor 的 FIFO mutation lane，
+通过本地 Socket 提交结构化请求；会话模式、模型和输出偏好直接原子保存为 next-run 设置，
+不等待活跃执行的 FIFO lane，下一轮建立 RunScope 时应用。其他可变运行时操作仍进入 actor lane，
 不建立第二套选择逻辑，也不走 legacy 全局 Provider 切换或 Daemon 重启。合并 Function
 Tool 动作避免把八个低频命令 schema 常驻到每次模型请求。`inspect` 直接投影
 Provider endpoint、region、credential 环境变量名和是否已配置，但绝不返回
@@ -593,11 +614,13 @@ FileSession 和 JSON stores，SQLite 收敛门槛及禁止双写决策见
 
 MemoryHub 统一 private/workspace semantic Wiki 与 workspace 文档来源，但不改写 Session/Event 原始证据。每轮捕获不可变 `profileId + workspaceRoot + sessionId + runId + cause`；私有 profile 使用独立三层 Vault 与 SQLite 控制面，workspace 页面只接受明确文件 provenance。主 Agent 可按未来价值调用 `remember`，本轮明确“不记住”时 Tool 拒绝；external/public Run 不能直接写 active Memory，单来源 inferred 默认保持 proposed。`forget` 删除页面和派生索引并写无正文 suppression，reindex 不能清空控制账本。
 
+L1/L2 页面共享 schema v2 与 revision 语义：L1 不从其他结论派生，L2 必须引用至少一个 L1/L2；`explain` 递归返回结论层级与 SourceRef，循环或缺失引用被有界处理。owner 纠正生成 Revision 并 supersede 旧结论；冲突、过期、来源删除和 forget 都保留可审计原因或 suppression。推断保持 inferred，不能升级成 owner-confirmed。普通 Conversation 只读召回；形成、去重与聚合继续由已有 `memory_maintenance` Task 异步完成，不增加调度器。
+
 Wiki 页面使用严格 YAML frontmatter、稳定 `pageId + canonicalKey`、SourceRef、窄主题正文和单页 atomic rename。所有 remember/capture/maintenance 写入共用 Canonical Topic Resolver，按 targetRef、canonical ID、标题和 alias 查找现有主题；命中时更新并累计来源，不存在时才创建。模型不直接拼接页面 envelope，确定性 renderer 统一生成标题、当前结论、关系与来源。所有写入先持久化 `MemoryCandidate` 和 `CompilationJob(applying)`，再 atomic rename 页面，最后提交 `MemoryPageRevision`、current pointer 与 terminal `CompilationReceiptV2`；重复 digest 返回同一结果。进程在 rename 后退出时用 planned digest 恢复，冲突或部分写入标记 `uncertain`，不会猜测重放。
 
-`WIKI.md` 的 YAML policy 控制 prefer-existing、SourceRef、canonicalKey、inferred-active、页面/来源上限和需要关系的页面类型；Markdown 正文给维护 Agent 定义 Ingest/Query/Lint 纪律，但不能扩大 scope、trust 或工具权限。确定性 Lint 可经 `lint-repair` Revision 修复 envelope、canonicalKey 和 inferred-active；语义维护使用有界 merge、supersede、link、move 与 refresh 工具形成 receipt 闭环。查询只读，不在热路径偷偷刷新 stale 来源；`/memory refresh` 显式重编译并保留旧 revision。查询优先返回 private/workspace Wiki，只有 Wiki 不足时才补充 Session episode/raw evidence；SQLite FTS5/BM25 为始终可用基线，可选 Embedding vector 以 RRF 合并，Provider 失败立即回退词法通道。
+`WIKI.md` 的 YAML policy 控制 prefer-existing、SourceRef、canonicalKey、inferred-active、页面/来源上限和需要关系的页面类型；Markdown 正文给维护 Agent 定义 Ingest/Query/Lint 纪律，但不能扩大 scope、trust 或工具权限。确定性 Lint 可经 `lint-repair` Revision 修复 envelope、canonicalKey 和 inferred-active；语义维护使用有界 merge、supersede、link、move 与 refresh 工具形成 receipt 闭环。查询只读，不在热路径偷偷刷新 stale 来源；`/memory refresh` 显式重编译并保留旧 revision。查询优先返回 private/workspace Wiki，只有 Wiki 不足时才补充 Session episode/raw evidence；SQLite FTS5/BM25 为默认词法基线，显式专用 Key 的远程 Embedding vector 可通过 RRF 合并，任一 Provider/Vec 故障都不能阻塞词法通道。
 
-自动探测的 `.mimi-agent`、旧 `.mimi-agent` 与默认 Daemon 数据根必须是实体目录，符号链接会在启动时失败关闭。文件、搜索和目录工具会拒绝这些根与显式运行数据目录，包括符号链接解析后的路径。Full Owner Shell 使用当前 OS 用户权限；Workstation Shell 固定进入结构化进程沙箱；Safe 和 Plan 没有 Shell。外部事件只能在来源 Scope 与当前 Security 都允许时获得 Shell。
+自动探测的 `.mimi-agent`、旧 `.nano-agent` 与默认 Daemon 数据根必须是实体目录，符号链接会在启动时失败关闭。Full Owner 的直接本机 CLI 或认证 Runtime HTTP Conversation 可通过文件工具和 Shell 使用当前 OS 用户权限访问这些根与显式运行数据目录；授权在每次 Tool 调用时从冻结的 Run scope 判定。Safe、Workstation、后台/Team worker、Schedule 和外部来源仍拒绝这些路径，包括符号链接解析后的别名。Workstation Shell 固定进入结构化进程沙箱；Safe 和 Plan 没有 Shell。外部事件只能在来源 Scope 与当前 Security 都允许时获得 Shell。
 
 ## Hooks 与 Trace
 
@@ -779,3 +802,42 @@ Manager 返回动作结果的 `live_action` 才计入 100 次。readiness、dire
 blocked/skipped 和 uncertain 均不能晋级。该 canary 不是 24/72h soak。
 默认输出使用不覆盖的时间戳文件名；`run-m1-eval.ts report <run...>` 只聚合同一 dataset
 revision 的多次 run，因此分母可以持续累计而不会混入不同口径。
+
+
+### 2026-10 执行可靠性补充
+
+上下文分项以小型 `context-manifests/<session>.json` 派生快照保存，读取不触发运行时/MCP初始化或修复原文件。未知历史继续标注估算；快照不是 canonical transcript。Host 的下一轮偏好更新不改变进行中 RunScope。
+
+ARC-303 原组合面及其已批准扩展之外，为本轮原文分页、派生快照、轻量控制、可靠终态与恢复增加 600 行显式预算，计入 `context-artifact.ts`、`context-manifest-store.ts`、`task-inspection.ts`；组合根单文件上限保持不变。设计与验收见 `docs/plans/20261009-execution-reliability.md`。
+
+### macOS 交互服务调度
+
+LaunchAgent 的 `ProcessType` 使用 `Interactive`，适用普通交互应用的资源限制。Daemon 的 Web/TUI 和控制面经 Unix socket 接收请求，不属于可由 XPC 自动提升优先级的 `Adaptive` 服务；也不能归为会限制磁盘 I/O 的 `Background` 作业。同步 SQLite 查询受到后台 I/O 限流时会阻塞共享事件循环，使其他异步阶段的墙钟耗时一起膨胀。此配置不调整 Nice、实时优先级或取消执行预算。已有 LaunchAgent 更新需重新加载 plist；只替换 JavaScript 或重启进程不足以改变 launchd 已缓存的作业类型。
+
+
+### 媒体理解与会话展示
+
+图片和视频采样帧通过 `media-understanding.default` 独立选择配置好的视觉模型，
+主对话仍使用 Session/场景选择的模型。该无工具调用限定 8 张画面、2,000 输出 tokens、
+45 秒，支持取消；按 Session、图片内容、问题与模型缓存理解结果。新的附件自动理解，
+后续具体问题可用本轮绑定的 `understand_media`，不允许传任意本地路径。
+语音继续使用现有本地转写，视频仍为采样画面，不宣称逐帧或音轨理解。
+
+媒体用户输入在模型准备之前提交到 canonical Session，保留类型、内容哈希、转写和时间。
+SDK 只看到此前历史；本轮持久化代理排除已提交输入及其媒体投影，避免把理解结果再次存成
+一条用户消息。二进制仍保存在受控附件目录，理解结果在独立派生缓存中，压缩不替代原附件。
+Web 读取旧失败会话时，可从同 Session 不可变提交中恢复唯一文本匹配的媒体引用；
+歧义不猜测，不制造未保存的媒体或过程。纯文本会话保持原有 SDK 持久化路径。
+
+MCP、运行状态、模型和模式目录的只读查看不进入运行队列，也不为了查看初始化新 actor。
+修改和重连仍走原有串行执行边界。发送、准备上下文、媒体理解、模型等待和执行步骤具有
+可见运行反馈；流式输出前的真实模型延迟不以伪造内容掩盖。运行摘要显示最近思考/工具步骤，
+完成后恢复固定过程标题，减少动态样式对历史记录的干扰。
+
+### 有界定位与 Shell 调用身份
+
+`search_files` 返回 `matches/scope/truncated/limitsReached/scannedEntries`。文件名检索不读正文、不依赖 rg，默认 3 秒、50,000 项扫描预算；文本检索使用 rg 或有界回退（10,000 项）。达到预算保留已有匹配并标注未搜完，不把部分结果当作不存在。`*.md` 匹配任意层级，`**/` 允许零层目录。排除目录、符号链接和原有权限边界保持有效。运行指令优先附件/近期产物/明确目录，两轮没有线索后澄清位置，不用全盘 Shell 扫描补偿搜索失败。
+
+Shell 的进程退出不证明业务完成。模型明确发起的不同调用按 occurrence 区分，即使命令相同也可执行；同一 SDK call 重送与持久事件按序恢复仍回读原账本。账本在原子 claim 内检查相同命令的未结束、失败和非零退出记录，改 timeout 或插入其他命令不能解除拦截。该规则不推断 stderr 中的自然语言为安全重试凭证，不自动重试任何命令；只有模型核实目标动作尚未执行后才能再次发起已正常退出的命令。正式业务 ActionIntent 和 Connector 回执的防重放语义不变。
+
+`use_skill` 在原有授权筛选后直接暴露，准确名称可立即激活；未知名称仍查能力目录，不预加载全部 Skill 正文。引用资料按当前操作需要读取，当前 Host 能力优先于历史能力记忆。
