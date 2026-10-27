@@ -5,6 +5,7 @@
 - Bound filename/content search by time and scan budgets, retain partial matches, and align nested filename globs across engines. Filename lookup no longer depends on ripgrep availability.
 - Separate explicit Shell invocations from SDK/durable replays; do not cache a completed process as business success. Atomically fence unfinished, failed, or nonzero-exit commands across intervening calls.
 - Expose authorized Skill activation directly and use references on demand; prioritize current capability evidence and bounded file discovery over repeated planning and full-home scans.
+- Verify capability-existence questions against the unified capability directory and memory before answering; the directly visible tool list is a per-run snapshot, not proof that a Skill, MCP tool, or Connector action does not exist.
 
 ## Unreleased — Web conversation reliability
 
