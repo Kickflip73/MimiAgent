@@ -763,7 +763,7 @@ test('model-facing Computer tools return a retryable recovery for an empty launc
   assert.equal(result.reason, 'missing_launch_target');
   assert.equal(result.retryable, true);
   assert.equal(result.next, 'computer_observe');
-  assert.match(String(result.message), /apps\[\]\.bundleId/);
+  assert.match(String(result.message), /name.*bundleId/);
   assert.equal(backend.actions.length, 0);
 });
 
@@ -848,7 +848,7 @@ test('app-centric observation settles a newly launched AX window without replayi
   let observations = 0;
   backend.observe = async () => {
     observations += 1;
-    return observations <= 8
+    return observations <= 1
       ? {
           target,
           frontmost: false,
@@ -861,7 +861,7 @@ test('app-centric observation settles a newly launched AX window without replayi
 
   const result = await manager.observeApp(authority, target.bundleId, false) as Record<string, unknown>;
   assert.equal(result.actionable, true);
-  assert.equal(observations, 9);
+  assert.equal(observations, 2);
   assert.equal(backend.actions.length, 0);
 });
 
@@ -885,7 +885,7 @@ test('app-centric observation falls back once to screenshot evidence after bound
   const result = await manager.observeApp(authority, target.bundleId, false) as Record<string, unknown>;
   assert.ok(result.screenshot);
   assert.equal(result.actionable, true);
-  assert.equal(observations, 21);
+  assert.equal(observations, 3);
   assert.equal(backend.actions.length, 0);
 });
 
@@ -997,7 +997,7 @@ test('production ledger wiring keeps exact low-risk owner launch on the guarded 
       newInstance: false,
     },
   }), { toolCall: { callId: 'launch-url' } } as never) as Record<string, unknown>;
-  assert.equal(urlResult.ok, true);
+  assert.match(JSON.stringify(urlResult), /action_uncertain/, 'dispatch is allowed but unrelated window state is not proof of the requested URL');
   assert.equal(backend.actions.length, 2);
 });
 
@@ -1558,4 +1558,287 @@ test('FileSession never persists computer type_text plaintext', async () => {
   const serialized = JSON.stringify(await session.getItems());
   assert.doesNotMatch(serialized, /session secret/);
   assert.match(serialized, /REDACTED sha256/);
+});
+
+
+test('launching a browser tab binds a changed existing window instead of polling for a new window', async () => {
+  const { backend, manager, authority } = await fixture();
+  backend.targets = [{ ...target, title: 'Old page' }];
+  let scans = 0;
+  backend.listTargets = async () => { scans += 1; return backend.targets; };
+  backend.act = async (_session, request) => {
+    backend.actions.push(request);
+    // Browsers retain PID/window ID; HTML titles need not contain the file name.
+    backend.targets = [{ ...target, title: 'Animation preview' }];
+    backend.observation.elements = [{ index: 3, role: 'AXTextField', label: 'Address', value: 'file:///tmp/scene.html' }];
+    return { status: 'applied', delivery: 'background' };
+  };
+  const result = await manager.act(authority, { action: { type: 'launch_app', bundleId: target.bundleId, urls: ['file:///tmp/scene.html'], newInstance: false } });
+  assert.equal(result.target?.title, 'Animation preview');
+  assert.equal(scans, 2);
+  assert.equal(backend.actions.length, 1);
+});
+
+test('an unchanged ambiguous launch does not poll twenty times or claim a document match', async () => {
+  const { backend, manager, authority } = await fixture();
+  backend.targets = [target, { ...target, windowId: 9, title: 'Other page' }];
+  let scans = 0;
+  backend.listTargets = async () => { scans += 1; return backend.targets; };
+  const result = await manager.act(authority, { action: { type: 'launch_app', bundleId: target.bundleId, urls: ['file:///tmp/scene.html'], newInstance: false } });
+  assert.equal(result.target, undefined);
+  assert.equal(result.verified, false);
+  assert.equal(scans, 3);
+  assert.equal(backend.actions.length, 1);
+});
+
+
+test('launch resolves an app name within one tool call and refuses ambiguity before dispatch', async () => {
+  const { backend, manager, authority } = await fixture({ access: 'foreground' });
+  const act = createComputerTools(manager, () => authority).find(item => item.name === 'computer_act')!;
+  assert.ok('invoke' in act);
+  const result = await act.invoke(new RunContext({}), JSON.stringify({action:{type:'launch_app', name:'Editor'}})) as {ok:boolean};
+  assert.equal(result.ok, true);
+  assert.equal(backend.actions.length, 1);
+  assert.deepEqual(backend.actions[0]?.input.action, {type:'launch_app', bundleId:target.bundleId, newInstance:false});
+  backend.targets.push({...target, bundleId:'com.example.second', appName:'Editor Plus'});
+  const ambiguous = await act.invoke(new RunContext({}), JSON.stringify({action:{type:'launch_app', name:'Edit'}}));
+  assert.match(JSON.stringify(ambiguous), /ambiguous|多个/);
+  assert.equal(backend.actions.length, 1);
+  await manager.close();
+});
+
+test('Cua mismatched window trees cannot masquerade as the requested window', async () => {
+  const client = new CuaDriverClient('/bin/false', 2_000);
+  let reads = 0;
+  client.listTargets = async () => [target];
+  (client as unknown as {call: (name:string) => Promise<unknown>}).call = async () => {
+    reads++;
+    return {structured:{pid:42,window_id:7,elements:[{element_index:0,role:'AXWindow',label:'OTHER WINDOW'},{element_index:1,role:'AXButton',label:'Wrong button'}],tree_markdown:'- [0] AXWindow OTHER WINDOW'}};
+  };
+  const result = await client.observe({id:'test'}, {input:{scope:'window',target:{bundleId:target.bundleId,pid:42,windowId:7},includeScreenshot:false,maxElements:20,maxDepth:8}});
+  assert.equal(result.elements?.length ?? 0, 0);
+  assert.match(JSON.stringify(result.data), /window_identity_mismatch/);
+  assert.doesNotMatch(JSON.stringify(result), /Wrong button|OTHER WINDOW/);
+  assert.equal(reads, 2);
+});
+
+
+test('text-only Computer models can review rendered screenshots through the perception route', async () => {
+  const { backend, manager, authority } = await fixture({supportsImageInput:false});
+  let captures = 0;
+  backend.observe = async (_session, request) => {
+    if ('includeScreenshot' in request.input && request.input.includeScreenshot) captures++;
+    return {...backend.observation, screenshot:{data:'cGl4ZWxz',mediaType:'image/png'}};
+  };
+  const questions: string[] = [];
+  const observe = createComputerTools(manager, () => authority, () => async (image, question) => {
+    assert.equal(image[0]?.data, 'cGl4ZWxz');
+    questions.push(question);
+    return {text:'右侧按钮被裁切',model:'test-vision'};
+  }).find(item => item.name === 'computer_observe')!;
+  assert.ok('invoke' in observe);
+  const result = await observe.invoke(new RunContext({}), JSON.stringify({app:'Editor',screenshot:true,question:'按钮是否完整可见？'}));
+  assert.equal(captures, 1);
+  assert.deepEqual(questions, ['按钮是否完整可见？']);
+  assert.match(JSON.stringify(result), /右侧按钮被裁切/);
+  assert.doesNotMatch(JSON.stringify(result), /cGl4ZWxz|vision_unavailable/);
+  assert.equal(authority.supportsImageInput, false);
+  await manager.close();
+});
+
+test('Cua waits once for AX title to catch up without replaying the open action', async () => {
+  const client = new CuaDriverClient('/bin/false', 2_000);
+  client.listTargets = async () => [target];
+  let reads = 0;
+  (client as unknown as {call: (name:string) => Promise<unknown>}).call = async name => {
+    assert.equal(name,'get_window_state');
+    reads++;
+    return {structured:{pid:42,window_id:7,elements:[{element_index:0,role:'AXWindow',label:reads === 1 ? 'Old page' : 'Document'}]}};
+  };
+  const result = await client.observe({id:'test'}, {input:{scope:'window',target:{bundleId:target.bundleId,pid:42,windowId:7},includeScreenshot:false,maxElements:20,maxDepth:8}});
+  assert.equal(result.elements?.[0]?.label, 'Document');
+  assert.equal(reads, 2);
+});
+
+
+test('launch app lookup deduplicates instances and prefers a whole-name suffix over helpers', async () => {
+  const {backend,manager,authority} = await fixture({access:'foreground'});
+  backend.targets = [{...target,appName:'Vendor Browser'}, {...target,windowId:8,appName:'Vendor Browser'}, {...target,bundleId:'com.example.helper',appName:'Vendor Browser Helper'}];
+  const result = await manager.act(authority,{action:{type:'launch_app',name:'Browser',newInstance:false}});
+  assert.equal(result.status,'applied');
+  assert.equal(backend.actions[0]?.input.action.type,'launch_app');
+  assert.equal((backend.actions[0]?.input.action as {bundleId:string}).bundleId,target.bundleId);
+  await manager.close();
+});
+
+test('browser readback prioritizes page content and exposes driver truncation', () => {
+  const client = new CuaDriverClient('/bin/false',2_000);
+  const normalize = (client as unknown as {observation:(result:{structured:unknown})=>BackendObservation}).observation.bind(client);
+  const result=normalize({structured:{elements:[{index:0,role:'AXWindow',label:'Page'},{index:1,role:'AXButton',label:'Bookmark'},{index:2,role:'AXButton',label:'Submit'}],tree_markdown:'- [0] AXWindow Page\n  - [1] AXButton Bookmark\n  - AXWebArea Page\n    - AXStaticText Important content\n    - [2] AXButton Submit\n  - AXToolbar Tabs\nAX tree truncated at 300 nodes'}});
+  assert.deepEqual(result.elements?.map(item=>item.index),[0,2]);
+  assert.match(JSON.stringify(result.data),/Important content/);
+  assert.doesNotMatch(JSON.stringify(result.data),/Bookmark/);
+  assert.equal(result.truncated,true);
+});
+
+
+test('showing a launched window requires foreground access and uses the exact discovered target', async () => {
+  const {backend,manager,authority}=await fixture();
+  const input={action:{type:'launch_app' as const,name:'Editor',newInstance:false,show:true}};
+  await assert.rejects(()=>manager.act(authority,input),/foreground|权限/);
+  assert.equal(backend.actions.length,0);
+  await manager.act({...authority,access:'foreground'},input);
+  assert.deepEqual(backend.actions.map(item=>item.input.action.type),['launch_app','handoff_to_user']);
+  assert.equal(backend.actions[1]?.target?.windowId,target.windowId);
+  await manager.close();
+});
+
+
+test('an already-open document is resolved by its address and reuses that exact readback', async () => {
+  const { backend, manager, authority } = await fixture();
+  backend.targets = [target, { ...target, windowId: 9, title: 'Same title' }];
+  let reads = 0;
+  backend.observe = async (_session, request) => {
+    reads++;
+    assert.equal(request.input.scope, 'window');
+    const id = request.input.scope === 'window' ? request.input.target.windowId : undefined;
+    const selected = backend.targets.find(item => item.windowId === id)!;
+    return { ...backend.observation, target: selected, elements: [
+      { index: 3, role: 'AXTextField', label: 'Address and search bar', value: id === 9 ? '/tmp/scene.html' : 'https://unrelated.example/' },
+      { index: 4, role: 'AXStaticText', value: id === 9 ? 'EXPECTED BODY' : 'WRONG BODY' },
+    ] };
+  };
+  const act = createComputerTools(manager, () => authority).find(item => item.name === 'computer_act')!;
+  assert.ok('invoke' in act);
+  const result = await act.invoke(new RunContext({}), JSON.stringify({ action: { type: 'launch_app', name: 'Editor', urls: ['/tmp/scene.html'] } }));
+  assert.match(JSON.stringify(result), /EXPECTED BODY/);
+  assert.doesNotMatch(JSON.stringify(result), /WRONG BODY/);
+  assert.equal(reads, 2, 'do not read the resolved window twice');
+  assert.deepEqual((backend.actions[0]?.input.action as { urls: string[] }).urls, ['file:///tmp/scene.html']);
+  assert.equal(backend.actions.length, 1);
+  await manager.close();
+});
+
+test('unresolved launch cannot fall back to an unrelated app window', async () => {
+  const { manager, authority } = await fixture();
+  const act = createComputerTools(manager, () => authority).find(item => item.name === 'computer_act')!;
+  assert.ok('invoke' in act);
+  const result = await act.invoke(new RunContext({}), JSON.stringify({ action: { type: 'launch_app', name: 'Editor', urls: ['file:///tmp/missing.html'] } }));
+  assert.match(JSON.stringify(result), /targetVerified.*false/);
+  assert.doesNotMatch(JSON.stringify(result), /next/);
+  await assert.rejects(() => manager.observeApp(authority, 'Editor', false), /launch_target_unresolved/);
+  await assert.rejects(() => manager.act(authority, { action: { type: 'launch_app', bundleId: target.bundleId, newInstance: true, urls: ['file:///tmp/missing.html'] } }), /不得.*重放/);
+  await manager.close();
+});
+
+test('foreground permission refusal is failed-safe and never uncertain', async () => {
+  const { manager, backend, authority } = await fixture();
+  const act = createComputerTools(manager, () => authority).find(item => item.name === 'computer_act')!;
+  assert.ok('invoke' in act);
+  const result = await act.invoke(new RunContext({}), JSON.stringify({ action: { type: 'launch_app', name: 'Editor', show: true } }));
+  assert.match(JSON.stringify(result), /action_failed_safe/);
+  assert.doesNotMatch(JSON.stringify(result), /action_uncertain/);
+  assert.equal(backend.actions.length, 0);
+  await manager.close();
+});
+
+
+test('Chrome foreground state is per window, using observed stacking rather than app activation', async () => {
+  const client = new CuaDriverClient('/bin/false', 2_000);
+  let ambiguous = false;
+  (client as unknown as { call: (name: string) => Promise<unknown> }).call = async name => ({ structured: name === 'list_apps'
+    ? { apps: [{ pid: 42, bundle_id: 'com.example.editor', name: 'Editor', active: true }] }
+    : { windows: [
+      { pid: 42, window_id: 7, title: 'Background page', bounds: target.bounds, is_on_screen: true, z_index: ambiguous ? null : 10 },
+      { pid: 42, window_id: 8, title: 'Owner page', bounds: target.bounds, is_on_screen: true, z_index: ambiguous ? null : 20 },
+    ] } });
+  const targets = await client.listTargets({ limit: 10 });
+  assert.equal(targets.find(item => item.windowId === 7)?.frontmost, false);
+  assert.equal(targets.find(item => item.windowId === 8)?.frontmost, true);
+  ambiguous = true;
+  assert.ok((await client.listTargets({ limit: 10 })).every(item => item.frontmost === undefined));
+});
+
+
+test('launch readback reuses a fresh target without another installed-app scan', async () => {
+  const client = new CuaDriverClient('/bin/false', 2_000);
+  client.listTargets = async () => { throw new Error('redundant scan'); };
+  (client as unknown as { call: (name: string) => Promise<unknown> }).call = async name => {
+    assert.equal(name, 'get_window_state');
+    return { structured: { pid: target.pid, window_id: target.windowId, elements: [{ index: 0, role: 'AXWindow', label: target.title }] } };
+  };
+  const result = await client.observe({ id: 'test' }, { target, input: {
+    scope: 'window', target, includeScreenshot: false, maxElements: 300, maxDepth: 12,
+  } });
+  assert.equal(result.target?.windowId, target.windowId);
+  assert.equal(result.elements?.[0]?.label, target.title);
+});
+
+
+test('animation review samples the same window and sends frames together to perception', async () => {
+  const { backend, manager, authority } = await fixture({ supportsImageInput: false });
+  let captures = 0;
+  backend.observe = async (_session, request) => {
+    assert.equal(request.input.scope, 'window');
+    assert.equal(request.input.scope === 'window' && request.input.target.windowId, target.windowId);
+    captures++;
+    return { ...backend.observation, screenshot: { data: `frame-${captures}`, mediaType: 'image/png' } };
+  };
+  const observe = createComputerTools(manager, () => authority, () => async (images, question) => {
+    assert.deepEqual(images.map(image => image.data), ['frame-1', 'frame-2']);
+    assert.match(question, /时间顺序/);
+    return { text: '两个时刻位置不同' };
+  }).find(item => item.name === 'computer_observe')!;
+  assert.ok('invoke' in observe);
+  const result = await observe.invoke(new RunContext({}), JSON.stringify({ app: 'Editor', screenshot: true, frames: 2, question: '是否在运动？' }));
+  assert.match(JSON.stringify(result), /两个时刻位置不同/);
+  assert.doesNotMatch(JSON.stringify(result), /frame-1|frame-2/);
+  assert.equal(captures, 2);
+  await manager.close();
+});
+
+
+test('a concurrent title change without document evidence cannot become the launch target', async () => {
+  const { backend, manager, authority } = await fixture();
+  backend.act = async (_session, request) => {
+    backend.actions.push(request);
+    backend.targets = [{ ...target, title: 'Owner changed unrelated tab' }];
+    return { status: 'applied', delivery: 'background' };
+  };
+  const act = createComputerTools(manager, () => authority).find(item => item.name === 'computer_act')!;
+  assert.ok('invoke' in act);
+  const result = await act.invoke(new RunContext({}), JSON.stringify({ action: { type: 'launch_app', name: 'Editor', urls: ['/tmp/scene.html'] } }));
+  assert.match(JSON.stringify(result), /action_uncertain/);
+  assert.doesNotMatch(JSON.stringify(result), /Owner changed unrelated tab/);
+  assert.equal(backend.actions.length, 1);
+  await manager.close();
+});
+
+test('launch resolution prefers the process named by the driver receipt', async () => {
+  const { backend, manager, authority } = await fixture();
+  const launched = { ...target, pid: 43, windowId: 9, title: 'scene.html' };
+  backend.targets = [{ ...target, title: 'scene.html' }, launched];
+  backend.nextActionResult = { status: 'applied', data: { pid: 43 } };
+  backend.observe = async (_session, request) => {
+    assert.equal(request.input.scope === 'window' && request.input.target.pid, 43);
+    return { ...backend.observation, target: launched };
+  };
+  const result = await manager.act(authority, { action: { type: 'launch_app', bundleId: target.bundleId, urls: ['/tmp/scene.html'], newInstance: false } });
+  assert.equal(result.target?.pid, 43);
+  await manager.close();
+});
+
+
+test('a browser handoff can resolve the URL in another instance without replaying launch', async () => {
+  const { backend, manager, authority } = await fixture();
+  const launcher = { ...target, pid: 43, windowId: 9 };
+  backend.targets = [launcher, target];
+  backend.nextActionResult = { status: 'applied', data: { pid: 43 } };
+  backend.observe = async (_session, request) => request.input.scope === 'window' && request.input.target.pid === 43
+    ? { target: launcher, elements: [], data: { degraded: true, degradedReason: 'ax_window_unresolved' } }
+    : { ...backend.observation, elements: [{ index: 1, role: 'AXTextField', label: 'Address', value: '/tmp/scene.html' }] };
+  const result = await manager.act(authority, { action: { type: 'launch_app', bundleId: target.bundleId, urls: ['/tmp/scene.html'], newInstance: false } });
+  assert.equal(result.target?.pid, target.pid);
+  assert.equal(backend.actions.length, 1);
+  await manager.close();
 });

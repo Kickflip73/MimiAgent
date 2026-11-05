@@ -318,3 +318,23 @@ test('Web supports a portless reverse proxy origin without trusting forwarded he
   }
   assert.throws(() => new MimiWebServer(backend(), 0, undefined, 80), /Web 外部端口无效/);
 });
+
+
+test('Web allows incoming document links but keeps cross-site API and embedded requests blocked', async (t) => {
+  const server = new MimiWebServer(backend(), 0);
+  await server.start(); t.after(() => server.close());
+  const get = (route: string, extra: Record<string, string> = {}) => new Promise<number | undefined>((resolve, reject) => {
+    const req = request(server.address + route, { headers: {
+      'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document', ...extra,
+    } }, res => { res.resume(); resolve(res.statusCode); });
+    req.on('error', reject); req.end();
+  });
+  assert.equal(await get('/'), 200);
+  assert.equal(await get('/?session=test'), 200);
+  assert.equal(await get('/api/status'), 403);
+  assert.equal(await get('/api/sessions'), 403);
+  assert.equal(await get('/app.js'), 403);
+  assert.equal(await get('/', { 'sec-fetch-mode': 'cors' }), 403);
+  assert.equal(await get('/', { 'sec-fetch-dest': 'iframe' }), 403);
+  assert.equal(await get('/', { host: 'evil.example' }), 403);
+});

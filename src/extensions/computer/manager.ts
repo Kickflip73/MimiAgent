@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { ActionFailedSafeError } from '../../core/action-intent.js';
 import { withExclusiveFileLock } from '../../core/state-file.js';
@@ -24,8 +25,8 @@ const ACCESS_LEVEL: Record<ComputerAccess, number> = {
 const OBSERVATION_TTL_MS = 30_000;
 const MAX_MODEL_OBSERVATION_BYTES = 16 * 1024;
 const MAX_SEMANTIC_TEXT_CHARS = 8_000;
-const DEFAULT_MODEL_ELEMENTS = 40;
-const AX_WINDOW_SETTLE_ATTEMPTS = 20;
+const DEFAULT_MODEL_ELEMENTS = 300;
+const AX_WINDOW_SETTLE_ATTEMPTS = 2;
 
 export interface ComputerRunAuthority {
   runId: string;
@@ -94,7 +95,7 @@ interface StoredObservation extends BackendObservation {
 interface RunState {
   session?: BackendSession;
   observations: Map<string, StoredObservation>;
-  preferredTargets: Map<string, ComputerTargetSummary>;
+  preferredTargets: Map<string, ComputerTargetSummary | null>;
   actions: number;
   screenshots: number;
   foregroundRestore?: {
@@ -123,6 +124,7 @@ function launchedDocumentName(urls: readonly string[] | undefined): string | und
 function requiresAccess(input: ComputerObserveInput | ComputerActInput): ComputerAccess {
   if ('scope' in input) return input.scope === 'desktop' ? 'foreground' : 'observe';
   const action = input.action;
+  if (action.type === 'launch_app' && action.show) return 'foreground';
   if (action.type === 'move_cursor') return action.scope === 'desktop' ? 'foreground' : 'background';
   if (['kill_app', 'start_recording', 'stop_recording', 'replay_trajectory', 'set_driver_config', 'set_agent_cursor', 'request_permissions'].includes(action.type)) return 'admin';
   if (['escalate_session', 'bring_to_front', 'handoff_to_user', 'release_foreground'].includes(action.type)) return 'foreground';
@@ -400,6 +402,8 @@ export class ComputerManager {
       const blockedReason = result && typeof result === 'object' && 'blockedReason' in result
         ? String(result.blockedReason ?? '')
         : '';
+      if (blockedReason.includes('window_identity_mismatch') && !includeScreenshot
+        && authority.supportsImageInput !== false) break;
       if (!blockedReason.includes('ax_window_unresolved') || includeScreenshot) return result;
       lastResult = result;
       await delay(100, undefined, { signal });
@@ -414,7 +418,12 @@ export class ComputerManager {
     }, signal);
   }
 
-  async observe(authority: ComputerRunAuthority, input: ComputerObserveInput, signal?: AbortSignal) {
+  async observe(
+    authority: ComputerRunAuthority,
+    input: ComputerObserveInput,
+    signal?: AbortSignal,
+    knownTarget?: ComputerTargetSummary,
+  ) {
     this.authorize(authority, requiresAccess(input));
     if ((('includeScreenshot' in input && input.includeScreenshot) || input.scope === 'region')
       && authority.supportsImageInput === false) {
@@ -442,7 +451,7 @@ export class ComputerManager {
       if (!parent.target || !parent.dimensions) throw new Error('region 只能引用带窗口尺寸的有效 Observation');
       this.assertRect(input.rect.x, input.rect.y, input.rect.width, input.rect.height, parent.dimensions);
     }
-    const result = await this.backend.observe(run.session!, { input, target: parent?.target }, signal);
+    const result = await this.backend.observe(run.session!, { input, target: parent?.target ?? knownTarget }, signal);
     if (input.scope === 'window' && result.target && !result.dimensions) {
       const { width, height } = result.target.bounds;
       if (width > 0 && height > 0) result.dimensions = { width, height };
@@ -593,6 +602,10 @@ export class ComputerManager {
   }
 
   async act(authority: ComputerRunAuthority, input: ComputerActInput, signal?: AbortSignal) {
+    if (input.action.type === 'launch_app' && input.action.urls) {
+      input = { action: { ...input.action, urls: input.action.urls.map(value =>
+        path.isAbsolute(value) ? pathToFileURL(value).href : value) } };
+    }
     const requiredAccess = requiresAccess(input);
     this.authorize(authority, requiredAccess);
     if (input.action.type === 'set_driver_config') {
@@ -602,7 +615,22 @@ export class ComputerManager {
         throw new Error('set_driver_config 第一阶段只允许 max_image_dimension=0..4096 的安全整数');
       }
     }
+    if (input.action.type === 'launch_app' && !input.action.bundleId && input.action.name) {
+      const apps = [...new Map((await this.listApps(authority, input.action.name, signal))
+        .map(app => [app.bundleId, app])).values()];
+      const name = input.action.name.toLowerCase();
+      const exact = apps.filter(app => app.name.toLowerCase() === name);
+      const suffix = apps.filter(app => app.name.toLowerCase().endsWith(` ${name}`));
+      const candidates = exact.length ? exact : suffix.length ? suffix : apps;
+      if (candidates.length !== 1) throw new ActionFailedSafeError(candidates.length ? 'ambiguous_app：匹配多个应用，请指定精确名称或 bundleId' : 'app_not_found：没有匹配的已安装应用');
+      const { name: _name, ...action } = input.action;
+      input = { action: { ...action, bundleId: candidates[0]!.bundleId } };
+    }
     const run = await this.run(authority.runId, signal);
+    if (input.action.type === 'launch_app' && input.action.bundleId
+      && run.preferredTargets.get(input.action.bundleId) === null) {
+      throw new ComputerActionUncertainError('此前打开动作已投递但窗口未确认；不得通过更换应用名、bundleId 或 newInstance 重放。请报告未验证。');
+    }
     if (run.actions >= this.config.maxActionsPerRun) throw new Error(`当前 Run 已达到 ${this.config.maxActionsPerRun} 个写动作上限`);
     let observation: StoredObservation | undefined;
     let target: ComputerTargetSummary | undefined;
@@ -618,7 +646,7 @@ export class ComputerManager {
     let foregroundRestoreTarget: ComputerTargetSummary | undefined;
     let artifactId: string | undefined;
     let artifactPath: string | undefined;
-    let targetsBeforeLaunch: Set<string> | undefined;
+    let targetsBeforeLaunch: Map<string, string> | undefined;
     if (input.action.type === 'start_recording') {
       if (run.activeArtifactId) throw new Error('当前 Run 已有活跃录制');
       const pending = await this.artifacts.create(authority.runId);
@@ -679,10 +707,10 @@ export class ComputerManager {
       path.join(this.dataRoot, 'computer-action'),
       async () => {
         if (input.action.type === 'launch_app' && input.action.bundleId) {
-          targetsBeforeLaunch = new Set((await this.backend.listTargets({
+          targetsBeforeLaunch = new Map((await this.backend.listTargets({
             query: input.action.bundleId,
             limit: 50,
-          }, signal)).map(targetKey));
+          }, signal)).map(candidate => [targetKey(candidate), candidate.title]));
         }
         if (target) {
           const currentTarget = target;
@@ -730,17 +758,37 @@ export class ComputerManager {
       signal,
     );
     const result = await this.enqueueAction(execute);
+    let launchState: Awaited<ReturnType<ComputerManager['observe']>> | undefined;
     if (result.status === 'applied' && input.action.type === 'launch_app' && input.action.bundleId) {
       const launchedTarget = await this.findLaunchedTarget(
+        authority,
         input.action.bundleId,
-        targetsBeforeLaunch ?? new Set(),
+        targetsBeforeLaunch ?? new Map(),
         input.action.urls,
         input.action.newInstance,
+        result.data && typeof result.data === 'object' && 'pid' in result.data
+          && typeof result.data.pid === 'number' ? result.data.pid : undefined,
         signal,
       );
+      if (input.action.urls?.length) run.preferredTargets.set(input.action.bundleId, launchedTarget?.target ?? null);
       if (launchedTarget) {
-        target = launchedTarget;
-        run.preferredTargets.set(input.action.bundleId, launchedTarget);
+        target = launchedTarget.target;
+        launchState = launchedTarget.state;
+        run.preferredTargets.set(input.action.bundleId, target);
+        if (input.action.show) {
+          try {
+            const shown = await this.enqueueAction(() => withExclusiveFileLock(
+              path.join(this.dataRoot, 'computer-action'),
+              () => this.backend.act(run.session!, {
+                input: { action: { type: 'handoff_to_user', pid: target!.pid, windowId: target!.windowId } },
+                target,
+              }, signal), signal,
+            ));
+            if (shown.status !== 'applied') throw new Error('窗口展示尚未确认');
+          } catch (error) {
+            throw new ComputerActionUncertainError(`应用已打开但窗口展示未确认；不得重放打开动作：${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
       }
     }
     let artifactResult: Record<string, unknown> = {};
@@ -784,6 +832,7 @@ export class ComputerManager {
       requiresObservation: true,
       ...(input.action.type === 'handoff_to_user' ? { foregroundDisposition: 'retained_for_user' } : {}),
       target,
+      state: launchState,
       ...artifactResult,
     };
   }
@@ -844,8 +893,11 @@ export class ComputerManager {
     };
     const preferred = targets.find((candidate) => {
       const selected = this.runs.get(authority.runId)?.preferredTargets.get(candidate.bundleId);
-      return selected !== undefined && targetKey(selected) === targetKey(candidate);
+      return selected != null && targetKey(selected) === targetKey(candidate);
     });
+    if (targets.some(candidate => this.runs.get(authority.runId)?.preferredTargets.get(candidate.bundleId) === null)) {
+      throw new Error('launch_target_unresolved：打开动作已投递，但未定位到对应页面；不可读取任意窗口或重放打开动作。');
+    }
     return preferred ?? [...targets].sort((left, right) => score(right) - score(left))[0];
   }
 
@@ -874,7 +926,7 @@ export class ComputerManager {
   }
 
   private authorize(authority: ComputerRunAuthority, required: ComputerAccess): void {
-    if (!hasAccess(authority.access, required)) throw new Error(`approval_required：Computer 动作需要 ${required}，当前授权为 ${authority.access}`);
+    if (!hasAccess(authority.access, required)) throw new ActionFailedSafeError(`approval_required：Computer 动作需要 ${required}，当前授权为 ${authority.access}；动作未投递`);
   }
 
   private authorizeApp(
@@ -912,22 +964,56 @@ export class ComputerManager {
   }
 
   private async findLaunchedTarget(
+    authority: ComputerRunAuthority,
     bundleId: string,
-    existing: ReadonlySet<string>,
+    existing: ReadonlyMap<string, string>,
     urls: readonly string[] | undefined,
     newInstance: boolean,
+    launchedPid: number | undefined,
     signal?: AbortSignal,
-  ): Promise<ComputerTargetSummary | undefined> {
+  ): Promise<{ target: ComputerTargetSummary; state?: Awaited<ReturnType<ComputerManager['observe']>> } | undefined> {
     const documentName = launchedDocumentName(urls);
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const targets = await this.backend.listTargets({ query: bundleId, limit: 50 }, signal);
-      const documentTarget = documentName
-        ? targets.find((candidate) => candidate.title.normalize('NFKC').toLowerCase().includes(documentName))
-        : undefined;
-      const freshTarget = targets.find((candidate) => !existing.has(targetKey(candidate)));
-      const selected = documentTarget ?? freshTarget ?? (!newInstance && !urls?.length ? targets[0] : undefined);
-      if (selected) return selected;
-      await delay(100, undefined, { signal });
+    let targets: ComputerTargetSummary[] = [];
+    let selected: ComputerTargetSummary | undefined;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      targets = (await this.backend.listTargets({ query: bundleId, limit: 50 }, signal))
+        .filter(candidate => candidate.bundleId === bundleId)
+        .sort((left, right) => Number(right.pid === launchedPid) - Number(left.pid === launchedPid));
+      selected = targets.find(candidate => !existing.has(targetKey(candidate)))
+        ?? targets.find(candidate => existing.get(targetKey(candidate)) !== candidate.title)
+        ?? (documentName ? targets.find(candidate => candidate.title.normalize('NFKC').toLowerCase().includes(documentName)) : undefined)
+        ?? (!newInstance && !urls?.length ? targets[0] : undefined);
+      if (selected) break;
+      if (attempt === 0) await delay(100, undefined, { signal });
+    }
+    if (!urls?.length) return selected ? { target: selected } : undefined;
+    // Reopening an existing tab need not change any window title. Resolve its
+    // actual address inside the host; never ask the model to inspect an arbitrary
+    // window or replay an already dispatched launch. Reads have no side effects.
+    const candidates = selected ? [selected, ...targets.filter(item => targetKey(item) !== targetKey(selected!))] : targets;
+    for (const candidate of candidates.slice(0, 6)) {
+      const state = await this.observe(authority, {
+        scope: 'window', target: { bundleId, pid: candidate.pid, windowId: candidate.windowId },
+        includeScreenshot: false, maxElements: DEFAULT_MODEL_ELEMENTS, maxDepth: 12,
+      }, signal, candidate);
+      const observed = state as { actionable?: boolean; elements?: ComputerElement[] };
+      const address = observed.elements?.find(element => element.role === 'AXTextField'
+        && !element.secure && typeof element.value === 'string'
+        && /address|url|地址|网址/i.test(`${element.label ?? ''} ${element.description ?? ''} ${element.identifier ?? ''}`))?.value;
+      // Non-browser apps need not expose an address field. A changed/new window
+      // still establishes window identity, but is not content validation.
+      if (address === undefined && candidate === selected && observed.actionable
+        && documentName && candidate.title.normalize('NFKC').toLowerCase().includes(documentName)
+        && !observed.elements?.some(element => element.role === 'AXWebArea')) {
+        return { target: candidate, state };
+      }
+      if (observed.actionable && typeof address === 'string' && urls?.some(url => {
+        try {
+          const expected = new URL(url);
+          const actual = new URL(address.includes('://') ? address : expected.protocol === 'file:' && address.startsWith('/') ? `file://${address}` : `${expected.protocol}//${address}`);
+          return decodeURI(actual.href) === decodeURI(expected.href);
+        } catch { return false; }
+      })) return { target: candidate, state };
     }
     return undefined;
   }

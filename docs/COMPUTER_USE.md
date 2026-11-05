@@ -53,9 +53,11 @@ app-centric 工具：
 }
 ```
 
-如果当前模型未声明图像输入能力，Host 不会让整个观察失败，而是自动忽略截图并返回
-可用的 AX 语义状态，同时用 `screenshotStatus.reason=vision_unavailable` 标明降级。
-`region` 等必须消费图像的底层观察仍会拒绝执行。
+截图验收可以同时传 `question` 指定要核对的布局、裁切、文字或交互结果。
+动态界面传 `frames=2`（最多 3），Host 固定同一窗口采样并一起分析，返回各帧时间；不能用单张截图证明运动。
+当前主模型无图像输入能力时，Host 将截图交给现有独立视觉模型并返回 `visualReview`，
+不更改主会话模型；视觉模型未配置或请求失败时如实报错，不能声称已验收。
+没有视觉委托的独立 Computer 调用仍返回 `vision_unavailable`；底层 region 维持原有权限边界。
 
 `app` 可以是应用名或 bundle id。Host 选择最匹配的真实窗口，并过滤菜单栏窗口、
 无标题离屏伪窗口和过小窗口。应用已安装但未运行时返回精确启动目标：
@@ -121,7 +123,7 @@ frontmost 诊断不会进入模型上下文。截图通过 SDK image output 传�
 
 | 动作 | 主要参数 | 用途 |
 |---|---|---|
-| `launch_app` | `bundleId`, `urls?`, `newInstance?` | 用 observe 返回的精确 bundle ID 启动应用或打开文件/URL |
+| `launch_app` | `name` 或 `bundleId`, `urls?`, `newInstance?`, `show?` | 打开应用或文件/URL；`show=true` 需要 foreground 权限 |
 | `click` | `elementIndex` 或 `x/y`, `button?`, `axAction?` | 点击元素或窗口局部坐标 |
 | `double_click` | `elementIndex` 或 `x/y` | 双击 |
 | `type_text` | `elementIndex` 或 `x/y`, `text` | 向目标输入文本 |
@@ -131,9 +133,10 @@ frontmost 诊断不会进入模型上下文。截图通过 SDK image output 传�
 | `drag` | `path` | 拖拽 |
 | `wait` | `milliseconds` | 等待应用自行更新 |
 
-`launch_app` 不依赖窗口 observation，但 `bundleId` 必须来自 `computer_observe` 返回的
-`app.id` 或 `apps[].bundleId`。Host 在启动前记录已有窗口，启动后按新窗口身份或打开
-文件名绑定本轮目标，并直接返回该窗口的 fresh state：
+`launch_app` 不依赖窗口 observation。已知应用名时可直接传 `name` 和 `urls`，
+Host 查询真实应用目录并唯一解析；歧义或未找到时拒绝投递。已有 `bundleId` 仍可使用。本地绝对路径在入口统一为 `file://` URL；兼容地址栏省略该协议。启动回执的 PID 决定候选优先级；浏览器可以把 URL 转交给同应用的另一个进程，最终仍按真实窗口与地址确认。Host 在启动前记录已有窗口身份与标题，启动后按文件名、新窗口或原窗口标题变化
+绑定候选目标，并直接返回 fresh state 供模型核实实际打开内容。浏览器新标签不一定
+创建新窗口，HTML 标题也不一定包含文件名。最多两次窗口查询，不反复轮询 20 次：
 
 ```json
 {
@@ -149,8 +152,13 @@ frontmost 诊断不会进入模型上下文。截图通过 SDK image output 传�
 }
 ```
 
-只有启动成功但在有界 settle 内还没有可绑定窗口时，才返回
-`{ "ok": true, "next": "computer_observe" }`。
+标题未变化时，Host 有界检查最多 6 个候选窗口的实际地址，复用命中的回读，不重复扫描应用。地址不匹配不能用标题替代。仍无法定位时返回 `targetVerified=false` 与 `stateUnavailable`；动作已投递，按 `action_uncertain` 记录并冻结该 Computer Run 的重放，不能靠更换 name、bundleId 或 newInstance 再次启动，也不能回退读取任意窗口。
+
+后台打开不等于展示到前台。显式 `show=true` 在已有 foreground 授权下把准确目标交给用户；权限不足在执行前返回 failed-safe，不标记为结果不确定。前台窗口优先使用驱动明确标记，否则用当前可见的活跃应用窗口中唯一最高的 `z_index` 判断；层级缺失或冲突时保持未知，不能绕过焦点保护。
+
+浏览器观察默认读取 300 个节点，并优先展示页面内容，保留真实元素索引及截断标记，避免工具栏和标签列表耗尽正文预算。
+
+Host 校验回读 pid/window_id 与 AXWindow 标题；标题更新竞态最多重读一次。持续不一致时丢弃 AX 控件与文本，不把其他窗口的内容绑定到目标。只有驱动明确校验过窗口的截图才可作为视觉退路，不能继续用错误元素点击。AX 暂未就绪最多读取两次，再进行一次截图退路，不再等待 20 次 IPC 轮询。
 
 普通 UI 动作由 Host 自动绑定本 Run 最近一次有效窗口观察，并直接返回动作后的状态：
 

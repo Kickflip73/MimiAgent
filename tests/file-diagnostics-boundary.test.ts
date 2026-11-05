@@ -46,3 +46,20 @@ test('post-write diagnostics validate JSON, syntax-only files, missing compiler,
   assert.equal(checked.status, 'clean');
   assert.equal(checked.command, 'tsc --noEmit');
 });
+
+
+for (const extension of ['svg', 'html', 'css', 'py']) {
+  test(`unvalidated ${extension} output never reports clean, including mixed batches`, async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-unchecked-'));
+    const file = path.join(root, `result.${extension}`);
+    const json = path.join(root, 'data.json');
+    await writeFile(file, '<broken');
+    await writeFile(json, '{}');
+    for (const files of [[file], [json, file]]) {
+      const report = await diagnoseWrittenFiles(root, files);
+      assert.equal(report.status, 'unavailable');
+      assert.deepEqual(report.uncheckedFiles, [file]);
+      assert.match(report.output ?? '', /未检查/);
+    }
+  });
+}

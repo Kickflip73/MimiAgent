@@ -6,11 +6,15 @@ All notable changes to MimiAgent are documented here.
 
 ### Added
 
+- Consolidate the existing experimental meeting-to-NotebookLM Skill; it remains excluded from published packages.
+
 - Optional `MIMI_WEB_HOSTNAME` local Web alias with exact Host and same-origin validation; the server remains bound to loopback.
 
 - Local Breeze TTS 2 speech engine: `MIMI_TTS_BREEZE_URL` points the `speech` tool at a loopback `breeze-server`, which renders text to WAV through its OpenAI-compatible `/v1/audio/speech` endpoint. Five design-based voices (`breeze:zh-narrator`, `breeze:zh-lively`, `breeze:zh-male`, `breeze:en-narrator`, `breeze:en-warm`) route by language; the ChatTTS 300-character cap does not apply.
 
 ### Fixed
+
+- Integrate Computer launch target verification, AX/window identity checks, bounded observation, and explicit foreground handoff.
 
 - Restore immediate Web conversation-list updates, automatic composer focus for new conversations, collapsible navigation, and workspace labels.
 - Verify capability-existence questions against installed Skills and include every loaded Skill in the context index.

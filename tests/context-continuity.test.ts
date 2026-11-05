@@ -177,3 +177,67 @@ test('runtime state claims require same-turn tool evidence', () => {
   assert.match(BASE_INSTRUCTIONS, /必须先调用对应的只读状态工具/);
   assert.match(BASE_INSTRUCTIONS, /不得声称“已核对”或断言状态不存在/);
 });
+
+
+for (const completes of [false, true]) {
+test(`optional semantic preparation does not block and ${completes ? 'is applied at the next input' : 'cannot write after run end'}`, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-context-latency-'));
+  let finishSummary!: () => void;
+  const summaryGate = new Promise<void>(resolve => { finishSummary = resolve; });
+  let calls = 0;
+  let summarySignal: AbortSignal | undefined;
+  const summarizer: ContextSemanticSummarizer = { summarize: async request => {
+    calls += 1;
+    summarySignal = request.signal;
+    await summaryGate;
+    return { goal: [], progress: [], completed: [], decisions: [], constraints: [], openQuestions: [], evidence: [], keyFacts: ['preserved'], references: [] };
+  } };
+  const agent = await MimiAgent.create({ provider: 'openai', defaultModel: 'context-latency-test', workspaceRoot: root,
+    dataRoot: path.join(root, 'data'), skillsRoot: path.join(root, 'skills'), mcpConfig: path.join(root, 'mcp.json'),
+    contextWindow: 1_048_576, historyLimit: 40, maxTurns: 20,
+  }, 'latency', { contextSemanticSummarizer: summarizer, enableMcp: false });
+  const session = (agent as unknown as { session: FileSession }).session;
+  const history: AgentInputItem[] = [
+    { role: 'user', content: 'old task' }, { role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'old detail '.repeat(20_000) }] },
+    { role: 'user', content: 'second' }, { role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'done' }] },
+    { role: 'user', content: 'third' }, { role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'done' }] },
+  ];
+  await session.addItems(history);
+  const runtime = agent as unknown as {
+    activeRun: { releaseOwner(): void }; runner: { run(...args: unknown[]): Promise<unknown> };
+  };
+  runtime.runner.run = async (...args) => {
+    const options = args[2] as { callModelInputFilter(args: { modelData: { input: AgentInputItem[]; instructions: string } }): Promise<{input: AgentInputItem[]}> };
+    const modelData = { input: [...history, {role: 'user', content: 'continue'} as AgentInputItem], instructions: 'base' };
+    const view = await options.callModelInputFilter({ modelData });
+    assert.ok(JSON.stringify(view.input).includes('old detail'));
+    assert.equal(calls, 1);
+    await options.callModelInputFilter({ modelData });
+    assert.equal(calls, 1, 'only one in-flight summary per run');
+    if (completes) {
+      finishSummary();
+      await new Promise(resolve => setImmediate(resolve));
+      const compacted = await options.callModelInputFilter({ modelData });
+      assert.doesNotMatch(JSON.stringify(compacted.input), /old detail/);
+      assert.ok((await session.getContextWorkSnapshot())?.coveredItems);
+    }
+    return {};
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([agent.stream('continue'), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('input filter waited on optional summary')), 5_000); })]);
+    runtime.activeRun.releaseOwner();
+    assert.equal(summarySignal?.aborted, true);
+    finishSummary();
+    await new Promise(resolve => setImmediate(resolve));
+    if (!completes) assert.equal(await session.getContextWorkSnapshot(), undefined);
+    assert.equal((await session.getItems()).length, history.length);
+  } finally {
+    if (timer) clearTimeout(timer);
+    finishSummary();
+    runtime.activeRun?.releaseOwner();
+    await agent.close();
+  }
+});
+
+}

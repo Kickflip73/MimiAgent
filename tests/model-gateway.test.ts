@@ -1178,3 +1178,32 @@ test('OpenAI Responses and OpenAI-compatible adapters send distinct native reque
       server.close((error) => error ? reject(error) : resolve()));
   }
 });
+
+
+test('DeepSeek V4 auto reasoning is bounded and off uses the native thinking switch', async () => {
+  const requests: Record<string, unknown>[] = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      requests.push(JSON.parse(body) as Record<string, unknown>);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ id: 'test', choices: [{ index: 0, message: { role: 'assistant', content: 'OK' }, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { createOpenAICompatibleModel } = await import('../src/runtime/providers/openai-compatible-model.js');
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    for (const effort of [undefined, 'high', 'none'] as const) {
+      const model = createOpenAICompatibleModel('test-key', url, 'deepseek-v4-pro');
+      await new Runner({ tracingDisabled: true }).run(new Agent({ name: 'test', model, modelSettings: effort ? { reasoning: { effort } } : {} }), 'OK');
+    }
+    assert.deepEqual(requests.map(body => body.thinking), [{ type: 'enabled' }, { type: 'enabled' }, { type: 'disabled' }]);
+    assert.deepEqual(requests.map(body => body.reasoning_effort), ['low', 'high', undefined]);
+    const other = createOpenAICompatibleModel('test-key', url, 'other-reasoner');
+    await new Runner({ tracingDisabled: true }).run(new Agent({ name: 'test', model: other }), 'OK');
+    assert.equal(requests[3]?.thinking, undefined);
+    assert.equal(requests[3]?.reasoning_effort, undefined);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+});
