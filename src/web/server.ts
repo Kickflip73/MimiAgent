@@ -8,6 +8,7 @@ import type { SecurityProfile } from '../config.js';
 import type { WebBackend } from './backend.js';
 
 const ASSETS: Record<string, [string, string]> = {
+  '/uuid.js': ['uuid.js', 'text/javascript; charset=utf-8'],
   '/notifications.js': ['notifications.js','text/javascript; charset=utf-8'],
   '/media.js': ['media.js','text/javascript; charset=utf-8'],
   '/recorder.js': ['recorder.js','text/javascript; charset=utf-8'],
@@ -67,8 +68,14 @@ export class MimiWebServer {
   private server?: Server;
   private streams = 0;
 
-  constructor(private readonly backend: WebBackend, private readonly port = 3210) {
+  constructor(private readonly backend: WebBackend, private readonly port = 3210, private readonly hostname?: string, private readonly publicPort?: number) {
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Web 端口无效');
+    if (publicPort !== undefined && (!hostname || !Number.isInteger(publicPort) || publicPort < 1 || publicPort > 65535)) {
+      throw new Error('Web 外部端口无效：需要配置域名及 1～65535 的端口');
+    }
+    if (hostname !== undefined && (hostname.length > 253 || !/^[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?)*$/.test(hostname) || hostname.split('.').some((label) => label.length > 63))) {
+      throw new Error('Web 域名无效：请使用不含协议、端口或路径的小写域名');
+    }
   }
 
   get address(): string {
@@ -77,7 +84,12 @@ export class MimiWebServer {
     return `http://127.0.0.1:${address.port}`;
   }
 
-  get launchUrl(): string { return `${this.address}/`; }
+  get launchUrl(): string {
+    const url = new URL(this.address);
+    if (this.hostname) url.hostname = this.hostname;
+    if (this.publicPort !== undefined) url.port = String(this.publicPort);
+    return url.href;
+  }
 
   async start(): Promise<void> {
     if (this.server) return;
@@ -115,8 +127,10 @@ export class MimiWebServer {
   }
 
   private async route(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const origin = this.address;
-    if (request.headers.host !== new URL(origin).host) throw new HttpError(403, '无效的访问地址');
+    // Accept only explicit local entry points; never derive trust from an arbitrary Host header.
+    const origin = [this.address, new URL(this.launchUrl).origin]
+      .find((candidate) => request.headers.host === new URL(candidate).host);
+    if (!origin) throw new HttpError(403, '无效的访问地址');
     const url = new URL(request.url ?? '/', origin);
     // Incoming links are document navigations, not permission to read local APIs.
     const incomingDocument = request.method === 'GET' && url.pathname === '/'

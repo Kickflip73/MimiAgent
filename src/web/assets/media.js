@@ -1,3 +1,4 @@
+import { randomUUID } from './uuid.js';
 export const mediaUrl=id=>/^[a-f0-9]{64}\.(mp3|wav|m4a|oga|flac|weba|mp4|webm|mov|file)$/.test(id)?`/api/media?id=${id}`:'';
 export const mediaTime=seconds=>{const n=Math.max(0,Math.floor(Number(seconds)||0));return `${Math.floor(n/60)}:${String(n%60).padStart(2,'0')}`;};
 export function mediaMarkup(ref,esc) {
@@ -39,7 +40,7 @@ export function createMediaDrafts({storage,upload,prepare,changed}) {
     async add(session,file){
       if(file.size>100*1024*1024||!file.size)throw new Error('媒体不能为空或超过 100MB');
       if(list(session).length>=8)throw new Error('每条消息最多 8 个附件');
-      const item={key:crypto.randomUUID(),name:file.name,kind:file.type.startsWith('video/')?'video':file.type.startsWith('audio/')?'audio':'file',bytes:file.size,src:URL.createObjectURL(file),pending:true};list(session).push(item);changed(session);
+      const item={key:randomUUID(),name:file.name,kind:file.type.startsWith('video/')?'video':file.type.startsWith('audio/')?'audio':'file',bytes:file.size,src:URL.createObjectURL(file),pending:true};list(session).push(item);changed(session);
       try{const result=await upload(file);if(!list(session).includes(item))return;URL.revokeObjectURL(item.src);Object.assign(item,result,{src:mediaUrl(result.id),pending:false});save(session);await recognize(session,item);}
       catch(e){item.pending=false;item.error=e.message;changed(session);}
     },

@@ -6,9 +6,13 @@ All notable changes to MimiAgent are documented here.
 
 ### Added
 
+- Optional `MIMI_WEB_HOSTNAME` local Web alias with exact Host and same-origin validation; the server remains bound to loopback.
+
 - Local Breeze TTS 2 speech engine: `MIMI_TTS_BREEZE_URL` points the `speech` tool at a loopback `breeze-server`, which renders text to WAV through its OpenAI-compatible `/v1/audio/speech` endpoint. Five design-based voices (`breeze:zh-narrator`, `breeze:zh-lively`, `breeze:zh-male`, `breeze:en-narrator`, `breeze:en-warm`) route by language; the ChatTTS 300-character cap does not apply.
 
 ### Fixed
+
+- Local HTTP Web domains no longer stall during initialization when the browser does not expose `crypto.randomUUID`; session, request, queue, and attachment IDs use cryptographic random bytes.
 
 - `npm ci` no longer fails with `EBADPLATFORM` on Linux, Windows, and Intel macOS. The macOS ARM CUA driver binary is provided by `@trycua/cua-driver`'s own optional dependencies instead of being a root dev dependency; the explicit entry aborted installs everywhere except Apple Silicon.
 - Removed a committed `.hallmark` runtime log, a non-fixture macOS home path in a planning document, and two private organization markers in tests; workspace memory written by the agent at runtime is now ignored so a local run cannot dirty `npm run ci`.

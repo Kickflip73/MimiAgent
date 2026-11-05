@@ -42,7 +42,7 @@ test('Local Web opens directly without credentials, cookies or a connect handsha
   assert.equal((await fetch(`${server.address}/api/mode`, { method: 'POST', headers: localHeaders(server), body: JSON.stringify({sessionId:'s', mode:'general'}) })).status, 200);
   assert.equal((await fetch(`${server.address}/api/connect`, { method: 'POST', headers: localHeaders(server), body: '{}' })).status, 404);
   assert.equal((await fetch(`${server.address}/package.json`)).status, 404);
-  for (const asset of ['app.js', 'execution.js', 'pickers.js', 'manage.js']) assert.equal((await fetch(`${server.address}/${asset}`)).headers.get('content-type'), 'text/javascript; charset=utf-8');
+  for (const asset of ['app.js', 'execution.js', 'pickers.js', 'manage.js', 'uuid.js']) assert.equal((await fetch(`${server.address}/${asset}`)).headers.get('content-type'), 'text/javascript; charset=utf-8');
 });
 
 test('Web rejects cross-origin requests and DNS rebinding without a login requirement', async (t) => {
@@ -252,4 +252,63 @@ test('notification inbox remains available while daemon is unavailable, validate
   const request={method:'POST',headers:localHeaders(server),body:'{"through":0}'};
   assert.equal((await fetch(`${server.address}/api/notifications/read`,request)).status,200);
   assert.equal((await fetch(`${server.address}/api/notifications/read`,{...request,body:'{"through":-1}'})).status,400);
+});
+
+
+test('Web accepts only the configured hostname alias with its own exact origin', async (t) => {
+  let calls = 0;
+  const server = new MimiWebServer(backend({ mode: async () => { calls++; return {}; } }), 0, 'mimi.com');
+  await server.start(); t.after(() => server.close());
+  const port = new URL(server.address).port;
+  const host = `mimi.com:${port}`;
+  assert.equal(server.launchUrl, `http://${host}/`);
+  const send = (method: string, headers: Record<string, string>) => new Promise<number | undefined>((resolve, reject) => {
+    const req = request(`${server.address}${method === 'POST' ? '/api/mode' : '/'}`, { method, headers }, (res) => {
+      res.resume(); res.on('end', () => resolve(res.statusCode));
+    });
+    req.on('error', reject);
+    req.end(method === 'POST' ? JSON.stringify({ sessionId: 's', mode: 'general' }) : undefined);
+  });
+  assert.equal(await send('GET', { host }), 200);
+  assert.equal((await fetch(server.address)).status, 200);
+  const headers = { host, origin: `http://${host}`, 'x-mimi-web': '1', 'content-type': 'application/json' };
+  assert.equal(await send('POST', headers), 200);
+  const invalidOrigins: Array<Record<string, string>> = [{ origin: server.address }, { origin: 'https://' + host }, { origin: 'http://mimi.com' }, { 'sec-fetch-site': 'cross-site' }];
+  for (const extra of invalidOrigins) {
+    assert.equal(await send('POST', { ...headers, ...extra }), 403);
+  }
+  for (const invalid of ['evil.com', `www.${host}`, `mimi.com:${Number(port) + 1}`, `mimi.com.evil:${port}`]) {
+    assert.equal(await send('GET', { host: invalid }), 403);
+  }
+  assert.equal(calls, 1);
+});
+
+test('Web rejects hostname aliases containing URL components or wildcards', () => {
+  for (const hostname of ['', '*', '*.mimi.com', 'http://mimi.com', 'mimi.com:3210', 'mimi.com/path', 'user@mimi.com', '-mimi.com', 'mimi..com']) {
+    assert.throws(() => new MimiWebServer(backend(), 0, hostname), /Web 域名无效/);
+  }
+});
+
+
+test('Web supports a portless reverse proxy origin without trusting forwarded headers', async (t) => {
+  let calls = 0;
+  const server = new MimiWebServer(backend({ mode: async () => { calls++; return {}; } }), 0, 'mimi.com', 80);
+  await server.start(); t.after(() => server.close());
+  assert.equal(server.launchUrl, 'http://mimi.com/');
+  const send = (headers: Record<string, string>) => new Promise<number | undefined>((resolve, reject) => {
+    const req = request(`${server.address}/api/mode`, { method: 'POST', headers: {
+      host: 'mimi.com', origin: 'http://mimi.com', 'x-mimi-web': '1', 'content-type': 'application/json', ...headers,
+    } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+    req.on('error', reject); req.end(JSON.stringify({ sessionId: 's', mode: 'general' }));
+  });
+  assert.equal(await send({}), 200);
+  assert.equal(await send({ origin: server.address }), 403);
+  assert.equal(await send({ host: 'evil.com', 'x-forwarded-host': 'mimi.com' }), 403);
+  assert.equal(await send({ origin: 'http://evil.com', 'x-forwarded-proto': 'http' }), 403);
+  assert.equal(await send({ host: `mimi.com:${new URL(server.address).port}` }), 403);
+  assert.equal(calls, 1);
+  for (const port of [0, -1, 65536, NaN, 1.5]) {
+    assert.throws(() => new MimiWebServer(backend(), 0, 'mimi.com', port), /Web 外部端口无效/);
+  }
+  assert.throws(() => new MimiWebServer(backend(), 0, undefined, 80), /Web 外部端口无效/);
 });

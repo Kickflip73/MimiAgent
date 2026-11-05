@@ -1,7 +1,8 @@
+import { randomUUID } from './uuid.js';
 export const imageUrl = id => /^[a-f0-9]{64}\.(png|jpg|gif|webp)$/.test(id) ? `/api/images?id=${encodeURIComponent(id)}` : '';
 
 /** Keep only small uploaded references in browser storage, never image base64. */
-export function createImageDrafts({storage,upload,changed,uuid=()=>crypto.randomUUID()}) {
+export function createImageDrafts({storage,upload,changed,uuid=()=>randomUUID()}) {
   const sessions = new Map();
   function list(session) {
     if (!sessions.has(session)) {

@@ -1,3 +1,4 @@
+import { randomUUID } from './uuid.js';
 import { replayHistory, conversationStatus } from './execution.js';
 import { bindImageViewer } from './image-viewer.js';
 import { inlineMarkup } from './inline.js';
@@ -53,7 +54,7 @@ const esc = (value) =>
 const state = {
   sessionId:
     sessionStorage.getItem('mimi-session') ||
-    `mimi-chat-${crypto.randomUUID()}`,
+    `mimi-chat-${randomUUID()}`,
   draft: !sessionStorage.getItem('mimi-session') || sessionStorage.getItem('mimi-draft') === '1',
   view: 'chat',
   sessions: [],
@@ -1090,7 +1091,7 @@ async function send(event) {
     pending = null;
   }
   if (!pending || pending.input !== input || JSON.stringify(pending.images||[]) !== JSON.stringify(images.map(i=>i.id)) || JSON.stringify(pending.media||[]) !== JSON.stringify(media.map(i=>i.id)))
-    pending = { input, media:media.map(i=>i.id), images:images.map(i=>i.id), requestId: crypto.randomUUID(), sentAt: new Date().toISOString(), security: $('#security').value };
+    pending = { input, media:media.map(i=>i.id), images:images.map(i=>i.id), requestId: randomUUID(), sentAt: new Date().toISOString(), security: $('#security').value };
   sessionStorage.setItem(`mimi-pending:${session}`, JSON.stringify(pending));
   const pendingArticle = message('user', input, false, pending.sentAt, images, media);
   pendingArticle.dataset.requestId = pending.requestId;
@@ -1409,7 +1410,7 @@ async function archiveDetachedRun(session,id,task) {
   liveRuns.delete(id);sessionStorage.removeItem(`mimi-progress:${session}`);
 }
 const queue = createMessageQueue({
-  storage: sessionStorage, uuid: () => crypto.randomUUID(), changed: () => renderQueue(),
+  storage: sessionStorage, uuid: () => randomUUID(), changed: () => renderQueue(),
   isRunning: async (session, { immediate } = {}) => {
     if (session === state.sessionId && (state.sending || state.loading || state.changing)) throw new Error('等待会话设置完成');
     const id = sessionStorage.getItem(`mimi-run:${session}`) || state.tasks.find(t => t.sessionId === session && active(t.status))?.taskId;
@@ -1532,7 +1533,7 @@ $('#workspace-choose').onclick=async()=>{const id=state.sessionId,button=$('#wor
 $('#workspace-reset').onclick=()=>{sessionStorage.setItem(`mimi-workspace:${state.sessionId}`,state.snapshot.workspaceRoot);renderWorkspace();};
 $('#session-search').addEventListener('keydown',event=>{if(event.key==='Escape'){$('#session-search').value='';renderSessions();$('#search-toggle').click();$('#search-toggle').focus();}});
 $('#new-chat').onclick = () => {
-  void selectSession(`mimi-chat-${crypto.randomUUID()}`, true);
+  void selectSession(`mimi-chat-${randomUUID()}`, true);
 };
 $('#refresh').onclick = async () => {
   await refresh(true);

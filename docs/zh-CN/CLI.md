@@ -6,6 +6,17 @@
 
 `mimi` 同时是交互式客户端和本机 Daemon 管理命令。使用 `mimi --help`、`/help` 和 `mimi daemon --help` 查看当前安装版本的精确命令集。
 
+## 本地 Web 域名
+
+`mimi web --port 3210` 启动本机界面。在本机 hosts 文件中将 `mimi.com` 映射到 `127.0.0.1`，然后执行：
+
+```bash
+MIMI_WEB_HOSTNAME=mimi.com mimi web --port 3210
+```
+
+访问 `http://mimi.com:3210/`。服务只接受配置的精确域名及原来的 `127.0.0.1` 地址，分别校验同源，仍只监听回环地址。通知链接保留原 IP 地址。hosts 覆盖仅对当前电脑生效，并覆盖同名公网域名。自定义 `.com` 域名使用 HTTP 时不具备浏览器安全上下文，录音请使用原 IP 地址，或另行配置受信任的本机 HTTPS。若要使用 `http://mimi.com/`，设置 `MIMI_WEB_PUBLIC_PORT=80`，并让仅监听回环地址的反向代理从 80 端口转发到 `127.0.0.1:3210`，保留原始 Host 和 Origin 请求头。此配置只改变接受的浏览器来源，不改变服务监听端口。
+
+
 ## 顶层命令
 
 | 命令 | 用途 |

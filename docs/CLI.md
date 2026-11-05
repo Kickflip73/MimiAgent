@@ -6,6 +6,17 @@
 
 The `mimi` executable is both the interactive client and the local daemon administration command. Run `mimi --help`, `/help`, and `mimi daemon --help` for the exact command set shipped by the installed version.
 
+## Local Web hostname
+
+`mimi web --port 3210` serves the local UI. To use a hostname alias, map `mimi.com` to `127.0.0.1` in the local hosts file and start with:
+
+```bash
+MIMI_WEB_HOSTNAME=mimi.com mimi web --port 3210
+```
+
+Open `http://mimi.com:3210/`. Only the exact configured hostname and the original `127.0.0.1` address are accepted, with same-origin checks for each. Listening remains loopback-only. Notification links retain the original IP address. The hosts override applies only to this computer and overrides the public domain. Plain HTTP on a custom `.com` domain does not provide a browser secure context; use the original IP address for microphone recording, or configure trusted local HTTPS separately. For `http://mimi.com/`, set `MIMI_WEB_PUBLIC_PORT=80` and use a loopback-only reverse proxy on port 80 forwarding to `127.0.0.1:3210` with the original Host and Origin headers preserved. This setting changes the accepted browser origin, not the listening port.
+
+
 ## Top-Level Commands
 
 | Command | Purpose |

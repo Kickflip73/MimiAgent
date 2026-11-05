@@ -8,7 +8,8 @@ export async function runWebCommand(config: AppConfig, args: string[]): Promise<
   if (args.length && (args.length !== 2 || args[0] !== '--port' || !/^\d+$/.test(args[1]!))) {
     throw new Error('用法：mimi web [--port 3210]');
   }
-  const server = new MimiWebServer(daemonWebBackend(config), args[1] ? Number(args[1]) : 3210);
+  const server = new MimiWebServer(daemonWebBackend(config), args[1] ? Number(args[1]) : 3210, process.env.MIMI_WEB_HOSTNAME,
+    process.env.MIMI_WEB_PUBLIC_PORT === undefined ? undefined : Number(process.env.MIMI_WEB_PUBLIC_PORT));
   await server.start();
   await webEndpoint(mimiPaths(config).root).replace({origin:server.address,pid:process.pid});
   console.log(`Mimi Web\n${server.launchUrl}\n\n仅本机可访问。请保留此终端；Ctrl+C 关闭 Web，后台任务继续运行。`);
