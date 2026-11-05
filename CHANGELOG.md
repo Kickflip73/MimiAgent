@@ -12,6 +12,9 @@ All notable changes to MimiAgent are documented here.
 
 ### Fixed
 
+- Restore immediate Web conversation-list updates, automatic composer focus for new conversations, collapsible navigation, and workspace labels.
+- Verify capability-existence questions against installed Skills and include every loaded Skill in the context index.
+
 - Local HTTP Web domains no longer stall during initialization when the browser does not expose `crypto.randomUUID`; session, request, queue, and attachment IDs use cryptographic random bytes.
 
 - `npm ci` no longer fails with `EBADPLATFORM` on Linux, Windows, and Intel macOS. The macOS ARM CUA driver binary is provided by `@trycua/cua-driver`'s own optional dependencies instead of being a root dev dependency; the explicit entry aborted installs everywhere except Apple Silicon.

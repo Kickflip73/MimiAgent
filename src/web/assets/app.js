@@ -35,6 +35,7 @@ const icons = {
   edit: 'm16 3 5 5-12 12H4v-5L16 3Zm-2 2 5 5',
   leaf: 'M20 3C9 2 2 8 5 16c8 6 16-1 15-13ZM5 20l10-11',
   close: 'M6 6l12 12M6 18 18 6',
+  chevron: 'm9 6 6 6-6 6',
   check: 'm5 12 4 4L19 6',
   clock: 'M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',
 };
@@ -78,6 +79,7 @@ const state = {
   loading: false,
   recoverRun: null,
   archiveUpdatedAt: 0,
+  focusInput: false,
 };
 let pickers;
 const selectionKey = (kind, session = state.sessionId) => JSON.stringify([session, kind]);
@@ -585,7 +587,10 @@ function scrollEnd() {
 }
 function renderSessions() {
   const query = $('#session-search').value.trim().toLowerCase();
-  const list = state.sessions
+  for (const s of state.sessions) optimisticSessions.delete(s.id);
+  const optimistic = [...optimisticSessions]
+    .map((id) => ({ id, title: '新的对话', preview: '', updatedAt: new Date().toISOString(), turns: 1, recoverable: false }));
+  const list = [...optimistic, ...state.sessions]
     .filter(
       (s) =>
         (query ||
@@ -603,6 +608,50 @@ function renderSessions() {
     : '<p class="sidebar-hint">' +
       (query ? '没有匹配的对话' : state.archivePending ? '正在读取最近对话…' : '还没有对话，从一句话开始。') +
       '</p>';
+}
+// A just-created conversation must be visible in the list immediately, before
+// the daemon has committed its titled summary. Optimistic rows survive any
+// concurrent list replacement and are dropped once the archive includes them.
+const optimisticSessions = new Set();
+function ensureSessionRow(session) {
+  if (/^mimi-(task-|connector-|routine-|system|briefing)/.test(session)) return;
+  if (!state.sessions.some((s) => s.id === session)) optimisticSessions.add(session);
+  renderSessions();
+}
+let sessionListSync = 0;
+function syncSessionList(expectedId) {
+  const token = ++sessionListSync;
+  const delays = [0, 1200, 3500, 8000];
+  (async () => {
+    for (const delay of delays) {
+      if (token !== sessionListSync) return;
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      if (token !== sessionListSync) return;
+      let value;
+      try {
+        value = await api('sessions?refresh=1');
+      } catch {
+        continue;
+      }
+      if (token !== sessionListSync) return;
+      const found = !expectedId || value.some((s) => s.id === expectedId);
+      state.sessions = value;
+      state.archiveUpdatedAt = Date.now();
+      if (found) optimisticSessions.delete(expectedId);
+      renderSessions();
+      if (found || !expectedId) return;
+    }
+    // The retry window ended; the periodic archive scan takes over afterwards.
+    if (token === sessionListSync && expectedId) {
+      void api('sessions?refresh=1').then((value) => {
+        if (token !== sessionListSync) return;
+        state.sessions = value;
+        state.archiveUpdatedAt = Date.now();
+        if (value.some((s) => s.id === expectedId)) optimisticSessions.delete(expectedId);
+        renderSessions();
+      }).catch(() => {});
+    }
+  })().catch(() => {});
 }
 function renderPlan(steps) {
   $('#plan').hidden = !steps?.length;
@@ -692,7 +741,7 @@ async function selectSession(id, draft = false, preserveInput = false) {
   } finally {
     if (revision === state.revision) {
       state.loading = false;
-      if (state.snapshot) { $('#session-loading').hidden = true; $('#chat-scroll').hidden = false; $('.composer-dock').hidden = false; resizeInput(); scrollEnd(); }
+      if (state.snapshot) { $('#session-loading').hidden = true; $('#chat-scroll').hidden = false; $('.composer-dock').hidden = false; resizeInput(); scrollEnd(); if (state.focusInput) { state.focusInput = false; $('#message-input').focus(); } }
       $('#selection-status').textContent = state.snapshot
         ? ''
         : '会话读取失败，请点击右上角刷新重试';
@@ -719,12 +768,13 @@ function setView(view) {
   document.querySelectorAll('[data-view]').forEach((el) => {
     el.classList.toggle('active', el.dataset.view === view);
   });
-  $('#view-title').textContent = {
+  const title = {
     chat: '对话',
     tasks: '后台任务',
     memory: '记忆',
     ...viewTitles,
   }[view];
+  $('#view-title').textContent = title;
   closeMenu();
   if (view === 'chat') { void state.recoverRun?.(); resizeInput(); renderQueue(); }
   if (view === 'tasks') renderTasks();
@@ -985,7 +1035,7 @@ function startStream(id) {
       if (latest && textOf(latest) !== visible) renderMessages(snapshot.items);
       updateContext(); renderPlan(snapshot.plan); updateComposer();
     }).catch(() => {});
-    void refresh(true); void drainQueues();
+    void refresh(true); ensureSessionRow(session); void syncSessionList(session); void drainQueues();
   }
   async function recover() {
     if (!current() || recovering) return;
@@ -1121,6 +1171,8 @@ async function send(event) {
     resizeInput();
     preparing.remove();
     startStream(accepted.eventId);
+    ensureSessionRow(session);
+    void syncSessionList(session);
     scrollEnd();
     void refresh(true);
   } catch (error) {
@@ -1441,7 +1493,7 @@ const queue = createMessageQueue({
     if (![...$('#messages').querySelectorAll('[data-request-id]')].some(el => el.dataset.requestId === item.id)) {
       const article = message('user',item.input,false,new Date().toISOString(),item.images,item.media); article.dataset.requestId = item.id; $('#messages').append(article);
     }
-    startStream(result.eventId); scrollEnd(); void refresh(true);
+    startStream(result.eventId); ensureSessionRow(session); void syncSessionList(session); scrollEnd(); void refresh(true);
   },
 });
 let editingQueued;
@@ -1525,16 +1577,22 @@ $('#message-input').addEventListener('keydown', (event) => {
 });
 function renderWorkspace() {
   const workspace=sessionStorage.getItem(`mimi-workspace:${state.sessionId}`)||state.snapshot?.workspaceRoot||'';
-  $('#chat-workspace').textContent=workspace;$('#chat-workspace').title=workspace;
-  $('#workspace-choose span:last-child').textContent=workspace===state.snapshot?.workspaceRoot?'选择工作区':workspace.split('/').filter(Boolean).at(-1)||'选择工作区';
-  $('#workspace-reset').hidden=workspace===state.snapshot?.workspaceRoot;
+  $('#workspace-path').textContent=workspace||'默认工作区';
+  $('#workspace-choose').title=workspace?`${workspace}\n点击选择其他工作区`:'点击选择工作区';
+  $('#workspace-reset').hidden=!workspace||workspace===state.snapshot?.workspaceRoot;
 }
 $('#workspace-choose').onclick=async()=>{const id=state.sessionId,button=$('#workspace-choose');button.disabled=true;try{const value=await api('manage',{action:'workspace.choose',sessionId:id,value:{}});if(value.path&&state.sessionId===id){sessionStorage.setItem(`mimi-workspace:${id}`,value.path);renderWorkspace();}}catch(error){toast(error.message);}finally{button.disabled=false;}};
 $('#workspace-reset').onclick=()=>{sessionStorage.setItem(`mimi-workspace:${state.sessionId}`,state.snapshot.workspaceRoot);renderWorkspace();};
 $('#session-search').addEventListener('keydown',event=>{if(event.key==='Escape'){$('#session-search').value='';renderSessions();$('#search-toggle').click();$('#search-toggle').focus();}});
 $('#new-chat').onclick = () => {
+  state.focusInput = true;
   void selectSession(`mimi-chat-${randomUUID()}`, true);
 };
+const navGroups = $('#nav-groups');
+navGroups.open = localStorage.getItem('mimi-nav-open') === '1';
+navGroups.addEventListener('toggle', () => {
+  localStorage.setItem('mimi-nav-open', navGroups.open ? '1' : '0');
+});
 $('#refresh').onclick = async () => {
   await refresh(true);
   if (state.online && state.view === 'chat')

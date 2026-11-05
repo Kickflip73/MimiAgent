@@ -229,7 +229,7 @@ export class MimiWebServer {
       throw new HttpError(503,'图片接口不可用');
     }
     if (get && url.pathname === '/api/status') { json(response, 200, await this.backend.status()); return; }
-    if (get && url.pathname === '/api/sessions') { json(response, 200, await this.backend.sessions()); return; }
+    if (get && url.pathname === '/api/sessions') { json(response, 200, await this.backend.sessions(url.searchParams.get('refresh') === '1')); return; }
     if (get && url.pathname === '/api/session') {
       json(response, 200, await this.backend.session(identifier(url.searchParams.get('id')), url.searchParams.get('draft') === '1')); return;
     }

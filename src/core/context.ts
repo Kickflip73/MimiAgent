@@ -557,6 +557,7 @@ export class ContextManager {
         id: 'skill-catalog',
         text: [
           '可用 Agent Skills（这里列出的是 Skill 名称，不是可直接调用的 Tool）：',
+          'owner 问“有没有/能不能用某能力”时，先按此清单核查，再用 inspect_capabilities 的能力目录或 list_skills 补充核实；清单未命中不等于能力不存在，结论中要说明已核查哪些来源。',
           '需要激活时，若尚不知道 use_skill 的 Tool schema，先用 inspect_capabilities 以精确 name="use_skill" 查询；',
           '已知 schema 后直接用 invoke_capability 调用 name="use_skill"，并把 Skill 名称放入 argumentsJson.name。',
           parts.skillCatalog,

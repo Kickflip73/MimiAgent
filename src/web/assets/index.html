@@ -23,20 +23,28 @@
           >
         </button>
         <nav class="navigation" aria-label="功能导航">
-          <div class="nav-group-label">工作</div>
-          <button class="nav-item active" data-view="chat"><span data-icon="chat"></span>对话</button>
-          <button class="nav-item" data-view="tasks"><span data-icon="stack"></span>后台任务<span class="nav-count" id="task-count">—</span></button>
-          <button class="nav-item" data-view="memory"><span data-icon="spark"></span>记忆</button>
-          <button class="nav-item" data-view="schedules"><span data-icon="clock"></span>定时任务</button>
-          <div class="nav-group-label">扩展</div>
-          <button class="nav-item" data-view="skills"><span data-icon="leaf"></span>Skills</button>
-          <button class="nav-item" data-view="mcp"><span data-icon="branch"></span>MCP</button>
-          <button class="nav-item" data-view="models"><span data-icon="stack"></span>模型接入</button>
-          <button class="nav-item" data-view="connectors"><span data-icon="branch"></span>连接器</button>
-          <div class="nav-group-label">系统</div>
-          <button class="nav-item" data-view="status"><span data-icon="sun"></span>运行状态</button>
-          <button class="nav-item" data-view="runtime"><span data-icon="file"></span>运行时指令</button>
-          <button class="nav-item" data-view="settings"><span data-icon="settings"></span>设置</button>
+          <details class="nav-groups" id="nav-groups">
+            <summary class="nav-groups-toggle" title="功能导航" aria-label="功能导航">
+              <span data-icon="stack"></span
+              ><span class="nav-groups-chevron" data-icon="chevron"></span>
+            </summary>
+            <div class="nav-groups-body">
+              <div class="nav-group-label">工作</div>
+              <button class="nav-item active" data-view="chat"><span data-icon="chat"></span>对话</button>
+              <button class="nav-item" data-view="tasks"><span data-icon="stack"></span>后台任务<span class="nav-count" id="task-count">—</span></button>
+              <button class="nav-item" data-view="memory"><span data-icon="spark"></span>记忆</button>
+              <button class="nav-item" data-view="schedules"><span data-icon="clock"></span>定时任务</button>
+              <div class="nav-group-label">扩展</div>
+              <button class="nav-item" data-view="skills"><span data-icon="leaf"></span>Skills</button>
+              <button class="nav-item" data-view="mcp"><span data-icon="branch"></span>MCP</button>
+              <button class="nav-item" data-view="models"><span data-icon="stack"></span>模型接入</button>
+              <button class="nav-item" data-view="connectors"><span data-icon="branch"></span>连接器</button>
+              <div class="nav-group-label">系统</div>
+              <button class="nav-item" data-view="status"><span data-icon="sun"></span>运行状态</button>
+              <button class="nav-item" data-view="runtime"><span data-icon="file"></span>运行时指令</button>
+              <button class="nav-item" data-view="settings"><span data-icon="settings"></span>设置</button>
+            </div>
+          </details>
         </nav>
         <div class="session-heading"><span>最近对话</span><div class="session-search-control"><div id="session-search-wrap" class="session-search-wrap" hidden><input class="session-search" id="session-search" type="search" placeholder="搜索对话…" aria-label="搜索会话"/></div><button class="icon-button" id="search-toggle" aria-label="搜索会话" aria-expanded="false"><span data-icon="search"></span></button></div></div>
         <div class="sessions" id="sessions">
@@ -76,7 +84,6 @@
               <strong id="loading-title">正在打开对话</strong><p id="loading-description">Mimi 正在整理这段对话…</p>
               <button id="retry-session" class="secondary-button" hidden>重新加载</button>
             </div>
-            <div class="chat-workspace" id="chat-workspace" title="当前工作区"></div>
             <div class="chat-scroll" id="chat-scroll">
               <div class="welcome" id="welcome">
                 <div class="mascot">
@@ -84,14 +91,13 @@
                 </div>
                 <h1>嗨，我是 Mimi。</h1>
                 <p class="welcome-description">陪你思考，也帮你把事情做好。</p>
-                <button type="button" class="workspace-choose secondary-button" id="workspace-choose"><span data-icon="file"></span><span>选择工作区</span></button><button type="button" class="text-button" id="workspace-reset" hidden>使用默认工作区</button>
-                <div class="welcome-footnote">
-                  在这里开始，对话和记忆始终相伴。
-                </div>
               </div>
               <div class="messages" id="messages" aria-label="对话记录"></div>
             </div>
             <div class="composer-dock">
+              <div class="workspace-line" id="workspace-line">
+                <button type="button" class="workspace-current" id="workspace-choose" title="点击选择工作区"><span data-icon="file"></span><span class="workspace-path" id="workspace-path">默认工作区</span><span class="workspace-switch" data-icon="chevron"></span></button><button type="button" class="text-button" id="workspace-reset" hidden>恢复默认工作区</button>
+              </div>
               <div id="plan" class="plan" hidden></div>
               <div id="message-queue" class="message-queue" aria-label="待发送消息" hidden></div>
               <form class="composer" id="composer">

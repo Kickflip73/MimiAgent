@@ -1,10 +1,10 @@
 # MimiAgent Connector Protocol
 
-Connector 把邮件、Messages、新闻、天气、日历或其他事件源适配为 MimiAgent 的统一事件协议。它运行在独立子进程中，通过 stdin/stdout 交换一行一个 JSON 的 NDJSON；渠道 SDK、崩溃和凭证不会进入 MimiAgent Runtime。个人 QQ 使用受约束的 CUA route，不伪装成 Connector 后端。
+Connector 把个人 QQ、邮件、Messages、新闻、天气、日历或其他事件源适配为 MimiAgent 的统一事件协议。它运行在独立子进程中，通过 stdin/stdout 交换一行一个 JSON 的 NDJSON；渠道 SDK、崩溃和凭证不会进入 MimiAgent Runtime。个人 QQ 使用受约束的 CUA route；微信个人账号与 Bot 通道均已退休，不再进入 Connector catalog。
 
 ## 配置
 
-首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认启用不启动 GUI App 的 System Connector 和 action-only Desktop Connector；Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Browser、Screen、Voice、Radar 和 File Radar 均需用户显式启用。初始化只为 canonical packaged Connector 补齐已声明的 action，且无变更时不改文件。
+首次运行 `mimi` 会自动从发布包内的 `mimi.connectors.example.json` 创建 `~/.mimi-agent/daemon/connectors.json`，将 Node 和 Connector 脚本转换为当前安装位置的绝对路径。macOS 默认启用不启动 GUI App 的 System Connector 和 action-only Desktop Connector；Desktop 默认不轮询，只有调用明确 action 时才工作。Calendar、Mail、Messages、Contacts、Notes、Shortcuts、Browser、Screen、Voice 和 QQ 个人消息配置槽位均需用户显式启用。旧版自动启用的 canonical 本机 Connector 会一次性迁移到轻量默认，之后用户的显式启停选择继续保留；QQ 个人消息槽位也只补一次。Calendar/Reminders 启用后通过 EventKit 静默访问系统数据；Mail 的主动轮询只在 Mail 已经运行时读取，绝不为了后台轮询重新打开 App。Radar 和 File Radar 默认关闭。初始化会原子移除全部旧微信 Connector/桥和其他已退役 Connector，并为 canonical packaged Connector 补齐新 action。写入无变更时不改文件。
 
 `~/.mimi-agent/daemon` 是唯一默认常驻状态目录。三个配置示例文件均使用统一的 MimiAgent 命名。
 
@@ -96,7 +96,6 @@ Connector 声明 effect=`read` 的 `health_check` 后，Daemon 的确定性
 并发。没有只读健康 action 的旧 Connector 不会被猜测调用。业务模型不得调用
 `health_check`、启停或 reload 来临时维修 Connector。
 
-
 ## 通用本机 Webhook
 
 没有专用 stdio Bridge 时，可开启只绑定 `127.0.0.1` 的认证入口：
@@ -175,6 +174,89 @@ Connector 执行完成后返回：
 在执行前完成入参、目标或业务前置条件校验并明确拒绝时，返回 `ok:false` 和简短 `error`，不得设置 `uncertain:true`；Host 将其记为 `failed_safe`，保留原始错误文本，本轮不会冻结后续 ActionIntent。只有请求可能已经越过副作用提交点、但无法确认结果时，才返回 `ok:false,uncertain:true`。`target` 是主要事务对象，`payload` 是 Connector 自己定义的 JSON。`deadlineAt` 是 Daemon 给出的 Unix 毫秒绝对截止时间；新 Connector 应在截止时间前停止底层进程或请求并返回失败，旧 Connector 可忽略该兼容字段。外层 `deliveryTimeoutMs` / `actionTimeoutMs` 到达后，Manager 会终止并重启整个 Connector 子进程，防止已经向调用方报超时的本地动作继续晚到；子进程退出或 action 超时时仍把结果视为不确定并拒绝自动重放。Connector 应在上游支持时使用 action `id` 做幂等键。
 
 运行 `mimi daemon connectors` 可查看每个 Connector 的当前进程状态、双向就绪度和 action 目录，输出不包含凭证。恢复通知仍需要通过上述稳定窗口。
+
+## 个人账号消息 Connector
+
+`personal-message-connector.mjs` 是个人账号协议 Adapter 的共享 NDJSON host。QQ 的正式业务读写不伪装成 Connector：已绑定的 QQ Event 通过
+`PersonalMessageHub → ComputerManager/CUA` 执行；`personal-qq` 的 disabled 空配置只记录
+尚缺正式入站观察器这一 capability gap。微信不保留配置槽位、Host channel 或降级路线。
+
+M0 运行基线允许把尚未达到其所属阶段门禁的实验渠道暂时停用，但不得删除配置。
+当前阶段归属和恢复门禁如下：
+
+| Connector | 阶段 | 恢复启用门禁 |
+|---|---|---|
+| `personal-qq` | M1 | Hub→ComputerManager 窄路由、账号/会话指纹、bounded context、前台/草稿保护、动作后回读与 uncertain no-replay 已通过；另需正式入站观察器、Computer live readiness 和 owner 测试会话 canary |
+| `macos-life` | M4 | Calendar/Reminders TCC 已由 owner 授予；只读 probe、稳定 UID/ID、后台安全和动作后核验通过 |
+
+恢复时逐项执行 `mimi daemon connectors enable <id>`，等待启动宽限期后复查
+`mimi daemon connectors` 与 `mimi daemon doctor`；出现 offline、unknown、stale 或
+unavailable 即重新停用并保留配置。恢复检查不得触发发送、日历写入或授权点击。
+
+个人消息 Event 由 Host 结构化绑定为 `PersonalMessageScope`，不是根据 owner 文本或渠道
+关键词分类。该 Scope 对 QQ 绑定当前 Session Actor
+的 ComputerManager callback，只开放有界读取/发送业务工具。QQ 必须由
+Source Policy 显式授予 `computerAccess>=background` 且 `computerApps` 包含
+`com.tencent.qq`，当前窗口、账号或稳定 `qq:visible_ax:sha256:*` 会话 ID 任一不匹配即
+失败关闭。QQ 不点击切换会话，不读取完整历史，不把可见 AX 覆盖冒充完整监听。
+`list_targets`
+从当前已验证账号的网页会话列表动态分页返回稳定 numeric sid，支持 `chat`、
+`groupchat`、`pubchat` 和 `collectchat`，顺序为最近活跃优先，默认仅返回最近一页。
+查看需注意消息时优先处理该页 unread/近期会话，不要求也不得无条件遍历全部会话；只有
+当前页信息不足或 owner 明确要求更早/全部时才按 `nextCursor` 继续。它只枚举账号当前
+已有会话，不复制联系人目录。`get_context` 对其中唯一 sid 做有界读取，无需把所有会话
+提前写入配置。账号或会话候选验证失败时读取失败关闭；同一资源不能降级到 Shell、
+Computer/CUA、Browser/Desktop 或其他 Connector。
+
+owner 明确要求按姓名找人或发起新会话时，`search_targets` 只在专用后台标签内驱动
+`#navSearchInput`，返回最多 20 个带稳定 numeric sid、会话类型和一次性
+`candidateToken` 的候选，并恢复原搜索框状态。它不扫描或持久化全量联系人。候选唯一，
+或 owner 已根据返回标签完成重名消歧后，`bind_target` 才会重新核对账号、后台标签、
+查询、sid 和类型，发起该会话，并把 stable sid、账号指纹和新 `authorizationRevision` 原子
+写入现有 allowlist。token 五分钟过期且单次消费；显示名不能直接绑定或发送。
+
+监听和发送仍只允许带 owner binding 的配置会话：
+
+```json
+{
+  "sid": "123456",
+  "type": "chat",
+  "binding": {
+    "selectedBy": "owner",
+    "accountFingerprint": "sha256:...",
+    "authorizationRevision": "owner-revision-1"
+  }
+}
+```
+
+动态读取以 `sid` 精确匹配当前已验证账号会话列表中的唯一候选，再从页面结构解析真实
+类型；显示名不参与定位，也不能作为发送目标。配置文件只持久化监听/发送 allowlist，
+目标因会话列表虚拟化暂未加载时，Adapter 最多执行 12 次有界 `loadMoreSessions` 并恢复
+原滚动位置；找到唯一 numeric sid/type 后才读取，耗尽边界仍返回
+`target_unavailable`，不会按名称猜测或无限翻页。
+`authorizationRevision` 使 owner 的每次写目标选择可审计。缺 binding、账号变化、
+revision 无效或写目标当前不存在唯一候选时，status 返回
+`targetBindingStatus=target_not_bound`，`outbound` 不会冒充可用，但账号验证通过后的
+动态 `contextRead/coverage` 仍为 bounded。页面指纹只在选中精确发送目标后、点击前
+执行 target-scoped preflight；专用页暂时停在会话列表或空会话不会把整个路线误判为
+不可用，目标页的输入框、发送按钮或指纹不匹配仍会在任何外部写入前失败关闭。
+
+`messageMode=confirm` 的草稿只能在同一个人消息 Session 中由 owner 使用
+`/confirm-send <最终文本>` 结构化命令解锁。Host 只接受最近十分钟内已经完成的个人消息
+草稿 Event，重新读取最新上下文，并把正文锁为命令中的精确文本；普通“好”
+“发送一下”、跨 Session 命令、过期草稿或模型改写后的正文都不能触发写操作。
+`messageMode=auto` 的授权只来自 owner 配置、稳定目标、Capability Snapshot 和一次性
+token，不扫描正文中的业务词汇来猜测风险。
+
+轮询只扫描配置的 watch 会话。每个新 watch 会话的首轮只把当前可见稳定 `mid`
+写成私有基线，不把启用前的页面历史误报为新 Event；之后 Connector 等整批
+`event_ack` 成功才推进最近 256 个稳定 `mid`。ACK 丢失时重读，由 Host 的
+`source + externalId` 去重。coverage 在后台外部入站、断线补偿和长期稳定性真实
+验收前固定为 `bounded`。
+
+## 已退役的消息渠道
+
+全部微信 Connector/桥、QQ OneBot/NapCat Connector、通用 HTTP Action/Event Connector，以及 QQ AppleScript IM Connector 已从运行时、发布包和默认配置中移除。它们不会作为个人消息 Adapter 的降级路线。旧配置会在初始化时删除这些已退役项。
 
 ## 信息雷达（RSS / Atom / 天气）
 
@@ -588,7 +670,7 @@ Connector 的旧应用声明不再粗粒度封锁 Chrome 等完整应用。
 
 ## M1 执行面与只读 Eval
 
-Browser、Screen、Shortcuts 和 Desktop action 必须在模板中声明稳定
+Browser、Screen、Shortcuts、Desktop 等 action 必须在模板中声明稳定
 `capability` 与 `effect`，运行时 `routeOwner` 固定为精确 Connector ID。读取目录、
 bounded page/screen/OCR 和状态查询为 `read`；Shortcut 执行、截图显式落盘、导航、
 DOM 执行、应用/键盘/菜单/剪贴板变更为 `write`。缺失或旧配置中的 `unknown` 不能被
