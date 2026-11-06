@@ -4,7 +4,7 @@ index af7b59c..7cddd24 100644
 +++ b/models/mlx_streaming.py
 @@ -11,6 +11,7 @@ run on Linux CI), so every `mlx` and `mlx_audio` import is inside the function t
  from __future__ import annotations
- 
+
  import json
 +import math
  import time
@@ -17,9 +17,9 @@ index af7b59c..7cddd24 100644
 +    wired_limit_gb: float | None = None
      compile_frame: bool = False
      fast_first_frames: int = 0
- 
+
 @@ -116,19 +118,31 @@ class MlxSpeedOptions:
- 
+
          env = os.environ if env is None else env
          cache = env.get("BREEZE_MLX_CACHE_GB", "").strip()
 +        wired = env.get("BREEZE_MLX_WIRED_GB", "").strip()
@@ -31,13 +31,13 @@ index af7b59c..7cddd24 100644
              compile_frame=env.get("BREEZE_MLX_COMPILE", "") == "1",
              fast_first_frames=int(env.get("BREEZE_MLX_FAST_FIRST", "0") or 0),
          )
- 
+
      def report(self) -> dict[str, Any]:
          """The `speed` field of the `model.loaded` event."""
 -        return {"quantize": self.quantize or None, "cache_limit_gb": self.cache_limit_gb, "compile_frame": self.compile_frame,
 +        return {"quantize": self.quantize or None, "cache_limit_gb": self.cache_limit_gb, "wired_limit_gb": self.wired_limit_gb, "compile_frame": self.compile_frame,
                  "fast_first_frames": self.fast_first_frames}
- 
+
 +    def wired_limit_bytes(self, device: Mapping[str, int]) -> int | None:
 +        if self.wired_limit_gb is None:
 +            return None
@@ -48,7 +48,7 @@ index af7b59c..7cddd24 100644
 +            raise ValueError("BREEZE_MLX_WIRED_GB must be positive and within the system/half-RAM limit")
 +        return int(value * 1e9)
 +
- 
+
  def quantize_parts(mlx_model: Any, speed: MlxSpeedOptions) -> None:
      """Quantize the linear layers of the parts `speed.quantize` names, in place (no-op when it names none).
 @@ -1131,6 +1145,9 @@ def load_mlx_runtime(path: Path, speed: MlxSpeedOptions | None = None) -> MlxBre
@@ -71,8 +71,8 @@ index 64c2e5c..6b9e7cd 100644
      assert speed.quantize_parts() == []
 -    assert speed.report() == {"quantize": None, "cache_limit_gb": None, "compile_frame": False, "fast_first_frames": 0}
 +    assert speed.report() == {"quantize": None, "cache_limit_gb": None, "wired_limit_gb": None, "compile_frame": False, "fast_first_frames": 0}
- 
- 
+
+
  def test_from_env_reads_every_setting():
 @@ -48,3 +48,16 @@ def test_quantize_parts_touches_only_the_named_part():
      assert model.depth_decoder.layers[0].bits == 8
