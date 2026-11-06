@@ -97,7 +97,7 @@ test('exposes unique tool names for OpenAI and compatible providers', () => {
   for (const openAI of [true, false]) {
     const names = createTools(process.cwd(), openAI).map((tool) => tool.name);
     assert.equal(new Set(names).size, names.length);
-    assert.ok(names.includes('web_search'));
+    assert.equal(names.includes('web_search'), openAI || Boolean(process.env.GOOGLE_CSE_API_KEY?.trim() && process.env.GOOGLE_CSE_CX?.trim()));
     assert.ok(names.includes('inspect_processes'));
   }
 });

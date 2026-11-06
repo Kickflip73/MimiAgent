@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { sharedSpeechOutput, type SpeechSynthesisOptions } from '../runtime/speech-output.js';
 import { WebNotifications } from './notifications.js';
 import { readOutputMedia } from './media-output.js';
 import { mediaIds, type MediaAttachment } from '../core/media-attachment.js';
@@ -28,6 +30,10 @@ import { DAEMON_PROTOCOL_VERSION, type DaemonStatus, type MimiChatSnapshot, type
 
 /** A browser transport over the existing daemon; never owns an Agent or durable state. */
 export interface WebBackend {
+  speechStream?(text: string, signal: AbortSignal, options?: SpeechSynthesisOptions): Promise<Response>;
+  speechLive?(session: string, audioId: string, signal: AbortSignal): Promise<Response>;
+  speechPreview?(id: string): Promise<Buffer>;
+  speechManage?(action: string, value?: unknown, signal?: AbortSignal): Promise<unknown>;
   notifications?: WebNotifications;
   manageRead?(area: string, session: string): Promise<unknown>;
   manageWrite?(action: string, session: string, value: unknown): Promise<unknown>;
@@ -154,6 +160,30 @@ export function daemonWebBackend(config: AppConfig, options: { homeDirectory?: s
     history: async (id) => {
       const items = await client.history(id);
       return (await timeline(id, items)).items;
+    },
+    speechLive: async (session, audioId, signal) => {
+      if (!config.tts) throw new Error('语音服务未配置');
+      return sharedSpeechOutput(config.tts, config.dataRoot).live(session, audioId, signal);
+    },
+    speechStream: async (text, signal, options = {}) => {
+      if (!config.tts) throw new Error('语音服务未配置');
+      return sharedSpeechOutput(config.tts, config.dataRoot).stream(text, options, signal);
+    },
+    speechPreview: async id => {
+      if (!config.tts) throw new Error('语音服务未配置');
+      return sharedSpeechOutput(config.tts, config.dataRoot).previewAudio(id);
+    },
+    speechManage: async (action, value, signal) => {
+      if (!config.tts) throw new Error('语音服务未配置');
+      const speech = sharedSpeechOutput(config.tts, config.dataRoot);
+      if (action === 'voice_clone' || action === 'voice_clone_preview') {
+        const input = z.object({ id: z.string(), name: z.string(), text: z.string(), mediaId: z.string() }).strict().parse(value);
+        const media = await readMedia(path.join(daemonPaths.root, 'web-media'), input.mediaId);
+        if (media.mediaType !== 'audio/wav') throw new Error('参考音频需要 WAV 格式');
+        if (action === 'voice_clone_preview') return speech.previewVoice({ id: input.id, name: input.name, text: input.text, options: { engine: 'breeze' } }, media.data, signal);
+        return speech.cloneVoice({ id: input.id, name: input.name, text: input.text }, media.data, signal);
+      }
+      return speech.manage(action, value, signal);
     },
     outputMedia:(session,file)=>readOutputMedia(config.dataRoot,sessionWorkspace(session),session,file),
     uploadMedia:(data,type,name)=>name?saveFile(path.join(daemonPaths.root,'web-media'),data,name):saveMedia(path.join(daemonPaths.root,'web-media'),data,type),

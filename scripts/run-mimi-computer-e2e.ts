@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { launchedWindowRefs, verifyE2EObservation } from './lib/computer-e2e-oracle.js';
 import { CuaDriverClient } from '../src/extensions/computer/cua-driver-client.js';
 
 const execFileAsync = promisify(execFile);
@@ -191,16 +192,6 @@ function operation(item: SessionItem): string | undefined {
   return item.name;
 }
 
-async function newPids(
-  backend: CuaDriverClient,
-  bundleId: string,
-  existing: ReadonlySet<number>,
-): Promise<number[]> {
-  return [...new Set((await backend.listTargets({ query: bundleId, limit: 50 }))
-    .filter((target) => target.bundleId === bundleId && !existing.has(target.pid))
-    .map((target) => target.pid))];
-}
-
 async function cleanupPids(pids: readonly number[]): Promise<boolean> {
   for (const pid of pids) {
     try {
@@ -256,7 +247,7 @@ async function runIteration(
     const prompt = [
       '只使用直接可见的原生 computer_observe 和 computer_act，不要检查或调用 capability gateway、Skill、Shell、AppleScript。',
       `先观察 app=${CALCULATOR_BUNDLE}，然后无论是否已运行都用 launch_app 启动 bundleId=${CALCULATOR_BUNDLE} 且 newInstance=true，只操作这次 launch 返回的新窗口 state。`,
-      '用 keypress 依次输入 7、SHIFT+8、8、ENTER，直接使用每次 computer_act 返回的 fresh state，不要在动作之间额外 observe，也不要重复任何按键；确认显示结果 56。',
+      '每个 UI 动作必须传上次 state.viewRef。用 keypress 依次输入 7、SHIFT+8、8、ENTER，直接使用每次 computer_act 返回的 fresh state，不要在动作之间额外 observe，也不要重复任何按键；确认显示结果 56。',
       `然后用 launch_app 启动 bundleId=${TEXTEDIT_BUNDLE}，newInstance=true，urls=[${JSON.stringify(pathToFileURL(fixture).toString())}]。`,
       `直接在 launch_app 返回的新 TextEdit 窗口 state 中找到可写文本元素；只有结果是 next=computer_observe 时才观察 app=${TEXTEDIT_BUNDLE}。用一次 set_value 把全文设为 ${JSON.stringify(expected)}，并直接从返回的 state 确认 Verified by Mimi agent ${iteration}。`,
       '最后简短汇总 Calculator 结果和 TextEdit 最终文本。',
@@ -278,7 +269,28 @@ async function runIteration(
       || item.name === 'computer_act'
       || item.name === 'read_context_artifact'
     ));
-    const serialized = `${output}\n${JSON.stringify(items)}`;
+    // Read the apps independently after the model stops. Never score its transcript.
+    const oracle = await backend.startSession({ sessionId: `${sessionId}-oracle`, captureScope: 'auto' });
+    const readOwnedValue = async (bundleId: string, existing: ReadonlySet<number>, role: string, value: string) => {
+      const candidates = (await backend.listTargets({ query: bundleId, limit: 50 }))
+        .filter(target => target.bundleId === bundleId && !existing.has(target.pid)
+          && launchedWindowRefs(items).has(`${target.bundleId}:${target.pid}:${target.windowId}`)
+          && (bundleId !== TEXTEDIT_BUNDLE || target.title.includes(path.basename(fixture))));
+      if (candidates.length !== 1) return false;
+      const target = candidates[0]!;
+      const observation = await backend.observe(oracle, { target, input: {
+        scope: 'window', target, includeScreenshot: false, maxElements: 1000, maxDepth: 20,
+      } });
+      return verifyE2EObservation(observation, target, role, value);
+    };
+    let calculatorVerified = false;
+    let editorVerified = false;
+    try {
+      calculatorVerified = await readOwnedValue(CALCULATOR_BUNDLE, existingCalculator, 'AXStaticText', '56');
+      editorVerified = await readOwnedValue(TEXTEDIT_BUNDLE, existingTextEdit, 'AXTextArea', expected);
+    } finally {
+      await backend.endSession(oracle);
+    }
     const required = [
       'computer_observe:com.apple.calculator',
       'computer_act:keypress',
@@ -290,16 +302,18 @@ async function runIteration(
     else if (missing.length) failure = `required operations missing: ${missing.join(', ')}`;
     else if (/An error occurred|failed-safe|ActionFailedSafeError/iu.test(JSON.stringify(items))) {
       failure = 'a Computer tool returned a failed result';
-    } else if (!serialized.includes('56')) failure = 'Calculator result 56 was not observed';
-    else if (!serialized.includes(`Verified by Mimi agent ${iteration}`)) failure = 'TextEdit result was not observed';
+    } else if (!calculatorVerified) failure = 'Calculator result 56 was not observed';
+    else if (!editorVerified) failure = 'TextEdit result was not observed';
     else if (calls.length > 12) failure = `combined Computer tool call budget exceeded: ${calls.length}`;
   } catch (error) {
     failure = errorText(error);
   } finally {
-    const created = [
-      ...await newPids(backend, CALCULATOR_BUNDLE, existingCalculator),
-      ...await newPids(backend, TEXTEDIT_BUNDLE, existingTextEdit),
-    ];
+    const owned = launchedWindowRefs(items);
+    const created = [...new Set((await backend.listTargets({ limit: 50 }))
+      .filter(target => owned.has(`${target.bundleId}:${target.pid}:${target.windowId}`)
+        && (target.bundleId === CALCULATOR_BUNDLE ? !existingCalculator.has(target.pid)
+          : target.bundleId === TEXTEDIT_BUNDLE && !existingTextEdit.has(target.pid)))
+      .map(target => target.pid))];
     sessionLeak = await cleanupPids(created);
     if (sessionLeak) failure ??= `test app process leak detected: ${created.join(',')}`;
   }
@@ -334,7 +348,8 @@ try {
 
 const successes = results.filter((result) => result.success).length;
 const report = {
-  schemaVersion: 1,
+  schemaVersion: 2,
+  oracle: 'independent-owned-window-ax-exact-value',
   kind: 'mimi-computer-agent-real-e2e',
   scenarioClasses: ['app-observe', 'keyboard-and-vision', 'text-read-write'],
   iterations,

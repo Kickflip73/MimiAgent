@@ -166,7 +166,7 @@ export async function runMimiCli(
     try {
       const accepted = await client.submit(oneShotInput, current.sessionId);
       const event = await client.wait(accepted.eventId, undefined, (streamed) => {
-        if (streamed.kind === 'plan') return;
+        if (streamed.kind === 'plan' || streamed.kind === 'speech') return;
         if (streamed.kind === 'answer') streamedAnswer += streamed.text;
         renderer.handleDisplay(streamed);
       });
@@ -295,6 +295,7 @@ export async function runMimiCli(
           terminal.setTasks(streamed.steps);
           return;
         }
+        if (streamed.kind === 'speech') return;
         if (streamed.kind === 'answer') streamedAnswer += streamed.text;
         renderer.handleDisplay(streamed);
       });

@@ -1,0 +1,93 @@
+diff --git a/models/mlx_streaming.py b/models/mlx_streaming.py
+index af7b59c..7cddd24 100644
+--- a/models/mlx_streaming.py
++++ b/models/mlx_streaming.py
+@@ -11,6 +11,7 @@ run on Linux CI), so every `mlx` and `mlx_audio` import is inside the function t
+ from __future__ import annotations
+ 
+ import json
++import math
+ import time
+ from collections.abc import Callable, Iterator, Mapping
+ from dataclasses import dataclass
+@@ -91,6 +92,7 @@ class MlxSpeedOptions:
+     quantize: str = ""
+     group_size: int = 64
+     cache_limit_gb: float | None = None
++    wired_limit_gb: float | None = None
+     compile_frame: bool = False
+     fast_first_frames: int = 0
+ 
+@@ -116,19 +118,31 @@ class MlxSpeedOptions:
+ 
+         env = os.environ if env is None else env
+         cache = env.get("BREEZE_MLX_CACHE_GB", "").strip()
++        wired = env.get("BREEZE_MLX_WIRED_GB", "").strip()
+         return cls(
+             quantize=env.get("BREEZE_MLX_QUANT", "").strip(),
+             group_size=int(env.get("BREEZE_MLX_GROUP", "64")),
+             cache_limit_gb=float(cache) if cache else None,
++            wired_limit_gb=float(wired) if wired else None,
+             compile_frame=env.get("BREEZE_MLX_COMPILE", "") == "1",
+             fast_first_frames=int(env.get("BREEZE_MLX_FAST_FIRST", "0") or 0),
+         )
+ 
+     def report(self) -> dict[str, Any]:
+         """The `speed` field of the `model.loaded` event."""
+-        return {"quantize": self.quantize or None, "cache_limit_gb": self.cache_limit_gb, "compile_frame": self.compile_frame,
++        return {"quantize": self.quantize or None, "cache_limit_gb": self.cache_limit_gb, "wired_limit_gb": self.wired_limit_gb, "compile_frame": self.compile_frame,
+                 "fast_first_frames": self.fast_first_frames}
+ 
++    def wired_limit_bytes(self, device: Mapping[str, int]) -> int | None:
++        if self.wired_limit_gb is None:
++            return None
++        value = self.wired_limit_gb
++        # Reserve at least half of physical RAM for macOS and other applications.
++        ceiling = min(device["max_recommended_working_set_size"], device["memory_size"] // 2)
++        if not math.isfinite(value) or value <= 0 or value * 1e9 > ceiling:
++            raise ValueError("BREEZE_MLX_WIRED_GB must be positive and within the system/half-RAM limit")
++        return int(value * 1e9)
++
+ 
+ def quantize_parts(mlx_model: Any, speed: MlxSpeedOptions) -> None:
+     """Quantize the linear layers of the parts `speed.quantize` names, in place (no-op when it names none).
+@@ -1131,6 +1145,9 @@ def load_mlx_runtime(path: Path, speed: MlxSpeedOptions | None = None) -> MlxBre
+     speed = MlxSpeedOptions.from_env() if speed is None else speed
+     if speed.cache_limit_gb is not None:
+         mx.set_cache_limit(int(speed.cache_limit_gb * 1e9))
++    wired_limit = speed.wired_limit_bytes(mx.device_info())
++    if wired_limit is not None:
++        mx.set_wired_limit(wired_limit)
+     # mlx-audio's Breeze loader validates the weights and, in its post-load hook, loads the
+     # codec from `path / "audio_tokenizer"` with its strict codec-weights check.
+     mlx_model = load(path)
+diff --git a/tests/test_mlx_speed_options.py b/tests/test_mlx_speed_options.py
+index 64c2e5c..6b9e7cd 100644
+--- a/tests/test_mlx_speed_options.py
++++ b/tests/test_mlx_speed_options.py
+@@ -14,7 +14,7 @@ def test_defaults_change_nothing():
+     speed = MlxSpeedOptions.from_env({})
+     assert speed == MlxSpeedOptions()
+     assert speed.quantize_parts() == []
+-    assert speed.report() == {"quantize": None, "cache_limit_gb": None, "compile_frame": False, "fast_first_frames": 0}
++    assert speed.report() == {"quantize": None, "cache_limit_gb": None, "wired_limit_gb": None, "compile_frame": False, "fast_first_frames": 0}
+ 
+ 
+ def test_from_env_reads_every_setting():
+@@ -48,3 +48,16 @@ def test_quantize_parts_touches_only_the_named_part():
+     assert model.depth_decoder.layers[0].bits == 8
+     assert type(model.depth_decoder.layers[1]) is nn.Embedding  # lookups stay exact
+     assert type(model.backbone_model.layers[0]) is nn.Linear
++
++
++def test_wired_memory_is_opt_in_and_bounded():
++    device = {"memory_size": 24_000_000_000, "max_recommended_working_set_size": 18_000_000_000}
++    assert MlxSpeedOptions().wired_limit_bytes(device) is None
++    speed = MlxSpeedOptions.from_env({"BREEZE_MLX_WIRED_GB": "8"})
++    assert speed.wired_limit_bytes(device) == 8_000_000_000
++    assert speed.report()["wired_limit_gb"] == 8
++    for invalid in ["-1", "0", "nan", "inf", "13", "19"]:
++        with pytest.raises(ValueError, match="BREEZE_MLX_WIRED_GB"):
++            MlxSpeedOptions.from_env({"BREEZE_MLX_WIRED_GB": invalid}).wired_limit_bytes(device)
++    with pytest.raises(ValueError, match="BREEZE_MLX_WIRED_GB"):
++        speed.wired_limit_bytes({**device, "max_recommended_working_set_size": 7_000_000_000})

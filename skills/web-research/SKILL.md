@@ -20,6 +20,12 @@ Extend your knowledge with live internet data. This is a source-gathering skill,
 
 ## Search Strategy
 
+### 0. Select a Configured Capability
+- Check current Skill purpose metadata and the owner's preferences. Use an available search Skill, MCP/API, or the visible hosted search tool that fits the task.
+- If the route is unclear, use `inspect_capabilities(query)`; use `source=mcp` to inspect configured services that are not loaded yet. Do not assume `web_search` exists on every provider.
+- Do not scrape search-engine HTML as an unconfigured fallback. `http_get` is discoverable on demand for known public text/JSON URLs; it is not a search engine or an article extractor.
+- Repeated, irrelevant, or stale results are not progress. After one justified query adjustment without new useful evidence, discover another authorized capability or report the limitation. Respect explicit owner routes and never bypass permission denials.
+
 ### 1. Query Design
 - Start with specific, narrow queries — broad searches return noise
 - Use exact phrases in quotes for technical terms
@@ -76,7 +82,7 @@ Don't open results beyond page 2 unless the first page was entirely wrong.
 ## Token & Context Budget
 
 - Don't read full articles when snippets answer the question — save full reads for critical evidence
-- Stop after 3 rounds of searches if findings converge
+- Stop when evidence is sufficient; if a query adjustment adds no useful evidence, change the capability or report the limitation instead of repeating searches
 - If page requires login/paywall, note it and look for alternative sources
 
 ## Common Mistakes

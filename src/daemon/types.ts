@@ -516,6 +516,7 @@ export type MimiStreamEvent = {
   | { kind: 'answer'; text: string }
   | { kind: 'reasoning'; text: string }
   | { kind: 'plan'; steps: PlanStep[] }
+  | { kind: 'speech'; audioId: string; autoplay: boolean }
   | {
       kind: 'status';
       /** Ephemeral host preparation, excluded from execution evidence. */

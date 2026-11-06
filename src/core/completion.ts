@@ -78,6 +78,7 @@ export interface CompletionEvidence {
   status: 'started' | 'succeeded' | 'failed' | 'uncertain';
   output?: unknown;
   error?: string;
+  objectiveVerified?: boolean;
 }
 export interface CompletionGateDecision {
   decision: 'pass' | 'continue' | 'blocked' | 'uncertain';
@@ -108,6 +109,7 @@ function workUnitResults(value: unknown): WorkUnitResult[] {
   return record ? Object.values(record).flatMap(workUnitResults) : [];
 }
 function isConfirmedActionReceipt(item: CompletionEvidence): boolean {
+  if (['computer_act', 'computer_observe'].includes(item.toolName)) return item.objectiveVerified === true;
   const receipt = objectValue(item.output);
   return (item.toolName === 'connector_action' || item.toolName === 'connector_capability')
     && receipt?.outcome === 'confirmed'

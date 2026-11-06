@@ -1,5 +1,5 @@
 import { setTracingDisabled } from '@openai/agents';
-import { EnvHttpProxyAgent, fetch as undiciFetch } from 'undici';
+import { EnvHttpProxyAgent, FormData as UndiciFormData, fetch as undiciFetch } from 'undici';
 import type { AppConfig } from '../config.js';
 
 let configured = false;
@@ -22,6 +22,17 @@ export function configureAgentRuntime(config: AppConfig): void {
       const headers = new Headers(input instanceof Request ? input.headers : undefined);
       new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
       headers.set('accept-encoding', 'identity');
+      const body = init?.body;
+      // Node's bundled FormData and the installed Undici have different brands.
+      // Without conversion Undici sends "[object FormData]" as text/plain.
+      if (body instanceof FormData) {
+        const form = new UndiciFormData();
+        for (const [name, value] of body.entries()) {
+          if (typeof value === 'string') form.append(name, value);
+          else form.append(name, value, value.name);
+        }
+        return undiciFetch(input as never, { ...init, body: form, dispatcher, headers } as never) as unknown as Promise<Response>;
+      }
       return undiciFetch(input as never, { ...init, dispatcher, headers } as never) as unknown as Promise<Response>;
     };
     globalThis.fetch = proxyAwareFetch;

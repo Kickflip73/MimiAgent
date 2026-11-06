@@ -1876,7 +1876,7 @@ export function createTools(
 
   const httpGet = tool({
     name: 'http_get',
-    description: '仅以只读 GET 请求读取公网 HTTP/HTTPS 资源；内网或需要浏览器登录态的网页使用 browser.url.read/read_url。headers 使用 name/value 数组。',
+    description: '按需以只读 GET 读取已知公网 URL 的原始文本或 JSON/API 响应；不执行 JavaScript、不提取网页正文、不带浏览器登录态。网页研究优先发现已配置的搜索/正文读取能力。headers 使用 name/value 数组。',
     parameters: z.object({
       url: z.string().min(1),
       headers: httpHeaders,
@@ -1893,9 +1893,13 @@ export function createTools(
       ),
   });
 
-  const webSearch = tool({
+  // Only expose a portable search when an API is explicitly configured.
+  // A missing provider must not silently become an HTML-scraping fallback.
+  const searchApiKey = process.env.GOOGLE_CSE_API_KEY?.trim();
+  const searchEngineId = process.env.GOOGLE_CSE_CX?.trim();
+  const webSearch = !includeOpenAIHostedTools && searchApiKey && searchEngineId ? tool({
     name: 'web_search',
-    description: '搜索互联网（Bing，无需配置）。适用于查找最新资讯、教程、文档、图片等。也可配置 GOOGLE_CSE_API_KEY+GOOGLE_CSE_CX 使用 Google 搜索。',
+    description: '通过已配置的 Google Custom Search API 搜索网页，返回标题、链接和摘要。空结果或错误不触发其他后端；没有新增有效证据时重新发现可用搜索能力。',
     parameters: z.object({
       query: z.string().min(1).describe('搜索关键词，尽量精确'),
       num: z.number().int().min(1).max(10).default(5).describe('返回结果数量，默认 5，最多 10'),
@@ -1904,46 +1908,16 @@ export function createTools(
       const signals = [AbortSignal.timeout(15_000)];
       if (details?.signal) signals.push(details.signal);
       const signal = AbortSignal.any(signals);
-      // 优先使用 Google CSE（如果有配置）
-      const apiKey = process.env.GOOGLE_CSE_API_KEY;
-      const cx = process.env.GOOGLE_CSE_CX;
-      if (apiKey && cx) {
-        const url = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(apiKey)}&cx=${encodeURIComponent(cx)}&q=${encodeURIComponent(query)}&num=${num}`;
-        const res = await fetch(url, { signal });
-        if (!res.ok) throw new Error(`Google CSE 返回 ${res.status}: ${await res.text()}`);
-        const data = await res.json() as { items?: Array<{ title?: string; link?: string; snippet?: string }> };
-        if (!data.items?.length) return '未找到结果';
-        return data.items.map((item, i) =>
-          `${i + 1}. ${item.title ?? '无标题'}\n   链接: ${item.link ?? ''}\n   摘要: ${item.snippet ?? ''}`
-        ).join('\n\n');
-      }
-      // 默认使用 Bing 搜索（无需 API Key）
-      const response = await fetch(
-        `https://www.bing.com/search?q=${encodeURIComponent(query)}&mkt=zh-CN`,
-        {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'zh-CN,zh;q=0.9',
-          },
-          signal,
-        },
-      );
-      if (!response.ok) throw new Error(`Bing 返回 ${response.status}: ${await response.text()}`);
-      const html = await response.text();
-      const algoBlocks = html.match(/<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>[\s\S]*?<\/li>/g);
-      if (!algoBlocks?.length) return '未找到搜索结果';
-      return algoBlocks.slice(0, num).map((block, i) => {
-        const urlMatch = block.match(/<a[^>]*href="(https?:\/\/[^"]+)"[^>]*>/);
-        const titleMatch = block.match(/<a[^>]*>([\s\S]*?)<\/a>/);
-        const snippetMatch = block.match(/<p[^>]*>([\s\S]*?)<\/p>/);
-        const url = urlMatch ? urlMatch[1]!.replace(/&amp;/g, '&') : '';
-        const title = titleMatch ? titleMatch[1]!.replace(/<[^>]+>/g, '').trim() : '';
-        const snippet = snippetMatch ? snippetMatch[1]!.replace(/<[^>]+>/g, '').trim() : '';
-        if (!title) return '';
-        return `${i + 1}. ${title}\n   链接: ${url}\n   摘要: ${snippet.slice(0, 200)}`;
-      }).filter(Boolean).join('\n\n');
+      const url = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(searchApiKey)}&cx=${encodeURIComponent(searchEngineId)}&q=${encodeURIComponent(query)}&num=${num}`;
+      const res = await fetch(url, { signal });
+      if (!res.ok) throw new Error(`Google CSE 返回 ${res.status}: ${await res.text()}`);
+      const data = await res.json() as { items?: Array<{ title?: string; link?: string; snippet?: string }> };
+      if (!data.items?.length) return '未找到结果；不要重复相同查询，请按任务用途发现其他已配置能力或说明证据不足。';
+      return data.items.map((item, i) =>
+        `${i + 1}. ${item.title ?? '无标题'}\n   链接: ${item.link ?? ''}\n   摘要: ${item.snippet ?? ''}`
+      ).join('\n\n');
     },
-  });
+  }) : undefined;
 
   const localTools = [
     currentTime,
@@ -1959,7 +1933,7 @@ export function createTools(
     httpRequest,
   ];
 
-  if (!includeOpenAIHostedTools) return [...localTools, webSearch];
+  if (!includeOpenAIHostedTools) return [...localTools, ...(webSearch ? [webSearch] : [])];
   return [
     ...localTools,
     webSearchTool({ searchContextSize: 'low', externalWebAccess: true }),

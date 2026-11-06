@@ -52,6 +52,7 @@ export class ToolSetBuilder {
     additionalNames: readonly string[] = [],
   ): ClassifiedToolSet {
     const alwaysDeferred = new Set([
+      'http_get',
       'inspect_mimi_capabilities',
       'connector_capability',
       'connector_action',
@@ -70,7 +71,6 @@ export class ToolSetBuilder {
       'search_files',
       'inspect_changes',
       'run_shell',
-      'http_get',
       'web_search',
       'code_interpreter',
       'browser_open',

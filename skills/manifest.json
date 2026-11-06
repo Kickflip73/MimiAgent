@@ -42,6 +42,11 @@
       "published": true
     },
     {
+      "name": "speech-studio",
+      "status": "product",
+      "published": true
+    },
+    {
       "name": "web-research",
       "status": "product",
       "published": true

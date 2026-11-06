@@ -175,7 +175,7 @@ test('desktop connector cannot take over a resource claimed by another enabled r
       action: 'activate_app',
       target: 'com.example.personal',
       payload: {},
-    }), /route_owner_conflict|不得跨执行面接管/);
+    }), /computer_route_required/);
   } finally {
     store.close();
   }

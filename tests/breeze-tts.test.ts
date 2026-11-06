@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -26,10 +26,24 @@ interface CapturedRequest {
   body: string;
 }
 
-const WAV = Buffer.from('RIFFbreeze-wav-fixture');
+const PCM = Buffer.from([0, 0, 255, 127, 0, 128, 0, 0]);
+const WAV = Buffer.alloc(44 + PCM.length);
+WAV.write('RIFF');
+WAV.writeUInt32LE(WAV.length - 8, 4);
+WAV.write('WAVEfmt ', 8);
+WAV.writeUInt32LE(16, 16);
+WAV.writeUInt16LE(1, 20);
+WAV.writeUInt16LE(1, 22);
+WAV.writeUInt32LE(24_000, 24);
+WAV.writeUInt32LE(48_000, 28);
+WAV.writeUInt16LE(2, 32);
+WAV.writeUInt16LE(16, 34);
+WAV.write('data', 36);
+WAV.writeUInt32LE(PCM.length, 40);
+PCM.copy(WAV, 44);
 
 async function fakeBreeze(
-  respond: (request: CapturedRequest) => { status: number; contentType: string; body: Buffer | string },
+  respond: (request: CapturedRequest) => { status: number; contentType: string; body: Buffer | string; headers?: Record<string, string> },
 ): Promise<{ server: Server; url: string; requests: CapturedRequest[] }> {
   const requests: CapturedRequest[] = [];
   const server = createServer((request: IncomingMessage, response) => {
@@ -44,7 +58,7 @@ async function fakeBreeze(
       };
       requests.push(captured);
       const reply = respond(captured);
-      response.writeHead(reply.status, { 'content-type': reply.contentType });
+      response.writeHead(reply.status, { 'content-type': reply.contentType, 'x-breeze-stable-voice': '1', ...reply.headers });
       response.end(reply.body);
     });
   });
@@ -65,8 +79,11 @@ function breezeConfig(url: string): TtsConfig {
   };
 }
 
-test('client posts the OpenAI-compatible speech request and writes the returned WAV', async (t) => {
-  const fake = await fakeBreeze(() => ({ status: 200, contentType: 'audio/wav', body: WAV }));
+test('client posts MLX form fields and wraps PCM as a valid WAV', async (t) => {
+  const fake = await fakeBreeze(() => ({
+    status: 200, contentType: 'audio/pcm', body: PCM,
+    headers: { 'x-sample-rate': '24000', 'x-sample-format': 's16le', 'x-breeze-stable-voice': '1' },
+  }));
   t.after(() => new Promise<void>((resolve) => fake.server.close(() => resolve())));
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-breeze-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -79,18 +96,22 @@ test('client posts the OpenAI-compatible speech request and writes the returned 
   assert.equal(audio.engine, 'breeze');
   assert.equal(audio.voice, 'breeze:zh-narrator');
   assert.equal(audio.format, 'wav');
-  assert.equal(await readFile(audio.file, 'utf8'), WAV.toString('utf8'));
+  assert.deepEqual(await readFile(audio.file), WAV);
 
   assert.equal(fake.requests.length, 1);
   const sent = fake.requests[0]!;
   assert.equal(sent.method, 'POST');
   assert.equal(sent.url, '/v1/audio/speech');
-  assert.match(sent.contentType ?? '', /application\/json/);
-  const payload = JSON.parse(sent.body) as Record<string, unknown>;
-  assert.equal(payload.input, '你好，本地语音合成。');
-  assert.equal(payload.response_format, 'wav');
-  assert.equal(payload.model, 'breeze-tts-2');
-  assert.match(String(payload.instructions), /中文女声|旁白/);
+  assert.match(sent.contentType ?? '', /application\/x-www-form-urlencoded/);
+  const payload = new URLSearchParams(sent.body);
+  assert.equal(payload.get('text'), '你好，本地语音合成。');
+  assert.equal(payload.get('split_chars'), '750');
+  assert.equal(payload.get('stable_voice'), '1');
+  assert.equal(payload.get('seed'), '42');
+  assert.equal(payload.get('max_new_tokens'), '1200');
+  assert.equal(payload.has('temperature'), false, 'retain the model sampling defaults');
+  assert.match(payload.get('instruction') ?? '', /中文女声|旁白/);
+  assert.equal(payload.has('voice_id'), false, 'Mimi presets are instructions, not saved server voices');
 });
 
 test('auto engine prefers breeze once a server URL is configured, without touching the renderer command', async (t) => {
@@ -111,7 +132,7 @@ test('auto engine prefers breeze once a server URL is configured, without touchi
   assert.equal(audio.language, 'en');
 });
 
-test('an unreachable server is reported with the start-up command instead of a raw fetch error', async () => {
+test('an unreachable server is reported with deployment guidance instead of a raw fetch error', async () => {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -124,7 +145,7 @@ test('an unreachable server is reported with the start-up command instead of a r
     client.synthesizeToFile({ text: 'hi', timeoutMs: 2_000 }, path.join(os.tmpdir(), 'never.wav')),
     (error: unknown) => error instanceof BreezeTtsError
       && /先启动本地服务/.test(error.message)
-      && /breeze-server/.test(error.message),
+      && /BREEZE_TTS.md/.test(error.message),
   );
 });
 
@@ -163,4 +184,55 @@ test('base URL normalization rejects non-http schemes and trailing slashes', () 
   assert.equal(normalizeBreezeBaseUrl('http://127.0.0.1:8080/api/'), 'http://127.0.0.1:8080/api');
   assert.throws(() => normalizeBreezeBaseUrl('file:///tmp/x'), BreezeTtsError);
   assert.throws(() => normalizeBreezeBaseUrl('not a url'), BreezeTtsError);
+});
+
+test('invalid PCM metadata, incomplete samples, empty or unsupported audio never create a WAV', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-breeze-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const [body, contentType, rate, format] of [
+    [PCM, 'audio/pcm', '48000', 's16le'],
+    [PCM, 'audio/pcm', '24000', 'f32le'],
+    [PCM, 'audio/pcm', '', ''],
+    [PCM.subarray(0, 3), 'audio/pcm', '24000', 's16le'],
+    [Buffer.alloc(0), 'audio/pcm', '24000', 's16le'],
+    [PCM, 'audio/mpeg', '', ''],
+    [PCM, 'audio/wav', '', ''],
+  ] as const) {
+    const client = new BreezeTtsClient(BREEZE_DEFAULT_BASE_URL, async () => new Response(body, {
+      headers: { 'x-breeze-stable-voice': '1', 'content-type': contentType, 'x-sample-rate': rate, 'x-sample-format': format },
+    }));
+    const file = path.join(root, 'invalid.wav');
+    await assert.rejects(client.synthesizeToFile({ text: 'hello', timeoutMs: 1000 }, file), BreezeTtsError);
+    await assert.rejects(access(file), { code: 'ENOENT' });
+  }
+});
+
+test('unclassified conflicts and interrupted streams are not retried or saved as successful audio', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-breeze-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const interrupted of [false, true]) {
+    let calls = 0;
+    const client = new BreezeTtsClient(BREEZE_DEFAULT_BASE_URL, async (_url, init) => {
+      calls++;
+      assert.ok(init?.signal, 'request and body consumption must share a timeout/cancellation signal');
+      if (!interrupted) return new Response('{"error":"busy"}', { status: 409 });
+      return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(PCM); controller.error(new Error('stream interrupted')); },
+      }), { headers: { 'content-type': 'audio/pcm', 'x-sample-rate': '24000', 'x-sample-format': 's16le', 'x-breeze-stable-voice': '1' } });
+    });
+    const file = path.join(root, 'failed.wav');
+    await assert.rejects(client.synthesizeToFile({ text: 'hello', timeoutMs: 1000 }, file),
+      interrupted ? /stream interrupted/ : /HTTP 409/);
+    assert.equal(calls, 1);
+    await assert.rejects(access(file), { code: 'ENOENT' });
+  }
+});
+
+test('an old server cannot silently ignore the single-speaker contract', async () => {
+  let cancelled = false;
+  const client = new BreezeTtsClient(BREEZE_DEFAULT_BASE_URL, async () => new Response(new ReadableStream({
+    cancel() { cancelled = true; },
+  }), { headers: { 'content-type': 'audio/pcm', 'x-sample-rate': '24000', 'x-sample-format': 's16le' } }));
+  await assert.rejects(client.stream({ text: '同一个人的声音。', timeoutMs: 1000 }), /尚未加载单音色/);
+  assert.ok(cancelled, 'unsupported generation must release the engine without playing');
 });

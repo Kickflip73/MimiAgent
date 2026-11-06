@@ -10,6 +10,11 @@ export function isPreparationStatus(step) {
 export function projectEvent(run, event) {
   if (event.sequence <= run.sequence) return false;
   run.sequence = event.sequence;
+  if (event.kind === 'speech') {
+    run.speech ||= [];
+    if (!run.speech.some(item => item.audioId === event.audioId)) run.speech.push({ audioId: event.audioId, autoplay: event.autoplay });
+    return true;
+  }
   if (isPreparationStatus(event)) { run.activity = event.title; return true; }
   run.activity = undefined;
   if (event.kind === 'answer') {

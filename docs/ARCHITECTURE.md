@@ -296,7 +296,7 @@ Host/Connector 之间流转；标准网页 observation 使用 DOM，最终序列
 page ID，避免 backend 的默认标签切换丢失原页；关闭标签会原子更新 active page 并返回
 恢复后的 URL。uncertain open 禁止继续页面动作，close 只投递一次；Dispatcher 在发布完成
 前清理，失败进入不可重试 dead letter。Computer 只投影两个聚合工具，`ComputerManager` 绑定不可变 authority、
-最新精确窗口 observation、动作预算和 session；degraded 且没有 AX/截图证据的
+由 viewRef 显式引用的精确窗口 observation、动作预算和 session；degraded 且没有 AX/截图证据的
 observation 不可授权写动作。两条路径都保留 ExecutionLedger 的 at-most-once 语义，
 uncertain close 或 action 不能被模型、Daemon 或替代路线静默重放。
 
@@ -491,7 +491,7 @@ SkillLoader 实现开放 Agent Skills 格式的最小完整客户端流程：
 
 - registry 按 `configured → project-native → project-shared → user-native → user-shared → builtin` 扫描固定根的直接子目录。`configured` 是显式 `MIMI_SKILLS_DIR`；project 分别是 `skills` 与 `.agents/skills`，user 分别是 `~/.mimi-agent/skills` 与 `~/.agents/skills`。builtin 从 MimiAgent 模块位置解析，且只接纳自身 `skills/manifest.json` 中 `published: true` 的条目。
 - 来源按优先级、目录按名称确定排序。canonical 文件去重；无效高优先级候选不遮蔽 fallback，有效同名候选只注册 winner 并产生包含双方 source/path 的 shadowed diagnostic。有效注册量限制 200 个、正文总量限制 10MB，达到边界必须诊断。
-- YAML Parser 和 Schema 校验 `name`、`description`。初始目录只披露当前 Run 可用 Skill 的名称、描述、胜出来源与绝对位置；owner 还可在原始输入开头用一个或多个 `$skill-name` 显式激活。解析发生在统一 `MimiAgent.stream()` Run 边界，外部/非 owner 输入保持惰性数据。
+- YAML Parser 和 Schema 校验 `name`、`description`。初始模型索引披露名称、本轮可用性和有界用途简介，胜出来源与绝对位置留在诊断/激活结果中；owner 还可在原始输入开头用一个或多个 `$skill-name` 显式激活。解析发生在统一 `MimiAgent.stream()` Run 边界，外部/非 owner 输入保持惰性数据。
 - `FileSession.activeSkills` 保存名称、source、canonical 文件、SHA-256 与时间。相同绑定幂等，同名换源或正文变化必须重新激活；reload 只重建 registry。模型首次 `use_skill` 获得完整正文并写入绑定，重复调用返回 `already_active`；`/skills active` 与 `/skills deactivate` 管理当前 Session。
 - 每轮把当前仍可用且未 stale 的绑定重新解析为完整 `active-skills` host instruction section。`soul`、`base-instructions`、`behavior-preferences`、`runtime-context` 与 `active-skills` 是按此顺序装配的 required section，不经过 ContextManager token 截断；超出 instruction budget 时请求明确失败。Transcript、archive、collapse 与 full compact 不保存或删除这些每轮派生正文。
 - Skill 可用 MimiAgent 扩展字段 `required-tools` 声明不可缺少的 Function Tool。catalog、`$skill`、`use_skill`、恢复注入、`list_skills` 与 `read_skill_resource` 共用 availability evaluator，以本轮最终工具名、`canReadLocal`、绑定和指令预算 fail closed。`allowed-tools` 不参与授权，也不能扩大 ToolPolicy。
@@ -710,8 +710,7 @@ digest 和 policy revision 建立 at-most-once fence。同一业务引用跨 Too
   才能重新执行。
 - Full Owner 的精确目标动作不再要求第二次一次性审批；Observation 新鲜度、窗口漂移、
   控制面保护、应用 allowlist、动作预算和前后台状态仍由 ComputerManager 在真正执行前
-  自动校验。`computer_observe/computer_act` 不向模型暴露 Observation 或授权句柄，
-  Manager 自动绑定本轮最新的有效窗口观察。
+  自动校验。`computer_observe/computer_act` 返回不透明 viewRef，UI 动作必须显式引用；授权始终由 Host 持有。坐标统一为完整窗口截图像素，不做模型侧 Retina/原点换算。投递及关键回读在同一动作锁内；读回失败为 uncertain，刷新视图或更换 UI 动作类别不能解除稳定窗口 fence。旧回执或仅投递成功不能作为 Goal 的业务完成证据，只有明确 verify 条件通过才可用于验收。
 - personal message 的 `contextToken` 只授权实际 send Tool，读取上下文不误占 Intent；
   它与 Computer 写动作都在原 Tool ledger 外层进入同一 Intent fence；传统
   call receipt 仍保留为 Completion evidence。
@@ -841,3 +840,13 @@ MCP、运行状态、模型和模式目录的只读查看不进入运行队列�
 Shell 的进程退出不证明业务完成。模型明确发起的不同调用按 occurrence 区分，即使命令相同也可执行；同一 SDK call 重送与持久事件按序恢复仍回读原账本。账本在原子 claim 内检查相同命令的未结束、失败和非零退出记录，改 timeout 或插入其他命令不能解除拦截。该规则不推断 stderr 中的自然语言为安全重试凭证，不自动重试任何命令；只有模型核实目标动作尚未执行后才能再次发起已正常退出的命令。正式业务 ActionIntent 和 Connector 回执的防重放语义不变。
 
 `use_skill` 在原有授权筛选后直接暴露，准确名称可立即激活；未知名称仍查能力目录，不预加载全部 Skill 正文。引用资料按当前操作需要读取，当前 Host 能力优先于历史能力记忆。
+
+### 按任务发现与选择能力
+
+Skill 初始索引包含全部已加载名称与本轮可用性，可用项附带简短用途，每项最多 160 字符、全部简介共用 12,000 字符预算；禁用项不展示用途。索引仍受 ContextManager 总预算约束，不含正文、资源路径或 schema。选择依据是 owner 偏好、数据源、质量、时效和工作流；只有同一数据源的同一原子操作才直接复用已有工具，直接可见不意味着比专门 Skill 更适合。跨会话记忆可提供经验，但不承担已安装能力目录的职责。
+
+`inspect_capabilities(query)` 未指定 source 时同时检索所有已授权直接/延迟 Tool、Skill 元数据和 Connector action；Skill 的精确 name 也可在未指定 source 时解析。Tool 与 Skill 共用大小写/标点归一化、中英文分词及多词匹配，完整短语优先，查询结果不自动激活或执行。返回调用方式区分直接工具与 gateway；Skill 可用性每次重新投影，避免 reload 或 MCP 发现后使用陈旧缓存。未连接的 MCP 服务保持惰性并明确标注未检索，模型可按 `source=mcp` 继续发现，零命中不代表这些服务没有能力。
+
+结果无关、过时或证据不足时，一次有依据的查询调整仍无进展就重新发现适合的能力；该规则不改变 owner 指定路线、权限拒绝或 uncertain 副作用的禁止绕过/重放边界，也不增加搜索供应商专用分支。
+
+公网搜索不再提供 Bing HTML 抓页或隐式兜底。OpenAI Responses 保留 SDK 托管 `web_search`；其他传输只有显式同时配置 `GOOGLE_CSE_API_KEY` 与 `GOOGLE_CSE_CX` 时才注册 Google CSE API 工具，配置在 Runtime 初始化时读取，修改后需重启。否则按当前 Skill/MCP 目录选用已配置能力，不暴露空壳搜索工具。搜索失败、空结果不会自动换后端；重复或无新增有效证据时，模型最多调整一次查询后重新发现能力或报告限制。`http_get` 始终属于主 Agent 的 deferred 工具面，供已知公网 URL 的原始文本/JSON 读取；发现与 gateway 调用仍经过同一 Mode、Policy、地址及重定向校验，Plan/Safe 的原有只读授权不变。

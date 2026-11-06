@@ -126,3 +126,12 @@ test('saved speech receipts restore a conversation player and authorize only pai
  await writeFile(path.join(data,'sessions','other.json'),JSON.stringify({items:[]}));
  await assert.rejects(readOutputMedia(data,workspace,'other',file),/未引用/);
 });
+
+test('recording distinguishes insecure HTTP from unsupported API and never requests permission on insecure origins', async()=>{
+ let calls=0;const errors:string[]=[];
+ const options={mediaDevices:{getUserMedia:async()=>{calls++;throw new Error('should not request');}},Recorder:class {},changed:()=>{},complete:()=>{},error:(e:Error)=>errors.push(e.message)};
+ const insecure=createRecorder({...options,secureContext:false});await insecure.start('s');
+ assert.equal(calls,0);assert.equal(insecure.active,false);assert.match(errors[0]!,/安全连接.*HTTPS/);assert.doesNotMatch(errors[0]!,/不支持录音|Chrome/);
+ const unsupported=createRecorder({...options,secureContext:true,mediaDevices:{},Recorder:undefined});await unsupported.start('s');
+ assert.match(errors[1]!,/未提供录音接口/);
+});

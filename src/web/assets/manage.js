@@ -1,3 +1,4 @@
+import { mountSpeechSettings } from './speech-settings.js';
 import { enhanceSelects } from './pickers.js';
 const github = '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.3c-3.3.7-4-1.4-4-1.4-.5-1.4-1.3-1.8-1.3-1.8-1.1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-5.9 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.3 11.3 0 0 1 6 0C17.3 5.1 18.3 5.4 18.3 5.4c.6 1.7.2 2.9.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.6-5.5 5.9.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>';
 export const managedViews = ['skills','mcp','models','connectors','schedules','status','runtime','settings','about'];
@@ -56,6 +57,7 @@ export function createManagement({ api, esc, markdown, getSession, openDialog, o
       shell(`<div class="admin-grid">${card('Mimi 后台',s.error||'本机常驻运行内核',table({'PID':s.pid,'版本':s.buildVersion,'工作区':s.workspaceRoot,'活动任务':s.activeTaskCount,'启用日程':s.enabledSchedules,'连接器':s.connectorCount}))}${card('当前会话',r.error||r.sessionTitle||'',table({'模型':r.model,'提供方':r.provider,'模式':r.mode?.label,'输出等级':r.outputLevel,'安全等级':r.securityProfile?.label,'Skills':r.skillCount,'记忆':r.memoryCount}))}</div><details class="admin-advanced"><summary>诊断详情</summary>${json(data)}</details>`, '查看真实后台、当前会话及主动关注系统的状态。');
     }
     enhanceSelects(root);
+    if (area === 'settings') void mountSpeechSettings(root);
   }
   function detailError(error) { const el=detail.querySelector('.detail-error'); if(el)el.textContent=error.message; }
   async function openSkill(skill) {

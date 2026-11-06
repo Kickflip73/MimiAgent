@@ -24,6 +24,24 @@ const confirmedCall: ExecutionCallRecord = {
   },
 };
 
+test('Computer delivery, old receipts and model claims do not satisfy a GUI completion criterion', async () => {
+  for (const [output, expected] of [
+    [{ ok: true, state: { text: '56' } }, 'continue'],
+    [{ ok: true, verified: false, verification: { status: 'not_requested' } }, 'continue'],
+    [{ ok: true, verified: true, verification: { status: 'failed' } }, 'continue'],
+    [{ ok: true, verified: true, verification: { status: 'passed', evidenceViewRef: 'fresh' } }, 'pass'],
+  ] as const) {
+    const coordinator = new CompletionCoordinator({ async listCalls() { return [{ ...confirmedCall, toolName: 'computer_act', argumentsJson: '{"verify":{"equals":"56"}}', output }]; } });
+    const result = await coordinator.evaluate({
+      sessionId: 's', runId: 'r', goalOwned: false, planOwned: false, teamOwned: false, requireDurableBlocker: false,
+      plans: { async get() { return []; } }, team: { async list() { return []; } },
+      completionContract: { objective: 'calculator', kind: 'external_action', criteria: [{ id: 'result', description: 'display 56', requiredEvidence: 'tool_receipt', expectedTool: 'computer_act', expectedArgumentsContain: ['"equals":"56"'] }] },
+      completionReport: { status: 'completed', proofs: [{ criterionId: 'result', evidence: '56', toolCallIds: ['model-call'] }] },
+    });
+    assert.equal(result.gate.decision, expected);
+  }
+});
+
 test('completion coordinator recovers prior evidence and fingerprints owned plan/team state', async () => {
   const requestedRuns: string[] = [];
   const coordinator = new CompletionCoordinator({

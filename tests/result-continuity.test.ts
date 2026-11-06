@@ -137,13 +137,13 @@ test('concurrent and restarted synthesis reuses one receipt; uncertainty never s
     calls += 1; started(); await release; throw new Error('backend timed out');
   };
   try {
-    const first = new SpeechOutput(config, root, runner).synthesize('same text');
+    const first = new SpeechOutput(config, root, runner).synthesize('same text', { engine: 'kokoro' });
     const rejected = assert.rejects(first, SpeechRenderUncertainError);
     await ready;
     const other = new SpeechOutput(config, root, runner);
-    await assert.rejects(other.synthesize('same text'), SpeechRenderUncertainError);
+    await assert.rejects(other.synthesize('same text', { engine: 'kokoro' }), SpeechRenderUncertainError);
     fail(); await rejected;
-    await assert.rejects(new SpeechOutput(config, root, runner).synthesize('same text'), SpeechRenderUncertainError);
+    await assert.rejects(new SpeechOutput(config, root, runner).synthesize('same text', { engine: 'kokoro' }), SpeechRenderUncertainError);
     assert.equal(calls, 1);
     const receipts = await other.inspect();
     assert.equal(receipts[0]?.status, 'uncertain');
@@ -176,7 +176,7 @@ test('persisted audio does not allow a replaced symlink to escape the render dir
     const speech = new SpeechOutput({ enabled: true, command: '/bin/echo', playbackCommand: '/bin/echo',
       synthesisTimeoutMs: 1_000, playbackTimeoutMs: 1_000 }, path.join(root, 'renders'),
     async (_command, args) => { await writeFile(args[2]!, 'audio'); return { stdout: '', stderr: '' }; });
-    const audio = await speech.synthesize('hello');
+    const audio = await speech.synthesize('hello', { engine: 'kokoro' });
     const outside = path.join(root, 'outside.wav'); await writeFile(outside, 'private content');
     await rm(audio.file); await symlink(outside, audio.file);
     await assert.rejects(speech.play(audio.id), /符号链接/);
@@ -193,10 +193,10 @@ test('a generated resource can be reused by a fresh runtime without synthesis', 
   const runner: ConstructorParameters<typeof SpeechOutput>[2] = async (_command, args) => {
     if (args.length === 3) { rendered += 1; await writeFile(args[2]!, 'wav-fixture'); }
     else played.push(args[0]!);
-    return { stdout: 'engine=chattts', stderr: '' };
+    return { stdout: 'engine=kokoro', stderr: '' };
   };
   try {
-    const original = await new SpeechOutput(config, root, runner).synthesize('already generated');
+    const original = await new SpeechOutput(config, root, runner).synthesize('already generated', { engine: 'kokoro' });
     const fresh = new SpeechOutput(config, root, runner);
     await fresh.play(original.id);
     assert.equal(rendered, 1);
@@ -213,7 +213,7 @@ test('a damaged render receipt cannot silently reset generation ownership', asyn
     const speech = new SpeechOutput({ enabled: true, command: '/bin/echo', playbackCommand: '/bin/echo',
       synthesisTimeoutMs: 1_000, playbackTimeoutMs: 1_000 }, root,
     async () => { called = true; return { stdout: '', stderr: '' }; });
-    await assert.rejects(speech.synthesize('must not submit'));
+    await assert.rejects(speech.synthesize('must not submit', { engine: 'kokoro' }));
     assert.equal(called, false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

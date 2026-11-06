@@ -8,6 +8,7 @@ interface UsabilityCase {
   input: string;
   expectedTools?: string[];
   expectedAnyTools?: string[][];
+  expectedOutputPatterns?: string[];
   forbiddenTools?: string[];
   fixtureFiles?: Record<string, string>;
   expectedFiles?: Array<{ path: string }>;
@@ -23,7 +24,10 @@ test('phase-one usability eval keeps twenty isolated, bounded daily journeys', a
   assert.equal(new Set(cases.map((item) => item.name)).size, cases.length);
   assert.ok(cases.some((item) => (item.expectedTools ?? []).includes('read_file')));
   assert.ok(cases.some((item) => (item.expectedTools ?? []).includes('run_shell')));
-  assert.ok(cases.some((item) => (item.expectedTools ?? []).includes('web_search')));
+  const webResearch = cases.find(item => item.name === '08 查询实时网页信息');
+  assert.ok(webResearch);
+  assert.ok(webResearch.expectedAnyTools?.some(group => group.includes('web_search') && group.includes('invoke_capability')));
+  assert.ok(webResearch.expectedOutputPatterns?.includes('nodejs\\.org'));
   assert.ok(cases.some((item) => (item.expectedTools ?? []).includes('inspect_capabilities')));
   assert.ok(cases.some((item) => item.env?.MIMI_MODE === 'plan'));
 

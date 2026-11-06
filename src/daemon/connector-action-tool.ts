@@ -1,3 +1,4 @@
+import { assertComputerRoute, isGenericDesktopWrite } from './desktop-action-policy.js';
 import type { Tool } from '@openai/agents';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -35,7 +36,7 @@ function modelVisibleCapabilities(
     .map((connector) => ({
       ...connector,
       actions: connector.enabled
-        ? (connector.actions ?? []).filter((action) => action.modelVisible !== false)
+        ? (connector.actions ?? []).filter((action) => action.modelVisible !== false && !isGenericDesktopWrite(action))
         : [],
     }));
 }
@@ -435,6 +436,7 @@ export function createInvokeCapabilityTool(
     }).strict(),
     errorFunction: (_context, error) => connectorActionErrorResult(error),
     execute: async ({ capability, action, target, payloadJson }, _context, details) => {
+      assertComputerRoute({ name: action, capability, effect: 'unknown' });
       let payload: unknown;
       try {
         payload = JSON.parse(payloadJson) as unknown;
@@ -608,6 +610,7 @@ function createConnectorActionRuntimeTool(
     }).strict(),
     errorFunction: (_context, error) => connectorActionErrorResult(error),
     execute: async ({ connector, action, target, payloadJson }, _context, details) => {
+      assertComputerRoute({ name: action });
       let payload: unknown;
       try {
         payload = JSON.parse(payloadJson) as unknown;

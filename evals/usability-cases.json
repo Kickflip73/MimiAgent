@@ -67,7 +67,8 @@
   {
     "name": "08 查询实时网页信息",
     "input": "搜索一下 Node.js 官方网站当前列出的最新 LTS 大版本，并附来源。",
-    "expectedTools": ["web_search"],
+    "expectedAnyTools": [["web_search", "run_shell", "invoke_capability"]],
+    "expectedOutputPatterns": ["nodejs\\.org", "LTS"],
     "forbiddenTools": ["set_goal", "update_plan", "run_team"],
     "maxDurationMs": 90000
   },

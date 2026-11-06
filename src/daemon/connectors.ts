@@ -1,3 +1,4 @@
+import { assertComputerRoute } from './desktop-action-policy.js';
 import { randomUUID } from 'node:crypto';
 import { chmod, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -1134,6 +1135,7 @@ export class ConnectorManager {
     }
     const action = before.actions.find((candidate) => candidate.name === request.action);
     if (!action) throw new Error(`unregistered：Connector ${request.connector} 未声明 action ${request.action}`);
+    assertComputerRoute(action);
     if (action.routeOwner !== request.connector) {
       throw new Error(`route drift：action ${request.action} routeOwner 不匹配`);
     }
@@ -1200,6 +1202,7 @@ export class ConnectorManager {
         `Connector ${request.connector} 未声明 action ${request.action}`,
       );
     }
+    assertComputerRoute(action);
     if (!action.modelVisible && !allowInternal) {
       throw new ActionFailedSafeError(
         `Connector ${request.connector} 的 action ${request.action} 是 Host 内部能力`,

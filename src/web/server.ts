@@ -1,3 +1,5 @@
+import { speechOverridesSchema } from '../core/speech-settings.js';
+import { once } from 'node:events';
 import { mediaIds, mediaMime, MEDIA_MAX_BYTES } from '../core/media-attachment.js';
 import { imageIds, imageMediaType, IMAGE_MAX_BYTES } from '../core/image-attachment.js';
 import { readFile } from 'node:fs/promises';
@@ -8,6 +10,8 @@ import type { SecurityProfile } from '../config.js';
 import type { WebBackend } from './backend.js';
 
 const ASSETS: Record<string, [string, string]> = {
+  '/speech-settings.js': ['speech-settings.js', 'text/javascript; charset=utf-8'],
+  '/speech-stream.js': ['speech-stream.js', 'text/javascript; charset=utf-8'],
   '/uuid.js': ['uuid.js', 'text/javascript; charset=utf-8'],
   '/notifications.js': ['notifications.js','text/javascript; charset=utf-8'],
   '/media.js': ['media.js','text/javascript; charset=utf-8'],
@@ -68,7 +72,8 @@ export class MimiWebServer {
   private server?: Server;
   private streams = 0;
 
-  constructor(private readonly backend: WebBackend, private readonly port = 3210, private readonly hostname?: string, private readonly publicPort?: number) {
+  constructor(private readonly backend: WebBackend, private readonly port = 3210, private readonly hostname?: string, private readonly publicPort?: number, private readonly publicProtocol = 'http') {
+    if (!['http', 'https'].includes(publicProtocol) || (publicProtocol === 'https' && !hostname)) throw new Error('Web 外部协议无效：HTTPS 需要显式配置域名');
     if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Web 端口无效');
     if (publicPort !== undefined && (!hostname || !Number.isInteger(publicPort) || publicPort < 1 || publicPort > 65535)) {
       throw new Error('Web 外部端口无效：需要配置域名及 1～65535 的端口');
@@ -86,7 +91,7 @@ export class MimiWebServer {
 
   get launchUrl(): string {
     const url = new URL(this.address);
-    if (this.hostname) url.hostname = this.hostname;
+    if (this.hostname) { url.hostname = this.hostname; url.protocol = this.publicProtocol + ':'; }
     if (this.publicPort !== undefined) url.port = String(this.publicPort);
     return url.href;
   }
@@ -150,6 +155,74 @@ export class MimiWebServer {
       if (request.headers.origin !== origin || request.headers['x-mimi-web'] !== '1') {
         throw new HttpError(403, '请求来源未通过验证');
       }
+    }
+    if (url.pathname === '/api/speech/preview' && request.method === 'GET') {
+      if (!this.backend.speechPreview) throw new HttpError(503, '语音预览不可用');
+      const audio = await this.backend.speechPreview(identifier(url.searchParams.get('id')));
+      response.writeHead(200, { 'content-type': 'audio/wav', 'cache-control': 'no-store' });
+      response.end(audio); return;
+    }
+    if (url.pathname === '/api/speech/settings') {
+      if (!this.backend.speechManage) throw new HttpError(503, '语音设置不可用');
+      if (request.method === 'GET') { json(response, 200, await this.backend.speechManage('settings')); return; }
+      if (request.method === 'POST') {
+        const input = await body(request);
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        response.once('close', abort);
+        try { json(response, 200, await this.backend.speechManage(String(input.action), input.value, controller.signal)); }
+        catch (error) { throw new HttpError(400, (error as Error).message); }
+        finally { response.off('close', abort); }
+        return;
+      }
+      throw new HttpError(405, '不支持的方法');
+    }
+    if ((request.method === 'POST' && url.pathname === '/api/speech/stream')
+      || (request.method === 'GET' && url.pathname === '/api/speech/live')) {
+      const live = url.pathname === '/api/speech/live';
+      const input = live ? { text: 'existing stream', options: {} } : await body(request);
+      if (typeof input.text !== 'string' || !input.text.trim() || [...input.text].length > 10_000) {
+        throw new HttpError(400, '朗读文本需要 1～10000 个字符');
+      }
+      if (live ? !this.backend.speechLive : !this.backend.speechStream) throw new HttpError(503, '流式朗读不可用');
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      response.once('close', abort);
+      let upstream: Response | undefined;
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      try {
+        const options = speechOverridesSchema.safeParse(input.options ?? {});
+        if (!options.success) throw new HttpError(400, '无效语音选项');
+        upstream = live
+          ? await this.backend.speechLive!(identifier(url.searchParams.get('session')), identifier(url.searchParams.get('id')), controller.signal)
+          : await this.backend.speechStream!(input.text, controller.signal, options.data);
+        const wav = upstream.headers.get('content-type')?.split(';')[0] === 'audio/wav';
+        if (!upstream.ok || !upstream.body
+          || (!wav && (upstream.headers.get('content-type')?.split(';')[0] !== 'audio/pcm'
+          || upstream.headers.get('x-sample-rate') !== '24000'
+          || upstream.headers.get('x-sample-format') !== 's16le'))) {
+          throw new Error('语音服务未返回 24 kHz PCM 音频');
+        }
+        response.writeHead(200, { 'content-type': wav ? 'audio/wav' : 'audio/pcm', 'x-sample-rate': '24000',
+          'x-sample-format': 's16le', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
+        response.flushHeaders();
+        reader = upstream.body.getReader();
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!response.write(value)) await once(response, 'drain', { signal: controller.signal });
+        }
+        response.end();
+      } catch (error) {
+        // Never turn an interrupted generation into a successful EOF.
+        if (response.headersSent) response.destroy();
+        else throw error;
+      } finally {
+        controller.abort();
+        await (reader ? reader.cancel() : upstream?.body?.cancel())?.catch(() => {});
+        response.off('close', abort);
+      }
+      return;
     }
     const get = request.method === 'GET';
     if (url.pathname === '/api/notifications' || url.pathname === '/api/notifications/read') {

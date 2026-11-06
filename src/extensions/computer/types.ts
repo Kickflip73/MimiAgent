@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeComputerKeys } from './keyboard.js';
 
 export const computerAccessSchema = z.enum(['none', 'observe', 'background', 'foreground', 'admin']);
 export type ComputerAccess = z.infer<typeof computerAccessSchema>;
@@ -92,7 +93,12 @@ const uiActionSchema = z.discriminatedUnion('type', [
     type: z.literal('set_value'), elementIndex: z.number().int().nonnegative(),
     value: z.union([z.string().max(10_000), z.number().finite(), z.boolean()]),
   }),
-  z.object({ type: z.literal('keypress'), keys: z.array(z.string().min(1).max(30)).min(1).max(5), dispatch: dispatchSchema }),
+  z.object({ type: z.literal('keypress'), keys: z.array(z.string().min(1).max(30)).min(1).max(5).transform((keys, ctx) => {
+    try { return normalizeComputerKeys(keys); } catch (error) {
+      ctx.addIssue({ code: 'custom', message: error instanceof Error ? error.message : 'invalid_keys' });
+      return z.NEVER;
+    }
+  }), dispatch: dispatchSchema }),
   z.object({
     type: z.literal('scroll'), x: z.number().finite().nonnegative().optional(), y: z.number().finite().nonnegative().optional(),
     deltaX: z.number().finite(), deltaY: z.number().finite(), dispatch: dispatchSchema,
@@ -150,9 +156,11 @@ export interface ComputerAppSummary {
 
 export interface ComputerElement {
   index: number;
+  token?: string;
   role: string;
   label?: string;
   value?: string | number | boolean;
+  valueTruncated?: boolean;
   description?: string;
   identifier?: string;
   actions?: string[];

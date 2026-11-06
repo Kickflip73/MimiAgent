@@ -1,0 +1,176 @@
+diff --git a/breeze_infer/http_fields.py b/breeze_infer/http_fields.py
+index a562a12..7defd2d 100644
+--- a/breeze_infer/http_fields.py
++++ b/breeze_infer/http_fields.py
+@@ -1089,6 +1089,7 @@ class SpeechRequest:
+     repetition_penalty: float | None
+     max_new_tokens: int | None
+     split_chars: int
++    stable_voice: bool = False
+ 
+ 
+ def parse_speech(fields: Fields, settings: Settings) -> SpeechRequest:
+@@ -1190,10 +1191,19 @@ def parse_speech(fields: Fields, settings: Settings) -> SpeechRequest:
+         split_chars = _parse_int(split_chars_raw, "split_chars", split_chars_rule)
+         _check_int_range(split_chars, "split_chars", *SPLIT_CHARS_RANGE, split_chars_rule)
+ 
++    stable_raw = _first(fields, "stable_voice")
++    if stable_raw not in (None, "0", "1"):
++        raise ApiError(400, "invalid_field", "stable_voice must be 0 or 1")
++    stable_voice = stable_raw == "1"
++    reference = _build_reference(fields)
++    if stable_voice and not isinstance(reference, NoReference):
++        # The reference supplies identity; ignore voice-redesign instructions.
++        cfg_scale = 0.0
++
+     return SpeechRequest(
+         text=text,
+         instruction=instruction,
+-        reference=_build_reference(fields),
++        reference=reference,
+         cfg_scale=cfg_scale,
+         seed=seed,
+         temperature=temperature,
+@@ -1202,6 +1212,7 @@ def parse_speech(fields: Fields, settings: Settings) -> SpeechRequest:
+         repetition_penalty=repetition_penalty,
+         max_new_tokens=max_new_tokens,
+         split_chars=split_chars,
++        stable_voice=stable_voice,
+     )
+ 
+ 
+diff --git a/breeze_infer/routes_speech.py b/breeze_infer/routes_speech.py
+index 82e713d..513b32a 100644
+--- a/breeze_infer/routes_speech.py
++++ b/breeze_infer/routes_speech.py
+@@ -740,13 +740,15 @@ def _iter_pieces(
+             if index == 0:
+                 inputs, room = first_inputs, first_room
+             else:
++                if request.stable_voice and isinstance(reference, NoRef):
++                    raise RuntimeError("stable voice reference unavailable; refusing to redesign the speaker")
+                 inputs = prepare_piece(
+                     runtime.tokenizer,
+                     runtime.model,
+                     reference,
+                     text,
+                     request.instruction,
+-                    request.cfg_scale,
++                    0.0 if request.stable_voice else request.cfg_scale,
+                 )
+                 room = piece_room(
+                     runtime, inputs, request.max_new_tokens, prefix=prefix_of(reference)
+@@ -764,7 +766,7 @@ def _iter_pieces(
+                 runtime,
+                 inputs,
+                 request_id=request_id,
+-                seed=piece_seed(request.seed, index),
++                seed=request.seed if request.stable_voice else piece_seed(request.seed, index),
+                 chunk_first=chunk_first,
+                 chunk_max=chunk_max,
+                 samples_per_frame=samples_per_frame,
+@@ -783,6 +785,8 @@ def _iter_pieces(
+                 request_id=request_id,
+                 piece_index=index,
+                 frames=piece_bytes // _PCM_BYTES_PER_SAMPLE // samples_per_frame,
++                seed=request.seed if request.stable_voice else piece_seed(request.seed, index),
++                stable_voice=request.stable_voice,
+             )
+             if frames is not None:
+                 reference = _anchor_for_later_pieces(
+@@ -1447,6 +1451,8 @@ async def _serve_speech(
+         }
+     else:
+         body = _rest_of_audio(session)
++    if request.stable_voice:
++        wav_fields.setdefault("headers", {})["X-Breeze-Stable-Voice"] = "1"
+     return SpeechResponse(
+         first_chunk=first_chunk,
+         body=body,
+diff --git a/tests/test_routes_speech.py b/tests/test_routes_speech.py
+index 987faee..99638f8 100644
+--- a/tests/test_routes_speech.py
++++ b/tests/test_routes_speech.py
+@@ -315,12 +315,13 @@ def test_unspeakable_text_is_400_not_409_even_while_the_gate_is_held(
+ # --- piece seeds -------------------------------------------------------------------------
+ 
+ 
+-def test_piece_seeds_increment_per_piece() -> None:
++@pytest.mark.parametrize("stable_voice", [False, True])
++def test_piece_seeds_increment_unless_single_speaker_is_requested(stable_voice: bool) -> None:
+     readiness = Readiness()
+     components = _build_components(readiness, split_chars=100)
+     try:
+         # A frame with every codebook, since piece 0's frames anchor the later pieces.
+-        runtime = _fake_runtime(chunks=1, frames=[torch.full((16,), 5)])
++        runtime = _fake_runtime(chunks=1, frames=[torch.full((16,), 5)], config=FakeStreamingConfig(max_seq_len=4096))
+         readiness.mark_ready(runtime)
+         client = _client_for(components)
+ 
+@@ -334,12 +335,15 @@ def test_piece_seeds_increment_per_piece() -> None:
+         assert len(sentence) > 100
+         response = client.post(
+             SPEECH_PATH,
+-            data={"text": " ".join([sentence] * 3), "seed": "100"},
++            data={"text": " ".join([sentence] * 3), "seed": "100", **({"stable_voice": "1"} if stable_voice else {})},
+         )
+ 
+         assert response.status_code == 200
+         assert len(runtime.calls) == 3
+-        assert [call["seed"] for call in runtime.calls] == [100, 101, 102]
++        assert [call["seed"] for call in runtime.calls] == ([100] * 3 if stable_voice else [100, 101, 102])
++        if stable_voice:
++            assert response.headers["x-breeze-stable-voice"] == "1"
++            assert all(call["inputs"].get("cfg_scale") == 0 for call in runtime.calls[1:])
+     finally:
+         components.gpu.shutdown()
+ 
+diff --git a/tests/test_stable_voice.py b/tests/test_stable_voice.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_stable_voice.py
+@@ -0,0 +1,44 @@
++"""Mimi single-speaker HTTP extension: never redesign a speaker mid-stream."""
++
++import pytest
++import torch
++
++from breeze_infer.routes_health import Readiness
++from tests.fakes import RecordingEvents
++from tests.test_routes_speech import _build_components, _client_for, _fake_runtime
++
++
++@pytest.mark.parametrize("value", ["yes", "-1", "2"])
++def test_stable_voice_rejects_unknown_values(value: str) -> None:
++    readiness = Readiness()
++    components = _build_components(readiness)
++    readiness.mark_ready(_fake_runtime())
++    try:
++        response = _client_for(components).post(
++            "/v1/audio/speech", data={"text": "Hello.", "stable_voice": value}
++        )
++        assert response.status_code == 400
++    finally:
++        components.gpu.shutdown()
++
++
++def test_stable_voice_never_redesigns_when_the_first_piece_cannot_anchor() -> None:
++    readiness = Readiness()
++    events = RecordingEvents()
++    components = _build_components(readiness, split_chars=100, events=events)
++    # A constrained context cannot accommodate the first sample as a reference.
++    runtime = _fake_runtime(chunks=1, frames=[torch.full((16,), 5)])
++    readiness.mark_ready(runtime)
++    sentence = (
++        "This sentence is long enough on its own to go past the budget of a piece, "
++        "which is one hundred characters."
++    )
++    try:
++        _client_for(components).post(
++            "/v1/audio/speech", data={"text": " ".join([sentence] * 3), "stable_voice": "1"}
++        )
++        assert len(runtime.calls) == 1
++        assert any(name == "speech.failed" for name, _ in events.calls)
++        assert not any(name == "speech.completed" for name, _ in events.calls)
++    finally:
++        components.gpu.shutdown()

@@ -8,6 +8,7 @@ import {
   TOOL_ACTION_INTENT,
   TOOL_LEDGER_ARGUMENTS,
 } from '../../core/tool-metadata.js';
+import { computerExpectationSchema, verifyComputerState } from './verification.js';
 import { ComputerManager, type ComputerRunAuthority } from './manager.js';
 import { computerActionSchema, type ComputerAction, type ComputerTargetSummary } from './types.js';
 
@@ -18,6 +19,7 @@ function computerActionErrorResult(error: unknown): string {
   if (error instanceof ActionFailedSafeError
     || (error instanceof Error && error.name === 'ActionFailedSafeError')) {
     return JSON.stringify({
+      ok: false,
       mimiStatus: 'action_failed_safe',
       retryable: false,
       sideEffectsFrozen: false,
@@ -25,6 +27,7 @@ function computerActionErrorResult(error: unknown): string {
     });
   }
   return JSON.stringify({
+    ok: false,
     mimiStatus: 'action_uncertain',
     retryable: false,
     sideEffectsFrozen: true,
@@ -51,14 +54,15 @@ function computerActionOutcome(result: unknown): 'confirmed' | 'failed_safe' | '
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return 'uncertain';
   const record = value as Record<string, unknown>;
-  if (record.mimiStatus === 'action_failed_safe' || record.ok === false) return 'failed_safe';
   if (record.mimiStatus === 'action_uncertain') return 'uncertain';
+  if (record.mimiStatus === 'action_failed_safe' || record.ok === false) return 'failed_safe';
   return 'confirmed';
 }
 
 const modelOptional = <T extends z.ZodType>(schema: T) => schema.nullable().optional();
 
 const observeToolParameters = z.object({
+  verify: modelOptional(computerExpectationSchema.describe('只读核对唯一语义元素的 value；可用于动作后的独立验收')),
   app: modelOptional(z.string().min(1).max(500)),
   screenshot: modelOptional(z.boolean()),
   frames: modelOptional(z.number().int().min(1).max(3).describe('截图数，默认 1；检查动画/动态界面用 2，Host 固定同一窗口按时间采样并一起分析。')),
@@ -77,13 +81,14 @@ const modelComputerActionSchema = z.object({
   newInstance: modelOptional(z.boolean()),
   show: modelOptional(z.boolean().describe('用户要求打开给他看且已授权 foreground 时为 true；只有 background 权限或后台自检时为 false。')),
   elementIndex: modelOptional(z.number().int().nonnegative()),
-  x: modelOptional(z.number().finite()),
+  x: modelOptional(z.number().finite().describe('viewRef 对应完整窗口截图的像素 x；不除 Retina 倍率、不加窗口偏移')),
   y: modelOptional(z.number().finite()),
   button: modelOptional(z.enum(['left', 'right', 'middle'])),
+  dispatch: modelOptional(z.enum(['background', 'foreground']).describe('默认 background。后台动作已读回确认无效、且操作可安全重试时，可请求 foreground；Host 仍校验当前权限。uncertain 时禁止换投递方式重试。')),
   axAction: modelOptional(z.enum(['press', 'show_menu', 'pick', 'confirm', 'cancel', 'open'])),
   text: modelOptional(z.string().max(10_000)),
   value: modelOptional(z.union([z.string().max(10_000), z.number().finite(), z.boolean()])),
-  keys: modelOptional(z.array(z.string().min(1).max(30)).min(1).max(5)),
+  keys: modelOptional(z.array(z.string().min(1).max(30)).min(1).max(5).describe('一个按键或组合键：全选 ["cmd","a"]，回车 ["Enter"]；也接受 ["cmd+a"]。不是按键序列。')),
   deltaX: modelOptional(z.number().finite()),
   deltaY: modelOptional(z.number().finite()),
   path: modelOptional(z.array(z.object({ x: z.number().finite(), y: z.number().finite() }).strict()).min(2).max(20)),
@@ -91,6 +96,8 @@ const modelComputerActionSchema = z.object({
 }).strict();
 
 const actToolParameters = z.object({
+  viewRef: modelOptional(z.string().uuid().describe('UI 动作必填，原样使用观察或上次动作 state 返回的 viewRef')),
+  verify: modelOptional(computerExpectationSchema.describe('可选结果断言：在动作后同一窗口唯一语义元素上精确核对 value；投递成功不等于任务完成')),
   action: modelComputerActionSchema,
 }).strict();
 
@@ -167,6 +174,7 @@ export function computerLedgerArguments(rawInput: string): string {
     const value = JSON.parse(rawInput) as Record<string, unknown>;
     const action = value.action as Record<string, unknown> | undefined;
     delete value.observationId;
+    delete value.viewRef;
     delete value.authorizationId;
     if (action?.type === 'type_text' && typeof action.text === 'string') {
       action.textSha256 = createHash('sha256').update(action.text).digest('hex');
@@ -210,9 +218,11 @@ export function createComputerTools(
         details?.signal,
       );
       if (!result || typeof result !== 'object') return result;
-      const publicResult = withoutObservationHandle(result) as Record<string, unknown>;
+      const expected = raw.verify as z.infer<typeof computerExpectationSchema> | undefined;
+      const verification = verifyComputerState(result, expected);
+      const publicResult: Record<string, unknown> = { ...withoutObservationHandle(result) as Record<string, unknown>, ok: true, verification, verified: verification.status === 'passed' };
       if (!('screenshot' in publicResult) || !publicResult.screenshot) return publicResult;
-      const { screenshot, ...metadata } = publicResult as typeof publicResult & {
+      let { screenshot, ...metadata } = publicResult as typeof publicResult & {
         screenshot: { data: string; mediaType: string };
       };
       const images = [screenshot];
@@ -226,8 +236,13 @@ export function createComputerTools(
         if (!shot) throw new Error('后续帧未取得截图，动态效果尚未验证');
         images.push(shot);
         capturedAt.push(next.capturedAt);
+        const { screenshot: _shot, ...latest } = withoutObservationHandle(next) as Record<string, unknown>;
+        const verification = verifyComputerState(next, expected);
+        metadata = { ...latest, ok: true, verification, verified: verification.status === 'passed' };
       }
       const question = (typeof raw.question === 'string' ? raw.question : '检查实际画面及明显缺陷，不根据标题或源码推断。')
+        + '\n图像是完整目标窗口截图，不是全屏；左上角为 (0,0)。若涉及操作，请同时给出相关可见控件在该截图内的像素中心坐标，不换算缩放倍率或屏幕偏移。'
+        + '\n简短回答，只写问题所需的可见证据和下一步相关控件坐标，不描述无关页面区域，不推测操作方案。'
         + (images.length > 1 ? `\n截图按时间顺序采集：${capturedAt.join('、')}。比较实际位置/状态变化，只报告这些帧能证明的结果。` : '');
       const perceive = perception?.();
       if (authority().supportsImageInput === false && perceive) {
@@ -241,26 +256,31 @@ export function createComputerTools(
   });
   const act = tool({
     name: 'computer_act',
-    description: '执行一个原子电脑动作。Host 自动绑定最新窗口；打开 URL/文件直接使用 launch_app + urls，不要点击地址栏或拆成按键输入。已知应用名直接 launch_app(name, urls)，Host 自动解析，无需先 observe；已有精确 bundleId 也可使用。用户要求看到页面且当前已授权 foreground 时 show=true；只有 background 权限时保持后台打开并说明未置前。后台验收用 show=false。动作后直接返回 fresh state，使用 state 继续；只有返回 next=computer_observe 时才再观察。',
+    description: '执行一个原子电脑动作。UI 动作必须带 state.viewRef，精确绑定该次观察；坐标一律是完整截图 image_px。投递与结果验证分别返回；打开 URL/文件直接使用 launch_app + urls，不要点击地址栏或拆成按键输入。已知应用名直接 launch_app(name, urls)，Host 自动解析，无需先 observe；已有精确 bundleId 也可使用。用户要求看到页面且当前已授权 foreground 时 show=true；只有 background 权限时保持后台打开并说明未置前。后台验收用 show=false。动作后直接返回 fresh state，使用 state 继续；只有返回 next=computer_observe 时才再观察。',
     parameters: actToolParameters,
     errorFunction: (_context, error) => computerActionErrorResult(error),
     execute: async (input, _context, details) => {
-      const parsedAction = parseModelAction((input as Record<string, unknown>).action);
+      const raw = input as z.infer<typeof actToolParameters>;
+      const parsedAction = parseModelAction(raw.action);
       if (!parsedAction.success) return parsedAction.result;
       const action = parsedAction.action;
       const runAuthority = authority();
       const result = await manager.act(
-        runAuthority,
-        manager.bindLatestAction(runAuthority, action),
+        observationAuthority(),
+        manager.bindAction(runAuthority, action, raw.viewRef),
         details?.signal,
       );
       if (result.status === 'background_unsupported') {
         return { ok: false, reason: 'background_unsupported' };
       }
+      const receipt = { delivery: result.delivery,
+        availableDelivery: ['foreground', 'admin'].includes(runAuthority.access)
+          ? ['background', 'foreground'] : ['background'],
+        verification: { status: 'not_requested' }, verified: false };
       if (!result.target) {
         return action.type === 'launch_app' && action.urls?.length
-          ? { ok: true, mimiStatus: 'action_uncertain', retryable: false, sideEffectsFrozen: true, targetVerified: false, stateUnavailable: '打开动作已投递，但未找到对应窗口。不能声称页面已验证，不得重放打开动作或观察任意窗口。' }
-          : { ok: true, next: 'computer_observe' };
+          ? { ...receipt, ok: false, mimiStatus: 'action_uncertain', retryable: false, sideEffectsFrozen: true, targetVerified: false, stateUnavailable: '打开动作已投递，但未找到对应窗口。不能声称页面已验证，不得重放打开动作或观察任意窗口。' }
+          : { ...receipt, ok: true, next: 'computer_observe' };
       }
       try {
         const state = ('state' in result ? result.state : undefined) ?? await manager.observeTarget(
@@ -269,24 +289,35 @@ export function createComputerTools(
           false,
           details?.signal,
         );
+        const verification = verifyComputerState(state, raw.verify);
+        const verifiedReceipt = { ...receipt, verification, verified: verification.status === 'passed' };
         const publicState = withoutObservationHandle(state) as Record<string, unknown>;
         if (!('screenshot' in publicState) || !publicState.screenshot) {
-          return { ok: true, state: publicState };
+          return { ...verifiedReceipt, ok: true, state: publicState };
         }
         const { screenshot, ...metadata } = publicState as typeof publicState & {
           screenshot: { data: string; mediaType: string };
         };
         const perceive = perception?.();
         if (runAuthority.supportsImageInput === false && perceive) {
-          return { ok: true, state: { ...metadata, visualReview: await perceive([screenshot], '确认实际窗口内容及可见问题，不从窗口标题推断已经完成用户任务。', details?.signal) } };
+          const actionContext = JSON.stringify({ type: action.type,
+            ...('x' in action ? { x: action.x, y: 'y' in action ? action.y : undefined } : {}),
+            ...('keys' in action ? { keys: action.keys } : {}) });
+          return { ...verifiedReceipt, ok: true, state: { ...metadata, visualReview: await perceive([screenshot],
+            `这是完整目标窗口截图，左上角 (0,0)，坐标单位为图像像素。刚尝试的动作：${actionContext}。简短回答，只写操作目标附近的可见状态、输入框内容/焦点/选区及弹窗；给出下一步相关控件的像素中心坐标。不描述无关区域，不推测操作方案，不把投递成功或窗口标题当作任务完成。`, details?.signal) } };
         }
         return [
-          { type: 'text', text: JSON.stringify({ ok: true, state: metadata }) } satisfies ToolOutputText,
+          { type: 'text', text: JSON.stringify({ ...verifiedReceipt, ok: true, state: metadata }) } satisfies ToolOutputText,
           { type: 'image', image: { data: screenshot.data, mediaType: screenshot.mediaType }, detail: 'high' } satisfies ToolOutputImage,
         ] satisfies StructuredOutput[];
       } catch (error) {
         return {
-          ok: true,
+          ...receipt,
+          ok: false,
+          mimiStatus: 'action_uncertain',
+          sideEffectsFrozen: true,
+          retryable: false,
+          verification: { status: 'unavailable' },
           next: 'computer_observe',
           stateUnavailable: error instanceof Error ? error.message.slice(0, 500) : String(error).slice(0, 500),
         };
@@ -324,9 +355,11 @@ export function createComputerTools(
       };
     }
     const runAuthority = authority();
-    const parsed = manager.bindLatestAction(
+    const parsed = manager.bindAction(
       runAuthority,
       parsedAction.action,
+      typeof input.viewRef === 'string' ? input.viewRef : undefined,
+      false,
     );
     const action = parsed.action as unknown as Record<string, unknown>;
     const observationId = 'observationId' in parsed ? parsed.observationId : undefined;
@@ -337,7 +370,7 @@ export function createComputerTools(
     const urls = Array.isArray(action.urls) ? action.urls : [];
     const target = action.target && typeof action.target === 'object'
       ? JSON.stringify(action.target)
-      : observationId ?? (bundleId ? `bundle:${bundleId}` : typeof action.name === 'string' ? `app:${action.name}` : actionType);
+      : (observationId ? manager.actionTargetRef(runAuthority, observationId) : undefined) ?? (bundleId ? `bundle:${bundleId}` : typeof action.name === 'string' ? `app:${action.name}` : actionType);
     const boundedBackground = 'observationId' in parsed
       && (!('dispatch' in parsed.action) || parsed.action.dispatch === 'background');
     return {

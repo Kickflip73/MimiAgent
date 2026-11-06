@@ -324,6 +324,7 @@ export const taskWorkerControlSchema = z.discriminatedUnion('type', [
 const pendingStreamEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('answer'), text: z.string() }).passthrough(),
   z.object({ kind: z.literal('reasoning'), text: z.string() }).passthrough(),
+  z.object({ kind: z.literal('speech'), audioId: z.string().uuid(), autoplay: z.boolean() }).strict(),
   z.object({ kind: z.literal('plan'), steps: z.array(z.unknown()) }).passthrough(),
   z.object({
     kind: z.literal('status'),

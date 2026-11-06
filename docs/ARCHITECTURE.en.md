@@ -194,6 +194,10 @@ MimiAgent assembles instructions from distinct ownership layers:
 
 Instruction order does not imply authorization. None of these documents can add tools, expand event trust, or override the effective capability policy.
 
+Installed Skills expose bounded purpose descriptions for task selection without preloading procedures or resource paths. Unscoped `inspect_capabilities(query)` searches authorized direct and deferred tools, Skill metadata, and Connector actions using shared multilingual lexical matching. Cold MCP services remain lazy and are explicitly marked as requiring `source=mcp` discovery. A visible generic tool does not take priority over a better-fitting data source or workflow; poor results should trigger renewed discovery, while explicit owner routes, permission denials, and uncertain effects still prohibit bypass or replay. Memory supplements this current catalog rather than serving as its inventory.
+
+Web search has no Bing HTML-scraping fallback. OpenAI Responses retains hosted search; other transports expose Google CSE only when both credentials/configuration values are present at runtime initialization. Otherwise, the agent discovers configured search Skills/MCP capabilities. Empty results or failures never switch backends automatically. The main Agent discovers `http_get` on demand for raw public text/JSON; its existing mode, permission, public-address, and redirect checks remain enforced.
+
 MemoryHub separates evidence, compiled semantic pages, and rebuildable indexes. Private and workspace scopes remain distinct. Suppression and provenance receipts survive reindexing. External claims cannot directly become active private memory without the policy and maintenance gates.
 
 ## Extension Boundaries
@@ -244,3 +248,8 @@ Changes to packaging or public entry points also run `npm run test:package`. Ret
 The core does not aim to provide a hosted web UI, multi-tenant isolation, a distributed queue, arbitrary-depth agent graphs, a general workflow DSL, an enterprise vector database, or a container orchestration platform.
 
 These boundaries keep the local runtime auditable. Capabilities outside them should normally live in an MCP server, Skill, Connector, or external system.
+
+
+### Computer view and result contract
+
+UI actions explicitly reference the opaque `viewRef` returned by observation or the previous action state. The Host retains authorization, checks Run ownership and freshness at dispatch, and rejects window geometry drift. Pixel input uses full-window screenshot pixels without model-side Retina or origin conversion. AX tokens remain snapshot-bound. Dispatch and critical readback share the action lock. Delivery is separate from the optional unique-element value assertion (`verify`); unverified legacy receipts cannot satisfy Computer Goal completion. Uncertain outcomes freeze the stable window across refreshed views and UI action kinds. Generic desktop writes are denied at Connector discovery and dispatch, including aliases and task proxies; dedicated business connectors retain their own routes.

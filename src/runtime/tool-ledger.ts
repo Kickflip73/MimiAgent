@@ -161,16 +161,20 @@ function uncertainActionFenceResult(
   error: ActionIntentUncertainError,
   scope?: Pick<UncertainActionFence, 'actionFamily' | 'targetRef'>,
 ): Record<string, unknown> {
+  const computer = scope?.actionFamily.startsWith('computer.') === true;
+  const cause = error.cause && typeof error.cause === 'object'
+    ? actionResultMessage((error.cause as { result?: unknown }).result, '') : '';
   return {
     mimiStatus: 'action_uncertain',
     retryable: false,
     sideEffectsFrozen: true,
-    sideEffectFenceScope: 'matching_action_family_and_target',
+    sideEffectFenceScope: computer ? 'matching_computer_target' : 'matching_action_family_and_target',
+    ...(cause ? { cause } : {}),
     ...(scope ? {
       frozenActionFamily: scope.actionFamily,
       frozenTargetRef: scope.targetRef,
     } : {}),
-    message: `${error.message}。同一 action family 和目标的后续 ActionIntent 已冻结；仍可继续只读检查、执行不相关的恢复动作并向用户报告，不得重放或换路。`,
+    message: `${error.message}。${computer ? '同一窗口的所有 Computer 写操作已冻结' : '同一 action family 和目标的后续 ActionIntent 已冻结'}；仍可继续只读检查、执行不相关的恢复动作并向用户报告，不得重放或换路。等待不会自动解除冻结。`,
   };
 }
 
@@ -184,12 +188,14 @@ function matchesUncertainActionFence(
   fence: UncertainActionFence,
   action: ToolActionIntentMetadata,
 ): boolean {
-  return fence.actionFamily === action.actionFamily
+  return (fence.actionFamily === action.actionFamily
+    || (fence.actionFamily.startsWith('computer.') && action.actionFamily.startsWith('computer.')))
     && fence.targetRef === action.targetRef;
 }
 
-function failedSafeMessage(result: unknown): string {
+function actionResultMessage(result: unknown, fallback: string): string {
   let value = result;
+  if (Array.isArray(value)) value = value.find(item => item?.type === 'text')?.text;
   if (typeof value === 'string') {
     const raw = value;
     try {
@@ -200,11 +206,11 @@ function failedSafeMessage(result: unknown): string {
   }
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const record = value as Record<string, unknown>;
-    for (const candidate of [record.message, record.error]) {
+    for (const candidate of [record.message, record.error, record.stateUnavailable]) {
       if (typeof candidate === 'string' && candidate.trim()) return candidate.slice(0, 2_000);
     }
   }
-  return '动作明确未执行，可修正参数后重试';
+  return fallback;
 }
 
 export function withExecutionLedger(
@@ -264,10 +270,8 @@ export function withExecutionLedger(
             && typeof sanitized.code === 'string'
             ? sanitized.code
             : undefined;
-          const code = explicitCode ?? (/^stale_observation(?:：|:|\b)/.test(message)
-            ? 'stale_observation'
-            : undefined);
-          if (code !== 'stale_observation') throw error;
+          const code = explicitCode ?? /^(stale_observation|viewRef_required)(?:：|:|\b)/.exec(message)?.[1];
+          if (code !== 'stale_observation' && code !== 'viewRef_required') throw error;
           return {
             mimiStatus: 'tool_input_rejected',
             retryable: true,
@@ -378,9 +382,9 @@ export function withExecutionLedger(
                 }
                 const outcome = action.outcome?.(output) ?? 'confirmed';
                 if (outcome === 'failed_safe') {
-                  throw new ActionFailedSafeError(failedSafeMessage(output));
+                  throw new ActionFailedSafeError(actionResultMessage(output, '动作明确未执行，可修正参数后重试'));
                 }
-                if (outcome === 'uncertain') throw new ActionIntentUncertainError('动作结果不确定');
+                if (outcome === 'uncertain') throw new ActionIntentUncertainError(actionResultMessage(output, '动作结果不确定'));
                 return output;
               },
             );

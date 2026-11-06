@@ -39,6 +39,7 @@ import {
   CuaDriverLifecycle,
   resolveCuaDriverAppBundle,
 } from '../src/extensions/computer/cua-driver-lifecycle.js';
+import { TOOL_ACTION_INTENT } from '../src/core/tool-metadata.js';
 
 const target: ComputerTargetSummary = {
   bundleId: 'com.example.editor', pid: 42, windowId: 7, appName: 'Editor', title: 'Document',
@@ -111,7 +112,7 @@ async function observeWindow(manager: ComputerManager, authority: ComputerRunAut
   return manager.observe(authority, {
     scope: 'window', target: { bundleId: target.bundleId, pid: target.pid, windowId: target.windowId },
     includeScreenshot: false, maxElements: 400, maxDepth: 12,
-  }) as Promise<{ observationId: string }>;
+  }) as Promise<{ observationId: string; [key: string]: unknown }>;
 }
 
 async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000) {
@@ -122,6 +123,224 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>, timeoutMs 
   }
   throw new Error('condition was not met before timeout');
 }
+
+test('P0 pixel actions require a screenshot view and reject geometry drift before delivery', async () => {
+  const { manager, backend, authority } = await fixture();
+  const ax = await observeWindow(manager, authority);
+  await assert.rejects(manager.act(authority, { observationId: ax.observationId, action: { type: 'click', x: 20, y: 30, button: 'left', dispatch: 'background' } }), /pixel_view_required/);
+  backend.observation = { ...backend.observation, screenshot: { data: 'fixture', mediaType: 'image/png' }, dimensions: { width: 1600, height: 1200 } };
+  const image = await observeWindow(manager, authority);
+  backend.targets = [{ ...target, bounds: { ...target.bounds, width: 900 } }];
+  await assert.rejects(manager.act(authority, { observationId: image.observationId, action: { type: 'click', x: 1000, y: 100, button: 'left', dispatch: 'background' } }), /geometry_changed/);
+  assert.equal(backend.actions.length, 0);
+});
+
+test('P0 model actions cannot silently switch to the latest window', async () => {
+  const { manager, backend, authority } = await fixture();
+  const [observe, act] = createComputerTools(manager, () => authority);
+  assert.ok(observe && act && 'invoke' in observe && 'invoke' in act);
+  const first = await observe.invoke(new RunContext({}), JSON.stringify({ app: 'Editor' })) as Record<string, unknown>;
+  assert.equal(typeof first.viewRef, 'string');
+  const other = { ...target, pid: 43, windowId: 8, bundleId: 'com.example.other', appName: 'Other' };
+  backend.targets = [target, other];
+  backend.observation = { ...backend.observation, target: other };
+  await manager.observeTarget(authority, other, false);
+  await act.invoke(new RunContext({}), JSON.stringify({ viewRef: first.viewRef, action: { type: 'click', elementIndex: 1 } }));
+  assert.equal(backend.actions[0]?.target?.pid, target.pid);
+  const missing = await act.invoke(new RunContext({}), JSON.stringify({ action: { type: 'click', elementIndex: 1 } }));
+  assert.match(JSON.stringify(missing), /viewRef/);
+  assert.equal(backend.actions.length, 1);
+});
+
+test('P0 readback failure is uncertain and cannot be reported as success', async () => {
+  const { manager, backend, authority } = await fixture();
+  const observed = await observeWindow(manager, authority);
+  backend.observe = async () => { throw new Error('readback unavailable'); };
+  const act = createComputerTools(manager, () => authority)[1]!;
+  assert.ok('invoke' in act);
+  const raw = await act.invoke(new RunContext({}), JSON.stringify({ viewRef: observed.observationId, action: { type: 'click', elementIndex: 1 } }));
+  const result = typeof raw === 'string' ? JSON.parse(raw) as Record<string, unknown> : raw as Record<string, unknown>;
+  assert.equal(result.ok, false);
+  assert.equal(result.mimiStatus, 'action_uncertain');
+  assert.equal(backend.actions.length, 1);
+});
+
+test('P0 uncertainty fence target stays stable across fresh observations', async () => {
+  const { manager, authority } = await fixture();
+  const act = createComputerTools(manager, () => authority)[1]!;
+  const intent = (act as unknown as { [TOOL_ACTION_INTENT]: (input: string) => { targetRef: string } })[TOOL_ACTION_INTENT];
+  const first = await observeWindow(manager, authority);
+  const firstIntent = intent(JSON.stringify({ viewRef: first.observationId, action: { type: 'click', elementIndex: 1 } }));
+  const second = await observeWindow(manager, authority);
+  const secondIntent = intent(JSON.stringify({ viewRef: second.observationId, action: { type: 'click', elementIndex: 1 } }));
+  assert.equal(firstIntent.targetRef, secondIntent.targetRef);
+});
+
+test('P0 image pixels are passed unchanged and repeated unchanged actions stop before a third delivery', async () => {
+  const { manager, backend, authority } = await fixture();
+  const shifted = { ...target, bounds: { ...target.bounds, x: -1200, y: 150 } };
+  backend.targets = [shifted];
+  backend.observation = { ...backend.observation, target: shifted, screenshot: { data: 'fixture', mediaType: 'image/png' }, dimensions: { width: 1600, height: 1200 } };
+  const first = await observeWindow(manager, authority);
+  const action = { type: 'click' as const, x: 1000, y: 700, button: 'left' as const, dispatch: 'background' as const };
+  const one = await manager.act(authority, { observationId: first.observationId, action });
+  assert.deepEqual(backend.actions[0]?.input.action, action);
+  assert.ok('state' in one);
+  const two = await manager.act(authority, { observationId: String((one.state as Record<string, unknown>).viewRef), action });
+  assert.ok('state' in two);
+  await assert.rejects(manager.act(authority, { observationId: String((two.state as Record<string, unknown>).viewRef), action }), /no_progress/);
+  assert.equal(backend.actions.length, 2);
+});
+
+test('P0 cross-run references and observations superseded while dispatch waits cannot write', async () => {
+  const { manager, backend, authority } = await fixture();
+  const first = await observeWindow(manager, authority);
+  const action = { type: 'click' as const, elementIndex: 1, button: 'left' as const, dispatch: 'background' as const };
+  await assert.rejects(manager.act({ ...authority, runId: 'other' }, { observationId: first.observationId, action }), /stale_observation/);
+  let entered!: () => void;
+  let release!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  backend.listTargets = async () => { entered(); await gate; return backend.targets; };
+  const pending = manager.act(authority, { observationId: first.observationId, action });
+  await waiting;
+  await observeWindow(manager, authority);
+  release();
+  await assert.rejects(pending, /stale_observation/);
+  assert.equal(backend.actions.length, 0);
+});
+
+test('P0 SDK retry reuses a consumed view receipt; uncertainty survives a new view and action kind', async () => {
+  const { manager, backend, authority } = await fixture();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-p0-fence-'));
+  try {
+    const tool = createComputerTools(manager, () => authority)[1]!;
+    const [wrapped] = withExecutionLedger([tool], new ExecutionLedger(path.join(root, 'ledger.json')), () => ({
+      sessionId: 's', runId: authority.runId,
+      guardedActionContext: { ownerAuthenticated: true, exactTarget: true, lowRisk: false, reversible: false, boundedLocal: true },
+    }));
+    assert.ok(wrapped && 'invoke' in wrapped);
+    const observation = await observeWindow(manager, authority);
+    const input = JSON.stringify({ viewRef: observation.observationId, action: { type: 'click', elementIndex: 1 } });
+    const receipt = await wrapped.invoke(new RunContext({}), input, { toolCall: { callId: 'once' } } as never);
+    assert.equal(JSON.stringify(await wrapped.invoke(new RunContext({}), input, { toolCall: { callId: 'once' } } as never)), JSON.stringify(receipt));
+    assert.equal(backend.actions.length, 1);
+    const second = await observeWindow(manager, authority);
+    backend.nextActionResult = { status: 'uncertain', delivery: 'background' };
+    await wrapped.invoke(new RunContext({}), JSON.stringify({ viewRef: second.observationId, action: { type: 'click', elementIndex: 1 } }), { toolCall: { callId: 'unknown' } } as never);
+    const third = await observeWindow(manager, authority);
+    const frozen = await wrapped.invoke(new RunContext({}), JSON.stringify({ viewRef: third.observationId, action: { type: 'keypress', keys: ['ENTER'] } }), { toolCall: { callId: 'alternate' } } as never);
+    assert.match(JSON.stringify(frozen), /uncertain/);
+    assert.equal(backend.actions.length, 2);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('P0 read-only verification confirms values without another write', async () => {
+  const { manager, backend, authority } = await fixture();
+  backend.observation.elements = [{ index: 1, role: 'AXTextArea', value: 'done' }];
+  const observe = createComputerTools(manager, () => authority)[0]!;
+  assert.ok('invoke' in observe);
+  const result = await observe.invoke(new RunContext({}), JSON.stringify({ app: 'Editor', verify: { role: 'AXTextArea', equals: 'done' } })) as Record<string, unknown>;
+  assert.equal(result.verified, true);
+  assert.equal((result.verification as Record<string, unknown>).evidenceViewRef, result.viewRef);
+  assert.equal(backend.actions.length, 0);
+});
+
+test('P0 snapshot tokens replace volatile AX indices and nested foreground delivery is preserved', async () => {
+  const client = new CuaDriverClient('/bin/false', 1000);
+  const calls: Record<string, unknown>[] = [];
+  Object.assign(client, { call: async (_name: string, args: Record<string, unknown>) => {
+    calls.push(args);
+    return { structured: { delivery: { mode: 'foreground' }, effect: 'unverifiable' } };
+  } });
+  const result = await client.act({ id: 'test' }, {
+    input: { observationId: '0a0d8aba-cfa3-4bf7-9eae-6cbeb62ef07d', action: { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' } },
+    target, element: { index: 1, token: 'snapshot-token', role: 'AXButton' },
+  });
+  assert.equal(calls[0]?.element_token, 'snapshot-token');
+  assert.equal(calls[0]?.element_index, undefined);
+  assert.equal(result.delivery, 'foreground');
+});
+
+test('search shortcuts normalize combined keys and reject malformed input before dispatch', async () => {
+  const { manager, backend, authority } = await fixture();
+  const act = createComputerTools(manager, () => authority)[1]!;
+  assert.ok('invoke' in act);
+  const view = await observeWindow(manager, authority);
+  const invalid = await act.invoke(new RunContext({}), JSON.stringify({ viewRef: view.viewRef,
+    action: { type: 'keypress', keys: ['cmd', 'a', 'b'] } }));
+  assert.match(JSON.stringify(invalid), /invalid_action/);
+  assert.equal(backend.actions.length, 0);
+  await act.invoke(new RunContext({}), JSON.stringify({ viewRef: view.viewRef,
+    action: { type: 'keypress', keys: ['Cmd+A'] } }));
+  assert.deepEqual(backend.actions[0]?.input.action, { type: 'keypress', keys: ['cmd', 'a'], dispatch: 'background' });
+});
+
+test('Cua keyboard adapter maps a combined shortcut to hotkey, never a literal key name', async () => {
+  const client = new CuaDriverClient('/bin/false', 1000);
+  const calls: { name: string; args: Record<string, unknown> }[] = [];
+  Object.assign(client, { call: async (name: string, args: Record<string, unknown>) => {
+    calls.push({ name, args }); return { structured: { delivery: { mode: 'background' } } };
+  } });
+  for (const keys of [['cmd+a'], ['Control', 'Shift', 'A'], ['Enter'], ['+']]) {
+    await client.act({ id: 'test' }, { target, input: { observationId: '0a0d8aba-cfa3-4bf7-9eae-6cbeb62ef07d',
+      action: { type: 'keypress', keys, dispatch: 'background' } } });
+  }
+  assert.deepEqual(calls.map(call => [call.name, call.args.keys ?? call.args.key]), [
+    ['hotkey', ['cmd', 'a']], ['hotkey', ['ctrl', 'shift', 'a']], ['press_key', 'return'], ['press_key', '+'],
+  ]);
+});
+
+test('Cua plain-text failures retain diagnostics without claiming safe delivery or replaying', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-cua-key-error-'));
+  try {
+    const command = path.join(root, 'driver');
+    await writeFile(command, '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "cua-driver 0.16.0\\n"; exit 0; fi\nprintf "press_key failed: Unknown key name: cmd+a\\n"\n', { mode: 0o700 });
+    const client = new CuaDriverClient(command, 1000);
+    await assert.rejects(client.act({ id: 'test' }, { target, input: {
+      observationId: '00000000-0000-4000-8000-000000000000', action: { type: 'keypress', keys: ['Enter'], dispatch: 'background' },
+    } }), (error: unknown) => error instanceof Error && error.name === 'ComputerActionUncertainError'
+      && /Unknown key name: cmd\+a/.test(error.message));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('window screenshot metadata cannot be confused with AX screen coordinates', async () => {
+  const { manager, backend, authority } = await fixture();
+  backend.observation = { ...backend.observation, screenshot: { data: 'fixture', mediaType: 'image/png' },
+    dimensions: { width: 1567, height: 1113 }, elements: [{ index: 0, role: 'AXWindow', frame: target.bounds }] };
+  const view = await observeWindow(manager, authority);
+  assert.equal(view.screenshotScope, 'window');
+  assert.equal(view.coordinateOrigin, 'top_left');
+  assert.equal((view.elements as {frame?: unknown}[])[0]?.frame, undefined);
+  assert.deepEqual(backend.observation.elements?.[0]?.frame, target.bounds, 'internal geometry is preserved');
+});
+
+test('uncertain Computer receipts preserve the cause and describe the whole-window fence', async () => {
+  const { manager, backend, authority } = await fixture();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-search-fence-'));
+  try {
+    const [wrapped] = withExecutionLedger([createComputerTools(manager, () => authority)[1]!],
+      new ExecutionLedger(path.join(root, 'ledger.json')), () => ({ sessionId: 's', runId: authority.runId,
+        guardedActionContext: { ownerAuthenticated: true, exactTarget: true, lowRisk: false, reversible: false, boundedLocal: true } }));
+    assert.ok(wrapped && 'invoke' in wrapped);
+    const view = await observeWindow(manager, authority);
+    backend.observe = async () => { throw new Error('capture_timeout_test'); };
+    const result = await wrapped.invoke(new RunContext({}), JSON.stringify({ viewRef: view.viewRef,
+      action: { type: 'keypress', keys: ['Enter'] } }), { toolCall: { callId: 'search-failure' } } as never) as Record<string, unknown>;
+    assert.match(JSON.stringify(result), /capture_timeout_test/);
+    assert.equal(result.sideEffectFenceScope, 'matching_computer_target');
+    assert.match(String(result.message), /同一窗口.*所有.*写/);
+    assert.equal(backend.actions.length, 1);
+    backend.observe = async () => backend.observation;
+    authority.access = 'foreground';
+    const fresh = await observeWindow(manager, authority);
+    const blocked = await wrapped.invoke(new RunContext({}), JSON.stringify({ viewRef: fresh.viewRef,
+      action: { type: 'click', elementIndex: 1, dispatch: 'foreground' } }),
+      { toolCall: { callId: 'different-delivery' } } as never);
+    assert.match(JSON.stringify(blocked), /action_uncertain/);
+    assert.equal(backend.actions.length, 1, 'foreground request cannot bypass an uncertain window fence');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test('read-only Computer probe observes one allowlisted background window and verifies target stability', async () => {
   const { backend, manager } = await fixture();
@@ -434,6 +653,7 @@ test('readiness probe does not report a degraded empty observation as ready', as
 
 test('rejects unsafe target state, coordinates, secure fields, and unapproved escalation', async () => {
   const { backend, manager, authority } = await fixture();
+  backend.observation.screenshot = { data: 'fixture', mediaType: 'image/png' };
   let observed = await observeWindow(manager, authority);
   await assert.rejects(() => manager.act(authority, {
     observationId: observed.observationId,
@@ -552,7 +772,7 @@ test('computer tools respect mode and deployment permission boundaries', async (
   const actParameters = JSON.stringify((tools[1] as unknown as Record<string, unknown>).parameters);
   assert.match(observeParameters, /app.*screenshot/);
   assert.doesNotMatch(observeParameters, /scope|pid|windowId|maxDepth|promptForPermissions/);
-  assert.doesNotMatch(actParameters, /dispatch|kill_app|request_permissions|set_driver_config|trajectory/);
+  assert.doesNotMatch(actParameters, /kill_app|request_permissions|set_driver_config|trajectory/);
   assert.doesNotMatch(actParameters, /"maxLength":4000/);
 });
 
@@ -584,7 +804,7 @@ test('bounds the model-facing Computer observation without losing semantic state
   assert.equal((result as { truncated?: boolean }).truncated, true);
 });
 
-test('model-facing Computer tools keep observation and authorization handles inside the Host', async () => {
+test('model-facing Computer tools expose opaque viewRef while keeping authority inside the Host', async () => {
   const { manager, authority } = await fixture();
   const tools = createComputerTools(manager, () => authority);
   const observe = tools.find((item) => item.name === 'computer_observe');
@@ -600,7 +820,7 @@ test('model-facing Computer tools keep observation and authorization handles ins
   );
   assert.doesNotMatch(
     JSON.stringify((act as unknown as Record<string, unknown>).parameters),
-    /pid|windowId|dispatch|escalate_session|bring_to_front|handoff_to_user|release_foreground|move_cursor|kill_app|recording|replay_trajectory|set_driver_config|request_permissions/,
+    /pid|windowId|escalate_session|bring_to_front|handoff_to_user|release_foreground|move_cursor|kill_app|recording|replay_trajectory|set_driver_config|request_permissions/,
   );
 
   const observed = await observe.invoke(new RunContext({}), JSON.stringify({
@@ -614,11 +834,13 @@ test('model-facing Computer tools keep observation and authorization handles ins
 
   assert.ok('invoke' in act);
   const acted = await act.invoke(new RunContext({}), JSON.stringify({
+    viewRef: (manager.bindLatestAction(authority, { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' }) as { observationId: string }).observationId,
     action: { type: 'click', elementIndex: 1, button: 'left' },
   })) as Record<string, unknown>;
   assert.equal(acted.ok, true);
   assert.equal(acted.status, undefined);
-  assert.equal(acted.delivery, undefined);
+  assert.equal(acted.delivery, 'background');
+  assert.equal(acted.verified, false);
   assert.equal(acted.requiresObservation, undefined);
   assert.equal((acted.state as Record<string, unknown>).observationId, undefined);
   assert.equal((acted.state as Record<string, unknown>).target, undefined);
@@ -650,10 +872,10 @@ test('model-facing Computer tools return a retryable recovery when the current R
   }), { toolCall: { callId: 'stale-observation' } } as never) as Record<string, unknown>;
 
   assert.equal(result.mimiStatus, 'tool_input_rejected');
-  assert.equal(result.code, 'stale_observation');
+  assert.equal(result.code, 'viewRef_required');
   assert.equal(result.retryable, true);
   assert.equal(result.next, 'computer_observe');
-  assert.match(String(result.message), /没有可绑定的最新窗口观察/);
+  assert.match(String(result.message), /viewRef/);
   assert.equal(backend.actions.length, 0);
 });
 
@@ -684,6 +906,7 @@ test('model-facing Computer tools classify target_in_use as failed-safe without 
   assert.ok(wrapped && 'invoke' in wrapped);
 
   const result = await wrapped.invoke(new RunContext({}), JSON.stringify({
+    viewRef: (manager.bindLatestAction(authority, { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' }) as { observationId: string }).observationId,
     action: { type: 'click', elementIndex: 1, button: 'left' },
   }), { toolCall: { callId: 'target-in-use' } } as never) as Record<string, unknown>;
 
@@ -724,6 +947,7 @@ test('Computer action evidence keeps a successful text-and-image state confirmed
   assert.ok(wrapped && 'invoke' in wrapped);
 
   const result = await wrapped.invoke(new RunContext({}), JSON.stringify({
+    viewRef: (manager.bindLatestAction(authority, { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' }) as { observationId: string }).observationId,
     action: { type: 'click', elementIndex: 1, button: 'left' },
   }), { toolCall: { callId: 'image-action' } } as never) as Record<string, unknown>;
 
@@ -910,6 +1134,7 @@ test('redacts type_text plaintext from semantic and persisted ledger arguments',
   };
   await observeWindow(manager, authority);
   const executionRaw = JSON.stringify({
+    viewRef: (manager.bindLatestAction(authority, { type: 'keypress', keys: ['TAB'], dispatch: 'background' }) as { observationId: string }).observationId,
     action: { type: 'type_text', elementIndex: 1, text: 'private value' },
   });
   const root = await mkdtemp(path.join(os.tmpdir(), 'mimi-computer-ledger-'));
@@ -1025,7 +1250,8 @@ test('production ledger wiring permits an authenticated owner bounded background
   const result = await wrapped.invoke(
     new RunContext({}),
     JSON.stringify({
-      action: { type: 'click', elementIndex: 1, button: 'left' },
+      viewRef: (manager.bindLatestAction(authority, { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' }) as { observationId: string }).observationId,
+    action: { type: 'click', elementIndex: 1, button: 'left' },
     }),
     { toolCall: { callId: 'bounded-background-click' } } as never,
   ) as Record<string, unknown>;
@@ -1056,6 +1282,7 @@ test('Full Owner uses a fresh Computer observation without a second approval lay
   assert.ok(wrapped && 'invoke' in wrapped);
 
   const result = await wrapped.invoke(new RunContext({}), JSON.stringify({
+    viewRef: (manager.bindLatestAction(authority, { type: 'click', elementIndex: 1, button: 'left', dispatch: 'background' }) as { observationId: string }).observationId,
     action: { type: 'click', elementIndex: 1, button: 'left' },
   }), { toolCall: { callId: 'high-risk-click' } } as never) as Record<string, unknown>;
   assert.equal(result.ok, true);
@@ -1582,6 +1809,7 @@ test('launching a browser tab binds a changed existing window instead of polling
 test('an unchanged ambiguous launch does not poll twenty times or claim a document match', async () => {
   const { backend, manager, authority } = await fixture();
   backend.targets = [target, { ...target, windowId: 9, title: 'Other page' }];
+  backend.observe = async (_session, request) => ({ ...backend.observation, target: request.target ?? target });
   let scans = 0;
   backend.listTargets = async () => { scans += 1; return backend.targets; };
   const result = await manager.act(authority, { action: { type: 'launch_app', bundleId: target.bundleId, urls: ['file:///tmp/scene.html'], newInstance: false } });
@@ -1639,7 +1867,9 @@ test('text-only Computer models can review rendered screenshots through the perc
   assert.ok('invoke' in observe);
   const result = await observe.invoke(new RunContext({}), JSON.stringify({app:'Editor',screenshot:true,question:'按钮是否完整可见？'}));
   assert.equal(captures, 1);
-  assert.deepEqual(questions, ['按钮是否完整可见？']);
+  assert.equal(questions.length, 1);
+  assert.match(questions[0]!, /^按钮是否完整可见？/);
+  assert.match(questions[0]!, /完整目标窗口截图.*不是全屏/);
   assert.match(JSON.stringify(result), /右侧按钮被裁切/);
   assert.doesNotMatch(JSON.stringify(result), /cGl4ZWxz|vision_unavailable/);
   assert.equal(authority.supportsImageInput, false);
@@ -1739,6 +1969,28 @@ test('foreground permission refusal is failed-safe and never uncertain', async (
   assert.match(JSON.stringify(result), /action_failed_safe/);
   assert.doesNotMatch(JSON.stringify(result), /action_uncertain/);
   assert.equal(backend.actions.length, 0);
+  await manager.close();
+});
+
+test('model can request foreground delivery but cannot grant itself foreground authority', async () => {
+  const { manager, backend, authority } = await fixture();
+  const act = createComputerTools(manager, () => authority).find(item => item.name === 'computer_act')!;
+  assert.ok('invoke' in act);
+  assert.match(JSON.stringify(act.parameters), /dispatch/);
+  const view = await observeWindow(manager, authority);
+  const input = JSON.stringify({ viewRef: view.observationId,
+    action: { type: 'click', elementIndex: 1, dispatch: 'foreground' } });
+  const refused = await act.invoke(new RunContext({}), input);
+  assert.match(JSON.stringify(refused), /action_failed_safe/);
+  assert.equal(backend.actions.length, 0);
+  authority.access = 'foreground';
+  backend.nextActionResult = { status: 'applied', delivery: 'foreground' };
+  const result = await act.invoke(new RunContext({}), input) as Record<string, unknown>;
+  assert.equal(result.delivery, 'foreground');
+  assert.equal(result.verified, false);
+  assert.equal(backend.actions.length, 1);
+  assert.equal(backend.actions[0]?.target?.windowId, target.windowId);
+  assert.equal((backend.actions[0]?.input.action as { dispatch: string }).dispatch, 'foreground');
   await manager.close();
 });
 

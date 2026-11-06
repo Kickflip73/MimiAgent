@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { normalizeComputerKeys } from './keyboard.js';
 import type {
   BackendActionResult,
   BackendActionRequest,
@@ -82,9 +83,12 @@ function toolForAction(input: ComputerActInput): { name: string; arguments: Reco
       text: action.text, delivery_mode: action.dispatch,
     } };
     case 'set_value': return { name: 'set_value', arguments: { element_index: action.elementIndex, value: String(action.value) } };
-    case 'keypress': return action.keys.length === 1
-      ? { name: 'press_key', arguments: { key: action.keys[0], delivery_mode: action.dispatch } }
-      : { name: 'hotkey', arguments: { keys: action.keys, delivery_mode: action.dispatch } };
+    case 'keypress': {
+      const keys = normalizeComputerKeys(action.keys);
+      return keys.length === 1
+        ? { name: 'press_key', arguments: { key: keys[0], delivery_mode: action.dispatch } }
+        : { name: 'hotkey', arguments: { keys, delivery_mode: action.dispatch } };
+    }
     case 'scroll': {
       const vertical = Math.abs(action.deltaY) >= Math.abs(action.deltaX);
       const delta = vertical ? action.deltaY : action.deltaX;
@@ -343,6 +347,7 @@ export class CuaDriverClient implements ComputerBackend {
       }
     }
     const selected = toolForAction(request.input);
+    if (request.element?.token) delete selected.arguments.element_index;
     if (request.input.action.type === 'start_recording') {
       if (!request.artifactPath) throw new Error('start_recording 缺少受保护的 artifact 路径');
       selected.arguments.output_dir = request.artifactPath;
@@ -355,6 +360,7 @@ export class CuaDriverClient implements ComputerBackend {
     }
     const result = await this.call(selected.name, {
       ...selected.arguments,
+      ...(request.element?.token ? { element_token: request.element.token } : {}),
       session: session.id,
       pid: request.target?.pid,
       window_id: request.target?.windowId,
@@ -365,7 +371,7 @@ export class CuaDriverClient implements ComputerBackend {
     if (/background.*(unsupported|unavailable|occluded)/i.test(status)) return { status: 'background_unsupported', data: structured };
     const foregroundControl = ['escalate_session', 'bring_to_front', 'handoff_to_user', 'release_foreground']
       .includes(request.input.action.type);
-    const delivery = String(structured.delivery_mode ?? structured.delivery) === 'foreground' || foregroundControl
+    const delivery = String(structured.delivery_mode ?? record(structured.delivery).mode ?? structured.delivery) === 'foreground' || foregroundControl
       ? 'foreground'
       : 'background';
     if (/uncertain|partial/i.test(status)) return { status: 'uncertain', delivery, data: structured };
@@ -402,11 +408,13 @@ export class CuaDriverClient implements ComputerBackend {
         || (!secure && /^AX(?:TextArea|TextField)$/i.test(role) && item.enabled !== false);
       return {
         index: finite(item.element_index ?? item.index),
+        ...(typeof item.element_token === 'string' ? { token: item.element_token } : {}),
         role,
         ...(item.label === undefined ? {} : { label: String(item.label) }),
         ...((typeof rawValue === 'string' || typeof rawValue === 'number' || typeof rawValue === 'boolean')
           ? { value: typeof rawValue === 'string' ? rawValue.slice(0, 500) : rawValue }
           : {}),
+        ...(typeof rawValue === 'string' && rawValue.length > 500 ? { valueTruncated: true } : {}),
         ...((item.description ?? item.help) === undefined
           ? {}
           : { description: String(item.description ?? item.help).slice(0, 500) }),
@@ -526,11 +534,15 @@ export class CuaDriverClient implements ComputerBackend {
         }
       }
       if (action && (!(error instanceof Error) || error.name !== 'CuaDriverRejectedError')) {
-        const uncertain = new Error('Cua Driver 动作结果通道失败，结果不确定；不会自动重试', { cause: error });
+        const failure = error as { stderr?: unknown; code?: unknown } | undefined;
+        const detail = error instanceof Error && error.name === 'CuaDriverProtocolError' ? error.message.slice(0, 500)
+          : typeof failure?.stderr === 'string' ? failure.stderr.trim().slice(0, 500)
+          : typeof failure?.code === 'string' || typeof failure?.code === 'number' ? String(failure.code) : 'unknown';
+        const uncertain = new Error(`Cua Driver ${name} 结果通道失败（${detail}），结果不确定；不会自动重试`, { cause: error });
         uncertain.name = 'ComputerActionUncertainError';
         throw uncertain;
       }
-      throw new Error(`Cua Driver ${name} 调用失败`, { cause: error });
+      throw new Error(`Cua Driver ${name} 调用失败${error instanceof Error && error.name === 'CuaDriverRejectedError' ? `：${error.message}` : ''}`, { cause: error });
     }
   }
 
@@ -544,7 +556,12 @@ export class CuaDriverClient implements ComputerBackend {
       encoding: 'utf8', timeout: this.timeoutMs, maxBuffer: name.includes('state') || name === 'zoom' ? 16 * 1024 * 1024 : 1024 * 1024,
       signal,
     });
-    const parsed = JSON.parse(stdout) as unknown;
+    let parsed: unknown;
+    try { parsed = JSON.parse(stdout) as unknown; } catch (error) {
+      const protocolError = new Error(`Cua Driver ${name} 返回非 JSON：${stdout.trim().slice(0, 500)}`, { cause: error });
+      protocolError.name = 'CuaDriverProtocolError';
+      throw protocolError;
+    }
     const envelopeCandidate = envelopeSchema.safeParse(parsed);
     if (!envelopeCandidate.success || !record(parsed).content) return rawDriverResult(parsed);
     const envelope = envelopeCandidate.data;

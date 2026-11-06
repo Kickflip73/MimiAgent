@@ -5,7 +5,7 @@ import { toolResultObject, toolResultFailure } from './tool-result.js';
 const audio = z.object({
   id: z.string().uuid(), file: z.string().max(4096),
   format: z.enum(['wav', 'mp3', 'm4a', 'ogg', 'flac']),
-  engine: z.enum(['chattts', 'kokoro', 'breeze', 'unknown']), createdAt: z.string(),
+  engine: z.enum(['macos', 'chattts', 'kokoro', 'breeze', 'unknown']), createdAt: z.string(),
 });
 
 /** Accept a speech receipt, never an arbitrary file mentioned in tool text. */
@@ -29,7 +29,7 @@ export function speechHistoryFiles(items: readonly unknown[]): string[] {
     if (!id) continue;
     if (item.type === 'function_call') {
       const args = toolResultObject(item.arguments);
-      if (item.name === 'speech' && ['play', 'speak', 'synthesize'].includes(String(args?.action))) calls.set(id, 'speech');
+      if (item.name === 'speech' && ['play', 'speak', 'synthesize', 'voice_preview'].includes(String(args?.action))) calls.set(id, 'speech');
     } else if (['function_call_result', 'function_call_output'].includes(String(item.type)) && calls.has(id)) {
       calls.delete(id);
       const file = speechAudioFile(item.output);

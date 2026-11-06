@@ -512,7 +512,7 @@ test('owner natural-language runs retain direct Skill activation and deferred ca
   await writeFile(path.join(skillsRoot, 'hidden-skill', 'SKILL.md'), [
     '---',
     'name: hidden-skill',
-    'description: UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK',
+    'description: UNIQUE_SKILL_PURPOSE_FOR_SELECTION',
     '---',
     'Hidden instructions.',
   ].join('\n'));
@@ -561,12 +561,12 @@ test('owner natural-language runs retain direct Skill activation and deferred ca
     assert.equal(captured.tools?.includes('list_skills'), false);
     assert.ok((captured.tools?.length ?? 0) <= 30);
     assert.ok(estimateTokens(captured.toolSchemas) <= 4_200, `Tool schemas: ${estimateTokens(captured.toolSchemas)} tokens`);
-    assert.doesNotMatch(captured.instructions ?? '', /UNIQUE_SKILL_DESCRIPTION_MUST_NOT_LEAK/);
+    assert.match(captured.instructions ?? '', /UNIQUE_SKILL_PURPOSE_FOR_SELECTION/);
+    assert.doesNotMatch(captured.instructions ?? '', /Hidden instructions\./);
     assert.ok(captured.tools?.includes('use_skill'));
     assert.match(captured.instructions ?? '', /"source":"skill"[^\n]*"list_skills"/);
     assert.doesNotMatch(captured.instructions ?? '', /source:|location:|hidden-skill\/SKILL\.md/);
-    // The installed-skill name index makes capability questions answerable from
-    // visible context without leaking SKILL.md bodies or descriptions.
+    // Purpose metadata supports selection without loading SKILL.md procedures.
     assert.match(captured.instructions ?? '', /可用 Agent Skills[\s\S]*hidden-skill/);
     assert.match(captured.instructions ?? '', /先按此清单核查/);
     await agent.completeRun('FOCUSED_OWNER_ANSWER');

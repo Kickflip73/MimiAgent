@@ -473,7 +473,14 @@ export class MimiAgent {
         runtime: () => new MediaRuntime(this.components.modelGateway, this.components.modelResolver),
         routeVersion: () => this.components.modelConfig.routeVersion,
       }),
-      ...createSpeechTools(components.speech),
+      ...createSpeechTools(components.speech, (autoplay) => {
+        const owner = this.activeRun;
+        if (!owner) return undefined;
+        return { sessionId: owner.sessionId, runId: owner.runId, onReady: async (audioId) => {
+          if (this.activeRun !== owner) return;
+          await this.hooks.emit({ type: 'speech_ready', sessionId: owner.sessionId, runId: owner.runId, audioId, autoplay });
+        } };
+      }),
       ...createMimiPreferenceTools(components.preferences),
     ];
   }

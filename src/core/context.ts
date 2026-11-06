@@ -556,10 +556,9 @@ export class ContextManager {
       candidates.push({
         id: 'skill-catalog',
         text: [
-          '可用 Agent Skills（这里列出的是 Skill 名称，不是可直接调用的 Tool）：',
-          'owner 问“有没有/能不能用某能力”时，先按此清单核查，再用 inspect_capabilities 的能力目录或 list_skills 补充核实；清单未命中不等于能力不存在，结论中要说明已核查哪些来源。',
-          '需要激活时，若尚不知道 use_skill 的 Tool schema，先用 inspect_capabilities 以精确 name="use_skill" 查询；',
-          '已知 schema 后直接用 invoke_capability 调用 name="use_skill"，并把 Skill 名称放入 argumentsJson.name。',
+          '可用 Agent Skills（名称与简短用途，不是可直接调用的 Tool；省略号表示简介截断）：',
+          '选择能力时先按此清单核查任务适配度；需要专门数据源或工作流时用 use_skill(name) 读取说明。清单未命中不等于能力不存在，可用 inspect_capabilities(query) 跨来源发现，或 list_skills 分页查看。',
+          'use_skill 已直接可见时直接调用；否则按精确 name="use_skill" 发现 schema 后通过 invoke_capability 调用，并把 Skill 名称放入 argumentsJson.name。',
           parts.skillCatalog,
         ].join('\n'),
       });

@@ -58,6 +58,7 @@ function truncateJsonString(value: string, maxBytes: number): string {
 }
 
 function boundedEvent(event: PendingStreamEvent): PendingStreamEvent {
+  if (event.kind === 'speech') return event;
   if (event.kind === 'answer' || event.kind === 'reasoning') {
     return { ...event, text: truncateUtf8(event.text, STREAM_TEXT_BYTES) };
   }
@@ -133,6 +134,7 @@ export function mimiStreamEvent(event: RunStreamEvent): PendingStreamEvent | und
 }
 
 export function mimiRuntimeStreamEvent(event: RuntimeEvent): PendingStreamEvent | undefined {
+  if (event.type === 'speech_ready') return { kind: 'speech', audioId: event.audioId, autoplay: event.autoplay };
   if (event.type === 'run_progress' || event.type === 'run_start') return {kind:'status',transient:true,tone:'thinking',title:event.type==='run_start'?'正在准备回答':event.phase,next:''};
   if (event.type !== 'plan_updated') return undefined;
   return {

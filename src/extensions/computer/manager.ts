@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -93,6 +93,7 @@ interface StoredObservation extends BackendObservation {
 }
 
 interface RunState {
+  noProgress?: { key: string; count: number };
   session?: BackendSession;
   observations: Map<string, StoredObservation>;
   preferredTargets: Map<string, ComputerTargetSummary | null>;
@@ -107,6 +108,19 @@ interface RunState {
 
 function targetKey(target: Pick<ComputerTargetSummary, 'pid' | 'windowId'>): string {
   return `${target.pid}:${target.windowId}`;
+}
+
+function progressKey(target: ComputerTargetSummary, action: ComputerAction): string {
+  return createHash('sha256').update(JSON.stringify([targetKey(target), action])).digest('hex');
+}
+
+function stateFingerprint(state: { elements?: readonly ComputerElement[]; screenshot?: { data: string }; target?: ComputerTargetSummary }): string | undefined {
+  if (!state.elements?.length && !state.screenshot) return undefined;
+  return createHash('sha256').update(JSON.stringify([
+    state.target?.title,
+    state.elements?.map(({ token: _token, index: _index, ...element }) => element),
+    state.screenshot?.data,
+  ])).digest('hex');
 }
 
 function launchedDocumentName(urls: readonly string[] | undefined): string | undefined {
@@ -219,7 +233,7 @@ function observationReadiness(observation: BackendObservation): {
 }
 
 function modelObservation(observation: StoredObservation): Record<string, unknown> {
-  const elements = observation.elements?.map((element) => ({
+  const elements = observation.elements?.map(({ frame: _screenFrame, ...element }) => ({
     ...element,
     ...(element.label ? { label: element.label.slice(0, 240) } : {}),
     ...(element.description ? { description: element.description.slice(0, 240) } : {}),
@@ -228,6 +242,12 @@ function modelObservation(observation: StoredObservation): Record<string, unknow
   })) ?? [];
   const view: Record<string, unknown> = {
     observationId: observation.id,
+    viewRef: observation.id,
+    targetRef: observation.target ? `${observation.target.bundleId}:${targetKey(observation.target)}` : undefined,
+    coordinateSpace: observation.screenshot && !observation.fromZoom ? 'image_px' : undefined,
+    screenshotScope: observation.screenshot && !observation.fromZoom ? (observation.target ? 'window' : 'desktop') : undefined,
+    coordinateOrigin: observation.screenshot && !observation.fromZoom ? 'top_left' : undefined,
+    imageSize: observation.screenshot && !observation.fromZoom ? observation.dimensions : undefined,
     capturedAt: new Date(observation.capturedAt).toISOString(),
     expiresAt: new Date(observation.expiresAt).toISOString(),
     target: observation.target,
@@ -452,6 +472,13 @@ export class ComputerManager {
       this.assertRect(input.rect.x, input.rect.y, input.rect.width, input.rect.height, parent.dimensions);
     }
     const result = await this.backend.observe(run.session!, { input, target: parent?.target ?? knownTarget }, signal);
+    if (this.runs.get(authority.runId) !== run) throw new ActionFailedSafeError('stale_run：观察所属 Run 已结束');
+    if (input.scope === 'window' && result.target
+      && ((input.target.bundleId !== undefined && input.target.bundleId !== result.target.bundleId)
+        || (input.target.pid !== undefined && input.target.pid !== result.target.pid)
+        || (input.target.windowId !== undefined && input.target.windowId !== result.target.windowId))) {
+      throw new ActionFailedSafeError('target_mismatch：观察返回了另一个窗口，拒绝绑定');
+    }
     if (input.scope === 'window' && result.target && !result.dimensions) {
       const { width, height } = result.target.bounds;
       if (width > 0 && height > 0) result.dimensions = { width, height };
@@ -519,6 +546,28 @@ export class ComputerManager {
       });
     }
     return computerActInputSchema.parse({ action });
+  }
+
+  bindAction(authority: ComputerRunAuthority, action: ComputerAction, viewRef?: string | null, validateFresh = true): ComputerActInput {
+    if (!['click', 'double_click', 'type_text', 'set_value', 'keypress', 'scroll', 'drag'].includes(action.type)) {
+      return computerActInputSchema.parse({ action });
+    }
+    if (!viewRef) throw new ActionFailedSafeError('viewRef_required：UI 动作必须引用观察或上次动作 state 的 viewRef，请 computer_observe');
+    const run = this.runs.get(authority.runId);
+    if (!run) throw new ActionFailedSafeError('stale_observation：当前 Run 没有可用观察');
+    // Ledger preflight may resolve a consumed reference to replay its existing receipt.
+    // Dispatch always validates freshness again, including inside the action lock.
+    if (validateFresh) this.freshObservation(run, authority.runId, viewRef);
+    else if (!run.observations.has(viewRef)) throw new ActionFailedSafeError('stale_observation：未知观察引用');
+    return computerActInputSchema.parse({ observationId: viewRef, action });
+  }
+
+  actionTargetRef(authority: ComputerRunAuthority, observationId: string): string {
+    const run = this.runs.get(authority.runId);
+    if (!run) throw new ActionFailedSafeError('stale_observation：当前 Run 没有可用观察');
+    const target = run.observations.get(observationId)?.target;
+    if (!target) throw new ActionFailedSafeError('target_missing：观察没有精确窗口');
+    return `${target.bundleId}:${targetKey(target)}`;
   }
 
   async observeStableBackgroundWindow(
@@ -647,6 +696,7 @@ export class ComputerManager {
     let artifactId: string | undefined;
     let artifactPath: string | undefined;
     let targetsBeforeLaunch: Map<string, string> | undefined;
+    let postActionState: Awaited<ReturnType<ComputerManager['observe']>> | undefined;
     if (input.action.type === 'start_recording') {
       if (run.activeArtifactId) throw new Error('当前 Run 已有活跃录制');
       const pending = await this.artifacts.create(authority.runId);
@@ -675,8 +725,20 @@ export class ComputerManager {
           throw new ActionFailedSafeError('target_in_use：目标应用处于前台或焦点状态未知，当前 Run 没有前台权限');
         }
       }
-      for (const point of actionCoordinates(input.action)) this.assertPoint(point.x, point.y, observation.dimensions);
+      const points = actionCoordinates(input.action);
+      if (('elementIndex' in input.action && input.action.elementIndex !== undefined
+        && (('x' in input.action && input.action.x !== undefined) || ('y' in input.action && input.action.y !== undefined)))
+        || ('x' in input.action && 'y' in input.action && (input.action.x === undefined) !== (input.action.y === undefined))) {
+        throw new ActionFailedSafeError('ambiguous_grounding：elementIndex 和像素坐标只能选一种，x/y 必须成对');
+      }
+      if (points.length && (!observation.screenshot || observation.fromZoom)) {
+        throw new ActionFailedSafeError('pixel_view_required：坐标只能引用完整窗口截图的 image_px；不得换算 Retina、窗口偏移或裁剪图坐标');
+      }
+      for (const point of points) this.assertPoint(point.x, point.y, observation.dimensions);
       element = actionElement(input.action, observation);
+      if (run.noProgress?.key === progressKey(target, input.action) && run.noProgress.count >= 2) {
+        throw new ActionFailedSafeError('no_progress：同一动作连续两次没有可观察进展；停止原样重试，只读诊断或报告未验证');
+      }
     } else if (input.action.type === 'launch_app' && input.action.bundleId) {
       this.authorizeApp(authority, input.action.bundleId, 'act');
     } else if (input.action.type === 'launch_app') {
@@ -702,10 +764,11 @@ export class ComputerManager {
       target = restore;
     }
     run.actions += 1;
-    if (observation) observation.valid = false;
     const execute = async () => withExclusiveFileLock(
       path.join(this.dataRoot, 'computer-action'),
       async () => {
+        if (this.runs.get(authority.runId) !== run) throw new ActionFailedSafeError('stale_run：动作所属 Run 已结束');
+        if (observation) this.freshObservation(run, authority.runId, observation.id);
         if (input.action.type === 'launch_app' && input.action.bundleId) {
           targetsBeforeLaunch = new Map((await this.backend.listTargets({
             query: input.action.bundleId,
@@ -717,7 +780,10 @@ export class ComputerManager {
           const freshTargets = await this.backend.listTargets({ query: currentTarget.bundleId, limit: 50 }, signal);
           const fresh = freshTargets.find((candidate) => candidate.bundleId === currentTarget.bundleId
             && candidate.pid === currentTarget.pid && candidate.windowId === currentTarget.windowId);
-          if (!fresh) throw new Error('stale_observation：目标窗口身份已变化，请重新观察');
+          if (!fresh) throw new ActionFailedSafeError('stale_observation：目标窗口身份已变化，请重新观察');
+          if (observation && (['x', 'y', 'width', 'height'] as const).some(key => fresh.bounds[key] !== currentTarget.bounds[key])) {
+            throw new ActionFailedSafeError('geometry_changed：窗口几何已变化，请重新观察');
+          }
           if (this.config.pauseWhenTargetFrontmost && effectiveAccess === 'background' && fresh.frontmost !== false) {
             if (!promoteToForeground()) {
               throw new ActionFailedSafeError('target_in_use：目标应用处于前台或焦点状态未知，当前 Run 没有前台权限');
@@ -726,6 +792,15 @@ export class ComputerManager {
         }
         if (input.action.type === 'drag' && input.action.path.length !== 2) {
           throw new Error('当前 Cua Driver 版本的 drag 只支持起点和终点两个路径点');
+        }
+        signal?.throwIfAborted();
+        if (this.runs.get(authority.runId) !== run) throw new ActionFailedSafeError('stale_run：动作所属 Run 已结束');
+        if (observation) {
+          this.freshObservation(run, authority.runId, observation.id);
+          if (observation.screenshot && run.screenshots >= this.config.maxScreenshotsPerRun) {
+            throw new ActionFailedSafeError('verification_budget_exhausted：截图额度不足以读回本次视觉动作，未投递');
+          }
+          observation.valid = false;
         }
         let applied = await this.backend.act(run.session!, {
           input: backendInput, target, element, fromZoom: observation?.fromZoom, artifactPath,
@@ -753,6 +828,20 @@ export class ComputerManager {
             throw new ComputerActionUncertainError('foreground_violation：后台动作后目标成为前台或焦点状态未知，停止后续动作');
           }
         }
+        if (target && observation && applied.status === 'applied') {
+          try {
+            // Keep dispatch and its authoritative readback in the same bounded lock.
+            postActionState = await this.observeTarget(authority, target, Boolean(observation.screenshot), signal);
+            const before = stateFingerprint(observation);
+            const after = stateFingerprint(postActionState as BackendObservation);
+            const key = progressKey(target, input.action);
+            run.noProgress = before && after && before === after
+              ? { key, count: run.noProgress?.key === key ? run.noProgress.count + 1 : 1 }
+              : undefined;
+          } catch (error) {
+            throw new ComputerActionUncertainError(`动作已投递，但结果读回失败；不得重放：${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
         return applied;
       },
       signal,
@@ -769,7 +858,10 @@ export class ComputerManager {
         result.data && typeof result.data === 'object' && 'pid' in result.data
           && typeof result.data.pid === 'number' ? result.data.pid : undefined,
         signal,
-      );
+      ).catch(error => {
+        if (input.action.type === 'launch_app' && input.action.bundleId) run.preferredTargets.set(input.action.bundleId, null);
+        throw new ComputerActionUncertainError(`启动已投递，但目标读回失败：${error instanceof Error ? error.message : String(error)}`);
+      });
       if (input.action.urls?.length) run.preferredTargets.set(input.action.bundleId, launchedTarget?.target ?? null);
       if (launchedTarget) {
         target = launchedTarget.target;
@@ -832,7 +924,7 @@ export class ComputerManager {
       requiresObservation: true,
       ...(input.action.type === 'handoff_to_user' ? { foregroundDisposition: 'retained_for_user' } : {}),
       target,
-      state: launchState,
+      state: postActionState ?? launchState,
       ...artifactResult,
     };
   }
@@ -904,7 +996,7 @@ export class ComputerManager {
   private freshObservation(state: RunState, runId: string, id: string): StoredObservation {
     const observation = state.observations.get(id);
     if (!observation || observation.runId !== runId || !observation.valid || observation.expiresAt <= Date.now()) {
-      throw new Error('stale_observation：请重新观察目标窗口');
+      throw new ActionFailedSafeError('stale_observation：请重新观察目标窗口');
     }
     return observation;
   }

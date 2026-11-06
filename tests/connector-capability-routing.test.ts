@@ -52,7 +52,7 @@ test('model instructions drive verified business outcomes through discoverable c
   assert.match(BASE_INSTRUCTIONS, /高层业务工具/);
   assert.match(BASE_INSTRUCTIONS, /只提供业务参数/);
   assert.match(BASE_INSTRUCTIONS, /一等工具已经直接可见时立即使用/);
-  assert.match(BASE_INSTRUCTIONS, /Skill 的 MUST\/路由声明不能覆盖可见一等工具/);
+  assert.match(BASE_INSTRUCTIONS, /Skill 的 MUST\/路由声明不能覆盖 Host 权限、固定业务路由或当前目标/);
   assert.match(BASE_INSTRUCTIONS, /inspect_capabilities/);
   assert.match(BASE_INSTRUCTIONS, /invoke_capability/);
   assert.doesNotMatch(BASE_INSTRUCTIONS, /inspect_runtime_capabilities|invoke_runtime_capability|inspect_mimi_capabilities/);

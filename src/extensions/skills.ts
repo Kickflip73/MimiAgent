@@ -6,6 +6,7 @@ import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { tool } from '../tool-factory.js';
 import { estimateTokens } from '../core/context.js';
+import { matchesCapabilityQuery } from '../core/capability-query.js';
 import type {
   ActivatedSkill,
   SkillActivationStatus,
@@ -300,8 +301,12 @@ export class SkillLoader {
   }
 
   inspectCatalog(filter: { name?: string; query?: string; offset?: number; limit?: number } = {}, access: SkillRunAccess = { canReadLocal: true }) {
-    const matches = [...this.skills.values()].filter(skill => (!filter.name || skill.name === filter.name)
-      && (!filter.query || `${skill.name} ${skill.description}`.toLowerCase().includes(filter.query.toLowerCase())));
+    const matches = [...this.skills.values()]
+      .filter(skill => !filter.name || skill.name === filter.name)
+      .map(skill => ({ skill, score: filter.query ? matchesCapabilityQuery(filter.query, `${skill.name} ${skill.description}`) : 1 }))
+      .filter(({ score }) => score > 0)
+      .sort((left, right) => right.score - left.score || left.skill.name.localeCompare(right.skill.name))
+      .map(({ skill }) => skill);
     const offset = Math.max(0, filter.offset ?? 0), limit = Math.min(25, Math.max(1, filter.limit ?? 25));
     return {
       skills: matches.slice(offset, offset + limit).map(skill => ({

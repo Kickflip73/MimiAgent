@@ -1,3 +1,4 @@
+import { speechButton, liveSpeechPlayer, armSpeechPlayback, stopSpeech } from './speech-stream.js';
 import { randomUUID } from './uuid.js';
 import { replayHistory, conversationStatus } from './execution.js';
 import { bindImageViewer } from './image-viewer.js';
@@ -459,6 +460,7 @@ function messageFooter(text, { role = 'assistant', sentAt, timestampSource, dura
       elapsed.setAttribute('aria-label', elapsed.title);
       actions.append(elapsed);
     }
+    if (copy && text && role === 'assistant') actions.append(speechButton(text, {}, { onError: toast }));
     if (copy && text) actions.append(copyButton(text, role === 'user' ? '复制消息' : '复制回答'));
     footer.append(actions);
   }
@@ -907,6 +909,13 @@ function startStream(id) {
   const live = document.createElement('div'); live.id = 'live-message'; live.className = 'message-run';
   const content = document.createElement('div'); content.className = 'live-content'; live.append(content);
   const answerNodes = [], processNodes = new Map();
+  const speechNodes = new Map(), speechArea = document.createElement('div'); live.append(speechArea);
+  const showSpeech = (event, autoplay = false) => {
+    if (speechNodes.has(event.audioId)) return;
+    const node = liveSpeechPlayer(session, event.audioId, autoplay);
+    speechNodes.set(event.audioId, node); speechArea.append(node);
+  };
+  for (const event of run.speech || []) showSpeech(event);
   $('#messages').append(live);
   let source, settled = false, detached = false, recovering = false, finishing = false, paintTimer, frame;
   const reveal = createTextReveal(run.answers);
@@ -980,6 +989,7 @@ function startStream(id) {
   }
   function ingest(data, replay = false) {
     if (!current() || !projectEvent(run,data)) return;
+    if (data.kind === 'speech') showSpeech(data, data.autoplay);
     if (data.kind === 'answer' && !run.answerTimes[run.answers.length-1]) run.answerTimes[run.answers.length-1] = Date.now();
     if (data.kind === 'status') runActivity(data.next || data.title);
     if (replay) { shown = reveal.update(run.answers, performance.now(), true); replayPaint = true; }
@@ -1125,6 +1135,7 @@ async function send(event) {
     state.loading
   )
     return;
+  armSpeechPlayback(state.sessionId);
   const session = state.sessionId;
   if (state.streamId || queue.list(session).length) {
     queue.add(session, input, $('#security').value, images, media); imageDrafts.clear(session); mediaDrafts.clear(session); $('#message-input').value = ''; resizeInput(); updateComposer(); void drainQueues(); return;
@@ -1621,6 +1632,7 @@ $('#send').addEventListener('click', async (event) => {
   event.preventDefault();
   const id = state.streamId;
   if (state.stopping === id) return;
+  stopSpeech();
   state.stopping = id; updateComposer(); runActivity('正在停止');
   try {
     const result = await api('tasks/action', { id, action: 'cancel' });

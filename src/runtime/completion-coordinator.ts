@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { hasVerifiedComputerResult } from '../extensions/computer/verification.js';
 import {
   evaluateCompletion,
   type CompletionContract,
@@ -57,7 +58,10 @@ export class CompletionCoordinator {
       callId: call.modelCallId ?? call.callId,
       aliases: [...new Set([call.callId, ...(call.modelCallIds ?? [])])],
       argumentsJson: call.argumentsJson,
-      status: call.status,
+      // A successful transport/ledger call is not evidence that the GUI goal was met.
+      status: ['computer_act', 'computer_observe'].includes(call.toolName) && call.status === 'succeeded' && !hasVerifiedComputerResult(call.output)
+        ? 'failed' as const : call.status,
+      objectiveVerified: ['computer_act', 'computer_observe'].includes(call.toolName) && hasVerifiedComputerResult(call.output),
       output: call.output,
       error: call.error,
     }));

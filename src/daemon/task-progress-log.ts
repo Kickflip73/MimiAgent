@@ -50,7 +50,7 @@ function compact(value: string, maxChars: number): string {
 }
 
 function persistedEvent(event: PendingMimiStreamEvent): PersistedTaskProgressEvent | undefined {
-  if (event.kind === 'reasoning') return undefined;
+  if (event.kind === 'reasoning' || event.kind === 'speech') return undefined;
   if (event.kind === 'answer') {
     return { kind: 'answer', text: compact(event.text, 2_000) };
   }

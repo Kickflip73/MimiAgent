@@ -2,6 +2,23 @@
 
 Use `codex/development-integrated` as the shared development baseline. Branch names and commit dates alone do not indicate which features a build contains: the Breeze feature branch and `main` had diverged.
 
+## Integration update — 2026-11-06
+
+The development branch now collects the current speech settings/voice preview and
+save lifecycle, native/Kokoro/Breeze engine selection, Agent and Web streaming,
+speech-text preparation, cancellation and long-text handling, plus Computer
+verification/input fixes and capability discovery improvements. ChatTTS is removed.
+The independent Breeze fixes are reproducible patches under `scripts/tts/`; the
+model, saved voices, logs and machine configuration stay outside the repository.
+
+Rechecked all local branches and worktrees against the inventory below. Their older
+unfinished copies remain historical sources, not replacement versions of newer
+integrated code. In particular, the pre-sanitization M3 branch must not be merged
+back wholesale. Remote `main` is an ancestor of this integration; there is no
+remote `master`. Publish the development branch, then advance `main` without
+rewriting history. This release targets the local Web/Daemon deployment, with no
+npm or GitHub Release publication.
+
 ## Integration inventory — 2026-11-05
 
 | Source | Disposition |

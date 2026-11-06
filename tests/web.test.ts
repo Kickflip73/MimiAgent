@@ -338,3 +338,103 @@ test('Web allows incoming document links but keeps cross-site API and embedded r
   assert.equal(await get('/', { 'sec-fetch-dest': 'iframe' }), 403);
   assert.equal(await get('/', { host: 'evil.example' }), 403);
 });
+
+test('speech forwards the first PCM chunk before generation completes and cancels on disconnect', async (t) => {
+  let streamController!: ReadableStreamDefaultController<Uint8Array>;
+  let cancelled!: () => void;
+  const cancellation = new Promise<void>(resolve => { cancelled = resolve; });
+  const server = new MimiWebServer(backend({ speechStream: async (_text, signal) => {
+    signal.addEventListener('abort', cancelled, { once: true });
+    return new Response(new ReadableStream({ start(c) { streamController = c; c.enqueue(new Uint8Array([1, 0])); } }),
+      { headers: { 'content-type': 'audio/pcm', 'x-sample-rate': '24000', 'x-sample-format': 's16le' } });
+  } }), 0);
+  await server.start(); t.after(() => server.close());
+  const controller = new AbortController();
+  const response = await fetch(`${server.address}/api/speech/stream`, { method: 'POST', headers: localHeaders(server),
+    body: JSON.stringify({ text: '你好' }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(3000)]) });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.body!.getReader().read()).value, new Uint8Array([1, 0]));
+  assert.ok(streamController, 'upstream is still open when first audio arrives');
+  controller.abort();
+  await Promise.race([cancellation, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('disconnect not propagated')), 2000); timer.unref(); })]);
+});
+
+test('speech validates origin and text before invoking the synthesizer', async (t) => {
+  let calls = 0;
+  const server = new MimiWebServer(backend({ speechStream: async () => { calls++; throw new Error('busy'); } }), 0);
+  await server.start(); t.after(() => server.close());
+  for (const [text, origin, status] of [['hello', 'http://evil.example', 403], ['', server.address, 400], ['x'.repeat(10001), server.address, 400]] as const) {
+    const response = await fetch(`${server.address}/api/speech/stream`, { method: 'POST',
+      headers: { ...localHeaders(server), origin }, body: JSON.stringify({ text }) });
+    assert.equal(response.status, status);
+  }
+  assert.equal(calls, 0);
+});
+
+test('speech settings share protected management and reject removed engines before synthesis', async t => {
+  const actions: string[] = [];
+  let calls = 0;
+  const server = new MimiWebServer(backend({ speechManage: async (action, value) => { actions.push(action); return { value }; },
+    speechStream: async (_text, _signal, options) => { calls++; assert.equal(options?.engine, 'macos'); return new Response('wav-fixture', { headers: { 'content-type': 'audio/wav' } }); } }), 0);
+  await server.start(); t.after(() => server.close());
+  assert.equal((await fetch(`${server.address}/api/speech/settings`)).status, 200);
+  const post = (route: string, value: unknown, headers = localHeaders(server)) => fetch(server.address + route, { method: 'POST', headers, body: JSON.stringify(value) });
+  assert.equal((await post('/api/speech/settings', { action: 'configure', value: { engine: 'macos' } })).status, 200);
+  assert.equal((await post('/api/speech/settings', { action: 'voice_remove', value: 'x' }, { ...localHeaders(server), origin: 'http://evil.example' })).status, 403);
+  assert.deepEqual(actions, ['settings', 'configure']);
+  assert.equal((await post('/api/speech/stream', { text: 'hello', options: { engine: 'chattts' } })).status, 400);
+  assert.equal(calls, 0);
+  const audio = await post('/api/speech/stream', { text: 'hello', options: { engine: 'macos' } });
+  assert.equal(audio.headers.get('content-type'), 'audio/wav');
+  assert.equal(await audio.text(), 'wav-fixture');
+});
+
+test('live speech reads an existing render without synthesis and rejects cross-site access', async t => {
+  let renders = 0, reads = 0;
+  const server = new MimiWebServer(backend({
+    speechStream: async () => { renders++; throw new Error('must not synthesize'); },
+    speechLive: async (session, id) => {
+      reads++; assert.equal(session, 'story'); assert.equal(id, '93355172-3311-421c-a6e2-ecf910572ad5');
+      return new Response(new Uint8Array([0, 64]), { headers: { 'content-type': 'audio/pcm', 'x-sample-rate': '24000', 'x-sample-format': 's16le' } });
+    },
+  }), 0);
+  await server.start(); t.after(() => server.close());
+  const url = `${server.address}/api/speech/live?session=story&id=93355172-3311-421c-a6e2-ecf910572ad5`;
+  assert.equal((await fetch(url, { headers: { origin: 'http://evil.example' } })).status, 403);
+  assert.equal(reads, 0);
+  const response = await fetch(url);
+  assert.equal(response.status, 200); assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([0, 64]));
+  assert.equal(reads, 1); assert.equal(renders, 0);
+});
+
+test('explicit HTTPS proxy origin permits HTTPS mutations without trusting forwarded headers or HTTP origins', async t=>{
+ let calls=0;
+ const server=new MimiWebServer(backend({mode:async()=>{calls++;return {};}}),0,'mimi.com',443,'https');
+ await server.start();t.after(()=>server.close());
+ assert.equal(server.launchUrl,'https://mimi.com/');
+ const send=(headers:Record<string,string>)=>new Promise<number|undefined>((resolve,reject)=>{
+  const req=request(server.address+'/api/mode',{method:'POST',headers:{host:'mimi.com',origin:'https://mimi.com','x-mimi-web':'1','content-type':'application/json',...headers}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});
+  req.on('error',reject);req.end(JSON.stringify({sessionId:'s',mode:'general'}));
+ });
+ assert.equal(await send({}),200);
+ assert.equal(await send({origin:'http://mimi.com','x-forwarded-proto':'https'}),403);
+ assert.equal(await send({host:'evil.com','x-forwarded-host':'mimi.com'}),403);
+ assert.equal(calls,1);
+ assert.throws(()=>new MimiWebServer(backend(),0,'mimi.com',443,'ftp'),/外部协议/);
+ assert.throws(()=>new MimiWebServer(backend(),0,undefined,undefined,'https'),/外部协议/);
+});
+
+test('voice preview audio is read-only, same-origin and never triggers synthesis', async t => {
+  let reads = 0, writes = 0;
+  const server = new MimiWebServer(backend({
+    speechPreview: async id => { reads++; assert.equal(id, 'preview-1'); return Buffer.from('RIFF preview'); },
+    speechManage: async () => { writes++; return {}; },
+  }), 0);
+  await server.start(); t.after(() => server.close());
+  const url = server.address + '/api/speech/preview?id=preview-1';
+  const result = await fetch(url); assert.equal(result.status, 200); assert.equal(result.headers.get('content-type'), 'audio/wav');
+  assert.equal(result.headers.get('cache-control'), 'no-store');
+  assert.equal((await fetch(url, { headers: { origin: 'https://evil.example' } })).status, 403);
+  assert.equal((await fetch(server.address + '/api/speech/preview?id=../secrets')).status, 400);
+  assert.equal(reads, 1); assert.equal(writes, 0);
+});

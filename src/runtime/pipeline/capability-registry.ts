@@ -2,6 +2,7 @@ import { getAllMcpTools, type MCPServer, type RunContext, type Tool } from '@ope
 import { z } from 'zod';
 import { tool } from '../../tool-factory.js';
 import { toolDescriptor } from '../tool-policy.js';
+import { capabilityQueryOverlap, matchesCapabilityQuery, normalizeCapabilityQuery } from '../../core/capability-query.js';
 import {
   createEffectiveCapabilitySnapshot,
   type CapabilitySource,
@@ -39,36 +40,6 @@ const INTERNAL_COMPATIBILITY_TOOLS = new Set([
   'inspect_runtime_capabilities',
   'invoke_runtime_capability',
 ]);
-const CAPABILITY_QUERY_STOP_WORDS = new Set([
-  'a', 'an', 'and', 'for', 'in', 'of', 'or', 'the', 'to', 'with',
-]);
-
-function normalizeCapabilityQuery(value: string): string {
-  return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
-}
-
-function capabilityQueryTerms(value: string): string[] {
-  return [...new Set(normalizeCapabilityQuery(value).split(/\s+/u)
-    .filter((term) => term.length > 1 && !CAPABILITY_QUERY_STOP_WORDS.has(term)))];
-}
-
-function capabilityQueryOverlap(query: string, searchable: string): number {
-  const normalizedQuery = normalizeCapabilityQuery(query);
-  const normalizedSearchable = normalizeCapabilityQuery(searchable);
-  if (!normalizedQuery || !normalizedSearchable) return 0;
-  if (normalizedSearchable.includes(normalizedQuery)) return 1_000;
-  return capabilityQueryTerms(query)
-    .filter((term) => normalizedSearchable.includes(term))
-    .length;
-}
-
-function matchesCapabilityQuery(query: string, searchable: string): number {
-  const overlap = capabilityQueryOverlap(query, searchable);
-  if (overlap >= 1_000) return overlap;
-  const termCount = capabilityQueryTerms(query).length;
-  return overlap >= Math.min(2, termCount) ? overlap : 0;
-}
-
 function connectorActionKey(capability: string, action: string): string {
   return `${capability}\u0000${action}`;
 }
@@ -185,11 +156,11 @@ export class HostCapabilityRegistry {
     return [
       tool({
         name: 'inspect_capabilities',
-        description: '查询本轮能力状态。Tool 用精确 name；Skill 实例用 source=skill 加技能 name/query；Connector action 用 capability。返回 resolution 和调用 schema。',
+        description: '按任务用途 query 发现 Tool、Skill 和 Connector，无需预知 source；精确名称用 name，Connector action 用 capability。返回可用性和调用方式；未加载 MCP 按 source=mcp 继续查询。',
         parameters: z.object({
           source: z.enum(['builtin', 'mcp', 'browser', 'computer', 'memory', 'goal', 'skill', 'connector']).optional(),
           name: z.string().trim().min(1).max(200).optional()
-            .describe('deferred Tool 的精确名称；Connector action 请使用 capability'),
+            .describe('Tool 或 Skill 的精确名称；Connector action 请使用 capability'),
           capability: z.string().trim()
             .regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$/)
             .max(120)
@@ -213,20 +184,26 @@ export class HostCapabilityRegistry {
           const signature = JSON.stringify({
             source, name: toolName, capability: connectorCapability, query, revision: this.catalogRevision,
           });
+          const inspectSkills = (!source || source === 'skill') && !connectorCapability
+            && this.skillCatalog && this.byName.has('list_skills')
+            && (!toolName || !this.byName.has(toolName));
+          // Availability and installed metadata can change after reload_skills
+          // or deferred MCP discovery. Do not cache the Skill projection.
+          const catalog = inspectSkills
+            ? await this.skillCatalog!({ ...(toolName ? { name: toolName } : {}), ...(query ? { query } : {}) })
+            : undefined;
+          const skills = catalog && typeof catalog === 'object' && 'skills' in catalog && Array.isArray(catalog.skills) ? catalog.skills : [];
           const cached = this.discoveryCache.get(signature);
-          if (cached !== undefined) return cached;
+          if (!inspectSkills && cached !== undefined) return cached;
           // Skill names are catalog entries, not tool names. Discovery never grants new tools.
-          if (source === 'skill' && this.skillCatalog && this.byName.has('list_skills')
-            && (!toolName || !this.byName.has(toolName))) {
-            const catalog = await this.skillCatalog({ ...(toolName ? { name: toolName } : {}), ...(query ? { query } : {}) });
-            const skills = catalog && typeof catalog === 'object' && 'skills' in catalog && Array.isArray(catalog.skills) ? catalog.skills : [];
-            const navigators = entries.filter(entry => ['use_skill', 'read_skill_resource', 'list_skills'].includes(entry.name));
+          if (inspectSkills && (source === 'skill' || (toolName && skills.length))) {
+            const navigators = this.entries.filter(entry => ['use_skill', 'read_skill_resource', 'list_skills'].includes(entry.name));
             for (const entry of navigators) this.discoveredNames.add(entry.name);
             return {
               authorizedCount: this.entries.length,
               ...(inspectMcp && this.mcpCatalog ? { mcpCatalog: this.mcpCatalog.statuses() } : {}), deferredCount: entries.length, matchedCount: skills.length,
               skillCatalog: catalog,
-              capabilities: navigators.map(entry => ({ ...entry, invokeWith: 'invoke_capability' })),
+              capabilities: navigators.map(entry => ({ ...entry, invokeWith: deferredNames.has(entry.name) ? 'invoke_capability' : entry.name })),
               resolution: { name: toolName, status: skills.length ? 'skill' : 'not_found', instruction: skills.length
                 ? '这是已安装 Skill。检查 available；通过返回的 use_skill schema 传入技能 name 激活，不要把技能名当作工具名。'
                 : '当前技能目录未匹配；可通过 list_skills 分页查看，不能据此判断同名 Tool 的状态。' },
@@ -285,7 +262,7 @@ export class HostCapabilityRegistry {
             this.discoveryCache.set(signature, result);
             return result;
           }
-          const eligibleEntries = entries.filter((entry) =>
+          const eligibleEntries = this.entries.filter((entry) =>
             (!source || entry.source === source)
             && (!toolName || entry.name === toolName));
           const directMatches = connectorCapability
@@ -334,15 +311,16 @@ export class HostCapabilityRegistry {
             authorizedCount: this.entries.length,
               ...(inspectMcp && this.mcpCatalog ? { mcpCatalog: this.mcpCatalog.statuses() } : {}),
             deferredCount: entries.length,
-            matchedCount: matches.length,
+            matchedCount: matches.length + skills.length,
             capabilities: matches.slice(0, 100).map((entry) => ({
               name: entry.name,
               source: entry.source,
               effect: entry.effect,
+              ...(!deferredNames.has(entry.name) ? { availability: 'direct', invokeWith: entry.name } : {}),
               ...(toolName || includeQuerySchemas || (connectorMatched && entry.name === connectorInvokerEntry?.name) ? {
                 description: entry.description,
                 parameters: entry.parameters,
-                invokeWith: 'invoke_capability',
+                invokeWith: deferredNames.has(entry.name) ? 'invoke_capability' : entry.name,
               } : {}),
             })),
             ...(toolName ? {
@@ -355,7 +333,12 @@ export class HostCapabilityRegistry {
               },
             } : {}),
             ...(connectorCatalog === undefined ? {} : { connectorCatalog }),
-            ...(query && matches.length === 0 ? {
+            ...(catalog === undefined ? {} : { skillCatalog: catalog }),
+            ...(!source && !toolName && this.mcpCatalog ? {
+              mcpCatalog: this.mcpCatalog.statuses(),
+              mcpDiscovery: '仅检索已加载的 MCP 工具；完整 MCP 查询使用 source=mcp，未加载不表示没有能力。',
+            } : {}),
+            ...(query && matches.length === 0 && skills.length === 0 ? {
               suggestions: eligibleEntries
                 .map((entry) => ({
                   name: entry.name,
@@ -366,9 +349,9 @@ export class HostCapabilityRegistry {
                 .slice(0, 5)
                 .map(({ name: suggestedName }) => suggestedName),
             } : {}),
-            truncated: matches.length > 100,
+            truncated: matches.length > 100 || (!!catalog && typeof catalog === 'object' && 'nextOffset' in catalog),
           };
-          this.discoveryCache.set(signature, result);
+          if (!inspectSkills) this.discoveryCache.set(signature, result);
           return result;
         },
       }),

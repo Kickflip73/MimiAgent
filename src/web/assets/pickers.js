@@ -109,7 +109,8 @@ export function enhanceSelects(container) {
     const root=document.createElement('div');root.className='picker form-picker';
     root.innerHTML='<button type="button" class="picker-trigger" aria-haspopup="listbox" aria-expanded="false"><span></span><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg></button><div class="picker-popover" hidden><div class="picker-list" role="listbox"></div></div>';
     select.after(root);const trigger=root.querySelector('button'),panel=root.querySelector('.picker-popover'),list=root.querySelector('.picker-list');
-    const sync=()=>{trigger.querySelector('span').textContent=select.selectedOptions[0]?.textContent||'选择';trigger.disabled=select.disabled;};sync();
+    const sync=()=>{trigger.querySelector('span').textContent=select.selectedOptions[0]?.textContent||'选择';trigger.disabled=select.disabled;trigger.setAttribute('aria-label',select.getAttribute('aria-label')||select.closest('label')?.firstChild?.textContent?.trim()||'选择');};sync();
+    select.addEventListener('picker-sync',sync);
     const close=()=>{panel.hidden=true;trigger.setAttribute('aria-expanded','false');};
     trigger.onclick=()=>{if(!panel.hidden)return close();list.replaceChildren();for(const option of select.options){const button=document.createElement('button');button.type='button';button.className='picker-option';button.textContent=option.textContent;button.setAttribute('role','option');button.setAttribute('aria-selected',String(option.selected));button.disabled=option.disabled;button.onclick=()=>{select.value=option.value;select.dispatchEvent(new Event('change',{bubbles:true}));sync();close();trigger.focus();};list.append(button);}panel.hidden=false;trigger.setAttribute('aria-expanded','true');list.querySelector('[aria-selected="true"]')?.focus();};
     root.addEventListener('focusout',e=>{if(!root.contains(e.relatedTarget))close();});

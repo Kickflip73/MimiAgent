@@ -89,11 +89,15 @@ function renderActiveSkills(skills: readonly Skill[]): string {
   ].join('\n');
 }
 
-// Names-only index of installed Skills. Exposing the names lets the model
-// answer capability questions ("有没有 X 能力") from visible context instead
-// of asserting absence from the tool list; SKILL.md bodies stay out of context.
-export function renderSkillIndex(skills: readonly { name: string; available: boolean }[]): string {
-  return skills.map((skill) => `${skill.name}${skill.available ? '' : '（本轮不可用）'}`).join('、');
+// Purpose metadata supports selection before activation. Bound descriptions
+// across the whole catalog; never preload procedures or resource paths.
+export function renderSkillIndex(skills: readonly { name: string; description: string; available: boolean }[]): string {
+  const descriptionLimit = Math.min(160, Math.floor(12_000 / Math.max(1, skills.length)));
+  return skills.map((skill) => {
+    if (!skill.available) return `- ${skill.name}（本轮不可用）`;
+    const description = skill.description.replace(/\s+/gu, ' ').trim();
+    return `- ${skill.name}: ${description.slice(0, descriptionLimit)}${description.length > descriptionLimit ? '…' : ''}`;
+  }).join('\n');
 }
 
 export async function executeRunPipeline(
@@ -831,6 +835,7 @@ export async function executeRunPipeline(
           const skill = host.components.skills.get(candidate.name);
           return {
             name: candidate.name,
+            description: candidate.description,
             available: skill !== undefined && host.components.skills.evaluateAvailability(
               skill,
               { canReadLocal, availableTools: run.availableToolNames },

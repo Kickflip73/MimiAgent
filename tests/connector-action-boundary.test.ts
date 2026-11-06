@@ -18,8 +18,8 @@ import type {
   ConnectorActionRequest,
   ConnectorCapability,
   ConnectorCapabilityRequest,
-  ConnectorManager,
 } from '../src/daemon/connectors.js';
+import { ConnectorManager } from '../src/daemon/connectors.js';
 import { withExecutionLedger } from '../src/runtime/tool-ledger.js';
 
 async function invoke(tools: Tool[], name: string, input: unknown): Promise<unknown> {
@@ -64,6 +64,38 @@ function capability(
     actions,
   };
 }
+
+test('P0 renamed desktop connector cannot expose or invoke generic GUI writes', async () => {
+  let writes = 0;
+  const manager = {
+    configPath: '/fixture/connectors.json',
+    listCapabilities: () => [capability('renamed-desktop', [
+      { name: 'activate_app', description: 'activate', capability: 'desktop.app.activate', effect: 'read', routeOwner: 'renamed-desktop', modelVisible: true },
+      { name: 'clipboard_read', description: 'read', capability: 'desktop.clipboard.read', effect: 'read', routeOwner: 'renamed-desktop', modelVisible: true },
+    ])],
+    executeAction: async () => { writes++; return { outcome: 'confirmed' }; },
+  } as unknown as ConnectorManager;
+  const snapshot = connectorCapabilitySnapshot(manager);
+  assert.deepEqual(snapshot.connectors[0]?.actions.map(action => action.name), ['clipboard_read']);
+  const result = await invoke(createConnectorTaskHostTools({ inspectCapabilities: async () => snapshot, executeAction: request => manager.executeAction(request) } as ConnectorTaskRuntime), 'connector_action', {
+    connector: 'renamed-desktop', action: 'activate_app', target: 'com.example.app', payloadJson: '{}',
+  });
+  assert.match(JSON.stringify(result), /computer_route_required/);
+  assert.equal(writes, 0);
+});
+
+test('P0 Connector manager enforces GUI policy on direct, capability and read-probe dispatch', async () => {
+  let writes = 0;
+  const declaration = capability('alias', [{ name: 'activate_app', description: 'activate', capability: 'desktop.app.activate', effect: 'read', routeOwner: 'alias', modelVisible: true }]);
+  const manager = Object.create(ConnectorManager.prototype) as ConnectorManager;
+  Object.assign(manager, { connectors: new Map([['alias', { capability: () => declaration, executeAction: async () => { writes++; } }]]) });
+  for (const invoke of [
+    () => manager.executeAction({ connector: 'alias', action: 'activate_app', target: 'app', payload: {} }),
+    () => manager.executeCapability({ capability: 'desktop.app.activate', action: 'activate_app', target: 'app', payload: {} }),
+    () => manager.executeReadProbe({ connector: 'alias', capability: 'desktop.app.activate', action: 'activate_app', target: 'app', payload: {} }),
+  ]) await assert.rejects(invoke, /computer_route_required/);
+  assert.equal(writes, 0);
+});
 
 test('capability snapshot filters exact ids and actions while bounding the catalog', () => {
   const capabilities = [

@@ -1,5 +1,5 @@
 /** Each take owns its tracks, meter and callbacks, including late permission grants. */
-export function createRecorder({mediaDevices=navigator.mediaDevices, Recorder=globalThis.MediaRecorder, AudioContext=globalThis.AudioContext, changed, complete, error, maxMs=300_000}) {
+export function createRecorder({mediaDevices=navigator.mediaDevices, Recorder=globalThis.MediaRecorder, AudioContext=globalThis.AudioContext, changed, complete, error, maxMs=300_000, secureContext=globalThis.isSecureContext}) {
   let current=null, preferred='', devices=[];
   const notify=()=>{
     const take=current,elapsed=take?.started?Date.now()-take.started:0;
@@ -18,7 +18,8 @@ export function createRecorder({mediaDevices=navigator.mediaDevices, Recorder=gl
     get active(){return !!current;},
     async start(owner,deviceId=preferred) {
       if(current)return;
-      if(!mediaDevices?.getUserMedia||!Recorder){error(new Error('此浏览器不支持录音，请使用 Chrome、Edge 或 Safari'));return;}
+      if(secureContext===false){error(new Error('当前地址不是安全连接，浏览器禁止访问麦克风。请使用本机可信的 HTTPS 地址打开 Mimi 后重试。'));return;}
+      if(!mediaDevices?.getUserMedia||!Recorder){error(new Error('当前环境未提供录音接口，请检查浏览器版本、网站权限或设备管理策略'));return;}
       preferred=deviceId;
       const take={owner,requesting:true,chunks:[],discard:false,level:0,hasSignal:false,meterSamples:0};current=take;notify();
       try {
@@ -56,7 +57,7 @@ export function createRecorder({mediaDevices=navigator.mediaDevices, Recorder=gl
       }catch(e){
         if(current!==take)return;
         take.discard=true;release(take);
-        error(new Error(e.name==='NotAllowedError'?'麦克风未获授权，请在 Chrome 网站设置中允许麦克风后重试':e.name==='NotFoundError'||e.name==='OverconstrainedError'?'未找到所选麦克风，请选择其他输入设备':'无法开始录音，请检查麦克风'));
+        error(new Error(e.name==='NotAllowedError'?'麦克风未获授权，请在浏览器网站设置及 macOS 隐私与安全性中允许麦克风后重试':e.name==='NotFoundError'||e.name==='OverconstrainedError'?'未找到所选麦克风，请选择其他输入设备':'无法开始录音，请检查麦克风'));
       }
     },
     stop(){const take=current;if(!take)return;if(!take.recorder){this.cancel();return;}if(take.recorder.state==='recording')take.recorder.stop();},
