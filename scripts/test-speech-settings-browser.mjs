@@ -16,7 +16,7 @@ const generationGate = new Promise(resolve => { releaseGeneration = resolve; });
 const speech = new SpeechOutput({ enabled: true, command: '/bin/echo', playbackCommand: '/bin/echo', synthesisTimeoutMs: 1000, playbackTimeoutMs: 1000, breezeUrl: 'http://127.0.0.1:8080' }, path.join(root, 'speech'), undefined,
   new BreezeTtsClient('http://127.0.0.1:8080', async (url, init) => String(url).endsWith('/v1/voices')
     ? Response.json({ id: init.body.get('name'), saved: true })
-    : new Response(new Uint8Array(48000), { headers: { 'content-type': 'audio/pcm', 'x-sample-rate': '24000', 'x-sample-format': 's16le' } })));
+    : new Response(new Uint8Array(48000), { headers: { 'content-type': 'audio/pcm', 'x-sample-rate': '24000', 'x-sample-format': 's16le', 'x-breeze-stable-voice': '1' } })));
 await speech.configure({ engine: 'breeze', voice: 'breeze:zh-narrator' });
 const server = new MimiWebServer({
   speechManage: async (action, value, signal) => {
