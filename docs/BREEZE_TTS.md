@@ -27,31 +27,35 @@ Keep the service bound to loopback, with WebSocket and CORS disabled when only M
 
 ### Long first-audio delays after idle on macOS
 
-MLX 0.32.3 can lose model residency after GPU idle. Under memory pressure the next
-request may spend tens of seconds bringing weights back, despite `/health` being
-ready. The [upstream residency fix](https://github.com/ml-explore/mlx/pull/4633)
-is included in MLX 0.32.4 and uses an opt-in refresh interval.
+The observed cold request took 41 seconds before first audio, although `/health`
+was ready. GPU idle can drop model residency; the next request then reloads it
+under memory pressure. A 0.32.4 trial with native residency refresh was **not**
+accepted: an idle replay stalled in Metal residency operations for 85 seconds on
+this macOS host. Keep the validated MLX 0.32.3 environment; do not enable
+`MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS` for this deployment.
 
-For the independent service, while idle, update with
-`uv pip install --python .venv/bin/python 'mlx==0.32.4'` and apply
-`scripts/tts/breeze-resident-memory.patch` from this repository. Set these variables
-in the service environment before restarting:
+Apply `scripts/tts/breeze-resident-memory.patch` to the independent server while
+idle and configure:
 
 ```sh
-MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS=1000
 BREEZE_MLX_WIRED_GB=8
 BREEZE_MLX_CACHE_GB=1
 ```
 
-The 8 GB residency budget is for a 24 GB Mac with this checkpoint. It pins up to
-that budget, reducing idle paging at the cost of keeping memory unavailable to
-other applications. The patch rejects budgets exceeding half physical RAM or the
-system Metal limit; it never raises system limits. Smaller machines need a smaller
-budget. Keep model weights, reference voices and sampling settings unchanged.
-Verify first-audio latency again after several idle minutes, not only back-to-back
-warm requests. This addresses idle reloads, not waiting behind another synthesis.
+The patch performs one scalar GPU operation per idle second on the existing GPU
+worker, under a non-waiting gate lease. It never synthesizes audio, advances model
+sampling/codec state, or queues ahead of a real request. The task stops with the
+service. This follows the small-GPU-operation workaround discussed in the
+[upstream idle-residency issue](https://github.com/ml-explore/mlx/issues/4609),
+without using a concurrent native residency-refresh thread.
 
-The [C++ server](https://github.com/HoppouAI/Breeze-TTS-2.cpp) also documents the form speech API. The MLX service is the target of the Mac deployment above.
+The 8 GB residency budget is for this checkpoint on a 24 GB Mac. It keeps that
+memory available to the model at the cost of less reclaimable RAM and a small
+amount of idle GPU activity. Budgets exceeding half physical RAM or the system
+Metal limit are rejected; system limits are never raised. Smaller machines need
+a smaller budget. Model weights, reference voices and sampling remain unchanged.
+Verify first-audio latency after several idle minutes, not only warm requests.
+This addresses idle reloads, not waiting behind another synthesis.
 
 ## Point MimiAgent at it
 

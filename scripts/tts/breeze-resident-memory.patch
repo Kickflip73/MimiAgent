@@ -1,5 +1,57 @@
+diff --git a/breeze_infer/api.py b/breeze_infer/api.py
+index 9655f84..9ea6342 100644
+--- a/breeze_infer/api.py
++++ b/breeze_infer/api.py
+@@ -306,6 +306,30 @@ def _ignore_sigint() -> None:
+         signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
++async def idle_keepalive_tick(components: Components) -> None:
++    runtime = components.readiness.runtime
++    if not getattr(runtime, "idle_keepalive_enabled", False):
++        return
++    lease = components.gate.try_acquire()
++    if lease is None:
++        return  # A real request always takes priority; never queue behind it.
++    try:
++        await components.gpu.run(runtime.idle_tick)
++    finally:
++        lease.release()
++
++
++async def keep_runtime_ready(components: Components) -> None:
++    try:
++        while True:
++            await asyncio.sleep(1)
++            await idle_keepalive_tick(components)
++    except asyncio.CancelledError:
++        raise
++    except Exception as exc:
++        components.events.emit("model.keepalive_failed", level="warning", error=repr(exc))
++
++
+ async def load_in_background(
+     components: Components, load: Callable[[], LoadedModel], server: uvicorn.Server
+ ) -> bool:
+@@ -534,6 +558,7 @@ async def serve(
+     restore_signals = _install_signal_handlers(asyncio.get_running_loop(), on_signal)
+     try:
+         loading = asyncio.create_task(load_in_background(components, load, server))
++        keeping_ready = asyncio.create_task(keep_runtime_ready(components))
+         components.events.emit(
+             "server.started",
+             host=components.settings.host,
+@@ -549,6 +574,8 @@ async def serve(
+             raise
+         finally:
+             serving = False
++            keeping_ready.cancel()
++            await asyncio.gather(keeping_ready, return_exceptions=True)
+             hard_exit_reason: str | None = None
+             stop_error: BaseException | None = None
+             try:
 diff --git a/models/mlx_streaming.py b/models/mlx_streaming.py
-index af7b59c..7cddd24 100644
+index af7b59c..fc207e6 100644
 --- a/models/mlx_streaming.py
 +++ b/models/mlx_streaming.py
 @@ -11,6 +11,7 @@ run on Linux CI), so every `mlx` and `mlx_audio` import is inside the function t
@@ -51,7 +103,26 @@ index af7b59c..7cddd24 100644
 
  def quantize_parts(mlx_model: Any, speed: MlxSpeedOptions) -> None:
      """Quantize the linear layers of the parts `speed.quantize` names, in place (no-op when it names none).
-@@ -1131,6 +1145,9 @@ def load_mlx_runtime(path: Path, speed: MlxSpeedOptions | None = None) -> MlxBre
+@@ -831,6 +845,18 @@ class MlxBreezeStreamingRuntime:
+                 pass
+         return (time.perf_counter() - started) * 1000.0
+
++    @property
++    def idle_keepalive_enabled(self) -> bool:
++        return self.speed.wired_limit_gb is not None
++
++    def idle_tick(self) -> None:
++        """A scalar GPU operation; no model, codec or sampling state is advanced."""
++        import mlx.core as mx
++
++        value = getattr(self, "_idle_value", None)
++        self._idle_value = (mx.zeros((1,)) if value is None else value) + 1
++        mx.eval(self._idle_value)
++
+     def build_reference_prefix(self, prefix_inputs: dict[str, Any]) -> MlxReferencePrefix:
+         """Run a voice's reference prefix (`templates.prepare_prefix_inputs`) through the
+         backbone alone, batch 1, and keep its KV (contracts/runtime-seam.md). Refused with
+@@ -1131,6 +1157,9 @@ def load_mlx_runtime(path: Path, speed: MlxSpeedOptions | None = None) -> MlxBre
      speed = MlxSpeedOptions.from_env() if speed is None else speed
      if speed.cache_limit_gb is not None:
          mx.set_cache_limit(int(speed.cache_limit_gb * 1e9))
@@ -91,3 +162,50 @@ index 64c2e5c..6b9e7cd 100644
 +            MlxSpeedOptions.from_env({"BREEZE_MLX_WIRED_GB": invalid}).wired_limit_bytes(device)
 +    with pytest.raises(ValueError, match="BREEZE_MLX_WIRED_GB"):
 +        speed.wired_limit_bytes({**device, "max_recommended_working_set_size": 7_000_000_000})
+diff --git a/tests/test_idle_keepalive.py b/tests/test_idle_keepalive.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_idle_keepalive.py
+@@ -0,0 +1,42 @@
++import asyncio
++from types import SimpleNamespace
++from breeze_infer.api import idle_keepalive_tick
++from breeze_infer.gpu import GpuGate, GpuThread
++from breeze_infer.routes_health import Readiness
++
++
++def test_keepalive_is_idle_only_opt_in_and_releases_the_gate():
++    async def scenario():
++        calls = []
++        gpu = GpuThread('cpu', set_device=lambda _: None)
++        gate = GpuGate()
++        ready = Readiness()
++        components = SimpleNamespace(gpu=gpu, gate=gate, readiness=ready)
++        runtime = SimpleNamespace(idle_keepalive_enabled=True, idle_tick=lambda: calls.append('tick'))
++        try:
++            await idle_keepalive_tick(components)
++            ready.mark_ready(SimpleNamespace())
++            await idle_keepalive_tick(components)
++            assert calls == []
++            ready.mark_ready(runtime)
++            lease = gate.try_acquire()
++            await idle_keepalive_tick(components)
++            assert calls == []
++            lease.release()
++            await idle_keepalive_tick(components)
++            assert calls == ['tick']
++            def fail():
++                raise RuntimeError('tick failed')
++            runtime.idle_tick = fail
++            try:
++                await idle_keepalive_tick(components)
++            except RuntimeError:
++                pass
++            else:
++                raise AssertionError('failure was hidden')
++            lease = gate.try_acquire()
++            assert lease is not None
++            lease.release()
++        finally:
++            gpu.shutdown()
++    asyncio.run(scenario())

@@ -4,7 +4,7 @@ All notable changes to MimiAgent are documented here.
 
 ## Unreleased
 
-- Documents and packages the bounded MLX residency patch and MLX 0.32.4 idle-residency fix for delayed speech startup; adds an incremental tempo-output regression. Consolidates current speech and Computer development for local deployment.
+- Documents and packages the bounded MLX residency and idle scalar keepalive patch for delayed speech startup; adds an incremental tempo-output regression. Consolidates current speech and Computer development for local deployment.
 
 - Single-speaker Breeze long-form reading pins seed/reference across pieces, uses longer bounded passages and rejects unsupported servers or lost anchors instead of silently redesigning voices. Includes the independent MLX service patch and regressions.
 
